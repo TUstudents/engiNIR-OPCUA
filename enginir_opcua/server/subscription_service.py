@@ -13,10 +13,13 @@ from enginir_opcua import ua
 from enginir_opcua.common import uamethod, utils
 
 from .address_space import AddressSpace
-from .internal_subscription import InternalSubscription
+from .internal_subscription import InternalSubscription, SubscriptionState
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
+    from .uaprocessor import PublishRequestData
+
+MAX_PENDING_NOTICES_PER_SESSION = 100
 
 
 class SubscriptionService:
@@ -33,6 +36,7 @@ class SubscriptionService:
         self._sub_id_counter = 77
         self.standard_events: dict[int, Any] = {}
         self._conditions: dict[ua.NodeId, Any] = {}
+        self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
 
     async def create_subscription(
         self,
@@ -65,6 +69,7 @@ class SubscriptionService:
             session_id,
             request_callback=request_callback,
             delete_callback=lambda: self.subscriptions.pop(result.SubscriptionId, None),
+            expire_callback=self._on_expired if request_callback is not None else None,
             no_acks_limit=no_acks_limit,
             max_queue_size=max_queue_size,
             publishing_enabled=params.PublishingEnabled,
@@ -107,7 +112,44 @@ class SubscriptionService:
         sub = self._owned(subscription_id, session_id)
         if sub is None:
             raise utils.ServiceError(ua.StatusCodes.BadSubscriptionIdInvalid)
+        sub.reset_lifetime()
         return sub
+
+    def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
+        self.subscriptions.pop(sub.data.SubscriptionId, None)
+        pending = self._pending_notices.setdefault(sub.session_id, [])
+        if len(pending) >= MAX_PENDING_NOTICES_PER_SESSION:
+            pending.pop(0)
+        pending.append((notice, sub.pub_result_callback))
+
+    def pending_notice(self, session_id: ua.NodeId) -> tuple[ua.PublishResult, Callable[..., Any]] | None:
+        pending = self._pending_notices.get(session_id)
+        if not pending:
+            return None
+        notice = pending.pop(0)
+        if not pending:
+            del self._pending_notices[session_id]
+        return notice
+
+    def drop_pending_notices(self, session_id: ua.NodeId) -> None:
+        self._pending_notices.pop(session_id, None)
+
+    async def on_publish_request(self, session_id: ua.NodeId, requestdata: "PublishRequestData") -> bool:
+        notice = self.pending_notice(session_id)
+        if notice is not None:
+            result, callback = notice
+            await callback(result, requestdata)
+            return True
+        late = [
+            sub
+            for sub in self.subscriptions.values()
+            if sub.session_id == session_id and sub.state is SubscriptionState.LATE
+        ]
+        late.sort(key=lambda sub: (-sub.priority, sub.served_at))
+        for sub in late:
+            if await sub.publish_results(requestdata):
+                return True
+        return False
 
     def modify_subscription(
         self, params: ua.ModifySubscriptionParameters, session_id: ua.NodeId
