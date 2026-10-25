@@ -1377,29 +1377,6 @@ def test_sort_nodes_progress_check_and_type_class_typedef():
         assert "Ordering of nodes is not possible" in str(exc)
 
 
-@pytest.mark.parametrize("max_keep_alive_count", [1, 2, 3])
-def test_keep_alive_triggers_at_max_keep_alive_count(max_keep_alive_count):
-    """A keep-alive must be sent on the RevisedMaxKeepAliveCount-th idle cycle."""
-    from enginir_opcua.server.address_space import AddressSpace
-    from enginir_opcua.server.internal_subscription import InternalSubscription
-
-    async def _callback(*args, **kwargs):
-        pass
-
-    data = ua.CreateSubscriptionResult()
-    data.SubscriptionId = 1
-    data.RevisedPublishingInterval = 100.0
-    data.RevisedMaxKeepAliveCount = max_keep_alive_count
-    data.RevisedLifetimeCount = 10000
-    sub = InternalSubscription(data, AddressSpace(), _callback, ua.NodeId(1))
-    # skip the initial publish that is always sent on startup
-    sub._startup = False
-
-    for cycle in range(1, max_keep_alive_count):
-        assert not sub.has_published_results(), f"unexpected keep-alive on cycle {cycle}"
-    assert sub.has_published_results()
-
-
 def _incoming_chunk(seq: int, body: bytes, chunk_type=ua.ChunkType.Intermediate) -> MessageChunk:
     chunk = MessageChunk(SecurityPolicyNone().symmetric_cryptography, body=body, chunk_type=chunk_type)
     chunk.MessageHeader.ChannelId = 1

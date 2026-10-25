@@ -1098,6 +1098,9 @@ async def test_internal_server_subscription(opc):
     for i in range(10):
         await client_var.write_value(i)
         await asyncio.sleep(0.01)
+    async with asyncio.timeout(5):
+        while len(sub_handler.results) < 10:
+            await asyncio.sleep(0.01)
     assert [v for n, v in sub_handler.results] == list(range(10))
     internal_sub = opc.server.iserver.subscription_service.subscriptions[sub.subscription_id]
     # Check that the results are not left un-acknowledged on internal Server Subscriptions.

@@ -135,6 +135,10 @@ class InternalServer:
         # count cap is what matters; PublishingInterval is left to the client.
         self.max_lifetime_count: int = 15_000
         self.max_keep_alive_count: int = 5_000
+        self.min_publishing_interval_ms: float = 50.0
+        self.max_publishing_interval_ms: float = 3_600_000.0
+        self.max_subscription_lifetime_ms: float = 86_400_000.0
+        self.max_notifications_per_publish: int = 10_000
         # Total subscription count cap across the whole server. Past this,
         # CreateSubscription returns BadTooManySubscriptions.
         self.max_subscriptions: int = 1_000
