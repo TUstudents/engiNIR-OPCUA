@@ -702,3 +702,90 @@ The certificate-validation rules referred to below are in Part 4, 6.1.3 (the tab
 3. **CRY-3**: revocation ignores the issuer and CRL signatures, and certificate chains with intermediates can't be validated.
 4. **CRY-11**: generated application certificates have `cA = TRUE`, `setup_self_signed_certificate` can replace an installed CA-issued certificate, and it writes a world-readable private key.
 5. **CRY-8**: password tokens are accepted RSA-1.5-encrypted on any endpoint, and the deprecated policies are still available.
+
+## asyncua/pubsub
+
+Checked against Part 14 (1.05.06). The UADP layout is in 7.2.4.4 (NetworkMessage) and 7.2.4.5 (DataSetMessage), and UADP security is in 7.2.4.4.3.
+
+### Security (writer.py, reader.py, uadp.py)
+
+- **PUB-1 (bug, security)** (spec-checked): **PubSub message security isn't implemented, but it can be configured.**
+  - `SecurityMode`, `SecurityGroupId` and `SecurityKeyServices` of writer groups and readers are only copied into the address space.
+  - A writer group configured for `Sign` or `SignAndEncrypt` sends unsigned plaintext messages, and a reader configured the same way accepts them.
+  - A received NetworkMessage with the SecurityHeader flag (ExtendedFlags1 bit 4) isn't rejected. The SecurityHeader isn't parsed, so the rest of the message is decoded from the wrong offset.
+  - UADP over UDP multicast has no other authentication. Any host on the segment can send DataSetMessages that `SubScribedTargetVariables` writes into server variables.
+  - Fix: refuse to start writers and readers whose `SecurityMode` isn't `None` until security is implemented, skip messages with the SecurityHeader flag, and document that PubSub data is unauthenticated.
+
+### uadp.py
+
+- **PUB-2 (bug)** (verified, spec-checked): **encoding errors in the UADP headers.**
+  - `PUBLISHER_ID_UINT64 = 0b110 << 8`, but Part 14 defines UInt64 as `011`; `11x` is reserved. Verified: a UInt64 id is sent with type bits `110`. A spec-encoded UInt64 id (`011`) is decoded as **UInt16**, because the UInt16 bit is tested first: `0x0102030405060708` came back as `UInt16 1800`. Reserved PublisherId types aren't skipped as required.
+  - The DataSetMessage `Valid` flag is lost. `UadpDataSetMessageHeader.Valid` defaults to `True`, and `from_binary` only ever sets it to `True`. Verified: a message sent with `Valid=False` is decoded as valid.
+  - `PromotedFields` are written with the field *count* in `Size`, but `Size` is the total size of the fields in bytes. Verified: `Size = 2` for two UInt16 fields, where it should be 4 plus encoding.
+  - DataSetMessage type `Event` (`0010`) isn't handled, so event messages are decoded as Variant key frames. Field encoding `11` (reserved) is treated as RawData.
+  - The UADP version, the reserved bits of ExtendedFlags2 and GroupFlags, and the 1.05 ActionHeader (ExtendedFlags2 bit 5) are never checked. Part 14 says the receiver shall skip messages with reserved values.
+  - `DeltaVariant.Value` defaults to the `Variant` *class* (`lambda: Variant`). `UadpDataSetDeltaRaw.Data` is typed as a list but defaults to `bytes`. `_pack_payload` encodes every DataSetMessage twice when there's a payload header.
+
+### reader.py
+
+- **PUB-3 (bug)**:
+  - `MessageReceiveTimeout` is a Duration in **milliseconds**, but `_timeout_task` waits `MessageReceiveTimeout * 1000` **seconds**. Also, `timeout_ev` is never set when a message arrives. With a timeout configured, the reader therefore never reaches the timeout in practice, and if it did, it would switch to `Error` even while data keeps arriving. It also never goes back to `Operational`.
+  - The DataSetMessage's `CfgMajorVersion`/`CfgMinorVersion` aren't compared with the reader's `DataSetMetaData.ConfigurationVersion`. Field lists are combined with `zip`, so a message with more or fewer fields than the metadata is silently cut to the shorter length.
+  - A delta frame's field index `No` comes from the network and is used unchecked (`IndexError`).
+  - `ReaderGroup.__init__(cfg)` replaces `cfg` with a fresh `ReaderGroupDataType()`, so a loaded reader group loses its name and settings.
+  - `handle_msg` uses `assert isinstance(msg.Payload, Iterable)`. Chunk, discovery-probe and announcement messages trip it (or pass it with `-O`). Chunked messages are never reassembled.
+  - `ReaderGroup.set_name()` returns the name and doesn't set it.
+
+### writer.py
+
+- **PUB-4 (bug)**:
+  - `WriterGroup._init_information_model` writes the `Priority` node from `WriterGroupId` (`Variant(self._cfg.WriterGroupId, VariantType.Byte)`). Ids above 255 can't be encoded as a Byte.
+  - The `Enabled` flags of connections, writer groups and DataSetWriters are never checked. Everything configured publishes.
+  - `run()` sleeps the full `PublishingInterval` *after* each publish, so the interval drifts by the processing time. An interval of 0 is a busy loop.
+  - `KeepAliveTime`, `MaxNetworkMessageSize` (no chunking above it), `KeyFrameCount` and delta frames aren't implemented.
+  - The GroupHeader sequence number wraps with `% 0xFFFF`, so 65535 is never used. The DataSetMessage sequence number skips 0. Part 14 defines both as plain UInt16 counters that roll over.
+  - With `DataSetClassId` in the content mask, a warning is logged on every publish.
+  - `PubSubDataSource.get_raw()` drops fields whose value is `None`. With RawData encoding, every later field then lands in the wrong position on the reader.
+
+### pubsub.py, connection.py
+
+- **PUB-5 (bug)** (partly verified):
+  - `PubSub.start()` uses `asyncio.wait`, which doesn't propagate exceptions. Verified: a connection that can't bind its socket only logs "Task exception was never retrieved", and `start()` returns with `_running = True`. With no connections, `asyncio.wait([])` raises `ValueError`.
+  - `init_information_model()` initializes the connections *inside* the loop over published datasets. With no datasets, connections never appear in the address space; with two, each connection is instantiated twice.
+  - Connections passed to `PubSub(cfg)` or `PubSub.new()` never get `set_if(self)`, so their writer groups run with `ps=None`. Only `add_connection()` sets it.
+  - `remove_published_dataset()` and `remove_connection()` call `node.delete()` without `await`, so nothing is deleted, and they don't remove the entry from their lists. `remove_connection()` targets the whole `PublishSubscribe` node.
+  - `PubSubConnection.remove_reader_group()` does `del r._meta`, which a ReaderGroup doesn't have (`AttributeError`). Neither remove method takes the group out of `_reader_groups`/`_writer_groups`, so a removed group keeps running.
+  - `load_binary_file` raises `UaError(BadInvalidArgument)` with the class instead of a status code. `get_connection()` contains a debug `print`. One error message has a stray `f` inside the f-string (`f"... f{...}"`).
+
+### subscribed_dataset.py
+
+- **PUB-6 (bug)**:
+  - With `OverrideValueHandling.OverrideValue`, `on_dataset_received` reads `cfg.OverrideValue` on the `FieldTargets` wrapper, which has no such attribute. That's an `AttributeError` when a bad status arrives; it should be `cfg._cfg.OverrideValue`.
+  - The target's `AttributeId`, `ReceiverIndexRange` and `WriteIndexRange` are ignored. Values are always written to `Value`, as a whole.
+  - `except KeyError: pass` hides unmapped fields, and also any `KeyError` raised while writing the node.
+  - `on_state_change` receives the reader's `DataSetReaderDataType` where a `DataSetMeta` is expected.
+
+### udp.py
+
+- **PUB-7 (bug)**:
+  - `Loopback=False` is never applied. The socket option is only set when loopback is *enabled*, so the operating system default (loopback on) stays.
+  - The configured `NetworkInterface` isn't used for multicast. The group is joined with `INADDR_ANY`, and `IP_MULTICAST_IF` isn't set for sending. Instead, the socket is *bound* to the interface address, which on Linux stops it from receiving multicast at all. On hosts with more than one network card, publishing and subscribing go through whichever interface the OS picks.
+  - Every malformed datagram is logged with a full traceback through the root logger (`logging.exception`). Any host on the network can flood the log.
+  - Received messages are dispatched with a fire-and-forget `ensure_future` (there's a `FIXME`).
+  - `"Unsupported socket family f{sock.family}"` is missing the `f` prefix.
+
+### Docs and module layout
+
+- **PUB-8 (doc)**:
+  - There is no PubSub page in `docs/`. The only documentation is `examples/pubsub` and the module docstrings, which list the missing features ("implement a lot of specs correct (timing, publishing)", "JsonEncoding: all", "DataSetWriter: implement state").
+  - Nothing tells users that security (PUB-1), JSON encoding, MQTT, keep-alives and chunking are missing.
+  - `asyncua/pubsub/__init__.py` star-imports `connection` and `writer` twice.
+
+### Summary: asyncua/pubsub
+
+8 findings (PUB-1 … PUB-8): 7 bugs and 1 doc. One of the bugs has security impact (PUB-1). Highest impact:
+1. **PUB-1**: configuring PubSub security silently does nothing. Data received over UDP is unauthenticated and is written into server variables.
+2. **PUB-2**: UInt64 publisher ids are encoded and decoded incorrectly, which breaks interoperability with spec-conforming peers. The `Valid` flag and the PromotedFields size are wrong too.
+3. **PUB-3**: the receive timeout is a factor of a million off, and never reset. Configuration version mismatches aren't detected.
+4. **PUB-5**: `PubSub.start()` hides startup failures, connections are registered in the address space zero or several times, and the remove methods do nothing.
+5. **PUB-7**: the network interface and loopback settings don't take effect for multicast.
