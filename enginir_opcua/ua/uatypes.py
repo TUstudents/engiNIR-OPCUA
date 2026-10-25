@@ -836,7 +836,7 @@ class QualifiedName:
 @dataclass(frozen=False)
 class RelativePathElement:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.31
+    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
 
     :ivar ReferenceTypeId:
     :vartype ReferenceTypeId: NodeId
@@ -859,7 +859,7 @@ class RelativePathElement:
 @dataclass(frozen=False)
 class RelativePath:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.31
+    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
 
     :ivar Elements:
     :vartype Elements: RelativePathElement
