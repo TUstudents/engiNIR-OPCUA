@@ -372,9 +372,9 @@ class StatusCode:
     """
     :ivar value:
     :vartype value: int
-    :ivar name():
+    :ivar name: symbolic name, ignoring the low 16 bits
     :vartype name: string
-    :ivar doc():
+    :ivar doc: description, ignoring the low 16 bits
     :vartype doc: string
     """
 
@@ -382,11 +382,14 @@ class StatusCode:
 
     def __post_init__(self) -> None:
         if isinstance(self.value, str):
-            object.__setattr__(self, "value", getattr(status_codes.StatusCodes, self.value))
+            try:
+                object.__setattr__(self, "value", getattr(status_codes.StatusCodes, self.value))
+            except AttributeError:
+                raise UaError(f"Unknown StatusCode name: {self.value!r}") from None
 
     def check(self) -> None:
         """
-        Raises an exception if the status code is anything else than 0 (good).
+        Raises an exception if the severity is not Good, so Uncertain raises too.
         """
         if not self.is_good():
             raise UaStatusCodeError(self.value)
@@ -402,7 +405,7 @@ class StatusCode:
 
     def is_bad(self) -> bool:
         """
-        https://reference.opcfoundation.org/v104/Core/docs/Part4/7.34.1/
+        Part 4, 7.38.1:
         11   Reserved for future use. All Clients should treat a StatusCode with this severity as “Bad”.
 
         return True if status is Bad (10) or (11).
@@ -423,12 +426,12 @@ class StatusCode:
 
     @property
     def name(self) -> str:
-        name, _ = status_codes.get_name_and_doc(self.value)
+        name, _ = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return name
 
     @property
     def doc(self) -> str:
-        _, doc = status_codes.get_name_and_doc(self.value)
+        _, doc = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return doc
 
 
