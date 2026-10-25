@@ -135,3 +135,13 @@ async def test_cry7_bad_x509_token_signature_is_user_signature_invalid(
     with pytest.raises(ua.uaerrors.BadUserSignatureInvalid):
         await client.connect()
     await client.disconnect()
+
+
+@pytest.mark.parametrize("policy_uri", [None, "", security_policies.SecurityPolicyNone.URI, "urn:unknown"])
+async def test_cry7_sign_asymmetric_without_a_signing_policy_raises(
+    policy_uri: str | None, credentials: tuple[object, object]
+) -> None:
+    """Part 6, 6.7.4 and Part 4, 5.7.3: a signature is never the data itself."""
+    _, private_key = credentials
+    with pytest.raises(ua.UaError):
+        security_policies.sign_asymmetric(private_key, DATA, policy_uri)

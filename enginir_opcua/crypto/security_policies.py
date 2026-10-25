@@ -494,6 +494,14 @@ class SecurityPolicy:
     def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
         pass
 
+    @staticmethod
+    def encrypt_asymmetric(pubkey, data):
+        raise UaError("The security policy has no asymmetric encryption")
+
+    @staticmethod
+    def sign_asymmetric(privkey, data):
+        raise UaError("The security policy has no asymmetric signature")
+
     @abstractmethod
     def make_local_symmetric_key(self, secret, seed):
         pass
@@ -1006,7 +1014,7 @@ class SecurityPolicyFactory:
         )
 
 
-def sign_asymmetric(privkey, data, policy_uri):
+def sign_asymmetric(privkey, data, policy_uri: str | None):
     """
     Sign data with privkey using an asymmetric algorithm.
     The algorithm is selected by policy_uri.
@@ -1022,7 +1030,7 @@ def sign_asymmetric(privkey, data, policy_uri):
         if policy_uri == cls.URI:
             return (cls.sign_asymmetric(privkey, data), cls.AsymmetricSignatureURI)
     if not policy_uri or policy_uri == SecurityPolicyNone.URI:
-        return data, ""
+        raise UaError("Cannot sign without a security policy that has a signature algorithm")
     raise UaError(f"Unsupported security policy `{policy_uri}`")
 
 
