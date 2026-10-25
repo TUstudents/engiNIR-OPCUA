@@ -16,7 +16,7 @@ from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.security_policies import SecurityPolicyNone
 from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary, struct_to_binary
 
-from .harness import RawPeer, RawServer, connect_client, secure_chunk
+from .harness import RawPeer, RawServer, connect_client, secure_chunk, signing_client
 
 
 def big_request(size: int) -> ua.WriteRequest:
@@ -230,3 +230,43 @@ async def test_cli19_abort_with_unreadable_body_fails_with_unexpected_error(raw_
     await peer.send(secure_chunk(b"A", request_id, 1, b"\x01"))
     with pytest.raises(ua.uaerrors.BadUnexpectedError):
         await asyncio.wait_for(request, 1)
+
+
+@pytest.mark.parametrize("opn_chunk_type", [b"C", b"A"])
+async def test_srv25_open_with_intermediate_chunk_gets_security_checks_failed(
+    raw_peer: RawPeer, opn_chunk_type: bytes
+) -> None:
+    """Part 6, 6.7.2.2 and 7.1.5: a protocol error on the channel is answered with an Error message and a close."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
+    await raw_peer.receive_acknowledge()
+    await raw_peer.send(secure_chunk(opn_chunk_type, 1, 1, b"x", message_type=b"OPN"))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadSecurityChecksFailed
+    assert error.Reason == ""
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_srv25_wrong_sequence_number_gets_security_checks_failed_and_closes(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.2.4 and 6.7.7: a sequence number out of order closes the channel, and the peer is told."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
+    await raw_peer.receive_acknowledge()
+    await raw_peer.send(secure_chunk(b"C", 1, 1, b"x"))
+    await raw_peer.send(secure_chunk(b"C", 1, 9, b"x"))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadSecurityChecksFailed
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_srv25_bad_signature_sends_security_checks_failed_and_closes(
+    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 6, 6.7.7 and 7.1.5: a chunk that does not verify gets an Error message and closes the connection."""
+    client = await signing_client(signing_server)
+    async with client:
+        assert client.uaclient.protocol is not None
+        crypto = client.uaclient.protocol._connection.security_policy.symmetric_cryptography
+        genuine = crypto.signature
+        monkeypatch.setattr(crypto, "signature", lambda data: bytes(len(genuine(data))))
+        with pytest.raises(ua.uaerrors.BadSecurityChecksFailed):
+            await client.get_node(ua.ObjectIds.Server_ServerStatus_State).read_value()
+        monkeypatch.undo()

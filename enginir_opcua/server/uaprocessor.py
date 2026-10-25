@@ -189,6 +189,11 @@ class UaProcessor:
             _logger.warning("Closing connection from %s: %s", self.name, e.reason)
             self._send_error(e.status)
             return False
+        except Exception as e:
+            _logger.warning("Closing connection from %s: channel failure", self.name, exc_info=True)
+            status = e.code if isinstance(e, ua.UaStatusCodeError) else ua.StatusCodes.BadSecurityChecksFailed
+            self._send_error(status)
+            return False
         if isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
                 self.open_secure_channel(msg.security_header(), msg.sequence_header(), msg.body())

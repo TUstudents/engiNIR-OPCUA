@@ -354,9 +354,7 @@ async def test_encrypted_private_key_handling_failure(srv_crypto_one_cert):
 async def test_certificate_handling_mismatched_creds(srv_crypto_one_cert):
     _, cert = srv_crypto_one_cert
     clt = Client(uri_crypto_cert, timeout=1)
-    with pytest.raises((AttributeError, TimeoutError)):
-        # either exception can be raise, depending on used python version
-        # and crypto library version
+    with pytest.raises((AttributeError, TimeoutError, ua.uaerrors.BadSecurityChecksFailed)):
         await clt.set_security(
             security_policies.SecurityPolicyBasic256Sha256,
             peer_creds["certificate"],
@@ -451,7 +449,7 @@ async def test_always_catch_new_cert_on_set_security():
     await srv.start()
     # The same client instance fails to open a SecureChannel because the
     # security_policy contains the previous SecurityMode and server certificate.
-    with pytest.raises(TimeoutError):
+    with pytest.raises((TimeoutError, ua.uaerrors.BadSecurityChecksFailed)):
         await clt.connect_and_get_server_endpoints()
 
     assert clt.security_policy == clt.uaclient.security_policy
