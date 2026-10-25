@@ -41,6 +41,7 @@ _nesting_depth = contextvars.ContextVar("ua_binary_nesting_depth", default=0)
 
 MAX_NESTING_DEPTH: int = 100
 MAX_ZERO_SIZE_ARRAY_COUNT: int = 65_536
+MAX_DIAGNOSTIC_INFO_DEPTH: int = 10
 
 
 def _bounded[**P, R](decode: Callable[P, R]) -> Callable[P, R]:
@@ -434,6 +435,8 @@ def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
     """Given a dataclass, return a function that serializes instances of this dataclass"""
     if dataclazz is ua.LocalizedText:
         return _localizedtext_to_binary
+    if dataclazz is ua.DiagnosticInfo:
+        return diagnosticinfo_to_binary
     data_fields = fields(dataclazz)
     # The result is cached, so get_type_hints only runs once per class.
     try:
@@ -493,6 +496,39 @@ def _localizedtext_to_binary(obj: ua.LocalizedText) -> bytes:
     if obj.Text:
         mask |= 0x02
         parts.append(Primitives.String.pack(obj.Text))
+    return Primitives.Byte.pack(mask) + b"".join(parts)
+
+
+_DIAGNOSTIC_INFO_INDEX_FIELDS = (
+    ("SymbolicId", 0x01),
+    ("NamespaceUri", 0x02),
+    ("Locale", 0x08),
+    ("LocalizedText", 0x04),
+)
+_DIAGNOSTIC_INFO_ADDITIONAL_INFO = 0x10
+_DIAGNOSTIC_INFO_INNER_STATUS_CODE = 0x20
+_DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO = 0x40
+
+
+def diagnosticinfo_to_binary(info: ua.DiagnosticInfo, _level: int = 1) -> bytes:
+    if _level > MAX_DIAGNOSTIC_INFO_DEPTH:
+        raise UaError(f"DiagnosticInfo nested deeper than {MAX_DIAGNOSTIC_INFO_DEPTH} levels")
+    mask = 0
+    parts: list[bytes] = []
+    for name, bit in _DIAGNOSTIC_INFO_INDEX_FIELDS:
+        value = getattr(info, name)
+        if value is not None:
+            mask |= bit
+            parts.append(Primitives.Int32.pack(value))
+    if info.AdditionalInfo is not None:
+        mask |= _DIAGNOSTIC_INFO_ADDITIONAL_INFO
+        parts.append(Primitives.String.pack(info.AdditionalInfo))
+    if info.InnerStatusCode is not None:
+        mask |= _DIAGNOSTIC_INFO_INNER_STATUS_CODE
+        parts.append(to_binary(ua.StatusCode, info.InnerStatusCode))
+    if info.InnerDiagnosticInfo is not None:
+        mask |= _DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO
+        parts.append(diagnosticinfo_to_binary(info.InnerDiagnosticInfo, _level + 1))
     return Primitives.Byte.pack(mask) + b"".join(parts)
 
 
@@ -901,6 +937,8 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     if isinstance(objtype, str):
         objtype = getattr(ua, objtype)
     assert isinstance(objtype, type)
+    if objtype is ua.DiagnosticInfo:
+        return diagnosticinfo_from_binary
     if issubclass(objtype, Enum):
         return create_enum_deserializer(objtype)  # type: ignore[arg-type]
     if issubclass(objtype, ua.UaUnion):
@@ -957,6 +995,30 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
         return objtype(**kwargs)
 
     return decode
+
+
+def _diagnosticinfo_from_binary(data: Buffer | IO, level: int) -> ua.DiagnosticInfo:
+    if level > MAX_DIAGNOSTIC_INFO_DEPTH:
+        raise UaError(f"DiagnosticInfo nested deeper than {MAX_DIAGNOSTIC_INFO_DEPTH} levels")
+    mask = Primitives.Byte.unpack(data)
+    if mask & 0x80:
+        raise UaError(f"DiagnosticInfo has unassigned encoding bits {mask & 0x80:#x}")
+    kwargs: dict[str, Any] = {}
+    for name, bit in _DIAGNOSTIC_INFO_INDEX_FIELDS:
+        if mask & bit:
+            kwargs[name] = Primitives.Int32.unpack(data)
+    if mask & _DIAGNOSTIC_INFO_ADDITIONAL_INFO:
+        kwargs["AdditionalInfo"] = Primitives.String.unpack(data)
+    if mask & _DIAGNOSTIC_INFO_INNER_STATUS_CODE:
+        kwargs["InnerStatusCode"] = from_binary(ua.StatusCode, data)
+    if mask & _DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO:
+        kwargs["InnerDiagnosticInfo"] = _diagnosticinfo_from_binary(data, level + 1)
+    return ua.DiagnosticInfo(**kwargs)
+
+
+@_bounded
+def diagnosticinfo_from_binary(data: Buffer | IO) -> ua.DiagnosticInfo:
+    return _diagnosticinfo_from_binary(data, 1)
 
 
 def struct_from_binary[T](objtype: type[T] | str, data: IO | Buffer) -> T:
