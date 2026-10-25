@@ -20,6 +20,7 @@ from enginir_opcua import ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from ..common.callback import CallbackService
+from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
 from ..crypto import security_policies, uacrypto
@@ -82,6 +83,7 @@ class InternalServer:
         # Refused at connection_made() to prevent FD exhaustion via parked sockets
         # that never call ActivateSession.
         self.max_connections: int = 1_000
+        self.channel_settings: ChannelSettings = ChannelSettings()
         # A connection that has not sent its Hello this many seconds after connecting is closed.
         self.hello_timeout_seconds: float = 30.0
         # Connections that haven't activated a session this many seconds after

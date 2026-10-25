@@ -1005,7 +1005,7 @@ async def test_process_reports_the_connection_should_close_on_a_limit_error():
     processor._transport = Mock()
     connection = Mock()
     connection.receive_from_header_and_body.side_effect = TransportError(ua.StatusCodes.BadTcpMessageTooLarge)
-    processor._connection = connection
+    processor._channel = connection
 
     keep_open = await processor.process(Mock(), Mock())
 

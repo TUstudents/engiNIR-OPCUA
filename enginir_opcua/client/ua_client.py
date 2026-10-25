@@ -27,7 +27,7 @@ from ..common.connection import (
     MessageAborted,
     MessageSizeExceeded,
     MessageTooLarge,
-    SecureConnection,
+    SecureChannel,
     TransportError,
     TransportLimits,
 )
@@ -82,8 +82,9 @@ class UASocketProtocol(asyncio.Protocol):
             limits = TransportLimits()
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
-        self._connection = SecureConnection(security_policy, limits)
-        self._reader = FrameReader(lambda: self._connection.limits.max_recv_buffer)
+        self._channel = SecureChannel(security_policy, limits)
+        self._acknowledged_version = 0
+        self._reader = FrameReader(lambda: self._channel.limits.max_recv_buffer)
 
         self.state: UASocketState = UASocketState.INITIALIZED
         # needed to pass params from asynchronous request to synchronous data receive callback, as well as
@@ -130,14 +131,16 @@ class UASocketProtocol(asyncio.Protocol):
             self.disconnect_socket()
 
     def _process_frame(self, header: ua.Header, body: Buffer) -> None:
-        msg = self._connection.receive_from_header_and_body(header, body)
-        self._process_received_message(msg)
+        msg = self._channel.receive_from_header_and_body(header, body)
         if header.MessageType == ua.MessageType.SecureOpen:
             params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+            self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
             response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
             response.ResponseHeader.ServiceResult.check()
+            self._channel.check_open_response(response.Parameters, params, self._acknowledged_version)
             self._open_secure_channel_exchange = response
-            self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
+            self._channel.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
+        self._process_received_message(msg)
 
     def _process_received_message(
         self, msg: ua.Message | AbortedMessage | ua.Acknowledge | ua.ErrorMessage | None
@@ -181,8 +184,7 @@ class UASocketProtocol(asyncio.Protocol):
         next_request_id = self._request_id + 1
         try:
             binreq = struct_to_binary(request)
-            self.revolve_security_token()
-            msg = self._connection.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
+            msg = self._channel.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
         except MessageTooLarge as e:
             self._request_handle -= 1
             raise ua.uaerrors.BadRequestTooLarge() from e
@@ -275,11 +277,6 @@ class UASocketProtocol(asyncio.Protocol):
         hdr.RequestHandle = self._request_handle
         hdr.TimeoutHint = int(timeout * 1000)
 
-    def revolve_security_token(self) -> None:
-        """Switch to the renewed symmetric security token once one is pending."""
-        if self._connection.next_security_token.TokenId != 0:
-            self._connection.revolve_tokens()
-
     @property
     def is_closed(self) -> bool:
         return self.state is UASocketState.CLOSED
@@ -292,7 +289,7 @@ class UASocketProtocol(asyncio.Protocol):
             self.logger.warning("disconnect_socket was called but transport is None")
 
     async def send_hello(self, url: str, max_messagesize: int = 0, max_chunkcount: int = 0) -> ua.Acknowledge:
-        limits = self._connection.limits
+        limits = self._channel.limits
         if max_messagesize:
             limits.max_message_size = max_messagesize
         if max_chunkcount:
@@ -302,7 +299,9 @@ class UASocketProtocol(asyncio.Protocol):
         self._callbackmap[0] = ack
         if self.transport is not None:
             self.transport.write(uatcp_to_binary(ua.MessageType.Hello, hello))
-        return await wait_for(ack, self.timeout)
+        acknowledge = await wait_for(ack, self.timeout)
+        self._acknowledged_version = acknowledge.ProtocolVersion
+        return acknowledge
 
     async def open_secure_channel(self, params: ua.OpenSecureChannelParameters) -> OpenSecureChannelResult:
         self.logger.info("open_secure_channel")
@@ -507,15 +506,6 @@ class UaClient:
     def mark_disconnected(self) -> None:
         """Mark the client as disconnected; the supervisor calls this when it gives up."""
         self._set_state(UaClientState.DISCONNECTED)
-
-    def revolve_security_token(self) -> None:
-        """Apply a renewed secure-channel token immediately instead of lazily.
-
-        The transport otherwise revolves on the next request; an idle channel that
-        was just renewed uses this so the new keys take effect at once.
-        """
-        if self.protocol is not None:
-            self.protocol.revolve_security_token()
 
     @property
     def has_transport(self) -> bool:

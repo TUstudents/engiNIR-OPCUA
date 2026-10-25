@@ -14,11 +14,12 @@ from typing import Any
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.common.connection import FrameReader, SecureChannel, TransportLimits
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.permission_rules import User, UserRole
-from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
+from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyNone
 from enginir_opcua.server.internal_server import InternalServer
-from enginir_opcua.ua.ua_binary import struct_from_binary, uatcp_to_binary
+from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -138,6 +139,98 @@ def secure_chunk(
         CONNECTION_PROTOCOL_HEADER.pack(message_type, chunk_type, CONNECTION_PROTOCOL_HEADER.size + len(content))
         + content
     )
+
+
+class _ChannelIds:
+    @staticmethod
+    def get_new_channel_id() -> int:
+        return 4242
+
+
+def _frames(data: bytes) -> list[tuple[ua.Header, Buffer]]:
+    reader = FrameReader(lambda: 2**31)
+    reader.feed(data)
+    return list(reader.frames())
+
+
+async def send_open_request(
+    peer: RawPeer,
+    channel: SecureChannel,
+    params: ua.OpenSecureChannelParameters,
+    message_channel_id: int | None = None,
+) -> None:
+    saved = channel.security_token.ChannelId
+    if message_channel_id is not None:
+        channel.security_token.ChannelId = message_channel_id
+    request = ua.OpenSecureChannelRequest(Parameters=params)
+    data = channel.message_to_binary(struct_to_binary(request), ua.MessageType.SecureOpen, request_id=99)
+    channel.security_token.ChannelId = saved
+    await peer.send(data)
+
+
+async def receive_service_status(peer: RawPeer, channel: SecureChannel) -> int:
+    """Reads one OPN reply (a ServiceFault or a response) and returns its ServiceResult."""
+    message_type, body = await peer.receive()
+    data = CONNECTION_PROTOCOL_HEADER.pack(message_type, b"F", CONNECTION_PROTOCOL_HEADER.size + len(body)) + body
+    ((header, chunk_body),) = _frames(data)
+    message = channel.receive_from_header_and_body(header, chunk_body)
+    reply = message.body()
+    nodeid_from_binary(reply)
+    return struct_from_binary(ua.ResponseHeader, reply).ServiceResult.value
+
+
+async def open_channel_as_client(peer: RawPeer, lifetime: int = 3_600_000) -> SecureChannel:
+    """Runs Hello and an OpenSecureChannel Issue with the None policy against the real server; returns the client side."""
+    await peer.send_hello(ua.Hello())
+    await peer.receive_acknowledge()
+    channel = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    params = ua.OpenSecureChannelParameters(
+        RequestType=ua.SecurityTokenRequestType.Issue,
+        SecurityMode=ua.MessageSecurityMode.None_,
+        RequestedLifetime=lifetime,
+    )
+    request = ua.OpenSecureChannelRequest(Parameters=params)
+    await peer.send(channel.message_to_binary(struct_to_binary(request), ua.MessageType.SecureOpen, request_id=1))
+    message_type, body = await peer.receive()
+    data = CONNECTION_PROTOCOL_HEADER.pack(message_type, b"F", CONNECTION_PROTOCOL_HEADER.size + len(body)) + body
+    ((header, chunk_body),) = _frames(data)
+    message = channel.receive_from_header_and_body(header, chunk_body)
+    response = struct_from_binary(ua.OpenSecureChannelResponse, message.body())
+    channel.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
+    return channel
+
+
+async def open_channel_as_server(
+    uaclient: UaClient, peer: RawPeer, tamper: Callable[[ua.OpenSecureChannelResult], None] | None = None
+) -> SecureChannel:
+    """Answers the OpenSecureChannel Issue of a client under test with the None policy; returns the server side."""
+    channel = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    opening = asyncio.create_task(
+        uaclient.open_secure_channel(
+            ua.OpenSecureChannelParameters(
+                RequestType=ua.SecurityTokenRequestType.Issue,
+                SecurityMode=ua.MessageSecurityMode.None_,
+                RequestedLifetime=3_600_000,
+            )
+        )
+    )
+    message_type, body = await peer.receive()
+    data = CONNECTION_PROTOCOL_HEADER.pack(message_type, b"F", CONNECTION_PROTOCOL_HEADER.size + len(body)) + body
+    ((header, chunk_body),) = _frames(data)
+    message = channel.receive_from_header_and_body(header, chunk_body)
+    request = struct_from_binary(ua.OpenSecureChannelRequest, message.body())
+    result = channel.open(request.Parameters, _ChannelIds())
+    if tamper is not None:
+        tamper(result)
+    response = ua.OpenSecureChannelResponse(Parameters=result)
+    await peer.send(
+        channel.message_to_binary(
+            struct_to_binary(response), ua.MessageType.SecureOpen, request_id=message.request_id()
+        )
+    )
+    if tamper is None:
+        await opening
+    return channel
 
 
 async def connect_client(raw_server: RawServer, acknowledge: ua.Acknowledge | None = None) -> tuple[UaClient, RawPeer]:

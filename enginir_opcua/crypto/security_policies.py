@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 import logging
 import struct
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -157,14 +156,8 @@ class Cryptography(CryptographyNone):
     def __init__(self, mode=MessageSecurityMode.Sign):
         self.Signer = None
         self.Verifier = None
-        self.Prev_Verifier = None
         self.Encryptor = None
         self.Decryptor = None
-        self.Prev_Decryptor = None
-        # we turn this flag on to fallback on previous key
-        self._use_prev_key = False
-        self.key_expiration = 0.0
-        self.prev_key_expiration = 0.0
         if mode not in (MessageSecurityMode.Sign, MessageSecurityMode.SignAndEncrypt):
             raise ValueError(f"unknown security mode {mode}")
         self.is_encrypted = mode == MessageSecurityMode.SignAndEncrypt
@@ -218,11 +211,7 @@ class Cryptography(CryptographyNone):
         return self.Verifier.signature_size()
 
     def verify(self, data, sig):
-        if not self.use_prev_key:
-            self.Verifier.verify(data, sig)
-        else:
-            _logger.debug("Message verification fallback: trying with previous secure channel key")
-            self.Prev_Verifier.verify(data, sig)
+        self.Verifier.verify(data, sig)
 
     def encrypt(self, data):
         if self.is_encrypted:
@@ -233,39 +222,11 @@ class Cryptography(CryptographyNone):
 
     def decrypt(self, data):
         if self.is_encrypted:
-            self.revoke_expired_key()
-            if self.use_prev_key:
-                return self.Prev_Decryptor.decrypt(data)
             return self.Decryptor.decrypt(data)
         return data
 
-    def revoke_expired_key(self):
-        """
-        Remove expired keys as soon as possible
-        """
-        now = time.monotonic()
-        if now > self.prev_key_expiration:
-            if self.Prev_Decryptor and self.Prev_Verifier:
-                self.Prev_Decryptor.reset()
-                self.Prev_Decryptor = None
-                self.Prev_Verifier.reset()
-                self.Prev_Verifier = None
-                _logger.debug("Expired secure_channel keys removed")
-
-    @property
-    def use_prev_key(self):
-        if self._use_prev_key:
-            if self.Prev_Decryptor and self.Prev_Verifier:
-                return True
-            raise SignatureError("signature does not match the data")
-        return False
-
-    @use_prev_key.setter
-    def use_prev_key(self, value: bool):
-        self._use_prev_key = value
-
     def remove_padding(self, data):
-        decryptor = self.Decryptor if not self.use_prev_key else self.Prev_Decryptor
+        decryptor = self.Decryptor
         if self.is_encrypted:
             if decryptor.encrypted_block_size() > 256:
                 pad_size = struct.unpack("<h", data[-2:])[0] + 2
@@ -495,6 +456,10 @@ class SecurityPolicy(ABC):
         raise UaError("The security policy has no asymmetric signature")
 
     @abstractmethod
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+        pass
+
+    @abstractmethod
     def make_local_symmetric_key(self, secret, seed):
         pass
 
@@ -529,6 +494,9 @@ class SecurityPolicyNone(SecurityPolicy):
         self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
         self.permissions = permission_ruleset
 
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+        return self.symmetric_cryptography
+
     def make_local_symmetric_key(self, secret, seed):
         return None
 
@@ -540,7 +508,6 @@ class RsaSecurityPolicy(SecurityPolicy):
     signature_key_size: int
     symmetric_key_size: int
     deprecated: bool = False
-    key_expiry_factor: float = 1.0
     asymmetric_padding_size: int
     asymmetric_signer: type[Signer]
     asymmetric_verifier: type[Verifier]
@@ -575,6 +542,16 @@ class RsaSecurityPolicy(SecurityPolicy):
     def _derive_keys(self, secret, seed):
         return self.p_hash(secret, seed, (self.signature_key_size, self.symmetric_key_size, 16))
 
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+        cryptography = Cryptography(self.Mode)
+        (sigkey, key, init_vec) = self._derive_keys(remote_nonce, local_nonce)
+        cryptography.Signer = self.symmetric_signer(sigkey)
+        cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
+        (sigkey, key, init_vec) = self._derive_keys(local_nonce, remote_nonce)
+        cryptography.Verifier = self.symmetric_verifier(sigkey)
+        cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+        return cryptography
+
     def make_local_symmetric_key(self, secret, seed):
         (sigkey, key, init_vec) = self._derive_keys(secret, seed)
         self.symmetric_cryptography.Signer = self.symmetric_signer(sigkey)
@@ -582,12 +559,6 @@ class RsaSecurityPolicy(SecurityPolicy):
 
     def make_remote_symmetric_key(self, secret, seed, lifetime):
         (sigkey, key, init_vec) = self._derive_keys(secret, seed)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        self.symmetric_cryptography.key_expiration = time.monotonic() + (lifetime * 0.001 * self.key_expiry_factor)
         self.symmetric_cryptography.Verifier = self.symmetric_verifier(sigkey)
         self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
 
@@ -761,7 +732,6 @@ class SecurityPolicyBasic256(RsaSecurityPolicy):
     signature_key_size = 24
     symmetric_key_size = 32
     deprecated = True
-    key_expiry_factor = 1.25
     asymmetric_padding_size = 42
     asymmetric_signer = SignerRsa
     asymmetric_verifier = VerifierRsa
