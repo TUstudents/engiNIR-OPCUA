@@ -4,6 +4,7 @@ Helper function and classes depending on ua object are in ua_utils.py
 """
 
 import asyncio
+import copy
 import logging
 import os
 from collections.abc import Awaitable
@@ -36,34 +37,41 @@ class Buffer:
     """
 
     def __init__(self, data: bytes, start_pos: int = 0, size: int = -1) -> None:
-        self._data = data
-        self._cur_pos = start_pos
+        if start_pos < 0 or start_pos > len(data):
+            raise UaError(f"Buffer start {start_pos} is outside the data of {len(data)} bytes")
         if size == -1:
             size = len(data) - start_pos
-        self._size = size
+        if size < 0 or start_pos + size > len(data):
+            raise UaError(f"Buffer window of {size} bytes at {start_pos} is outside the data of {len(data)} bytes")
+        self._data = data
+        self._start = start_pos
+        self._end = start_pos + size
+        self._cur_pos = start_pos
 
     def __str__(self) -> str:
-        return f"Buffer(size:{self._size}, data:{self._data[self._cur_pos : self._cur_pos + self._size]!r})"
+        return f"Buffer(size:{len(self)}, data:{self._data[self._cur_pos : self._end]!r})"
 
     __repr__ = __str__
 
     def __len__(self) -> int:
-        return self._size
+        return self._end - self._cur_pos
 
     def __bool__(self) -> bool:
-        return self._size > 0
+        return self._end > self._cur_pos
 
     def __bytes__(self) -> bytes:
         """Return remains of buffer as bytes."""
-        return bytes(self._data[self._cur_pos :])
+        return bytes(self._data[self._cur_pos : self._end])
+
+    def _check_size(self, size: int) -> None:
+        if size < 0 or size > len(self):
+            raise NotEnoughData(f"Not enough data left in buffer, request for {size}, we have {len(self)}")
 
     def read(self, size: int) -> bytes:
         """
         read and pop number of bytes for buffer
         """
-        if size > self._size:
-            raise NotEnoughData(f"Not enough data left in buffer, request for {size}, we have {self._size}")
-        self._size -= size
+        self._check_size(size)
         pos = self._cur_pos
         self._cur_pos += size
         return self._data[pos : self._cur_pos]
@@ -72,29 +80,31 @@ class Buffer:
         """
         return a shadow copy, optionally only copy 'size' bytes
         """
-        if size == -1 or size > self._size:
-            size = self._size
+        if size == -1:
+            size = len(self)
+        self._check_size(size)
         return Buffer(self._data, self._cur_pos, size)
 
     def skip(self, size: int) -> None:
         """
         skip size bytes in buffer
         """
-        if size > self._size:
-            raise NotEnoughData(f"Not enough data left in buffer, request for {size}, we have {self._size}")
-        self._size -= size
+        self._check_size(size)
         self._cur_pos += size
 
     @property
     def cur_pos(self) -> int:
         return self._cur_pos
 
-    def rewind(self, cur_pos: int = 0) -> None:
+    def rewind(self, cur_pos: int | None = None) -> None:
         """
-        rewind the buffer
+        rewind the buffer to cur_pos, or to the start of its window
         """
+        if cur_pos is None:
+            cur_pos = self._start
+        if cur_pos < self._start or cur_pos > self._end:
+            raise UaError(f"Cannot rewind to {cur_pos}, the buffer window is {self._start} to {self._end}")
         self._cur_pos = cur_pos
-        self._size = len(self._data) - cur_pos
 
 
 def create_nonce(size: int = 32) -> bytes:
@@ -119,13 +129,16 @@ def fields_with_resolved_types(
         cls, globalns=globalns, localns=localns, include_extras=include_extras
     )
 
+    resolved: list[Field] = []
     for field in fields_:
+        field = copy.copy(field)
         try:
             field.type = resolved_fieldtypes[field.name]
         except KeyError:
             _logger.info("could not resolve fieldtype for field=%s of class_or_instance=%s", field, class_or_instance)
+        resolved.append(field)
 
-    return fields_
+    return tuple(resolved)
 
 
 async def wait_for[T](aw: Awaitable[T], timeout: int | float | None) -> T:
