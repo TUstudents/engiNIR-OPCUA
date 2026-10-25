@@ -337,6 +337,29 @@ class SessionProbe:
         response.ResponseHeader.ServiceResult.check()
         return response
 
+    async def send_edited(
+        self, token: ua.NodeId, request: Any, response_type: type, edit: Callable[[bytes], bytes]
+    ) -> Any:
+        """Sends the encoded request after `edit` changed its bytes, for malformed bodies."""
+        self.use(token)
+        protocol = self.client.uaclient.protocol
+        assert protocol is not None
+        protocol._setup_request_header(request.RequestHeader, 1)
+        message = protocol._channel.message_to_binary(
+            edit(struct_to_binary(request)),
+            message_type=ua.MessageType.SecureMessage,
+            request_id=protocol._request_id + 1,
+        )
+        protocol._request_id += 1
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        protocol._callbackmap[protocol._request_id] = future
+        assert protocol.transport is not None
+        protocol.transport.write(message)
+        protocol.check_answer(await asyncio.wait_for(future, 5), "")
+        response = struct_from_binary(response_type, await future)
+        response.ResponseHeader.ServiceResult.check()
+        return response
+
     async def close_session(self, token: ua.NodeId, delete_subscriptions: bool = True) -> None:
         request = ua.CloseSessionRequest(DeleteSubscriptions=delete_subscriptions)
         await self.send(token, request, ua.CloseSessionResponse)

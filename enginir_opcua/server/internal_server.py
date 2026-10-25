@@ -10,6 +10,7 @@ import hmac
 import logging
 from collections.abc import Callable
 from copy import copy
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from struct import unpack_from
@@ -28,6 +29,8 @@ from .address_space import AddressSpace, AttributeService, MethodService, NodeDa
 from .event_generator import EventGenerator
 from .history import HistoryManager
 from .internal_session import InternalSession, SessionManager
+from .service_dispatch import Dispatcher
+from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
 from .user_managers import PermissiveUserManager, UserManager
 
@@ -42,6 +45,46 @@ USER_TOKEN_SECURITY_POLICIES: tuple[type[security_policies.SecurityPolicy], ...]
     security_policies.SecurityPolicyAes128Sha256RsaOaep,
     security_policies.SecurityPolicyAes256Sha256RsaPss,
 )
+
+
+@dataclass
+class OperationLimits:
+    max_nodes_per_read: int = 10_000
+    max_nodes_per_history_read_data: int = 10_000
+    max_nodes_per_history_read_events: int = 10_000
+    max_nodes_per_write: int = 10_000
+    max_nodes_per_history_update_data: int = 10_000
+    max_nodes_per_history_update_events: int = 10_000
+    max_nodes_per_method_call: int = 10_000
+    max_nodes_per_browse: int = 10_000
+    max_nodes_per_register_nodes: int = 10_000
+    max_nodes_per_translate_browse_paths: int = 10_000
+    max_nodes_per_node_management: int = 10_000
+    max_monitored_items_per_call: int = 10_000
+
+
+OPERATION_LIMIT_NODES: dict[str, int] = {
+    "max_nodes_per_read": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRead,
+    "max_nodes_per_history_read_data": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadData,
+    "max_nodes_per_history_read_events": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadEvents
+    ),
+    "max_nodes_per_write": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerWrite,
+    "max_nodes_per_history_update_data": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateData
+    ),
+    "max_nodes_per_history_update_events": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateEvents
+    ),
+    "max_nodes_per_method_call": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerMethodCall,
+    "max_nodes_per_browse": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerBrowse,
+    "max_nodes_per_register_nodes": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRegisterNodes,
+    "max_nodes_per_translate_browse_paths": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerTranslateBrowsePathsToNodeIds
+    ),
+    "max_nodes_per_node_management": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerNodeManagement,
+    "max_monitored_items_per_call": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxMonitoredItemsPerCall,
+}
 
 
 class ServerDesc:
@@ -111,7 +154,9 @@ class InternalServer:
         self.user_manager = user_manager
         self.certificate_validator: CertificateValidatorMethod | None = None
         """hook to validate a certificate, raises a ServiceError when not valid"""
+        self.operation_limits = OperationLimits()
         self.session_manager = SessionManager(self)
+        self.dispatcher = Dispatcher(self, build_service_table())
         self.isession: InternalSession = self.session_manager.new_in_process_session()
         self.current_time_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         self.server_status_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus))
@@ -154,25 +199,13 @@ class InternalServer:
         await ns_node.write_value(uries)
 
         params = ua.WriteParameters()
-        for nodeid in (
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRead,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadData,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadEvents,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerWrite,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateData,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateEvents,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerMethodCall,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerBrowse,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRegisterNodes,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerTranslateBrowsePathsToNodeIds,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerNodeManagement,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxMonitoredItemsPerCall,
-        ):
+        for limit in fields(self.operation_limits):
+            nodeid = OPERATION_LIMIT_NODES[limit.name]
             attr = ua.WriteValue()
             attr.NodeId = ua.NodeId(nodeid)
             attr.AttributeId = ua.AttributeIds.Value
             attr.Value = ua.DataValue(
-                ua.Variant(10000, ua.VariantType.UInt32),
+                ua.Variant(getattr(self.operation_limits, limit.name), ua.VariantType.UInt32),
                 StatusCode=ua.StatusCode(ua.StatusCodes.Good),
                 SourceTimestamp=datetime.now(UTC),
             )

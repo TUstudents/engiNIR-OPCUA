@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
-from enginir_opcua.crypto.permission_rules import User, UserRole
+from enginir_opcua.crypto.permission_rules import PermissionRuleset, User, UserRole
 
 from ..common.callback import CallbackType, ServerItemCallback
 from ..common.utils import ServiceError, create_nonce
@@ -56,6 +56,12 @@ class SessionChannel(Protocol):
 
     @property
     def max_request_message_size(self) -> int: ...
+
+    @property
+    def sockname(self) -> tuple[str, int] | None: ...
+
+    @property
+    def permissions(self) -> PermissionRuleset | None: ...
 
     @property
     def server_certificate(self) -> bytes | None: ...
@@ -132,6 +138,7 @@ class Session:
         self._channel: weakref.ref[SessionChannel] | None = weakref.ref(channel)
         self.publish_queue: deque[PublishRequestData] = deque()
         self.pending_publish_subscriptions: dict[int, bool] = {}
+        self.in_flight = 0
         self.services = InternalSession(
             self.iserver,
             self.iserver.aspace,
@@ -155,6 +162,14 @@ class Session:
 
     def touch(self) -> None:
         self.last_activity = time.monotonic()
+
+    def enter_request(self) -> None:
+        if self.in_flight >= self.manager.max_requests_in_flight_per_session:
+            raise ServiceError(ua.StatusCodes.BadServerTooBusy)
+        self.in_flight += 1
+
+    def leave_request(self) -> None:
+        self.in_flight -= 1
 
     def idle_seconds(self, now: float) -> float:
         return now - self.last_activity
@@ -261,6 +276,7 @@ class SessionManager:
         self.iserver = iserver
         self.sessions: dict[ua.NodeId, Session] = {}
         self.max_sessions: int = 100
+        self.max_requests_in_flight_per_session: int = 100
         self._counter = 0
         self._sweep_task: asyncio.Task[None] | None = None
 
