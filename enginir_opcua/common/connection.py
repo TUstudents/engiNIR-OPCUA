@@ -45,6 +45,31 @@ class TransportError(UaError):
         self.reason = reason
 
 
+class MessageSizeExceeded(TransportError):
+    """A Message above the MaxMessageSize or MaxChunkCount this side announced."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(ua.StatusCodes.BadTcpMessageTooLarge, reason)
+
+
+@dataclass
+class AbortedMessage:
+    """An Abort chunk (Part 6, 6.7.3): the Message of request_id is discarded and the channel stays open."""
+
+    request_id: int
+    error: ua.ErrorMessage
+
+    @staticmethod
+    def from_chunk(chunk: MessageChunk) -> AbortedMessage:
+        try:
+            error = struct_from_binary(ua.ErrorMessage, Buffer(chunk.Body))
+            if len((error.Reason or "").encode()) > MAX_ERROR_REASON_BYTES:
+                raise UaError("Reason is too long")
+        except Exception:
+            error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadUnexpectedError), "")
+        return AbortedMessage(chunk.SequenceHeader.RequestId, error)
+
+
 class MessageTooLarge(UaError):
     """A Message above the MaxMessageSize or MaxChunkCount the peer announced; nothing was written."""
 
@@ -573,9 +598,10 @@ class SecureConnection:
                 )
         if self._incoming_parts:
             if self._incoming_parts[0].SequenceHeader.RequestId != chunk.SequenceHeader.RequestId:
-                raise ua.UaError(
+                raise self._reject_chunk(
+                    ua.StatusCodes.BadSecurityChecksFailed,
                     f"Wrong request id {chunk.SequenceHeader.RequestId},"
-                    f" expected {self._incoming_parts[0].SequenceHeader.RequestId}"
+                    f" expected {self._incoming_parts[0].SequenceHeader.RequestId}",
                 )
         # The sequence number must monotonically increase (but it can wrap around)
         seq_num = chunk.SequenceHeader.SequenceNumber
@@ -639,33 +665,34 @@ class SecureConnection:
         self._incoming_parts = []
         self._incoming_size = 0
 
-    def _receive(self, msg: MessageChunk) -> ua.Message | None:
-        if msg.MessageHeader.packet_size > self._limits.max_recv_buffer:
-            self._drop_incoming_parts()
-            _logger.error(
-                "Message size: %s is > chunk max size: %s", msg.MessageHeader.packet_size, self._limits.max_recv_buffer
-            )
-            raise ua.UaStatusCodeError(ua.StatusCodes.BadRequestTooLarge)
+    def _reject_chunk(self, status: int, reason: str) -> TransportError:
+        self._drop_incoming_parts()
+        return TransportError(status, reason)
+
+    def _receive(self, msg: MessageChunk) -> ua.Message | AbortedMessage | None:
+        header = msg.MessageHeader
         self._check_incoming_chunk(msg)
+        if header.ChunkType not in (ua.ChunkType.Single, ua.ChunkType.Intermediate, ua.ChunkType.Abort):
+            raise self._reject_chunk(ua.StatusCodes.BadTcpMessageTypeInvalid, "Unsupported chunk type")
+        if header.MessageType != ua.MessageType.SecureMessage and header.ChunkType != ua.ChunkType.Single:
+            raise self._reject_chunk(ua.StatusCodes.BadSecurityChecksFailed, "Only MSG can have several chunks")
+        if self._incoming_parts and self._incoming_parts[0].MessageHeader.MessageType != header.MessageType:
+            raise self._reject_chunk(ua.StatusCodes.BadSecurityChecksFailed, "Chunks of different message types")
+        if header.ChunkType == ua.ChunkType.Abort:
+            aborted = AbortedMessage.from_chunk(msg)
+            _logger.warning("Message %s aborted: %s", msg, aborted.error)
+            self._drop_incoming_parts()
+            return aborted
         if not self._limits.is_msg_size_within_limit(self._incoming_size + len(msg.Body)):
             self._drop_incoming_parts()
-            raise ua.UaStatusCodeError(ua.StatusCodes.BadRequestTooLarge)
+            raise MessageSizeExceeded("Message size exceeds the limit")
         self._incoming_parts.append(msg)
         self._incoming_size += len(msg.Body)
         if not self._limits.is_chunk_count_within_limit(len(self._incoming_parts)):
             self._drop_incoming_parts()
-            raise ua.UaStatusCodeError(ua.StatusCodes.BadRequestTooLarge)
-        if msg.MessageHeader.ChunkType == ua.ChunkType.Intermediate:
+            raise MessageSizeExceeded("Chunk count exceeds the limit")
+        if header.ChunkType == ua.ChunkType.Intermediate:
             return None
-        if msg.MessageHeader.ChunkType == ua.ChunkType.Abort:
-            err = struct_from_binary(ua.ErrorMessage, ua.utils.Buffer(msg.Body))
-            _logger.warning("Message %s aborted: %s", msg, err)
-            # specs Part 6, 6.7.3 say that aborted message shall be ignored
-            # and SecureChannel should not be closed
-            self._drop_incoming_parts()
-            return None
-        if msg.MessageHeader.ChunkType == ua.ChunkType.Single:
-            message = ua.Message(self._incoming_parts)
-            self._drop_incoming_parts()
-            return message
-        raise ua.UaError(f"Unsupported chunk type: {msg}")
+        message = ua.Message(self._incoming_parts)
+        self._drop_incoming_parts()
+        return message

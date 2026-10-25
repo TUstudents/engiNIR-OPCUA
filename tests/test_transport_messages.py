@@ -5,12 +5,18 @@ from unittest.mock import patch
 import pytest
 
 from enginir_opcua import Client, Server, ua
-from enginir_opcua.common.connection import MessageAborted, MessageChunk, SecureConnection, TransportLimits
+from enginir_opcua.common.connection import (
+    MessageAborted,
+    MessageChunk,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+)
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.security_policies import SecurityPolicyNone
-from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary
+from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary, struct_to_binary
 
-from .harness import RawServer, connect_client
+from .harness import RawPeer, RawServer, connect_client, secure_chunk
 
 
 def big_request(size: int) -> ua.WriteRequest:
@@ -117,3 +123,110 @@ def test_com61_abort_chunk_after_late_failure() -> None:
     error = struct_from_binary(ua.ErrorMessage, Buffer(chunks[1][1][12:]))
     assert error.Error.value != ua.StatusCodes.Good
     assert connection._sequence_number == 2
+
+
+def _chunk(message_type: bytes, chunk_type: bytes, seq: int, request_id: int = 1) -> MessageChunk:
+    chunk = MessageChunk(SecurityPolicyNone().symmetric_cryptography, b"x" * 10, message_type, chunk_type)
+    chunk.MessageHeader.ChannelId = 1
+    chunk.MessageHeader.packet_size = 34
+    chunk.SequenceHeader.RequestId = request_id
+    chunk.SequenceHeader.SequenceNumber = seq
+    return chunk
+
+
+@pytest.mark.parametrize("message_type", [ua.MessageType.SecureOpen, ua.MessageType.SecureClose])
+@pytest.mark.parametrize("chunk_type", [ua.ChunkType.Intermediate, ua.ChunkType.Abort])
+def test_com64_open_and_close_need_a_single_final_chunk(message_type: bytes, chunk_type: bytes) -> None:
+    """Part 6, 6.7.2.2: OpenSecureChannel and CloseSecureChannel are one final chunk."""
+    connection = _connection(TransportLimits())
+    with pytest.raises(TransportError) as error:
+        connection._receive(_chunk(message_type, chunk_type, 1))
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+    assert connection._incoming_parts == []
+
+
+def test_com64_mixed_message_types_are_rejected() -> None:
+    """Part 6, 6.7.3: the chunks of one Message have the same message type."""
+    connection = _connection(TransportLimits())
+    assert connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1)) is None
+    with pytest.raises(TransportError) as error:
+        connection._receive(_chunk(ua.MessageType.SecureClose, ua.ChunkType.Single, 2))
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+    assert connection._incoming_parts == []
+
+
+def test_com64_a_different_request_id_inside_a_message_is_rejected() -> None:
+    """Part 6, 6.7.3: chunks of different Messages are not interleaved."""
+    connection = _connection(TransportLimits())
+    connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1, request_id=1))
+    with pytest.raises(TransportError) as error:
+        connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Single, 2, request_id=2))
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+
+
+def test_com60_message_above_the_receive_limit_is_tcp_message_too_large() -> None:
+    """Part 6, 7.1.2.3 and 7.1.5: a Message above the announced size ends the connection with Table 79's code."""
+    connection = _connection(TransportLimits(max_chunk_count=2))
+    connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1))
+    connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 2))
+    with pytest.raises(TransportError) as error:
+        connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 3))
+    assert error.value.status == ua.StatusCodes.BadTcpMessageTooLarge
+
+
+@pytest.fixture
+def five_chunks_per_message(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert server.bserver is not None
+    monkeypatch.setattr(server.bserver.limits, "max_chunk_count", 5)
+
+
+async def test_com60_server_answers_too_many_chunks_with_tcp_message_too_large(
+    five_chunks_per_message: None, raw_peer: RawPeer
+) -> None:
+    """Part 6, 7.1.2.3 and 7.1.5: the Error for a Message with more chunks than announced."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
+    acknowledge = await raw_peer.receive_acknowledge()
+    assert acknowledge.MaxChunkCount == 5
+    await raw_peer.send(b"".join(secure_chunk(b"C", 1, seq, b"x") for seq in range(1, 7)))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadTcpMessageTooLarge
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_com60_client_fails_pending_requests_on_too_many_chunks(raw_server: RawServer) -> None:
+    """Part 6, 7.1.2.3: a response with more chunks than the client announced fails the request."""
+    uaclient, peer = await connect_client(raw_server)
+    assert uaclient.protocol is not None
+    uaclient.protocol._connection.limits.max_chunk_count = 2
+    request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
+    await peer.receive()
+    await peer.send(b"".join(secure_chunk(b"C", 1, seq, b"x") for seq in range(1, 4)))
+    with pytest.raises(ua.uaerrors.BadResponseTooLarge):
+        await request
+    assert await peer.is_closed_by_peer()
+
+
+async def test_cli19_abort_fails_the_request_at_once(raw_server: RawServer) -> None:
+    """Part 6, 6.7.3: an Abort chunk fails the request it names with the Error StatusCode."""
+    uaclient, peer = await connect_client(raw_server)
+    assert uaclient.protocol is not None
+    request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
+    _, body = await peer.receive()
+    request_id = struct.unpack("<I", body[12:16])[0]
+    error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadEncodingLimitsExceeded), "no")
+    await peer.send(secure_chunk(b"A", request_id, 1, struct_to_binary(error)))
+    with pytest.raises(ua.uaerrors.BadEncodingLimitsExceeded):
+        await asyncio.wait_for(request, 1)
+    assert not uaclient.protocol.is_closed
+
+
+async def test_cli19_abort_with_unreadable_body_fails_with_unexpected_error(raw_server: RawServer) -> None:
+    """Part 6, 6.7.3: an Abort whose body cannot be read still discards the Message."""
+    uaclient, peer = await connect_client(raw_server)
+    assert uaclient.protocol is not None
+    request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
+    _, body = await peer.receive()
+    request_id = struct.unpack("<I", body[12:16])[0]
+    await peer.send(secure_chunk(b"A", request_id, 1, b"\x01"))
+    with pytest.raises(ua.uaerrors.BadUnexpectedError):
+        await asyncio.wait_for(request, 1)

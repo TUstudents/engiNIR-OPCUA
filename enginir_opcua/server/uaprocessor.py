@@ -9,11 +9,13 @@ from enginir_opcua import ua
 
 from ..common.connection import (
     HELLO_MAX_CHUNK_SIZE,
+    AbortedMessage,
     MessageAborted,
     MessageTooLarge,
     SecureConnection,
     TransportError,
     TransportLimits,
+    error_message_to_binary,
 )
 from ..common.utils import Buffer, ServiceError
 from ..crypto import uacrypto
@@ -174,17 +176,18 @@ class UaProcessor:
         result.Results = requestdata.results
         self.send_response(requestdata.requesthdr.RequestHandle, requestdata.seqhdr, response)
 
+    def _send_error(self, status: int) -> None:
+        self._transport.write(error_message_to_binary(status))
+
     async def process(self, header, body):
         try:
             msg = self._connection.receive_from_header_and_body(header, body)
-        except ua.uaerrors.BadRequestTooLarge as e:
-            _logger.warning("Received request that exceed the transport limits")
-            err = ua.ErrorMessage(ua.StatusCode(e.code), str(e))
-            data = uatcp_to_binary(ua.MessageType.Error, err)
-            self._transport.write(data)
-            return False
         except ua.uaerrors.BadUserAccessDenied:
             _logger.warning("Unauthenticated user attempted to connect")
+            return False
+        except TransportError as e:
+            _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self._send_error(e.status)
             return False
         if isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
@@ -194,6 +197,8 @@ class UaProcessor:
                 return False
             elif header.MessageType == ua.MessageType.SecureMessage:
                 return await self.process_message(msg.sequence_header(), msg.body())
+        elif isinstance(msg, AbortedMessage):
+            _logger.warning("Request %s was aborted by the client", msg.request_id)
         elif isinstance(msg, ua.ErrorMessage):
             _logger.warning("Received an error message type")
         elif msg is None:

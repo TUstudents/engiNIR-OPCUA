@@ -18,7 +18,7 @@ import pytest
 import enginir_opcua
 from enginir_opcua import Client, Server, ua, uamethod
 from enginir_opcua.common import ua_utils
-from enginir_opcua.common.connection import TransportLimits
+from enginir_opcua.common.connection import TransportError, TransportLimits
 from enginir_opcua.common.event_objects import (
     AuditChannelEvent,
     AuditEvent,
@@ -1001,9 +1001,10 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
 
 async def test_process_reports_the_connection_should_close_on_a_limit_error():
     processor = UaProcessor.__new__(UaProcessor)
+    processor.name = "peer"
     processor._transport = Mock()
     connection = Mock()
-    connection.receive_from_header_and_body.side_effect = ua.uaerrors.BadRequestTooLarge()
+    connection.receive_from_header_and_body.side_effect = TransportError(ua.StatusCodes.BadTcpMessageTooLarge)
     processor._connection = connection
 
     keep_open = await processor.process(Mock(), Mock())

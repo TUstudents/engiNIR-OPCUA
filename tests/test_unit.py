@@ -16,7 +16,13 @@ import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.common import structures
-from enginir_opcua.common.connection import MessageChunk, SecureConnection, TransportLimits
+from enginir_opcua.common.connection import (
+    AbortedMessage,
+    MessageChunk,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+)
 from enginir_opcua.common.event_objects import BaseEvent
 from enginir_opcua.common.structures import StructGenerator
 from enginir_opcua.common.structures104 import make_structure
@@ -1417,7 +1423,7 @@ def test_incomplete_message_is_capped_by_max_message_size():
     for seq in range(1, 5):
         assert connection._receive(_incoming_chunk(seq, body)) is None
 
-    with pytest.raises(ua.UaStatusCodeError):
+    with pytest.raises(TransportError):
         connection._receive(_incoming_chunk(5, body))
     assert connection._incoming_parts == []
 
@@ -1468,7 +1474,7 @@ def test_an_aborted_message_frees_its_accumulated_size():
     for seq in range(1, 4):
         connection._receive(_incoming_chunk(seq, body))
     abort = _incoming_chunk(4, struct_to_binary(ua.ErrorMessage()), ua.ChunkType.Abort)
-    assert connection._receive(abort) is None
+    assert isinstance(connection._receive(abort), AbortedMessage)
 
     for seq in range(5, 8):
         assert connection._receive(_incoming_chunk(seq, body)) is None

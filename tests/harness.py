@@ -123,6 +123,23 @@ class RawServer:
         self._server.close()
 
 
+def secure_chunk(
+    chunk_type: bytes,
+    request_id: int,
+    sequence_number: int,
+    body: bytes,
+    message_type: bytes = b"MSG",
+    channel_id: int = 0,
+    token_id: int = 0,
+) -> bytes:
+    """A chunk of the None policy: header, channel id, token id, sequence header and body (Part 6, 6.7.2)."""
+    content = struct.pack("<IIII", channel_id, token_id, sequence_number, request_id) + body
+    return (
+        CONNECTION_PROTOCOL_HEADER.pack(message_type, chunk_type, CONNECTION_PROTOCOL_HEADER.size + len(content))
+        + content
+    )
+
+
 async def connect_client(raw_server: RawServer, acknowledge: ua.Acknowledge | None = None) -> tuple[UaClient, RawPeer]:
     """Connects a UaClient to the raw_server and completes the handshake with the given Acknowledge."""
     uaclient = UaClient(timeout=1)

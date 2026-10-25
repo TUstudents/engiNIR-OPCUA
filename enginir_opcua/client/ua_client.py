@@ -22,8 +22,10 @@ from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
 from ..common.connection import (
+    AbortedMessage,
     FrameReader,
     MessageAborted,
+    MessageSizeExceeded,
     MessageTooLarge,
     SecureConnection,
     TransportError,
@@ -116,7 +118,8 @@ class UASocketProtocol(asyncio.Protocol):
                 self._process_frame(header, body)
         except TransportError as e:
             self.logger.error("Closing connection to server: %s (%s)", e.reason, ua.StatusCode(e.status))
-            self._fail_all_pending(ua.UaStatusCodeError(e.status))
+            status = ua.StatusCodes.BadResponseTooLarge if isinstance(e, MessageSizeExceeded) else e.status
+            self._fail_all_pending(ua.UaStatusCodeError(status))
             self.disconnect_socket()
         except ua.UaStatusCodeError as e:
             self.logger.error("Got error status from server: %s", e)
@@ -136,11 +139,15 @@ class UASocketProtocol(asyncio.Protocol):
             self._open_secure_channel_exchange = response
             self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
 
-    def _process_received_message(self, msg: ua.Message | ua.Acknowledge | ua.ErrorMessage | None) -> None:
+    def _process_received_message(
+        self, msg: ua.Message | AbortedMessage | ua.Acknowledge | ua.ErrorMessage | None
+    ) -> None:
         if msg is None:
             pass
         elif isinstance(msg, ua.Message):
             self._call_callback(msg.request_id(), msg.body())
+        elif isinstance(msg, AbortedMessage):
+            self._fail_request(msg)
         elif isinstance(msg, ua.Acknowledge):
             self._call_callback(0, msg)
         elif isinstance(msg, ua.ErrorMessage):
@@ -150,6 +157,11 @@ class UASocketProtocol(asyncio.Protocol):
                 msg.Error.check()
         else:
             raise ua.UaError(f"Unsupported message type: {msg}")
+
+    def _fail_request(self, aborted: AbortedMessage) -> None:
+        future = self._callbackmap.pop(aborted.request_id, None)
+        if future is not None and not future.done():
+            future.set_exception(ua.UaStatusCodeError(aborted.error.Error.value))
 
     def _send_request(
         self, request: Any, timeout: float = 1, message_type: ua.MessageType = ua.MessageType.SecureMessage
