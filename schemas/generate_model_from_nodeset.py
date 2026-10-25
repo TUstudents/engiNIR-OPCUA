@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 import re
 from pathlib import Path
 
+import nodeset_source
+
 _logger = getLogger(__name__)
 
 IgnoredEnums: list[str] = []
@@ -253,7 +255,7 @@ def reorder_structs(model: Model) -> None:
 
 def nodeid_to_names(model: Model) -> None:
     ids = {}
-    with open(Path.cwd() / "UA-Nodeset-master" / "Schema" / "NodeIds.csv") as f:
+    with open(nodeset_source.NODE_IDS_CSV) as f:
         for line in f:
             name, nb, datatype = line.split(",")
             ids[nb] = name
@@ -477,8 +479,7 @@ def fix_names(model: Model) -> None:
 
 if __name__ == "__main__":
     # this is jus debug code
-    BASE_DIR = Path.cwd()
-    xml_path = BASE_DIR / "UA-Nodeset-master" / "Schema" / "Opc.Ua.NodeSet2.Services.xml"
+    xml_path = nodeset_source.SERVICES_NODESET
     p = Parser(xml_path)
     model = p.parse()
     nodeid_to_names(model)

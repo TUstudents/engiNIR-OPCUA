@@ -20,7 +20,7 @@ The script downloads the OPC Foundation's official Markdown export of each part 
 
 ## Editions
 
-The online reference serves the current 1.05 edition and **1.04** (published 2017-11-22) for every part. Earlier editions (1.00–1.03) and the intermediate 1.05.x releases aren't available online. The generated code in `enginir_opcua/ua` and `enginir_opcua/server/standard_address_space` was built from [UA-Nodeset](https://github.com/OPCFoundation/UA-Nodeset) tag **`UA-1.05.07-2026-05-01`** (core model 1.05.07, published 2026-05-01). `schemas/update_ua_nodeset.py` clones UA-Nodeset into `schemas/UA-Nodeset-master/` to do that. The `nodeset` submodule is an older copy (commit `526c5e59`, 2023) that only the tests use.
+The online reference serves the current 1.05 edition and **1.04** (published 2017-11-22) for every part. Earlier editions (1.00–1.03) and the intermediate 1.05.x releases aren't available online. The generated code in `enginir_opcua/ua` and `enginir_opcua/server/standard_address_space` was built from [UA-Nodeset](https://github.com/OPCFoundation/UA-Nodeset) tag **`UA-1.05.07-2026-05-01`** (core model 1.05.07, published 2026-05-01). The `nodeset` submodule is pinned to that tag, and `schemas/regenerate.py` regenerates the code from it.
 
 | Part | Title | Current | v1.04 |
 |---|---|---|---|

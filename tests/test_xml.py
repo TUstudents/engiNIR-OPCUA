@@ -35,6 +35,7 @@ NODESET_DI = NODESET_DIR / "DI" / "Opc.Ua.Di.NodeSet2.xml"
 NODESET_SCALES = NODESET_DIR / "Scales" / "Opc.Ua.Scales.NodeSet2.xml"
 NODESET_PACK = NODESET_DIR / "PackML" / "Opc.Ua.PackML.NodeSet2.xml"
 NODESET_TMC = NODESET_DIR / "TMC" / "Opc.Ua.TMC.NodeSet2.xml"
+NODESET_MACHINERY = NODESET_DIR / "Machinery" / "Opc.Ua.Machinery.NodeSet2.xml"
 NODESET_IA = NODESET_DIR / "IA" / "Opc.Ua.IA.NodeSet2.xml"
 NODESET_VISION = NODESET_DIR / "MachineVision" / "Opc.Ua.MachineVision.NodeSet2.xml"
 NODESET_PLASTIC_RUBBER = (
@@ -89,11 +90,12 @@ async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
     nodes = await opc.opc.import_xml(NODESET_DI)
+    nodes += await opc.opc.import_xml(NODESET_IA)
+    nodes += await opc.opc.import_xml(NODESET_MACHINERY)
+    nodes += await opc.opc.import_xml(NODESET_PACK)
     nodes += await opc.opc.import_xml(NODESET_SCALES)
     if opc.opc == opc.server:
-        nodes += await opc.opc.import_xml(NODESET_PACK)
         nodes += await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
-        nodes += await opc.opc.import_xml(NODESET_IA)
         nodes += await opc.opc.import_xml(NODESET_VISION)
     for nodeid in nodes:
         await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])

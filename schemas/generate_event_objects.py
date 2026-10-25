@@ -1,15 +1,15 @@
 # code to generate eEventTypes
 from __future__ import annotations
 
-import datetime
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import IO, Any
 
 import enginir_opcua.ua.object_ids as ob_ids
 import generate_model_event as gme
+import nodeset_source
 
-BASE_DIR = Path.cwd().parent
+BASE_DIR = nodeset_source.BASE_DIR
 
 
 class EventsCodeGenerator:
@@ -51,7 +51,7 @@ Model Uri:{model_.attrib["ModelUri"]}"
 Version:{model_.attrib["Version"]}"
 Publication date:{model_.attrib["PublicationDate"]}"
 
-File creation Date:{datetime.datetime.now(datetime.timezone.utc)}"
+UA-Nodeset tag:{nodeset_source.nodeset_tag()}"
 """
 from enginir_opcua import ua
 from .events import Event
@@ -158,7 +158,7 @@ class {event.browseName}({parent_event_browse_name[0]}):""")
 
 
 if __name__ == "__main__":
-    xmlPath = BASE_DIR / "schemas" / "UA-Nodeset-master" / "Schema" / "Opc.Ua.NodeSet2.xml"
+    xmlPath = nodeset_source.CORE_NODESET
     output_path = BASE_DIR / "enginir_opcua" / "common" / "event_objects.py"
     p = gme.Parser(str(xmlPath))
     model = p.parse()
