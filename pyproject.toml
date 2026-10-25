@@ -1,22 +1,26 @@
 [project]
 name = "enginir-opcua"
-version = "2.1.0"
-description = "Pure Python OPC-UA client and server library"
+version = "3.0.0.dev0"
+description = "OPC UA client and server library for Python, built on asyncio; a fork of opcua-asyncio"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "GNU Lesser General Public License v3 or later" }
+license = "LGPL-3.0-or-later"
+license-files = ["COPYING", "COPYING.GPL", "NOTICE"]
 authors = [
   { name = "Olivier Roulet-Dubonnet", email = "olivier.roulet@gmail.com" },
+]
+maintainers = [
+  { name = "engiNIR-OPCUA contributors" },
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
@@ -32,8 +36,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "http://freeopcua.github.io/"
-Repository = "https://github.com/FreeOpcUa/opcua-asyncio"
+Homepage = "https://github.com/TUstudents/engiNIR-OPCUA"
+Repository = "https://github.com/TUstudents/engiNIR-OPCUA"
+Upstream = "https://github.com/FreeOpcUa/opcua-asyncio"
 
 [project.scripts]
 enginir-uabrowse = "enginir_opcua.tools:uals"
@@ -73,7 +78,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
-include = ["/enginir_opcua"]
+include = ["/enginir_opcua", "/COPYING", "/COPYING.GPL", "/NOTICE"]
 
 [tool.mypy]
 disable_error_code = ["misc", "arg-type", "assignment", "var-annotated"]

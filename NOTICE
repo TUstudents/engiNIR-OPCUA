@@ -1,0 +1,66 @@
+engiNIR-OPCUA
+=============
+
+engiNIR-OPCUA (distribution "enginir-opcua", import package "enginir_opcua") is a
+modified version of opcua-asyncio 2.1.0 (https://github.com/FreeOpcUa/opcua-asyncio).
+It was forked on 2026-10-25. The modifications are recorded in the git history of
+https://github.com/TUstudents/engiNIR-OPCUA.
+
+Copyright (C) 2015-2026 Olivier Roulet-Dubonnet and the opcua-asyncio contributors
+Copyright (C) 2026 the engiNIR-OPCUA contributors
+
+engiNIR-OPCUA is free software: you can redistribute it and/or modify it under the
+terms of the GNU Lesser General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+The text of the GNU Lesser General Public License is in COPYING, and the text of the
+GNU General Public License, which it supplements, is in COPYING.GPL.
+
+engiNIR-OPCUA is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+
+
+OPC UA nodeset files
+--------------------
+
+The generated code in enginir_opcua/ua and enginir_opcua/server/standard_address_space
+is built from the OPC Foundation UA-Nodeset files (https://github.com/OPCFoundation/UA-Nodeset,
+tag UA-1.05.07-2026-05-01), which carry this notice:
+
+    Copyright (c) 2005-2026 The OPC Foundation, Inc. All rights reserved.
+
+    OPC Foundation MIT License 1.00
+
+    Permission is hereby granted, free of charge, to any person
+    obtaining a copy of this software and associated documentation
+    files (the "Software"), to deal in the Software without
+    restriction, including without limitation the rights to use,
+    copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following
+    conditions:
+
+    The above copyright notice and this permission notice shall be
+    included in all copies or substantial portions of the Software.
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+    OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+    NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+    HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+    WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+    OTHER DEALINGS IN THE SOFTWARE.
+
+    The complete license agreement can be found here:
+    http://opcfoundation.org/License/MIT/1.00/
+
+
+OPC UA specifications
+---------------------
+
+The OPC UA specifications (OPC 10000) are copyrighted by the OPC Foundation and are
+not included in this package. docs/opcua-spec/fetch_specs.py downloads a personal copy;
+see docs/opcua-spec/README.md.
+
+"OPC UA" and "OPC Foundation" are trademarks of the OPC Foundation. engiNIR-OPCUA is
+not affiliated with or certified by the OPC Foundation.
