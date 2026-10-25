@@ -324,6 +324,8 @@ class UaProcessor:
 
         elif typeid == ua.NodeId(ua.ObjectIds.RegisterServerRequest_Encoding_DefaultBinary):
             _logger.info("register server request %s", user)
+            if not self.iserver.accept_server_registrations:
+                raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
             serv = struct_from_binary(ua.RegisteredServer, body)
             self.iserver.register_server(serv)
             response = ua.RegisterServerResponse()
@@ -332,6 +334,8 @@ class UaProcessor:
 
         elif typeid == ua.NodeId(ua.ObjectIds.RegisterServer2Request_Encoding_DefaultBinary):
             _logger.info("register server 2 request %s", user)
+            if not self.iserver.accept_server_registrations:
+                raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
             params = struct_from_binary(ua.RegisterServer2Parameters, body)
             results = self.iserver.register_server2(params)
             response = ua.RegisterServer2Response()

@@ -152,6 +152,14 @@ class Server:
         """
         self.iserver.match_discovery_endpoint_url = match_discovery_endpoint_url
 
+    def accept_server_registrations(self, enabled: bool = True) -> None:
+        """
+        Let other servers register with this server through RegisterServer and RegisterServer2,
+        so that this server acts as a discovery server. Off by default.
+        Registrations are not authenticated yet, so only enable this on trusted networks.
+        """
+        self.iserver.accept_server_registrations = enabled
+
     def set_match_discovery_client_ip(self, match_discovery_client_ip: bool) -> None:
         """
         Enables or disables the matching of an endpoint IP to a client IP during discovery.

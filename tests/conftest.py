@@ -209,6 +209,7 @@ async def discovery_server():
     await srv.init()
     await srv.set_application_uri("urn:enginir:opcua:discovery")
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_discovery}")
+    srv.accept_server_registrations()
     await srv.start()
     yield srv
     # stop the server

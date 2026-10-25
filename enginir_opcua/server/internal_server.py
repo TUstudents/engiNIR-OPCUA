@@ -52,6 +52,7 @@ class InternalServer:
         self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
+        self.accept_server_registrations: bool = False
         # auth_token -> InternalSession: lets a fresh UaProcessor reattach to an existing
         # session on ActivateSession (spec Part 4 §6.7 reconnect path).
         self._external_sessions: dict[ua.NodeId, "InternalSession"] = {}
