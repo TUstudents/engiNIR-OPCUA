@@ -1182,7 +1182,7 @@ async def test_too_many_publish(opc, mocker):
     sub_handler = MySubHandler()
     sub = await opc.opc.create_subscription(500, sub_handler)
     try:
-        requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(12)]
+        requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(11)]
         while True:
             done, pending = await asyncio.wait(requests, timeout=5, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

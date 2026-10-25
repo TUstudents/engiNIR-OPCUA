@@ -137,7 +137,6 @@ class Session:
         self.bound_channel_id: int | None = channel.channel_id
         self._channel: weakref.ref[SessionChannel] | None = weakref.ref(channel)
         self.publish_queue: deque[PublishRequestData] = deque()
-        self.pending_publish_subscriptions: dict[int, bool] = {}
         self.in_flight = 0
         self.services = InternalSession(
             self.iserver,
@@ -183,6 +182,42 @@ class Session:
         self._channel = None
         self.publish_queue.clear()
 
+    def move_to(self, channel: SessionChannel) -> None:
+        previous = self.bound_channel_id
+        self.bind(channel)
+        remaining: deque[PublishRequestData] = deque()
+        for requestdata in self.publish_queue:
+            if requestdata.channel is not None and requestdata.channel.channel_id == previous:
+                requestdata.answer(ua.StatusCodes.BadSecureChannelClosed)
+            else:
+                remaining.append(requestdata)
+        self.publish_queue = remaining
+
+    def flush_publish_queue(self, status: int) -> None:
+        queued, self.publish_queue = self.publish_queue, deque()
+        for requestdata in queued:
+            requestdata.answer(status)
+
+    def cancel_publish_requests(self, request_handle: int) -> int:
+        cancelled = [r for r in self.publish_queue if r.requesthdr.RequestHandle == request_handle]
+        for requestdata in cancelled:
+            self.publish_queue.remove(requestdata)
+            requestdata.answer(ua.StatusCodes.BadRequestCancelledByClient)
+        return len(cancelled)
+
+    @property
+    def publish_request_limit(self) -> int:
+        return self.manager.max_publish_requests_per_session
+
+    def trim_retransmission_queue(self) -> None:
+        subscriptions = self.iserver.subscription_service.subscriptions
+        owned = [subscriptions[sub_id] for sub_id in self.subscription_ids()]
+        bound = 2 * self.publish_request_limit
+        while sum(sub.unacknowledged_count for sub in owned) > bound:
+            holders = [sub for sub in owned if sub.unacknowledged_count]
+            oldest = min(holders, key=lambda sub: sub.republish(sub.available_sequence_numbers()[0]).PublishTime)
+            oldest.drop_oldest_unacknowledged()
+
     def subscription_ids(self) -> list[int]:
         return [
             sub_id
@@ -220,7 +255,6 @@ class Session:
         now = time.monotonic()
         while True:
             if not self.publish_queue:
-                self.pending_publish_subscriptions[subscription_id] = True
                 return None
             requestdata = self.publish_queue.popleft()
             if not requestdata.has_timed_out(now):
@@ -233,17 +267,12 @@ class Session:
         result.Results = requestdata.results
         if requestdata.channel is not None:
             requestdata.channel.send_response(requestdata.requesthdr.RequestHandle, requestdata.seqhdr, response)
+        self.trim_retransmission_queue()
 
     async def enqueue_publish(self, requestdata: PublishRequestData, subscription_count: int) -> None:
-        while self.pending_publish_subscriptions:
-            subscription_id = next(iter(self.pending_publish_subscriptions))
-            self.pending_publish_subscriptions.pop(subscription_id)
-            sub = self.iserver.subscription_service.subscriptions.get(subscription_id)
-            if sub is None:
-                continue
-            if await sub.publish_results(requestdata):
-                return
-        if len(self.publish_queue) >= subscription_count + 10:
+        if await self.iserver.subscription_service.on_publish_request(self.id, requestdata):
+            return
+        if len(self.publish_queue) >= max(self.publish_request_limit, subscription_count + 1):
             self._evict_publish_request()
         self.publish_queue.append(requestdata)
 
@@ -263,8 +292,8 @@ class Session:
         _logger.info("close session %s", self.name)
         self.state = SessionState.Closed
         self.manager.forget(self)
-        self.publish_queue.clear()
-        self.pending_publish_subscriptions.clear()
+        self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
+        self.iserver.subscription_service.drop_pending_notices(self.id)
         if delete_subscriptions:
             await self.services.delete_subscriptions(self.subscription_ids())
 
@@ -277,6 +306,7 @@ class SessionManager:
         self.sessions: dict[ua.NodeId, Session] = {}
         self.max_sessions: int = 100
         self.max_requests_in_flight_per_session: int = 100
+        self.max_publish_requests_per_session: int = 10
         self._counter = 0
         self._sweep_task: asyncio.Task[None] | None = None
 
@@ -421,7 +451,7 @@ class SessionManager:
         result.ServerNonce = session.nonce
         session.state = SessionState.Activated
         if moving:
-            session.bind(channel)
+            session.move_to(channel)
         session.touch()
         _logger.info("Activated session %s for user %s", session.name, user)
         return result

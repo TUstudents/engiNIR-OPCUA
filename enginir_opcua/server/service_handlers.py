@@ -57,6 +57,12 @@ async def close_session(ctx: ServiceContext, delete_subscriptions: bool) -> ua.C
     return ua.CloseSessionResponse()
 
 
+async def cancel(ctx: ServiceContext, params: ua.CancelParameters) -> ua.CancelResponse:
+    response = ua.CancelResponse()
+    response.Parameters.CancelCount = ctx.active_session.cancel_publish_requests(params.RequestHandle)
+    return response
+
+
 async def read(ctx: ServiceContext, params: ua.ReadParameters) -> ua.ReadResponse:
     response = ua.ReadResponse()
     response.Results = await ctx.active_session.services.read(params)
@@ -160,8 +166,11 @@ async def set_publishing_mode(
 async def delete_subscriptions(
     ctx: ServiceContext, params: ua.DeleteSubscriptionsParameters
 ) -> ua.DeleteSubscriptionsResponse:
+    session = ctx.active_session
     response = ua.DeleteSubscriptionsResponse()
-    response.Results = await ctx.active_session.services.delete_subscriptions(params.SubscriptionIds)
+    response.Results = await session.services.delete_subscriptions(params.SubscriptionIds)
+    if not session.subscription_ids():
+        session.flush_publish_queue(ua.StatusCodes.BadNoSubscription)
     return response
 
 
@@ -229,6 +238,7 @@ def build_service_table() -> list[ServiceEntry]:
         entry("CreateSession", ua.CreateSessionParameters, create_session, **sessionless),
         entry("ActivateSession", ua.ActivateSessionParameters, activate_session, **sessionless),
         entry("CloseSession", Primitives.Boolean.unpack, close_session, **sessionless),
+        entry("Cancel", ua.CancelParameters, cancel),
         entry("Read", ua.ReadParameters, read, operations=OperationBound("NodesToRead", "max_nodes_per_read")),
         entry("Write", ua.WriteParameters, write, operations=OperationBound("NodesToWrite", "max_nodes_per_write")),
         entry(

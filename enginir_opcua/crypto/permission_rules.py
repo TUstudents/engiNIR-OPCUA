@@ -31,6 +31,7 @@ USER_TYPES = [
     ua.ObjectIds.DeleteMonitoredItemsRequest_Encoding_DefaultBinary,
     ua.ObjectIds.HistoryReadRequest_Encoding_DefaultBinary,
     ua.ObjectIds.PublishRequest_Encoding_DefaultBinary,
+    ua.ObjectIds.CancelRequest_Encoding_DefaultBinary,
     ua.ObjectIds.RepublishRequest_Encoding_DefaultBinary,
     ua.ObjectIds.CloseSecureChannelRequest_Encoding_DefaultBinary,
     ua.ObjectIds.CallRequest_Encoding_DefaultBinary,
