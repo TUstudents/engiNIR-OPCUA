@@ -1089,11 +1089,8 @@ class Client:
         but it does not cost much.
         """
         try:
-            # Part4 5.5.2.1:
-            # Clients should request a new SecurityToken after 75 % of its lifetime has elapsed
-            duration = self.secure_channel_timeout * 0.75 / 1000
             while not self.uaclient.is_disconnect_requested:
-                await asyncio.sleep(duration)
+                await asyncio.sleep(max(1.0, self.secure_channel_timeout * 0.75 / 1000))
                 _logger.debug("renewing channel")
                 await self.open_secure_channel(renew=True)
         except ConnectionError as e:

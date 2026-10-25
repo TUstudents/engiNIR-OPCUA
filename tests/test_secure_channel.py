@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from cryptography.hazmat.primitives import serialization
 
-from enginir_opcua import ua
+from enginir_opcua import Client, ua
 from enginir_opcua.common.connection import (
     FrameReader,
     OpenRequestError,
@@ -334,3 +334,24 @@ def test_com63_client_rejects_an_invalid_open_response(mutation: str) -> None:
         result.ServerNonce = nonce
     with pytest.raises(ua.UaStatusCodeError):
         pair.client.check_open_response(result, params, 0)
+
+
+async def test_cli8_renewal_interval_follows_every_revised_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.6.2.1: the client renews at 75 % of the lifetime of the token it holds now, never below 1 s."""
+    client = Client("opc.tcp://127.0.0.1:1")
+    client.secure_channel_timeout = 40_000
+    sleeps: list[float] = []
+    lifetimes = iter([8_000, 0, 20_000])
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def fake_open(renew: bool = False) -> None:
+        client.secure_channel_timeout = next(lifetimes)
+        if len(sleeps) == 3:
+            client.uaclient._disconnect_requested = True
+
+    monkeypatch.setattr("enginir_opcua.client.client.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "open_secure_channel", fake_open)
+    await client._renew_channel_loop()
+    assert sleeps == [30.0, 6.0, 1.0]

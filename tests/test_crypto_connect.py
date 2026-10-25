@@ -368,7 +368,7 @@ async def test_certificate_handling_mismatched_creds(srv_crypto_one_cert):
 
 
 async def test_secure_channel_key_expiration(srv_crypto_one_cert, monkeypatch):
-    timeout = 1
+    timeout = 2
     srv, cert = srv_crypto_one_cert
     monkeypatch.setattr(srv.iserver.channel_settings, "min_lifetime", 500)
     clt = Client(uri_crypto_cert)
@@ -390,12 +390,12 @@ async def test_secure_channel_key_expiration(srv_crypto_one_cert, monkeypatch):
         channel = clt.uaclient.protocol._channel
         assert channel._previous is None
 
-        await asyncio.sleep(timeout)
+        await asyncio.sleep(timeout * 0.85)
         previous = channel._previous
         assert previous is not None
         assert previous.token.TokenId != channel.security_token.TokenId
 
-        await asyncio.sleep(timeout * 0.3)
+        await asyncio.sleep(timeout * 0.45)
         assert await clt.get_objects_node().get_children()
         assert channel._previous is not previous
 
