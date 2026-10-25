@@ -1,12 +1,12 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import IO, Optional, TYPE_CHECKING
-import datetime
+import nodeset_source
 
 if TYPE_CHECKING:
     from generate_model_from_nodeset import Enum, Field, Model, Struct
 
-BASE_DIR = Path(__file__).absolute().parent.parent
+BASE_DIR = nodeset_source.BASE_DIR
 
 IgnoredEnums = ["NodeIdType"]
 IgnoredStructs = [
@@ -89,7 +89,7 @@ class CodeGenerator:
         """Write file header."""
         self.write("from __future__ import annotations")
         self.write('"""')
-        self.write(f"Autogenerate code from xml spec\nDate:{datetime.datetime.now(datetime.timezone.utc)}")
+        self.write(f"Autogenerate code from xml spec\n{nodeset_source.provenance()}")
         self.write('"""')
         self.write("")
         self.write("from datetime import datetime, timezone")
@@ -243,7 +243,7 @@ class CodeGenerator:
 if __name__ == "__main__":
     import generate_model_from_nodeset as gm
 
-    xml_path = BASE_DIR.joinpath("schemas", "UA-Nodeset-master", "Schema", "Opc.Ua.NodeSet2.Services.xml")
+    xml_path = nodeset_source.SERVICES_NODESET
     protocol_path = BASE_DIR.joinpath("enginir_opcua", "ua", "uaprotocol_auto.py")
     p = gm.Parser(xml_path)
     model = p.parse()

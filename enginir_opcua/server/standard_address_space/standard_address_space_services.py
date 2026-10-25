@@ -6,7 +6,7 @@ Model Uri:http://opcfoundation.org/UA/
 Version:1.05.07
 Publication date:2026-05-01T00:00:00Z
 
-File creation Date:2026-05-16 06:47:16.849806+00:00
+UA-Nodeset tag:UA-1.05.07-2026-05-01
 """
 import datetime
 from dateutil.tz import tzutc

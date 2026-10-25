@@ -70,9 +70,9 @@ def test_variant_array_none():
     v = ua.Variant(None, VariantType=ua.VariantType.Null, Dimensions=[0, 0])
     data = variant_to_binary(v)
     v2 = variant_from_binary(ua.utils.Buffer(data))
-    assert v == v2
+    assert v2 == ua.Variant(None, VariantType=ua.VariantType.Null, is_array=True)
     assert v2.is_array
-    assert v2.Dimensions == [0, 0]
+    assert v2.Dimensions is None
 
 
 def test_variant_empty_list():
@@ -86,9 +86,9 @@ def test_variant_empty_list():
     v = ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True, Dimensions=[0])
     data = variant_to_binary(v)
     v2 = variant_from_binary(ua.utils.Buffer(data))
-    assert v == v2
+    assert v2 == ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True)
     assert v2.is_array
-    assert v2.Dimensions == [0]
+    assert v2.Dimensions is None
 
 
 def test_custom_structs(tmpdir):
@@ -245,8 +245,7 @@ def test_nodeid_ordering():
 
     mylist = [a, b, c, d, e, f, g, h, i, j]
     mylist.sort()
-    expected = [h, c, a, b, e, d, f, g, i, j]
-    expected = [c, h, a, b, e, d, f, g, i, j]  # FIXME: make sure this does not break some client/server
+    expected = [c, h, a, b, e, d, f, g, i, j]
     assert mylist == expected
 
 
@@ -371,7 +370,7 @@ def test_string_to_variant_localized_text_with_none1():
 def test_string_to_variant_localized_text_with_none2():
     locale = None
     string = "my name is ..."
-    string_repr = f"LocalizedText(Locale='{locale}', Text='{string}')"
+    string_repr = f"LocalizedText(Locale={locale!r}, Text={string!r})"
     obj = ua.LocalizedText(string, locale)
     assert obj == string_to_val(string_repr, ua.VariantType.LocalizedText)
     assert obj == string_to_val(string, ua.VariantType.LocalizedText)
@@ -403,8 +402,8 @@ def test_variant_dimensions():
     v = ua.Variant(arry, ua.VariantType.UInt32)
     assert [2, 3, 0] == v.Dimensions
     v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
-    assert v.Dimensions == v2.Dimensions
-    assert v == v2
+    assert v2.Dimensions is None
+    assert v2.Value == []
 
 
 def test_flatten():
@@ -482,8 +481,8 @@ def test_nodeid_bytestring():
     s2 = n2.to_string()
     assert n == n2
     assert s == s2
-    n = ua.NodeId.from_string("b=0xaabbccdd")
-    assert n.Identifier == b"\xaa\xbb\xcc\xdd"
+    with pytest.raises(ua.UaStringParsingError):
+        ua.NodeId.from_string("b=0xaabbccdd")
 
 
 def test__nodeid():
@@ -524,13 +523,12 @@ def test_nodeid_string():
     assert nid0 == ua.NodeId.from_string("i=45")
     assert nid0 == ua.NodeId.from_string("ns=0;i=45")
     nid = ua.NodeId(45, 10)
-    assert nid == ua.NodeId.from_string("i=45; ns=10")
-    assert nid != ua.NodeId.from_string("i=45; ns=11")
-    assert nid != ua.NodeId.from_string("i=5; ns=10")
-    # not sure the next one is correct...
-    assert nid == ua.NodeId.from_string("i=45; ns=10; srv=3")
+    assert nid == ua.NodeId.from_string("ns=10;i=45")
+    assert nid != ua.NodeId.from_string("ns=11;i=45")
+    assert nid != ua.NodeId.from_string("ns=10;i=5")
+    assert nid != ua.NodeId.from_string("svr=3;ns=10;i=45")
     nid1 = ua.NodeId("myid.mynodeid", 7)
-    assert nid1 == ua.NodeId.from_string("ns=7; s=myid.mynodeid")
+    assert nid1 == ua.NodeId.from_string("ns=7;s=myid.mynodeid")
     # with pytest.raises(ua.UaError):
     # nid1 = ua.NodeId(7, "myid.mynodeid")
     # with pytest.raises(ua.UaError):
@@ -555,10 +553,8 @@ def test_bad_string():
         ua.NodeId.from_string("i=r;ns=1")
     with pytest.raises(ua.UaStringParsingError):
         ua.NodeId.from_string("ns=1")
-    with pytest.raises(ua.UaError):
-        ua.QualifiedName.from_string("i:yu")
-    with pytest.raises(ua.UaError):
-        ua.QualifiedName.from_string("i:::yu")
+    assert ua.QualifiedName.from_string("i:yu").Name == "i:yu"
+    assert ua.QualifiedName.from_string("i:::yu").Name == "i:::yu"
 
 
 def test_expandednodeid():
@@ -1496,3 +1492,24 @@ def test_client_sends_what_the_server_receives_and_receives_what_it_sends(initia
     limits.update_client_limits(ack)
 
     assert (limits.max_recv_buffer, limits.max_send_buffer) == (65535, 8192)
+
+
+def test_ua9_write_mask_bits_22_to_25() -> None:
+    """Part 3, 8.60: bits 22 to 25 of the AttributeWriteMask."""
+    assert ua.WriteMask.DataTypeDefinition.value == 22
+    assert ua.WriteMask.RolePermissions.value == 23
+    assert ua.WriteMask.AccessRestrictions.value == 24
+    assert ua.WriteMask.AccessLevelEx.value == 25
+    assert ua.WriteMask.parse_bitfield(1 << 25) == {ua.WriteMask.AccessLevelEx}
+
+
+def test_to_bitfield_duplicates() -> None:
+    """Part 3, 8.60: a repeated member sets the same bit."""
+    members = [ua.WriteMask.BrowseName, ua.WriteMask.BrowseName, ua.WriteMask.DataType]
+    assert ua.WriteMask.to_bitfield(members) == (1 << 2) | (1 << 4)
+    assert ua.AccessLevel.to_bitfield([ua.AccessLevel.CurrentRead, ua.AccessLevel.CurrentRead]) == 1
+
+
+def test_ua8_parse_bitfield_message() -> None:
+    with pytest.raises(ValueError, match="of type"):
+        ua.AccessLevel.parse_bitfield("x")  # type: ignore[arg-type]

@@ -1,6 +1,9 @@
 import pytest
 
+from enginir_opcua import ua
 from enginir_opcua.ua.object_ids import ObjectIds
+from enginir_opcua.ua.relative_path import RelativePathElementFormatter, RelativePathElementType
+from enginir_opcua.ua.uaerrors import UaStringParsingError
 from enginir_opcua.ua.uatypes import RelativePath
 
 
@@ -142,25 +145,102 @@ def test_relative_path():
 
 def test_relative_path_with_non_standard_reference_type():
     # TODO: Remove after the non-standard reference types are supported.
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("<1:ConnectedTo>1:Boiler/1:HeatSensor")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("<1:ConnectedTo>1:Boiler/")
 
 
 def test_relative_path_with_invalid_format():
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("/1:<Boiler")  # Non-escaped '<' is invalid.
 
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("/1:Boiler&")  # '&' is appeared without a follwing character.
 
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("/1:Boiler&Output")  # '&' is followed by a non-reserved char.
 
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("<0:HasChild")  # Closing delimiter '>' is missing.
 
-    with pytest.raises(ValueError):
+    with pytest.raises(UaStringParsingError):
         RelativePath.from_string("<0:>1:Boiler")  # Empty reference type name
+
+
+def test_ua23_relative_path_element_is_forward_by_default() -> None:
+    """Part 4, 7.30: IsInverse false means the reference is followed forward."""
+    assert ua.RelativePathElement().IsInverse is False
+    assert ua.RelativePathElement().IncludeSubtypes is True
+
+
+def test_ua34_reference_type_name_must_be_a_reference_type() -> None:
+    """Part 4, A.2: the name between the angle brackets is a ReferenceType BrowseName."""
+    with pytest.raises(UaStringParsingError):
+        RelativePath.from_string("<Server>Foo")
+    with pytest.raises(UaStringParsingError):
+        RelativePath.from_string("<Boolean>Foo")
+    assert (
+        RelativePath.from_string("<HasComponent>Foo").Elements[0].ReferenceTypeId.Identifier == ObjectIds.HasComponent
+    )
+
+
+def test_ua34_reference_type_name_namespace_must_be_zero() -> None:
+    """Part 4, A.2: a namespace index in the reference type name selects the namespace."""
+    with pytest.raises(UaStringParsingError):
+        RelativePath.from_string("<2:HasComponent>Foo")
+    assert (
+        RelativePath.from_string("<0:HasComponent>Foo").Elements[0].ReferenceTypeId.Identifier == ObjectIds.HasComponent
+    )
+
+
+def test_ua35_reference_type_id_in_other_namespace_is_not_written_as_a_name() -> None:
+    """Part 4, A.2: only namespace 0 ReferenceTypes have a name in the text form."""
+    element = ua.RelativePathElement(
+        ReferenceTypeId=ua.NodeId(ObjectIds.HierarchicalReferences, 2),
+        IsInverse=False,
+        IncludeSubtypes=True,
+        TargetName=ua.QualifiedName("x", 2),
+    )
+    with pytest.raises(UaStringParsingError):
+        RelativePath(Elements=[element]).to_string()
+    element.ReferenceTypeId = ua.NodeId(ObjectIds.Aggregates, 2)
+    with pytest.raises(UaStringParsingError):
+        RelativePath(Elements=[element]).to_string()
+
+
+def test_ua35_non_reference_type_id_is_not_written_as_a_name() -> None:
+    """Part 4, A.2: only ReferenceTypes have a name in the text form."""
+    element = ua.RelativePathElement(
+        ReferenceTypeId=ua.NodeId(ObjectIds.Server),
+        IsInverse=False,
+        IncludeSubtypes=True,
+        TargetName=ua.QualifiedName("x", 2),
+    )
+    with pytest.raises(UaStringParsingError):
+        RelativePath(Elements=[element]).to_string()
+
+
+def test_ua36_target_with_namespace_and_empty_name_round_trips() -> None:
+    """Part 4, A.2: a target is an optional namespace index and a name."""
+    path = RelativePath.from_string("/2:")
+    assert path.Elements[0].TargetName.NamespaceIndex == 2
+    assert path.Elements[0].TargetName.Name == ""
+    assert path.to_string() == "/2:"
+
+
+def test_ua36_reference_without_name_cannot_be_written() -> None:
+    """Part 4, A.2: a step without a reference type name is a hierarchical step."""
+    formatter = RelativePathElementFormatter()
+    formatter._element_type = RelativePathElementType.ForwardReference
+    with pytest.raises(UaStringParsingError):
+        formatter.to_string()
+    formatter._element_type = RelativePathElementType.InverseReference
+    with pytest.raises(UaStringParsingError):
+        formatter.to_string()
+
+
+def test_relative_path_error_names_the_input() -> None:
+    with pytest.raises(UaStringParsingError, match="Boiler&Output"):
+        RelativePath.from_string("/1:Boiler&Output")

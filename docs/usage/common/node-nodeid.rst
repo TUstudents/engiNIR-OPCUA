@@ -48,18 +48,45 @@ A NodeId can also be built from a single string:
     >>> ua.NodeId.from_string('ns=2;s=Test')
     NodeId(Identifier='Test', NamespaceIndex=2, NodeIdType=<NodeIdType.String: 3>)
 
-The input string must be in the format :code:`<key>=<val>;[<key>=<val>]`, or in words:
-it must be a list of key-value pairs, separated by semicolons.
-The following keys are supported:
+The string form follows the OPC UA specification (Part 6, 5.1.12). It is a sequence of
+components separated by semicolons, written in this order, where only the identifier is required:
 
-ns
-    The ns key will map to the Namespace of the NodeId
+.. code-block:: text
+
+    [svr=<server index>;] [ns=<namespace index>; | nsu=<namespace URI>;] <identifier>
+
+svr
+    The index of the server, written as digits. If it is present, a
+    :class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` is returned. It is only written when it is not 0.
+    The older spelling :code:`srv=` is still read, but only in this first position.
+ns, nsu
+    The namespace, either as an index or as a URI. They exclude each other. A URI is percent-encoded so that
+    it contains no semicolon: :code:`;` is written as :code:`%3B` and :code:`%` as :code:`%25`, and every
+    :code:`%XX` sequence is decoded when reading. A string with :code:`nsu` returns an
+    :class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` with :code:`NamespaceIndex` 0.
+    Nodes in namespace 0, or in the OPC UA namespace URI, use the identifier alone.
 i, s, g, b
-    These keys will map to the Identifier of the NodeId. The character specifies the
-    type: Numeric, String, Guid or Bytes.
-srv, nsu:
-    If one of this keys is set, a :class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` will be returned
-    and the ServerIndex and NamespaceUri will be set.
+    The identifier, which is always the last component. The character selects the type: :code:`i=` a decimal
+    number, :code:`s=` a string, :code:`g=` a Guid in the form :code:`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`,
+    and :code:`b=` opaque bytes in standard Base64. A string identifier takes everything up to the end of the
+    text, so it may itself contain semicolons and equals signs.
+
+.. code-block:: python
+
+    >>> ua.NodeId.from_string('ns=10;i=12345').to_string()
+    'ns=10;i=12345'
+    >>> ua.NodeId.from_string('svr=1;nsu=http://example.com/hello;s=Water;Pump')
+    ExpandedNodeId(Identifier='Water;Pump', NamespaceIndex=0, NodeIdType=<NodeIdType.String: 3>, NamespaceUri='http://example.com/hello', ServerIndex=1)
+
+Text that does not follow this grammar raises :class:`~enginir_opcua.ua.uaerrors.UaStringParsingError`.
+That includes an unknown key, an identifier that is not last, a number that is not made of digits, a malformed
+Guid, and a :code:`b=` value that is not valid Base64. Server URIs (:code:`svu=`) cannot be stored in a
+:class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` and are rejected.
+
+:class:`~enginir_opcua.ua.uatypes.QualifiedName` has a string form too (Part 6, 5.1.12, Table 7):
+the bare name for namespace 0 and :code:`<index>:<name>` for other namespaces, for example
+:code:`3:Hello:World`. :meth:`~enginir_opcua.ua.uatypes.QualifiedName.from_string` also reads
+:code:`nsu=<uri>;<name>` when it is given the list of namespace URIs through its :code:`namespaces` argument.
 
 
 What else?

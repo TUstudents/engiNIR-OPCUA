@@ -4,17 +4,21 @@ implement ua datatypes
 
 from __future__ import annotations
 
-import binascii
+import ast
+import functools
 import itertools
 import logging
+import operator
 import re
 import types
 import uuid
 from base64 import b64decode, b64encode
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Self, Union, get_args, get_origin
+from urllib.parse import unquote
 
 from enginir_opcua.ua.object_ids import ObjectIds
 
@@ -41,19 +45,11 @@ MAX_INT64 = 2**63 - 1
 
 
 def type_is_optional(uatype: Any) -> bool:
-    origin = get_origin(uatype)
-    union_types = (Union,)
-    if hasattr(types, "UnionType"):
-        union_types += (types.UnionType,)  # type: ignore[attr-defined]
-    return origin in union_types and type(None) in get_args(uatype)
+    return get_origin(uatype) in (Union, types.UnionType) and type(None) in get_args(uatype)
 
 
 def type_is_union(uatype: Any) -> bool:
-    origin = get_origin(uatype)
-    union_types = (Union,)
-    if hasattr(types, "UnionType"):
-        union_types += (types.UnionType,)  # type: ignore[attr-defined]
-    return origin in union_types
+    return get_origin(uatype) in (Union, types.UnionType)
 
 
 def type_is_list(uatype: Any) -> bool:
@@ -65,35 +61,26 @@ def type_allow_subclass(uatype: Any) -> bool:
 
 
 def types_or_list_from_union(uatype: Any) -> tuple[bool, Any]:
-    # returns the type of a union or the list of type if a list is inside the union
-    types = []
+    members = []
     for subtype in get_args(uatype):
-        if hasattr(subtype, "_paramspec_tvars"):
-            # @hack how to check if a parameter is a list:
-            # check if have _paramspec_tvars works for type[X]
+        if type_is_list(subtype):
             return True, subtype
-        if hasattr(subtype, "_name"):
-            # @hack how to check if parameter is union or list
-            # if _name is not List, it is Union
-            if subtype._name == "List":
-                return True, subtype
-        elif not isinstance(None, subtype):
-            types.append(subtype)
-    if not types:
+        if subtype is not type(None):
+            members.append(subtype)
+    if not members:
         raise ValueError(f"Union {uatype} does not seem to contain a valid type")
-    return False, types[0]
+    return False, members[0]
 
 
 def types_from_union(uatype: Any, origin: Any = None) -> list[Any]:
     if origin is None:
         origin = get_origin(uatype)
-    if origin != Union:
+    if origin not in (Union, types.UnionType):
         raise ValueError(f"{uatype} is not an Union")
-    # need to find out what real type is
-    types = list(filter(lambda subtype: not isinstance(None, subtype), get_args(uatype)))
-    if not types:
+    members = [subtype for subtype in get_args(uatype) if subtype is not type(None)]
+    if not members:
         raise ValueError(f"Union {uatype} does not seem to contain a valid type")
-    return types
+    return members
 
 
 def type_from_list(uatype: Any) -> Any:
@@ -108,28 +95,44 @@ def type_from_allow_subtype(uatype: Any) -> Any:
     return get_args(uatype)[0]
 
 
+def _split_top_level_union(annotation: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for position, char in enumerate(annotation):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            parts.append(annotation[start:position].strip())
+            start = position + 1
+    parts.append(annotation[start:].strip())
+    return parts
+
+
+def _type_name_from_string(annotation: str) -> str:
+    annotation = annotation.strip("'\" ")
+    members = [member for member in _split_top_level_union(annotation) if member.strip("'\" ") != "None"]
+    member = members[0].strip("'\" ") if members else annotation
+    for prefix in ("Optional[", "list[", "List["):
+        if member.startswith(prefix) and member.endswith("]"):
+            return _type_name_from_string(member[len(prefix) : -1])
+    return member.rsplit(".", 1)[-1]
+
+
 def type_string_from_type(uatype: Any) -> str:
     if isinstance(uatype, str):
-        # PEP 563 / Python 3.14: type annotations may surface as strings from
-        # dataclasses.fields(). Strip optional/list wrappers, quotes, and module
-        # prefixes so callers get the bare class name (e.g. "QualifiedName").
-        s = uatype.strip("'\" ")
-        for prefix in ("Optional[", "list[", "List["):
-            if s.startswith(prefix):
-                s = s[len(prefix) : -1]
-        s = s.strip("'\" ")
-        # Strip "| None" (PEP 604 unions used for Optional fields).
-        s = s.split("|", 1)[0].strip()
-        return s.rsplit(".", 1)[-1]
-    if type_is_optional(uatype):
-        uatype = type_from_optional(uatype)
-    if type_is_union(uatype):
-        uatype = types_from_union(uatype)[0]
-    elif type_is_list(uatype):
-        uatype = type_from_list(uatype)
-    elif type_allow_subclass(uatype):
-        uatype = type_from_allow_subtype(uatype)
-    return uatype.__name__
+        return _type_name_from_string(uatype)
+    while True:
+        if type_is_union(uatype):
+            uatype = types_from_union(uatype)[0]
+        elif type_is_list(uatype):
+            uatype = type_from_list(uatype)
+        elif type_allow_subclass(uatype):
+            uatype = type_from_allow_subtype(uatype)
+        else:
+            return uatype.__name__
 
 
 @dataclass
@@ -274,7 +277,7 @@ class _MaskEnum(IntEnum):
     def parse_bitfield(cls, the_int: int) -> set[Self]:
         """Take an integer and interpret it as a set of enum values."""
         if not isinstance(the_int, int):
-            raise ValueError(f"Argument should be an int, we received {the_int} fo type {type(the_int)}")
+            raise ValueError(f"Argument should be an int, we received {the_int} of type {type(the_int)}")
         return {cls(b) for b in cls._bits(the_int) if b in cls._value2member_map_}
 
     @classmethod
@@ -285,7 +288,7 @@ class _MaskEnum(IntEnum):
         iter1, iter2 = itertools.tee(iter(collection))
         if not all(isinstance(x, cls) for x in iter1):
             raise TypeError(f"All elements have to be of type {cls}")
-        return sum(x.mask for x in iter2)
+        return functools.reduce(operator.or_, (x.mask for x in iter2), 0)
 
     @property
     def mask(self) -> int:
@@ -352,6 +355,10 @@ class WriteMask(_MaskEnum):
     ValueRank = 19
     WriteMask = 20
     ValueForVariableType = 21
+    DataTypeDefinition = 22
+    RolePermissions = 23
+    AccessRestrictions = 24
+    AccessLevelEx = 25
 
 
 class EventNotifier(_MaskEnum):
@@ -372,9 +379,9 @@ class StatusCode:
     """
     :ivar value:
     :vartype value: int
-    :ivar name():
+    :ivar name: symbolic name, ignoring the low 16 bits
     :vartype name: string
-    :ivar doc():
+    :ivar doc: description, ignoring the low 16 bits
     :vartype doc: string
     """
 
@@ -382,11 +389,14 @@ class StatusCode:
 
     def __post_init__(self) -> None:
         if isinstance(self.value, str):
-            object.__setattr__(self, "value", getattr(status_codes.StatusCodes, self.value))
+            try:
+                object.__setattr__(self, "value", getattr(status_codes.StatusCodes, self.value))
+            except AttributeError:
+                raise UaError(f"Unknown StatusCode name: {self.value!r}") from None
 
     def check(self) -> None:
         """
-        Raises an exception if the status code is anything else than 0 (good).
+        Raises an exception if the severity is not Good, so Uncertain raises too.
         """
         if not self.is_good():
             raise UaStatusCodeError(self.value)
@@ -402,7 +412,7 @@ class StatusCode:
 
     def is_bad(self) -> bool:
         """
-        https://reference.opcfoundation.org/v104/Core/docs/Part4/7.34.1/
+        Part 4, 7.38.1:
         11   Reserved for future use. All Clients should treat a StatusCode with this severity as “Bad”.
 
         return True if status is Bad (10) or (11).
@@ -423,12 +433,12 @@ class StatusCode:
 
     @property
     def name(self) -> str:
-        name, _ = status_codes.get_name_and_doc(self.value)
+        name, _ = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return name
 
     @property
     def doc(self) -> str:
-        _, doc = status_codes.get_name_and_doc(self.value)
+        _, doc = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return doc
 
 
@@ -441,6 +451,34 @@ class NodeIdType(IntEnum):
     ByteString = 5
 
 
+_OPC_UA_NAMESPACE_URI = "http://opcfoundation.org/UA/"
+_GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_DIGITS_PATTERN = re.compile(r"[0-9]+")
+_INDEX_PREFIX_PATTERN = re.compile(r"([0-9]+):")
+_NODEID_FAMILY = {
+    NodeIdType.TwoByte: 0,
+    NodeIdType.FourByte: 0,
+    NodeIdType.Numeric: 0,
+    NodeIdType.String: 1,
+    NodeIdType.Guid: 2,
+    NodeIdType.ByteString: 3,
+}
+
+
+def _encode_uri(uri: str) -> str:
+    return uri.replace("%", "%25").replace(";", "%3B")
+
+
+def _decode_uri(uri: str) -> str:
+    return unquote(uri, errors="strict")
+
+
+def _parse_digits(value: str, what: str) -> int:
+    if not _DIGITS_PATTERN.fullmatch(value):
+        raise ValueError(f"{what} must be a sequence of digits, got {value!r}")
+    return int(value)
+
+
 @dataclass(eq=False, order=False, slots=True)
 class NodeId:
     """
@@ -448,23 +486,22 @@ class NodeId:
 
     Args:
         identifier: The identifier might be an int, a string, bytes or a Guid
-        namespaceidx(int): The index of the namespace
-        nodeidtype(NodeIdType): The type of the nodeid if it cannot be guessed, or you want something
+        namespace_index(int): The index of the namespace
+        node_id_type(NodeIdType): The type of the nodeid if it cannot be guessed, or you want something
         special like twobyte nodeid or fourbytenodeid
 
+    The string form is the one of Part 6, 5.1.12, for example ``ns=2;s=Name``.
 
-    :ivar Identifier:
-    :vartype Identifier: NodeId
+    :ivar Identifier: int, str, bytes or uuid.UUID
+    :vartype Identifier: UInt32, String, Guid or ByteString
     :ivar NamespaceIndex:
-    :vartype NamespaceIndex: Int
-    :ivar NamespaceUri:
-    :vartype NamespaceUri: String
-    :ivar ServerIndex:
-    :vartype ServerIndex: Int
+    :vartype NamespaceIndex: UInt16
+    :ivar NodeIdType: the wire format, not part of the identity
+    :vartype NodeIdType: NodeIdType
     """
 
-    Identifier: "ua.Int32 | ua.String | ua.Guid | ua.ByteString" = 0
-    NamespaceIndex: "ua.Int16" = 0
+    Identifier: "ua.UInt32 | ua.String | ua.Guid | ua.ByteString" = 0
+    NamespaceIndex: "ua.UInt16" = 0
     NodeIdType: "ua.NodeIdType" = None
 
     def __post_init__(self) -> None:
@@ -493,8 +530,8 @@ class NodeId:
         """
         valid_type_combinations = [
             (int, [NodeIdType.Numeric, NodeIdType.TwoByte, NodeIdType.FourByte]),
-            (str, [NodeIdType.String, NodeIdType.ByteString]),
-            (bytes, [NodeIdType.ByteString, NodeIdType.TwoByte, NodeIdType.FourByte]),
+            (str, [NodeIdType.String]),
+            (bytes, [NodeIdType.ByteString]),
             (uuid.UUID, [NodeIdType.Guid]),
         ]
         for identifier, valid_node_types in valid_type_combinations:
@@ -505,6 +542,8 @@ class NodeId:
         )
 
     def __eq__(self, node: object) -> bool:
+        if isinstance(node, ExpandedNodeId) and not isinstance(self, ExpandedNodeId):
+            return node.__eq__(self)
         return (
             isinstance(node, NodeId)
             and self.NamespaceIndex == node.NamespaceIndex
@@ -517,14 +556,28 @@ class NodeId:
     def __hash__(self) -> int:
         return hash((self.NamespaceIndex, self.Identifier))
 
+    def _sort_key(self) -> tuple[Any, ...]:
+        return (_NODEID_FAMILY[self.NodeIdType], self.NamespaceIndex, self.Identifier, "", 0)
+
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, NodeId):
-            raise AttributeError("Can only compare to NodeId")
-        return (self.NodeIdType, self.NamespaceIndex, self.Identifier) < (
-            other.NodeIdType,
-            other.NamespaceIndex,
-            other.Identifier,
-        )
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
+
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() <= other._sort_key()
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() > other._sort_key()
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() >= other._sort_key()
 
     def is_null(self) -> bool:
         if self.NamespaceIndex != 0:
@@ -548,77 +601,78 @@ class NodeId:
             raise UaStringParsingError(f"Error parsing string {string}", ex) from ex
 
     @staticmethod
+    def _parse_identifier(component: str) -> tuple["ua.NodeIdType", Any]:
+        key, separator, value = component.partition("=")
+        if not separator:
+            raise ValueError(f"Unknown component {component!r}")
+        if key == "i":
+            return NodeIdType.Numeric, _parse_digits(value, "Numeric identifier")
+        if key == "s":
+            return NodeIdType.String, String(value)
+        if key == "g":
+            if not _GUID_PATTERN.fullmatch(value):
+                raise ValueError(f"Malformed Guid {value!r}")
+            return NodeIdType.Guid, uuid.UUID(value)
+        if key == "b":
+            return NodeIdType.ByteString, b64decode(value.encode("ascii"), validate=True)
+        raise ValueError(f"Unknown key {key!r}")
+
+    @staticmethod
     def _from_string(string: str) -> NodeId:
-        elements = string.split(";")
-        identifier = None
-        namespace = 0
-        ntype = None
-        srv = None
-        nsu = None
-        while elements:
-            el = elements.pop(0)  # consume exactly one part of the node name, left-to-right
-            if not el:
-                continue
-            k, v = el.split("=", 1)
-            k = k.strip()
-            if k == "ns":
-                namespace = int(v.strip())
-            elif k == "i":
-                ntype = NodeIdType.Numeric
-                identifier = int(v.strip())
-            elif k == "s":
-                ntype = NodeIdType.String
-                # As per https://reference.opcfoundation.org/Core/Part3/v105/docs/8.2.4 and https://reference.opcfoundation.org/Core/Part3/v104/docs/8.2.4,
-                # strings may contain arbitrary non-control unicode characters, even semicolons and equals.
-                # We must now consume the whole rest of the identifier.
-                identifier = String(";".join((v, *elements)))
-                elements = []  # consume everything immediately
-            elif k == "g":
-                ntype = NodeIdType.Guid
-                identifier = uuid.UUID(f"urn:uuid:{v}")
-            elif k == "b":
-                ntype = NodeIdType.ByteString
-                if v[0:2] == "0x":
-                    # our custom handling, normaly all bytestring nodes are base64
-                    identifier = bytes.fromhex(v[2:])
+        remaining = string
+        server_index = 0
+        namespace_index = 0
+        namespace_uri: str | None = None
+        has_server = False
+        stage = 0
+        while True:
+            key, separator, value = remaining.partition("=")
+            if separator and key in ("svr", "srv", "svu", "ns", "nsu"):
+                text, semicolon, rest = value.partition(";")
+                if not semicolon:
+                    raise ValueError("The identifier must come last")
+                if key == "svu":
+                    raise ValueError("Server URIs are not supported")
+                if key in ("svr", "srv"):
+                    if stage > 0:
+                        raise ValueError("svr must come first")
+                    server_index = _parse_digits(text, "svr")
+                    has_server = True
+                    stage = 1
                 else:
-                    try:
-                        # this should be the default case base64
-                        identifier = b64decode(v.encode("ascii"))
-                    except (binascii.Error, ValueError):
-                        # fallback for backwards compatiblity just use the bytestring
-                        identifier = v.encode("ascii")
-            elif k == "srv":
-                srv = int(v.strip())
-            elif k == "nsu":
-                nsu = v
-        if identifier is None:
-            raise UaStringParsingError(f"Could not find identifier in string: {string}")
-        if nsu is not None or srv is not None:
-            return ExpandedNodeId(identifier, namespace, ntype, NamespaceUri=nsu, ServerIndex=srv)
-        return NodeId(identifier, namespace, ntype)
+                    if stage > 1:
+                        raise ValueError("Only one of ns and nsu is allowed")
+                    if key == "ns":
+                        namespace_index = _parse_digits(text, "ns")
+                    else:
+                        namespace_uri = _decode_uri(text)
+                    stage = 2
+                remaining = rest
+                continue
+            break
+        if remaining.endswith(";") and not remaining.startswith("s="):
+            remaining = remaining[:-1]
+        node_id_type, identifier = NodeId._parse_identifier(remaining)
+        if namespace_uri is not None or has_server:
+            return ExpandedNodeId(
+                identifier, namespace_index, node_id_type, NamespaceUri=namespace_uri, ServerIndex=server_index
+            )
+        return NodeId(identifier, namespace_index, node_id_type)
+
+    def _identifier_string(self) -> str:
+        identifier = self.Identifier
+        if self.NodeIdType == NodeIdType.Guid:
+            return f"g={identifier!s}"
+        if self.NodeIdType == NodeIdType.ByteString:
+            return f"b={b64encode(identifier).decode('ascii')}"
+        if self.NodeIdType == NodeIdType.String:
+            return f"s={identifier!s}"
+        return f"i={identifier!s}"
 
     def to_string(self) -> str:
-        string = []
         if self.NamespaceIndex != 0:
-            string.append(f"ns={self.NamespaceIndex}")
-        identifier = self.Identifier
-        ntype = None
-        if self.NodeIdType == NodeIdType.Numeric:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.String:
-            ntype = "s"
-        elif self.NodeIdType == NodeIdType.TwoByte:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.FourByte:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.Guid:
-            ntype = "g"
-        elif self.NodeIdType == NodeIdType.ByteString:
-            ntype = "b"
-            identifier = b64encode(identifier).decode("ascii")
-        string.append(f"{ntype}={identifier!s}")
-        return ";".join(string)
+            return f"ns={self.NamespaceIndex};{self._identifier_string()}"
+        return self._identifier_string()
 
     def to_binary(self) -> bytes | bytearray:
         import enginir_opcua
@@ -635,7 +689,7 @@ class TwoByteNodeId(NodeId):
         if self.Identifier > 255:
             raise ValueError(f"{self.__class__.__name__} cannot have identifier > 255")
         if self.NamespaceIndex != 0:
-            raise ValueError(f"{self.__class__.__name__}  cannot have NamespaceIndex != 0")
+            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex != 0")
 
 
 @dataclass(eq=False, order=False, slots=True)
@@ -647,7 +701,7 @@ class FourByteNodeId(NodeId):
         if self.Identifier > 65535:
             raise ValueError(f"{self.__class__.__name__} cannot have identifier > 65535")
         if self.NamespaceIndex > 255:
-            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex != 0")
+            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex > 255")
 
 
 @dataclass(eq=False, order=False, slots=True)
@@ -685,58 +739,104 @@ class StringNodeId(NodeId):
 @dataclass(eq=False, order=False, slots=True)
 class ExpandedNodeId(NodeId):
     NamespaceUri: String | None = field(default=None, compare=True)
-    ServerIndex: Int32 = field(default=0, compare=True)
+    ServerIndex: UInt32 = field(default=0, compare=True)
+
+    def __eq__(self, node: object) -> bool:
+        if not isinstance(node, NodeId):
+            return False
+        if self.Identifier != node.Identifier:
+            return False
+        other_uri = node.NamespaceUri if isinstance(node, ExpandedNodeId) else None
+        other_server = node.ServerIndex if isinstance(node, ExpandedNodeId) else 0
+        if (self.NamespaceUri or None) != (other_uri or None) or self.ServerIndex != other_server:
+            return False
+        return bool(self.NamespaceUri) or self.NamespaceIndex == node.NamespaceIndex
+
+    def __hash__(self) -> int:
+        if self.NamespaceUri:
+            return hash((self.NamespaceUri, self.ServerIndex, self.Identifier))
+        if self.ServerIndex:
+            return hash((self.NamespaceIndex, self.Identifier, self.ServerIndex))
+        return hash((self.NamespaceIndex, self.Identifier))
+
+    def _sort_key(self) -> tuple[Any, ...]:
+        namespace_index = 0 if self.NamespaceUri else self.NamespaceIndex
+        return (
+            _NODEID_FAMILY[self.NodeIdType],
+            namespace_index,
+            self.Identifier,
+            self.NamespaceUri or "",
+            self.ServerIndex,
+        )
 
     def to_string(self) -> str:
-        nid_string = NodeId.to_string(self)
-        string = [nid_string]
+        parts = []
         if self.ServerIndex:
-            string.append(f"srv={self.ServerIndex}")
+            parts.append(f"svr={self.ServerIndex}")
         if self.NamespaceUri:
-            string.append(f"nsu={self.NamespaceUri}")
-        return ";".join(string)
+            if self.NamespaceUri != _OPC_UA_NAMESPACE_URI:
+                parts.append(f"nsu={_encode_uri(self.NamespaceUri)}")
+        elif self.NamespaceIndex != 0:
+            parts.append(f"ns={self.NamespaceIndex}")
+        parts.append(self._identifier_string())
+        return ";".join(parts)
 
 
 @dataclass(init=False, order=True, slots=True)
 class QualifiedName:
     """
-    A string qualified with a namespace index.
+    A name qualified with a namespace index (Part 3, 8.3; Part 6, 5.2.2.13).
+
+    The string form is the one of Part 6, 5.1.12, Table 7: the bare name for namespace 0 and
+    ``<index>:<name>`` otherwise.
     """
 
-    NamespaceIndex: "ua.Int16" = 0
+    NamespaceIndex: "ua.UInt16" = 0
     Name: "ua.String" = ""
 
     def __init__(self, Name: str | None = None, NamespaceIndex: int = 0) -> None:
+        if isinstance(Name, int) and isinstance(NamespaceIndex, str):
+            raise TypeError(
+                f"QualifiedName(Name, NamespaceIndex): the arguments are swapped, got ({Name!r}, {NamespaceIndex!r})"
+            )
+        if not isinstance(Name, str | type(None)):
+            raise TypeError(f"QualifiedName Name must be a string or None, got {type(Name).__name__}")
+        if not isinstance(NamespaceIndex, int):
+            raise TypeError(f"QualifiedName NamespaceIndex must be an int, got {type(NamespaceIndex).__name__}")
         object.__setattr__(self, "Name", Name)
         object.__setattr__(self, "NamespaceIndex", NamespaceIndex)
-        if isinstance(self.NamespaceIndex, str) and isinstance(self.Name, int):
-            # originally the order or argument was inversed, try to support it
-            _logger.warning("QualifiedName are str, int, while int, str is expected, switching")
-
-        if not isinstance(self.NamespaceIndex, int) or not isinstance(self.Name, str | type(None)):
-            raise ValueError(f"QualifiedName constructor args have wrong types, {self}")
 
     def to_string(self) -> str:
-        return f"{self.NamespaceIndex}:{self.Name}"
+        name = self.Name or ""
+        if self.NamespaceIndex == 0:
+            if _INDEX_PREFIX_PATTERN.match(name):
+                raise UaError(f"The name {name!r} in namespace 0 would read back as a name in another namespace")
+            return name
+        return f"{self.NamespaceIndex}:{name}"
 
     @staticmethod
-    def from_string(string: str, default_idx: int = 0) -> QualifiedName:
-        if ":" in string:
+    def from_string(string: str, default_idx: int = 0, namespaces: list[str] | None = None) -> QualifiedName:
+        if string.startswith("nsu="):
+            uri, separator, name = string[4:].partition(";")
+            if not separator:
+                raise UaStringParsingError(f"Error parsing string {string}: no name after the namespace URI")
+            if namespaces is None:
+                raise UaStringParsingError(f"Error parsing string {string}: nsu= needs a namespace table")
             try:
-                idx, name = string.split(":", 1)
-                idx = int(idx)
-            except (TypeError, ValueError) as ex:
-                raise UaStringParsingError(f"Error parsing string {string}", ex) from ex
-        else:
-            idx = default_idx
-            name = string
-        return QualifiedName(Name=name, NamespaceIndex=idx)
+                index = namespaces.index(_decode_uri(uri))
+            except ValueError as ex:
+                raise UaStringParsingError(f"Error parsing string {string}: unknown namespace URI", ex) from ex
+            return QualifiedName(Name=name, NamespaceIndex=index)
+        match = _INDEX_PREFIX_PATTERN.match(string)
+        if match:
+            return QualifiedName(Name=string[match.end() :], NamespaceIndex=int(match.group(1)))
+        return QualifiedName(Name=string, NamespaceIndex=default_idx)
 
 
 @dataclass(frozen=False)
 class RelativePathElement:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.31
+    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
 
     :ivar ReferenceTypeId:
     :vartype ReferenceTypeId: NodeId
@@ -751,7 +851,7 @@ class RelativePathElement:
     data_type = NodeId(537)
 
     ReferenceTypeId: "ua.NodeId" = field(default_factory=NodeId)
-    IsInverse: "ua.Boolean" = True
+    IsInverse: "ua.Boolean" = False
     IncludeSubtypes: "ua.Boolean" = True
     TargetName: "ua.QualifiedName" = field(default_factory=QualifiedName)
 
@@ -759,7 +859,7 @@ class RelativePathElement:
 @dataclass(frozen=False)
 class RelativePath:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.31
+    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
 
     :ivar Elements:
     :vartype Elements: RelativePathElement
@@ -785,15 +885,16 @@ class RelativePath:
 @dataclass(init=False, slots=True)
 class LocalizedText:
     """
-    A string qualified with a namespace index.
+    Human readable text with an optional locale identifier (Part 6, 5.2.2.14).
+
+    The string form is specific to this library and reads back exactly.
     """
 
     Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
-    Locale: "ua.String| None" = None
+    Locale: "ua.String | None" = None
     Text: "ua.String | None" = None
 
     def __init__(self, Text: str | None = None, Locale: str | None = None) -> None:
-        # need to write init method since args ar inverted in original implementation
         object.__setattr__(self, "Text", Text)
         object.__setattr__(self, "Locale", Locale)
         object.__setattr__(self, "Encoding", 0)
@@ -812,16 +913,28 @@ class LocalizedText:
                 )
 
     def to_string(self) -> str:
-        return self.__str__()
+        return f"LocalizedText(Locale={self.Locale!r}, Text={self.Text!r})"
 
     @staticmethod
     def from_string(string: str) -> LocalizedText:
-        m = re.match(r"^LocalizedText\(Locale='(.*)', Text='(.*)'\)$", string)
-        if m:
-            text = m.group(2) if m.group(2) != str(None) else None
-            locale = m.group(1) if m.group(1) != str(None) else None
-            return LocalizedText(Text=text, Locale=locale)
-        return LocalizedText(string)
+        try:
+            tree = ast.parse(string, mode="eval").body
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return LocalizedText(string)
+        if not (
+            isinstance(tree, ast.Call)
+            and isinstance(tree.func, ast.Name)
+            and tree.func.id == "LocalizedText"
+            and not tree.args
+            and [keyword.arg for keyword in tree.keywords] == ["Locale", "Text"]
+            and all(
+                isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str | type(None))
+                for keyword in tree.keywords
+            )
+        ):
+            return LocalizedText(string)
+        values = [keyword.value.value for keyword in tree.keywords if isinstance(keyword.value, ast.Constant)]
+        return LocalizedText(Text=values[1], Locale=values[0])
 
 
 @dataclass(frozen=True)
@@ -914,8 +1027,8 @@ class VariantTypeCustom:
     def __init__(self, val: int) -> None:
         self.name = "Custom"
         self.value = val
-        if self.value > 0b00111111:
-            raise UaError(f"Cannot create VariantType. VariantType must be {0b111111} > x > {25}, received {val}")
+        if not 25 < self.value <= 0b00111111:
+            raise UaError(f"Cannot create VariantType. VariantType must be in the range 26 to 63, received {val}")
 
     def __str__(self) -> str:
         return f"VariantType.Custom:{self.value}"
@@ -930,6 +1043,24 @@ class VariantTypeCustom:
 
 
 _VariantTypeUnion = VariantType | VariantTypeCustom
+
+_NULLABLE_VARIANT_TYPES = frozenset(
+    {
+        VariantType.Null,
+        VariantType.String,
+        VariantType.DateTime,
+        VariantType.Guid,
+        VariantType.ByteString,
+        VariantType.XmlElement,
+        VariantType.NodeId,
+        VariantType.ExpandedNodeId,
+        VariantType.QualifiedName,
+        VariantType.LocalizedText,
+        VariantType.ExtensionObject,
+        VariantType.DataValue,
+        VariantType.Variant,
+    }
+)
 
 
 @dataclass(slots=True)
@@ -957,15 +1088,18 @@ class Variant:
     is_array: bool | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.Value, Variant):
+            inner = self.Value
+            object.__setattr__(self, "VariantType", inner.VariantType)
+            object.__setattr__(self, "Value", inner.Value)
+            object.__setattr__(self, "Dimensions", inner.Dimensions)
+            object.__setattr__(self, "is_array", inner.is_array)
+
         if self.is_array is None:
             if isinstance(self.Value, list | tuple) or self.Dimensions:
                 object.__setattr__(self, "is_array", True)
             else:
                 object.__setattr__(self, "is_array", False)
-
-        if isinstance(self.Value, Variant):
-            object.__setattr__(self, "VariantType", self.Value.VariantType)
-            object.__setattr__(self, "Value", self.Value.Value)
 
         if not isinstance(self.VariantType, VariantType | VariantTypeCustom):
             if self.VariantType is None:
@@ -976,18 +1110,15 @@ class Variant:
                 else:
                     raise ValueError("VariantType argument must be an instance of VariantType")
 
+        if self.VariantType == VariantType.DiagnosticInfo:
+            raise UaError("A Variant cannot contain a DiagnosticInfo (Part 6, 5.1.9)")
+
         if self.Value is None and not self.is_array:
-            # only some types of Variants can be NULL when not in an array
-            if self.VariantType == VariantType.NodeId:
-                # why do we rewrite this case and not the others?
-                object.__setattr__(self, "Value", NodeId(0, 0))
-            elif self.VariantType not in (
-                VariantType.Null,
-                VariantType.String,
-                VariantType.DateTime,
-                VariantType.ExtensionObject,
-                VariantType.ByteString,
-            ):
+            if self.VariantType in _NULLABLE_VARIANT_TYPES:
+                null_factory = _NULL_SCALAR_FACTORIES.get(self.VariantType)
+                if null_factory is not None:
+                    object.__setattr__(self, "Value", null_factory())
+            else:
                 raise UaError(f"Non array Variant of type {self.VariantType} cannot have value None")
 
         if self.Dimensions is None and isinstance(self.Value, list | tuple):
@@ -996,9 +1127,13 @@ class Variant:
                 object.__setattr__(self, "Dimensions", dims)
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, Variant) and self.VariantType == other.VariantType and self.Value == other.Value:
-            return True
-        return False
+        return (
+            isinstance(other, Variant)
+            and self.VariantType == other.VariantType
+            and self.Value == other.Value
+            and bool(self.is_array) == bool(other.is_array)
+            and (self.Dimensions or None) == (other.Dimensions or None)
+        )
 
     def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
@@ -1011,13 +1146,15 @@ class Variant:
             if len(val) == 0:
                 raise UaError(f"could not guess UA type of variable {error_val}")
             val = val[0]
-        # now check if this is one our buildin types
         type_name = type(val).__name__
         if hasattr(VariantType, type_name):
             return VariantType[type_name]
-        # nope so guess the type
         if val is None:
             return VariantType.Null
+        if isinstance(val, ExpandedNodeId):
+            return VariantType.ExpandedNodeId
+        if isinstance(val, NodeId):
+            return VariantType.NodeId
         if isinstance(val, bool):
             return VariantType.Boolean
         if isinstance(val, float):
@@ -1034,11 +1171,8 @@ class Variant:
             return VariantType.DateTime
         if isinstance(val, uuid.UUID):
             return VariantType.Guid
-        if isinstance(val, object):
-            try:
-                return getattr(VariantType, val.__class__.__name__)
-            except AttributeError:
-                return VariantType.ExtensionObject
+        if any(cls in typeid_by_extension_objects for cls in type(val).__mro__):
+            return VariantType.ExtensionObject
         raise UaError(f"Could not guess UA type of {val} with type {type(val)}, specify UA type")
 
 
@@ -1127,12 +1261,11 @@ class DiagnosticInfo:
     :vartype Encoding: Byte
     :ivar SymbolicId:
     :vartype SymbolicId: Int32
-    :ivar NamespaceURI:
-    :vartype NamespaceURI: Int32
+    :ivar NamespaceUri:
+    :vartype NamespaceUri: Int32
     :ivar Locale:
     :vartype Locale: Int32
     :ivar LocalizedText:
-    :vartype LocalizedText: Int32
     :vartype LocalizedText: Int32
     :ivar AdditionalInfo:
     :vartype AdditionalInfo: String
@@ -1146,12 +1279,12 @@ class DiagnosticInfo:
 
     Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
     SymbolicId: "ua.Int32 | None" = None
-    NamespaceURI: "ua.Int32 | None" = None
+    NamespaceUri: "ua.Int32 | None" = None
     Locale: "ua.Int32 | None" = None
     LocalizedText: "ua.Int32 | None" = None
     AdditionalInfo: "ua.String | None" = None
     InnerStatusCode: "ua.StatusCode | None" = None
-    InnerDiagnosticInfo: "ua.ExtensionObject | None" = None
+    InnerDiagnosticInfo: "ua.DiagnosticInfo | None" = None
 
 
 def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantTypeCustom:
@@ -1166,9 +1299,25 @@ def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantType
     if not isinstance(int_type, int):
         raise UaError(f"Expected int type for VariantType, got {type(int_type)}")
 
-    if int_type <= 25:
+    if 0 <= int_type <= 25:
         return VariantType(int_type)
     return VariantTypeCustom(int_type)
+
+
+_NULL_SCALAR_FACTORIES: dict[VariantType, Callable[[], Any]] = {
+    VariantType.DateTime: get_win_epoch,
+    VariantType.Guid: lambda: uuid.UUID(int=0),
+    VariantType.NodeId: NodeId,
+    VariantType.ExpandedNodeId: ExpandedNodeId,
+    VariantType.QualifiedName: QualifiedName,
+    VariantType.LocalizedText: LocalizedText,
+    VariantType.DataValue: DataValue,
+    VariantType.Variant: Variant,
+}
+
+
+def register_null_scalar(vtype: VariantType, factory: Callable[[], Any]) -> None:
+    _NULL_SCALAR_FACTORIES[vtype] = factory
 
 
 def get_default_value(vtype: VariantType) -> Any:
@@ -1188,13 +1337,13 @@ def get_default_value(vtype: VariantType) -> Any:
     if vtype in (VariantType.Float, VariantType.Double):
         return 0.0
     if vtype == VariantType.String:
-        return None  # a string can be null
+        return None
     if vtype == VariantType.DateTime:
-        return datetime.now(UTC)
+        return get_win_epoch()
     if vtype == VariantType.Guid:
-        return uuid.uuid4()
+        return uuid.UUID(int=0)
     if vtype == VariantType.XmlElement:
-        return None  # Not sure if this is correct
+        return None
     if vtype == VariantType.NodeId:
         return NodeId()
     if vtype == VariantType.ExpandedNodeId:
@@ -1211,6 +1360,8 @@ def get_default_value(vtype: VariantType) -> Any:
         return DataValue()
     if vtype == VariantType.Variant:
         return Variant()
+    if vtype == VariantType.DiagnosticInfo:
+        return DiagnosticInfo()
     raise RuntimeError(f"function take a uatype as argument, got: {vtype}")
 
 
