@@ -737,9 +737,7 @@ async def test_get_filter_typedefinitionid_is_defining_type(opc):
     alarm_type = opc.opc.get_node(ua.ObjectIds.AlarmConditionType)
     evfilter = await asyncua.common.events.get_filter_from_event_type([alarm_type])
     type_by_path = {
-        tuple(bp.Name for bp in op.BrowsePath): op.TypeDefinitionId
-        for op in evfilter.SelectClauses
-        if op.BrowsePath
+        tuple(bp.Name for bp in op.BrowsePath): op.TypeDefinitionId for op in evfilter.SelectClauses if op.BrowsePath
     }
     expected = {
         ("EventId",): ua.ObjectIds.BaseEventType,
@@ -1168,7 +1166,9 @@ async def test_maxkeepalive_count(opc, mocker):
 
 @pytest.mark.parametrize("opc", ["client"], indirect=True)
 async def test_publish_without_subscription(opc):
-    assert opc.server.iserver.subscription_service.subscriptions == {}, "Some prior test has left subscriptions on the server"
+    assert opc.server.iserver.subscription_service.subscriptions == {}, (
+        "Some prior test has left subscriptions on the server"
+    )
     with pytest.raises(ua.UaStatusCodeError) as excinfo:
         _ = await opc.opc.uaclient.session.publish([])
     assert excinfo.value.code == ua.StatusCodes.BadNoSubscription
@@ -1176,7 +1176,9 @@ async def test_publish_without_subscription(opc):
 
 @pytest.mark.parametrize("opc", ["client"], indirect=True)
 async def test_too_many_publish(opc, mocker):
-    assert opc.server.iserver.subscription_service.subscriptions == {}, "Some prior test has left subscriptions on the server"
+    assert opc.server.iserver.subscription_service.subscriptions == {}, (
+        "Some prior test has left subscriptions on the server"
+    )
     mocker.patch.object(opc.opc.uaclient.session, "ensure_publish_loop", lambda: None)
     sub_handler = MySubHandler()
     sub = await opc.opc.create_subscription(500, sub_handler)

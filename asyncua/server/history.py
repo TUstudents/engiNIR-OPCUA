@@ -297,9 +297,7 @@ class HistoryManager:
         handler = await self._sub.subscribe_data_change(node)
         self._handlers[node] = handler
 
-    async def historize_event(
-        self, source: Node, period: timedelta | None = timedelta(days=7), count: int = 0
-    ) -> None:
+    async def historize_event(self, source: Node, period: timedelta | None = timedelta(days=7), count: int = 0) -> None:
         """
         Subscribe to the source nodes' events and store the data in the active storage.
 

@@ -19,7 +19,7 @@ _logger = logging.getLogger(__name__)
 
 
 class PublishRequestData:
-    def __init__(self, requesthdr=None, seqhdr=None, results: list[ua.StatusCode] | None=None):
+    def __init__(self, requesthdr=None, seqhdr=None, results: list[ua.StatusCode] | None = None):
         self.requesthdr = requesthdr
         self.seqhdr = seqhdr
         self.results = results

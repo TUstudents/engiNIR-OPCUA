@@ -311,9 +311,11 @@ async def test_generate_load_private_key_pem(tmp_path):
 
 def _generate_self_signed_cert(key):
     """Helper to generate a self-signed certificate for testing."""
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "Test"),
-    ])
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "Test"),
+        ]
+    )
     return (
         x509.CertificateBuilder()
         .subject_name(subject)

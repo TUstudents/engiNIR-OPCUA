@@ -373,9 +373,7 @@ async def test_reference_with_nodeid_reftype(opc):
     where the type annotation enforced int, but _to_nodeid() already supports
     Node, ua.NodeId, str, and int at runtime.
     """
-    newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(
-        0, "HasNodeIdRefType"
-    )
+    newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(0, "HasNodeIdRefType")
     reftype_nodeid = newtype.nodeid  # ua.NodeId, not int
 
     obj = opc.opc.nodes.objects

@@ -40,9 +40,7 @@ class State:
     number: Number is an integer which uniquely identifies the current state within the StateMachineType.
     """
 
-    def __init__(
-        self, id: Any, name: str | None = None, number: int | None = None, node: Node | None = None
-    ) -> None:
+    def __init__(self, id: Any, name: str | None = None, number: int | None = None, node: Node | None = None) -> None:
         if id is not None:
             self.id: Any = ua.Variant(id)
         else:
@@ -70,9 +68,7 @@ class Transition:
     with each change of a substate.
     """
 
-    def __init__(
-        self, id: Any, name: str | None = None, number: int | None = None, node: Node | None = None
-    ) -> None:
+    def __init__(self, id: Any, name: str | None = None, number: int | None = None, node: Node | None = None) -> None:
         if id is not None:
             self.id: Any = ua.Variant(id)
         else:

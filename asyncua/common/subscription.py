@@ -407,7 +407,9 @@ class Subscription:
         finally:
             self._deleted = True
             self._close_iterator()
-            self._observe(lambda: self.server.observer.on_subscription_event(self.subscription_id, SubscriptionEvent.DELETED))
+            self._observe(
+                lambda: self.server.observer.on_subscription_event(self.subscription_id, SubscriptionEvent.DELETED)
+            )
 
     def _close_iterator(self) -> None:
         """Push the sentinel so any active `async for ev in sub` loop ends."""
@@ -476,9 +478,7 @@ class Subscription:
                 except BadMessageNotAvailable:
                     break
                 except Exception:
-                    self.logger.warning(
-                        "republish failed for sub %s seq %s", self.subscription_id, seq, exc_info=True
-                    )
+                    self.logger.warning("republish failed for sub %s seq %s", self.subscription_id, seq, exc_info=True)
                     return False
                 await self.publish_callback(ua.PublishResult(self.subscription_id, NotificationMessage=msg))
                 seq += 1

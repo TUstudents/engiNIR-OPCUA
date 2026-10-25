@@ -437,9 +437,7 @@ class InternalServer:
         """
         self.aspace.set_attribute_value_setter(nodeid, attr, setter)
 
-    def read_attribute_value(
-        self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value
-    ) -> ua.DataValue:
+    def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value) -> ua.DataValue:
         """
         directly read datavalue of the Attribute
         """

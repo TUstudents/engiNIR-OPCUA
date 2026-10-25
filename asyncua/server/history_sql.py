@@ -43,9 +43,7 @@ class HistorySQLite(HistoryStorageInterface):
         await self._db.close()
         self.logger.info("Historizing SQL connection closed")
 
-    async def new_historized_node(
-        self, node_id: ua.NodeId, period: timedelta | None, count: int = 0
-    ) -> None:
+    async def new_historized_node(self, node_id: ua.NodeId, period: timedelta | None, count: int = 0) -> None:
         table = self._get_table_name(node_id)
         self._datachanges_period[node_id] = period, count
         # create a table for the node which will store attributes of the DataValue object
@@ -66,9 +64,7 @@ class HistorySQLite(HistoryStorageInterface):
         except aiosqlite.Error as e:
             self.logger.info("Historizing SQL Table Creation Error for %s: %s", node_id, e)
 
-    async def execute_sql_delete(
-        self, condition: str, args: Iterable[Any], table: str, node_id: ua.NodeId
-    ) -> None:
+    async def execute_sql_delete(self, condition: str, args: Iterable[Any], table: str, node_id: ua.NodeId) -> None:
         try:
             validate_table_name(table)
             await self._db.execute(f'DELETE FROM "{table}" WHERE {condition}', args)
@@ -255,9 +251,7 @@ class HistorySQLite(HistoryStorageInterface):
         return ev_fields
 
     @staticmethod
-    def _get_bounds(
-        start: datetime | None, end: datetime | None, nb_values: int
-    ) -> tuple[str, str, str, int]:
+    def _get_bounds(start: datetime | None, end: datetime | None, nb_values: int) -> tuple[str, str, str, int]:
         order = "ASC"
         if start is None or start == ua.get_win_epoch():
             order = "DESC"

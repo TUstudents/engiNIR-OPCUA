@@ -121,6 +121,8 @@ extend-exclude = [
   "*_auto.py",
   "event_objects.py",
   "standard_address_space_services*.py",
+  "asyncua/ua/object_ids.py",
+  "asyncua/ua/status_codes.py",
 ]
 
 [tool.ruff.lint]

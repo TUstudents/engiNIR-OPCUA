@@ -83,9 +83,7 @@ class OPCTypeDictionaryBuilder:
         field.attrib["TypeName"] = data_type
         field.attrib["LengthField"] = array_len
 
-    def add_field(
-        self, type_name: str | Enum, variable_name: str, struct_name: str, is_array: bool = False
-    ) -> None:
+    def add_field(self, type_name: str | Enum, variable_name: str, struct_name: str, is_array: bool = False) -> None:
         if isinstance(type_name, Enum):
             type_name = type_name.name
         if is_array:
@@ -173,7 +171,9 @@ class DataTypeDictionaryBuilder:
             new_node.NodeAttributes = attrs
             res = await self._session_server.add_nodes([new_node])
             return res[0].AddedNodeId
-        _logger.warning("Making %s object for node %s which already exist, its data will be overriden", self, existing_node)
+        _logger.warning(
+            "Making %s object for node %s which already exist, its data will be overriden", self, existing_node
+        )
         return existing_node.nodeid
 
     async def _link_nodes(
@@ -284,9 +284,7 @@ class DataTypeDictionaryBuilder:
     ) -> "StructNode":
         return await self._create_data_type(type_name, nodeid, init)
 
-    def add_field(
-        self, type_name: str | Enum, variable_name: str, struct_name: str, is_array: bool = False
-    ) -> None:
+    def add_field(self, type_name: str | Enum, variable_name: str, struct_name: str, is_array: bool = False) -> None:
         self._type_dictionary.add_field(type_name, variable_name, struct_name, is_array)
 
     async def set_dict_byte_string(self) -> None:

@@ -64,7 +64,11 @@ def val_to_string(val: Any, truncate: bool = False) -> str:
             val = val[:10] + "...." + val[-10:]
     elif isinstance(val, bytes):
         if truncate and len(val) > 100:
-            val = val[:10].decode(get_string_encoding(), errors="surrogateescape") + "...." + val[-10:].decode(get_string_encoding(), errors="surrogateescape")
+            val = (
+                val[:10].decode(get_string_encoding(), errors="surrogateescape")
+                + "...."
+                + val[-10:].decode(get_string_encoding(), errors="surrogateescape")
+            )
         else:
             val = val.decode(get_string_encoding(), errors="surrogateescape")
     elif isinstance(val, datetime):

@@ -688,7 +688,6 @@ def test_equal_nodeid():
     assert id(nid1) != id(nid2)
 
 
-
 def test_to_nodeid_int_ranges():
     """_to_nodeid must encode large integer identifiers (GH-1831).
 

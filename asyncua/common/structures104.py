@@ -653,9 +653,7 @@ class RecursiveParser:
             except Exception:
                 # A single malformed/unusual DataType node should not abort parsing
                 # of the rest of the type hierarchy.
-                _logger.exception(
-                    "Failed to process DataType node %s (%s), skipping it", desc.NodeId, desc.BrowseName
-                )
+                _logger.exception("Failed to process DataType node %s (%s), skipping it", desc.NodeId, desc.BrowseName)
                 next_parent = parent_sdef
 
         child_node = self.server.get_node(desc.NodeId)
