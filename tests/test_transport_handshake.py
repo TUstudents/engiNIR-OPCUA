@@ -12,7 +12,7 @@ from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.ua.ua_binary import struct_to_binary
 
-from .harness import RawPeer, RawServer
+from .harness import RawPeer, RawServer, connect_client
 
 HELLO = ua.Hello(ReceiveBufferSize=65536, SendBufferSize=65536)
 
@@ -233,17 +233,6 @@ async def test_com36_client_rejects_invalid_acknowledge(raw_server: RawServer, a
     with pytest.raises(ua.UaStatusCodeError):
         await hello_task
     assert await peer.is_closed_by_peer()
-
-
-async def connect_client(raw_server: RawServer) -> tuple[UaClient, RawPeer]:
-    uaclient = UaClient(timeout=1)
-    await uaclient.connect_socket(raw_server.host, raw_server.port)
-    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
-    peer = await raw_server.accept()
-    await peer.receive_hello()
-    await peer.send_acknowledge(ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65535))
-    await hello_task
-    return uaclient, peer
 
 
 async def test_cli18_client_rejects_oversized_header_before_buffering(raw_server: RawServer) -> None:

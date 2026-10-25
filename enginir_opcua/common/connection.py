@@ -45,6 +45,18 @@ class TransportError(UaError):
         self.reason = reason
 
 
+class MessageTooLarge(UaError):
+    """A Message above the MaxMessageSize or MaxChunkCount the peer announced; nothing was written."""
+
+
+class MessageAborted(UaError):
+    """Encoding failed after the first chunk; written holds the chunks encoded so far and the Abort chunk."""
+
+    def __init__(self, written: bytes) -> None:
+        super().__init__("Message aborted")
+        self.written = written
+
+
 def error_message_to_binary(status: int, reason: str = "") -> bytes:
     reason = reason.encode()[:MAX_ERROR_REASON_BYTES].decode(errors="ignore")
     return uatcp_to_binary(ua.MessageType.Error, ua.ErrorMessage(ua.StatusCode(status), reason))
@@ -309,6 +321,8 @@ class MessageChunk:
 
         crypto = security_policy.symmetric_cryptography
         max_size = MessageChunk.max_body_size(crypto, max_chunk_size)
+        if max_size < 1:
+            raise ua.UaError(f"A chunk of {max_chunk_size} bytes cannot carry any data")
 
         chunks = []
         for i in range(0, len(body), max_size):
@@ -461,6 +475,8 @@ class SecureConnection:
         The only supported types are SecureOpen, SecureMessage, SecureClose.
         If message_type is SecureMessage, the AlgorithmHeader should be passed as arg.
         """
+        if message_type == ua.MessageType.SecureMessage:
+            self._check_send_limits(message)
         chunks = MessageChunk.message_to_chunks(
             self.security_policy,
             message,
@@ -470,13 +486,48 @@ class SecureConnection:
             request_id=request_id,
             token_id=self.security_token.TokenId,
         )
+        encoded: list[bytes] = []
+        first_sequence_number = self._sequence_number
         for chunk in chunks:
-            self._sequence_number += 1
-            if self._sequence_number >= (1 << 32):
-                _logger.debug("Wrapping sequence number: %d -> 1", self._sequence_number)
-                self._sequence_number = 1
-            chunk.SequenceHeader.SequenceNumber = self._sequence_number
-        return b"".join([chunk.to_binary() for chunk in chunks])
+            chunk.SequenceHeader.SequenceNumber = self._next_sequence_number()
+            try:
+                encoded.append(chunk.to_binary())
+            except Exception:
+                if not encoded:
+                    self._sequence_number = first_sequence_number
+                    raise
+                self._sequence_number -= 1
+                encoded.append(self._abort_chunk(chunk))
+                raise MessageAborted(b"".join(encoded)) from None
+        return b"".join(encoded)
+
+    def _next_sequence_number(self) -> int:
+        self._sequence_number += 1
+        if self._sequence_number >= (1 << 32):
+            _logger.debug("Wrapping sequence number: %d -> 1", self._sequence_number)
+            self._sequence_number = 1
+        return self._sequence_number
+
+    def _check_send_limits(self, message: bytes) -> None:
+        capacity = MessageChunk.max_body_size(self.security_policy.symmetric_cryptography, self._limits.max_send_buffer)
+        if capacity < 1:
+            raise ua.UaError(f"A chunk of {self._limits.max_send_buffer} bytes cannot carry any data")
+        chunk_count = -(-len(message) // capacity)
+        if self._limits.send_max_message_size and len(message) > self._limits.send_max_message_size:
+            raise MessageTooLarge(f"Message of {len(message)} bytes exceeds {self._limits.send_max_message_size}")
+        if self._limits.send_max_chunk_count and chunk_count > self._limits.send_max_chunk_count:
+            raise MessageTooLarge(f"Message of {chunk_count} chunks exceeds {self._limits.send_max_chunk_count}")
+
+    def _abort_chunk(self, failed: MessageChunk) -> bytes:
+        error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadUnexpectedError), "")
+        abort = MessageChunk(
+            failed.crypto, struct_to_binary(error), failed.MessageHeader.MessageType, ua.ChunkType.Abort
+        )
+        abort.SecurityHeader = failed.SecurityHeader
+        abort.MessageHeader.ChannelId = failed.MessageHeader.ChannelId
+        abort.SequenceHeader.RequestId = failed.SequenceHeader.RequestId
+        abort.SequenceHeader.SequenceNumber = self._next_sequence_number()
+        return abort.to_binary()
 
     def _check_sym_header(self, security_hdr: ua.SymmetricAlgorithmHeader) -> None:
         """

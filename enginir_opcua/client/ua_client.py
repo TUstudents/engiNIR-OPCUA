@@ -21,7 +21,14 @@ from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
-from ..common.connection import FrameReader, SecureConnection, TransportError, TransportLimits
+from ..common.connection import (
+    FrameReader,
+    MessageAborted,
+    MessageTooLarge,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+)
 from ..common.utils import wait_for
 from ..crypto import security_policies
 from ..observer import NULL_OBSERVER, Observer
@@ -164,6 +171,14 @@ class UASocketProtocol(asyncio.Protocol):
             binreq = struct_to_binary(request)
             self.revolve_security_token()
             msg = self._connection.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
+        except MessageTooLarge as e:
+            self._request_handle -= 1
+            raise ua.uaerrors.BadRequestTooLarge() from e
+        except MessageAborted as e:
+            self._request_handle -= 1
+            if self.transport is not None:
+                self.transport.write(e.written)
+            raise
         except Exception:
             # reset request handle if any error
             # see self._setup_request_header

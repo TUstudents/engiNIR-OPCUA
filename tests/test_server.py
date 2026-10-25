@@ -856,7 +856,7 @@ async def test_message_limits_fail_read(restore_transport_limits_server: Server)
     async with client:
         n = client.get_node(n.nodeid)
         await n.write_value(test_string, ua.VariantType.ByteString)
-        with pytest.raises(ua.uaerrors.BadRequestTooLarge):
+        with pytest.raises(ua.uaerrors.BadResponseTooLarge):
             await n.read_value()
 
 

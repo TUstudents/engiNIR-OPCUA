@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from enginir_opcua import Client, Server, ua
+from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
@@ -120,6 +121,18 @@ class RawServer:
         if self._connected.done():
             await self._connected.result().close()
         self._server.close()
+
+
+async def connect_client(raw_server: RawServer, acknowledge: ua.Acknowledge | None = None) -> tuple[UaClient, RawPeer]:
+    """Connects a UaClient to the raw_server and completes the handshake with the given Acknowledge."""
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    await peer.receive_hello()
+    await peer.send_acknowledge(acknowledge or ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65535))
+    await hello_task
+    return uaclient, peer
 
 
 ResponseTamper = Callable[[Any], None]

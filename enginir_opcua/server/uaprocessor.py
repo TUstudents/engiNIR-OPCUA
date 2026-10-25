@@ -7,7 +7,14 @@ from typing import Literal
 
 from enginir_opcua import ua
 
-from ..common.connection import HELLO_MAX_CHUNK_SIZE, SecureConnection, TransportError, TransportLimits
+from ..common.connection import (
+    HELLO_MAX_CHUNK_SIZE,
+    MessageAborted,
+    MessageTooLarge,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+)
 from ..common.utils import Buffer, ServiceError
 from ..crypto import uacrypto
 from ..crypto.security_policies import SecurityPolicyNone
@@ -76,9 +83,23 @@ class UaProcessor:
 
     def send_response(self, requesthandle, seqhdr, response, msgtype=ua.MessageType.SecureMessage):
         response.ResponseHeader.RequestHandle = requesthandle
-        data = self._connection.message_to_binary(
-            struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
-        )
+        try:
+            data = self._connection.message_to_binary(
+                struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
+            )
+        except MessageTooLarge:
+            _logger.warning(
+                "Response %s to request %s is above the limits of the client", type(response), requesthandle
+            )
+            fault = ua.ServiceFault()
+            fault.ResponseHeader.RequestHandle = requesthandle
+            fault.ResponseHeader.ServiceResult = ua.StatusCode(ua.StatusCodes.BadResponseTooLarge)
+            data = self._connection.message_to_binary(
+                struct_to_binary(fault), message_type=msgtype, request_id=seqhdr.RequestId
+            )
+        except MessageAborted as e:
+            _logger.warning("Response to request %s was aborted", requesthandle)
+            data = e.written
         self._transport.write(data)
 
     def open_secure_channel(self, algohdr, seqhdr, body):
