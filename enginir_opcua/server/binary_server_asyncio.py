@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from .. import ua
 from ..common.connection import (
@@ -42,6 +42,7 @@ class OPCUAProtocol(asyncio.Protocol):
         self.processor: UaProcessor | None = None
         self._reader = FrameReader(self._max_frame_size)
         self._closed = False
+        self._hello_timer: asyncio.TimerHandle | None = None
         self.iserver: InternalServer = iserver
         self.policies = policies
         self.clients = clients
@@ -67,7 +68,9 @@ class OPCUAProtocol(asyncio.Protocol):
                 self.iserver.max_connections,
             )
             self._closed = True
-            transport.close()
+            refused = cast(asyncio.Transport, transport)
+            refused.write(error_message_to_binary(ua.StatusCodes.BadTcpNotEnoughResources, "Too many connections"))
+            refused.close()
             return
         _logger.info("New connection from %s", self.peer_name)
         self.transport = transport  # type: ignore[assignment]
@@ -76,10 +79,20 @@ class OPCUAProtocol(asyncio.Protocol):
         self.iserver.asyncio_transports.append(transport)
         self.clients.append(self)
         self._task = asyncio.create_task(self._process_received_message_loop())
+        self._hello_timer = asyncio.get_running_loop().call_later(
+            self.iserver.hello_timeout_seconds, self._hello_deadline_expired
+        )
         if self.iserver.max_pending_activation_seconds > 0:
             self._activation_watchdog_task = asyncio.create_task(self._activation_watchdog())
 
+    def _hello_deadline_expired(self) -> None:
+        if self.processor is not None and not self.processor.hello_received:
+            _logger.warning("Closing connection from %s: no Hello received", self.peer_name)
+            self._fail(ua.StatusCodes.BadTimeout, "No Hello received")
+
     def connection_lost(self, ex: BaseException | None) -> None:
+        if self._hello_timer is not None:
+            self._hello_timer.cancel()
         _logger.info("Lost connection from %s, %s", self.peer_name, ex)
         if self.transport is not None:
             self.transport.close()

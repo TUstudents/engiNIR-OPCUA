@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from enginir_opcua import ua
+from enginir_opcua import Server, ua
 from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 
 from .harness import RawPeer
@@ -94,3 +94,32 @@ async def test_srv8_any_protocol_version_gets_zero(raw_peer: RawPeer, version: i
     """Part 6, 7.1.2.3 and 7.1.2.4: a higher version than ours is accepted and answered with 0."""
     await raw_peer.send_hello(ua.Hello(ProtocolVersion=version, ReceiveBufferSize=65535, SendBufferSize=65535))
     assert (await raw_peer.receive_acknowledge()).ProtocolVersion == 0
+
+
+@pytest.fixture
+def short_hello_deadline(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server.iserver, "hello_timeout_seconds", 0.3)
+
+
+@pytest.fixture
+def no_free_connection(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server.iserver, "max_connections", len(server.bserver.clients))  # type: ignore[union-attr]
+
+
+async def test_srv26_no_hello_is_closed_with_timeout(short_hello_deadline: None, raw_peer: RawPeer) -> None:
+    """Part 6, 7.1.3: a connection without a Hello is closed; Table 79 gives Bad_Timeout."""
+    await assert_error_and_close(raw_peer, ua.StatusCodes.BadTimeout)
+
+
+async def test_srv26_hello_stops_the_deadline(short_hello_deadline: None, raw_peer: RawPeer) -> None:
+    """Part 6, 7.1.3: the deadline is for the Hello only."""
+    await raw_peer.send_hello(HELLO)
+    await raw_peer.receive_acknowledge()
+    assert not await raw_peer.is_closed_by_peer(timeout=0.8)
+
+
+async def test_srv26_connection_over_limit_gets_not_enough_resources(
+    no_free_connection: None, raw_peer: RawPeer
+) -> None:
+    """Part 6, 7.1.2.3 and 7.1.5: a server that cannot take the connection says so before it closes."""
+    await assert_error_and_close(raw_peer, ua.StatusCodes.BadTcpNotEnoughResources)
