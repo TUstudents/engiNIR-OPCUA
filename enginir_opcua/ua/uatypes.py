@@ -5,8 +5,10 @@ implement ua datatypes
 from __future__ import annotations
 
 import binascii
+import functools
 import itertools
 import logging
+import operator
 import re
 import types
 import uuid
@@ -41,19 +43,11 @@ MAX_INT64 = 2**63 - 1
 
 
 def type_is_optional(uatype: Any) -> bool:
-    origin = get_origin(uatype)
-    union_types = (Union,)
-    if hasattr(types, "UnionType"):
-        union_types += (types.UnionType,)  # type: ignore[attr-defined]
-    return origin in union_types and type(None) in get_args(uatype)
+    return get_origin(uatype) in (Union, types.UnionType) and type(None) in get_args(uatype)
 
 
 def type_is_union(uatype: Any) -> bool:
-    origin = get_origin(uatype)
-    union_types = (Union,)
-    if hasattr(types, "UnionType"):
-        union_types += (types.UnionType,)  # type: ignore[attr-defined]
-    return origin in union_types
+    return get_origin(uatype) in (Union, types.UnionType)
 
 
 def type_is_list(uatype: Any) -> bool:
@@ -65,35 +59,26 @@ def type_allow_subclass(uatype: Any) -> bool:
 
 
 def types_or_list_from_union(uatype: Any) -> tuple[bool, Any]:
-    # returns the type of a union or the list of type if a list is inside the union
-    types = []
+    members = []
     for subtype in get_args(uatype):
-        if hasattr(subtype, "_paramspec_tvars"):
-            # @hack how to check if a parameter is a list:
-            # check if have _paramspec_tvars works for type[X]
+        if type_is_list(subtype):
             return True, subtype
-        if hasattr(subtype, "_name"):
-            # @hack how to check if parameter is union or list
-            # if _name is not List, it is Union
-            if subtype._name == "List":
-                return True, subtype
-        elif not isinstance(None, subtype):
-            types.append(subtype)
-    if not types:
+        if subtype is not type(None):
+            members.append(subtype)
+    if not members:
         raise ValueError(f"Union {uatype} does not seem to contain a valid type")
-    return False, types[0]
+    return False, members[0]
 
 
 def types_from_union(uatype: Any, origin: Any = None) -> list[Any]:
     if origin is None:
         origin = get_origin(uatype)
-    if origin != Union:
+    if origin not in (Union, types.UnionType):
         raise ValueError(f"{uatype} is not an Union")
-    # need to find out what real type is
-    types = list(filter(lambda subtype: not isinstance(None, subtype), get_args(uatype)))
-    if not types:
+    members = [subtype for subtype in get_args(uatype) if subtype is not type(None)]
+    if not members:
         raise ValueError(f"Union {uatype} does not seem to contain a valid type")
-    return types
+    return members
 
 
 def type_from_list(uatype: Any) -> Any:
@@ -108,28 +93,44 @@ def type_from_allow_subtype(uatype: Any) -> Any:
     return get_args(uatype)[0]
 
 
+def _split_top_level_union(annotation: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for position, char in enumerate(annotation):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            parts.append(annotation[start:position].strip())
+            start = position + 1
+    parts.append(annotation[start:].strip())
+    return parts
+
+
+def _type_name_from_string(annotation: str) -> str:
+    annotation = annotation.strip("'\" ")
+    members = [member for member in _split_top_level_union(annotation) if member.strip("'\" ") != "None"]
+    member = members[0].strip("'\" ") if members else annotation
+    for prefix in ("Optional[", "list[", "List["):
+        if member.startswith(prefix) and member.endswith("]"):
+            return _type_name_from_string(member[len(prefix) : -1])
+    return member.rsplit(".", 1)[-1]
+
+
 def type_string_from_type(uatype: Any) -> str:
     if isinstance(uatype, str):
-        # PEP 563 / Python 3.14: type annotations may surface as strings from
-        # dataclasses.fields(). Strip optional/list wrappers, quotes, and module
-        # prefixes so callers get the bare class name (e.g. "QualifiedName").
-        s = uatype.strip("'\" ")
-        for prefix in ("Optional[", "list[", "List["):
-            if s.startswith(prefix):
-                s = s[len(prefix) : -1]
-        s = s.strip("'\" ")
-        # Strip "| None" (PEP 604 unions used for Optional fields).
-        s = s.split("|", 1)[0].strip()
-        return s.rsplit(".", 1)[-1]
-    if type_is_optional(uatype):
-        uatype = type_from_optional(uatype)
-    if type_is_union(uatype):
-        uatype = types_from_union(uatype)[0]
-    elif type_is_list(uatype):
-        uatype = type_from_list(uatype)
-    elif type_allow_subclass(uatype):
-        uatype = type_from_allow_subtype(uatype)
-    return uatype.__name__
+        return _type_name_from_string(uatype)
+    while True:
+        if type_is_union(uatype):
+            uatype = types_from_union(uatype)[0]
+        elif type_is_list(uatype):
+            uatype = type_from_list(uatype)
+        elif type_allow_subclass(uatype):
+            uatype = type_from_allow_subtype(uatype)
+        else:
+            return uatype.__name__
 
 
 @dataclass
@@ -274,7 +275,7 @@ class _MaskEnum(IntEnum):
     def parse_bitfield(cls, the_int: int) -> set[Self]:
         """Take an integer and interpret it as a set of enum values."""
         if not isinstance(the_int, int):
-            raise ValueError(f"Argument should be an int, we received {the_int} fo type {type(the_int)}")
+            raise ValueError(f"Argument should be an int, we received {the_int} of type {type(the_int)}")
         return {cls(b) for b in cls._bits(the_int) if b in cls._value2member_map_}
 
     @classmethod
@@ -285,7 +286,7 @@ class _MaskEnum(IntEnum):
         iter1, iter2 = itertools.tee(iter(collection))
         if not all(isinstance(x, cls) for x in iter1):
             raise TypeError(f"All elements have to be of type {cls}")
-        return sum(x.mask for x in iter2)
+        return functools.reduce(operator.or_, (x.mask for x in iter2), 0)
 
     @property
     def mask(self) -> int:

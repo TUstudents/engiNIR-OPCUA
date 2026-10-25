@@ -1505,3 +1505,15 @@ def test_ua9_write_mask_bits_22_to_25() -> None:
     assert ua.WriteMask.AccessRestrictions.value == 24
     assert ua.WriteMask.AccessLevelEx.value == 25
     assert ua.WriteMask.parse_bitfield(1 << 25) == {ua.WriteMask.AccessLevelEx}
+
+
+def test_to_bitfield_duplicates() -> None:
+    """Part 3, 8.60: a repeated member sets the same bit."""
+    members = [ua.WriteMask.BrowseName, ua.WriteMask.BrowseName, ua.WriteMask.DataType]
+    assert ua.WriteMask.to_bitfield(members) == (1 << 2) | (1 << 4)
+    assert ua.AccessLevel.to_bitfield([ua.AccessLevel.CurrentRead, ua.AccessLevel.CurrentRead]) == 1
+
+
+def test_ua8_parse_bitfield_message() -> None:
+    with pytest.raises(ValueError, match="of type"):
+        ua.AccessLevel.parse_bitfield("x")  # type: ignore[arg-type]
