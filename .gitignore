@@ -43,3 +43,6 @@ examples/sync/c.py
 .python-version
 combined.svg
 t.txt
+
+# OPC UA specifications may not be redistributed, see docs/opcua-spec/README.md
+docs/opcua-spec/downloads/
