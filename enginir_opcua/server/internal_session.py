@@ -4,10 +4,12 @@ import asyncio
 import logging
 import secrets
 import time
+import weakref
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
@@ -15,12 +17,21 @@ from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from ..common.callback import CallbackType, ServerItemCallback
 from ..common.utils import ServiceError, create_nonce
+from ..crypto import uacrypto
 from ..crypto.uacrypto import x509
 from .address_space import AddressSpace
 from .subscription_service import SubscriptionService
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
+
+_logger = logging.getLogger(__name__)
+
+CLIENT_NONCE_MIN_LENGTH = 32
+CLIENT_NONCE_MAX_LENGTH = 128
+SERVER_NONCE_LENGTH = 32
+TOKEN_LENGTH = 32
+SESSION_ID_NAMESPACE = 1
 
 
 class SessionState(Enum):
@@ -36,6 +47,31 @@ class ChannelSecurity:
     mode: ua.MessageSecurityMode
 
 
+class SessionChannel(Protocol):
+    @property
+    def channel_id(self) -> int: ...
+
+    @property
+    def security(self) -> ChannelSecurity: ...
+
+    @property
+    def max_request_message_size(self) -> int: ...
+
+    @property
+    def server_certificate(self) -> bytes | None: ...
+
+    @property
+    def signature_algorithm(self) -> str | None: ...
+
+    def sign(self, data: bytes) -> bytes: ...
+
+    def verify(self, data: bytes, signature: bytes | None) -> None: ...
+
+    def send_response(
+        self, requesthandle: int, seqhdr: Any, response: Any, msgtype: Any = ua.MessageType.SecureMessage
+    ) -> None: ...
+
+
 def identity_token(params: ua.ActivateSessionParameters) -> Any:
     token = params.UserIdentityToken
     if isinstance(token, ua.ExtensionObject) and token.TypeId == ua.NodeId(ua.ObjectIds.Null):
@@ -43,12 +79,393 @@ def identity_token(params: ua.ActivateSessionParameters) -> Any:
     return token
 
 
-class InternalSession(AbstractSession):
-    """ """
+class PublishRequestData:
+    def __init__(
+        self,
+        requesthdr: ua.RequestHeader,
+        seqhdr: Any,
+        results: list[ua.StatusCode] | None = None,
+        channel: SessionChannel | None = None,
+    ) -> None:
+        self.requesthdr = requesthdr
+        self.seqhdr = seqhdr
+        self.results = results
+        self.channel = channel
+        self.timestamp = time.monotonic()
 
-    max_connections = 1000
-    _current_connections = 0
-    _counter = 10
+    def has_timed_out(self, now: float) -> bool:
+        return self.requesthdr.TimeoutHint != 0 and self.requesthdr.TimeoutHint / 1000 < now - self.timestamp
+
+    def answer(self, status: int) -> None:
+        if self.channel is None:
+            return
+        fault = ua.ServiceFault()
+        fault.ResponseHeader.ServiceResult = ua.StatusCode(status)
+        self.channel.send_response(self.requesthdr.RequestHandle, self.seqhdr, fault)
+
+
+class Session:
+    """The server side of one OPC UA Session: identity, binding to a channel, timeout and the Publish queue."""
+
+    def __init__(
+        self,
+        manager: SessionManager,
+        session_id: ua.NodeId,
+        channel: SessionChannel,
+        name: str,
+        revised_timeout_ms: float,
+    ) -> None:
+        self.manager = manager
+        self.iserver = manager.iserver
+        self.id = session_id
+        self.token = ua.NodeId(secrets.token_bytes(TOKEN_LENGTH), 0, ua.NodeIdType.ByteString)
+        self.name = name
+        self.state = SessionState.Created
+        self.user: User = User(role=UserRole.Anonymous)
+        self.nonce: bytes = create_nonce(SERVER_NONCE_LENGTH)
+        self.channel_security: ChannelSecurity = channel.security
+        self.client_certificate: bytes | None = None
+        self.revised_timeout_ms = revised_timeout_ms
+        self.created_at = time.monotonic()
+        self.last_activity = self.created_at
+        self.bound_channel_id: int | None = channel.channel_id
+        self._channel: weakref.ref[SessionChannel] | None = weakref.ref(channel)
+        self.publish_queue: deque[PublishRequestData] = deque()
+        self.pending_publish_subscriptions: dict[int, bool] = {}
+        self.services = InternalSession(
+            self.iserver,
+            self.iserver.aspace,
+            self.iserver.subscription_service,
+            name,
+            user=self.user,
+            external=True,
+            session_id=session_id,
+        )
+        self.services.publish_callback = self.forward_publish_response
+
+    def __str__(self) -> str:
+        return f"Session(name:{self.name}, id:{self.id}, user:{self.user}, state:{self.state.name})"
+
+    @property
+    def bound_channel(self) -> SessionChannel | None:
+        return self._channel() if self._channel is not None else None
+
+    def is_activated(self) -> bool:
+        return self.state == SessionState.Activated
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def idle_seconds(self, now: float) -> float:
+        return now - self.last_activity
+
+    def bind(self, channel: SessionChannel) -> None:
+        self.bound_channel_id = channel.channel_id
+        self._channel = weakref.ref(channel)
+
+    def unbind(self) -> None:
+        self.bound_channel_id = None
+        self._channel = None
+        self.publish_queue.clear()
+
+    def subscription_ids(self) -> list[int]:
+        return [
+            sub_id
+            for sub_id, sub in self.iserver.subscription_service.subscriptions.items()
+            if sub.session_id == self.id
+        ]
+
+    def validate_identity(self, params: ua.ActivateSessionParameters, peer_certificate: bytes | None) -> User:
+        id_token = identity_token(params)
+        if not isinstance(id_token, self.iserver.supported_tokens):
+            _logger.error("Rejected active session UserIdentityToken not supported")
+            raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+        if self.iserver.user_manager is None:
+            return self.user
+        try:
+            if isinstance(id_token, ua.UserNameIdentityToken):
+                username, password = self.iserver.decrypt_user_token(self, id_token)
+            elif isinstance(id_token, ua.X509IdentityToken):
+                peer_certificate = self.iserver.verify_x509_token(self, id_token, params.UserTokenSignature)
+                username, password = None, None
+            else:
+                username, password = None, None
+        except (ServiceError, ua.uaerrors.UaStatusCodeError):
+            raise
+        except Exception:
+            raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid) from None
+        user = self.iserver.user_manager.get_user(
+            self.iserver, username=username, password=password, certificate=peer_certificate
+        )
+        if user is None:
+            raise ServiceError(ua.StatusCodes.BadUserAccessDenied)
+        return user
+
+    def get_publish_request(self, subscription_id: int) -> PublishRequestData | None:
+        now = time.monotonic()
+        while True:
+            if not self.publish_queue:
+                self.pending_publish_subscriptions[subscription_id] = True
+                return None
+            requestdata = self.publish_queue.popleft()
+            if not requestdata.has_timed_out(now):
+                return requestdata
+            requestdata.answer(ua.StatusCodes.BadTimeout)
+
+    async def forward_publish_response(self, result: ua.PublishResult, requestdata: PublishRequestData) -> None:
+        response = ua.PublishResponse()
+        response.Parameters = result
+        result.Results = requestdata.results
+        if requestdata.channel is not None:
+            requestdata.channel.send_response(requestdata.requesthdr.RequestHandle, requestdata.seqhdr, response)
+
+    async def enqueue_publish(self, requestdata: PublishRequestData, subscription_count: int) -> None:
+        while self.pending_publish_subscriptions:
+            subscription_id = next(iter(self.pending_publish_subscriptions))
+            self.pending_publish_subscriptions.pop(subscription_id)
+            sub = self.iserver.subscription_service.subscriptions.get(subscription_id)
+            if sub is None:
+                continue
+            if await sub.publish_results(requestdata):
+                return
+        if len(self.publish_queue) >= subscription_count + 10:
+            self._evict_publish_request()
+        self.publish_queue.append(requestdata)
+
+    def _evict_publish_request(self) -> None:
+        now = time.monotonic()
+        for i, requestdata in enumerate(self.publish_queue):
+            if requestdata.has_timed_out(now):
+                del self.publish_queue[i]
+                requestdata.answer(ua.StatusCodes.BadTimeout)
+                return
+        if self.publish_queue:
+            self.publish_queue.popleft().answer(ua.StatusCodes.BadTooManyPublishRequests)
+
+    async def close(self, delete_subscriptions: bool) -> None:
+        if self.state == SessionState.Closed:
+            return
+        _logger.info("close session %s", self.name)
+        self.state = SessionState.Closed
+        self.manager.forget(self)
+        self.publish_queue.clear()
+        self.pending_publish_subscriptions.clear()
+        if delete_subscriptions:
+            await self.services.delete_subscriptions(self.subscription_ids())
+
+
+class SessionManager:
+    """All Sessions of one server, found by their AuthenticationToken."""
+
+    def __init__(self, iserver: InternalServer) -> None:
+        self.iserver = iserver
+        self.sessions: dict[ua.NodeId, Session] = {}
+        self.max_sessions: int = 100
+        self._counter = 0
+        self._sweep_task: asyncio.Task[None] | None = None
+
+    def next_session_id(self) -> ua.NodeId:
+        self._counter += 1
+        return ua.NodeId(self._counter, SESSION_ID_NAMESPACE)
+
+    def new_in_process_session(self, name: str = "Internal") -> InternalSession:
+        return InternalSession(
+            self.iserver,
+            self.iserver.aspace,
+            self.iserver.subscription_service,
+            name,
+            user=User(role=UserRole.Admin),
+            session_id=self.next_session_id(),
+        )
+
+    def forget(self, session: Session) -> None:
+        self.sessions.pop(session.token, None)
+
+    def has_session(self, channel_id: int) -> bool:
+        return any(s.bound_channel_id == channel_id for s in self.sessions.values())
+
+    def has_activated_session(self, channel_id: int) -> bool:
+        return any(s.bound_channel_id == channel_id and s.is_activated() for s in self.sessions.values())
+
+    def resolve(self, channel: SessionChannel, token: ua.NodeId, requires_activated: bool = True) -> Session:
+        session = self.sessions.get(token)
+        if session is None:
+            raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
+        if session.bound_channel_id != channel.channel_id:
+            raise ServiceError(ua.StatusCodes.BadSecureChannelIdInvalid)
+        session.touch()
+        if requires_activated and not session.is_activated():
+            raise ServiceError(ua.StatusCodes.BadSessionNotActivated)
+        return session
+
+    def _revise_timeout(self, requested: float) -> float:
+        revised = min(max(requested, self.iserver.min_session_timeout_ms), self.iserver.max_session_timeout_ms)
+        if revised != requested:
+            _logger.info("Clamping RequestedSessionTimeout %.0fms to %.0fms", requested, revised)
+        return revised
+
+    @staticmethod
+    def _check_client_certificate(client_certificate: bytes | None, security: ChannelSecurity) -> None:
+        if security.mode == ua.MessageSecurityMode.None_:
+            return
+        try:
+            certificate = uacrypto.der_from_x509(uacrypto.x509_from_der(client_certificate))
+        except Exception:
+            raise ServiceError(ua.StatusCodes.BadCertificateInvalid) from None
+        if certificate != security.certificate:
+            _logger.warning("CreateSession certificate does not match the SecureChannel certificate")
+            raise ServiceError(ua.StatusCodes.BadSecurityChecksFailed)
+
+    async def _make_room(self) -> None:
+        if len(self.sessions) < self.max_sessions:
+            return
+        unactivated = [s for s in self.sessions.values() if s.state == SessionState.Created]
+        if not unactivated:
+            raise ServiceError(ua.StatusCodes.BadTooManySessions)
+        oldest = min(unactivated, key=lambda s: s.created_at)
+        _logger.warning("At max_sessions=%s, closing the oldest unactivated session %s", self.max_sessions, oldest)
+        await oldest.close(False)
+
+    async def create_session(
+        self, channel: SessionChannel, params: ua.CreateSessionParameters, sockname: tuple[str, int] | None = None
+    ) -> ua.CreateSessionResult:
+        nonce = params.ClientNonce
+        if nonce is None or not CLIENT_NONCE_MIN_LENGTH <= len(nonce) <= CLIENT_NONCE_MAX_LENGTH:
+            raise ServiceError(ua.StatusCodes.BadNonceInvalid)
+        security = channel.security
+        self._check_client_certificate(params.ClientCertificate, security)
+        if self.iserver.certificate_validator and params.ClientCertificate:
+            await self.iserver.certificate_validator(
+                x509.load_der_x509_certificate(params.ClientCertificate), params.ClientDescription
+            )
+        ep_params = ua.GetEndpointsParameters()
+        ep_params.EndpointUrl = params.EndpointUrl
+        endpoints = await self.iserver.get_endpoints(params=ep_params, sockname=sockname)
+        await self._make_room()
+        session = Session(
+            self,
+            self.next_session_id(),
+            channel,
+            params.SessionName or "",
+            self._revise_timeout(float(params.RequestedSessionTimeout or 0)),
+        )
+        session.client_certificate = params.ClientCertificate
+        self.sessions[session.token] = session
+        result = ua.CreateSessionResult()
+        result.SessionId = session.id
+        result.AuthenticationToken = session.token
+        result.RevisedSessionTimeout = session.revised_timeout_ms
+        result.MaxRequestMessageSize = channel.max_request_message_size
+        result.ServerNonce = session.nonce
+        result.ServerEndpoints = endpoints
+        result.ServerCertificate = channel.server_certificate
+        signed = (security.certificate or b"") + nonce
+        result.ServerSignature.Signature = channel.sign(signed)
+        result.ServerSignature.Algorithm = channel.signature_algorithm
+        return result
+
+    def _check_move(self, session: Session, channel: SessionChannel, params: ua.ActivateSessionParameters) -> None:
+        security = channel.security
+        if not session.is_activated() or session.channel_security != security:
+            _logger.warning("Rejected moving session %s to a SecureChannel with different security", session.name)
+            raise ServiceError(ua.StatusCodes.BadSecurityChecksFailed)
+        if security.mode == ua.MessageSecurityMode.Sign and isinstance(
+            identity_token(params), ua.AnonymousIdentityToken
+        ):
+            raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+
+    def activate_session(
+        self, channel: SessionChannel, token: ua.NodeId, params: ua.ActivateSessionParameters
+    ) -> ua.ActivateSessionResult:
+        session = self.sessions.get(token)
+        if session is None:
+            raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
+        moving = session.bound_channel_id != channel.channel_id
+        if moving and session.state == SessionState.Created:
+            raise ServiceError(ua.StatusCodes.BadSecureChannelIdInvalid)
+        if moving:
+            self._check_move(session, channel, params)
+        security = channel.security
+        server_certificate = channel.server_certificate
+        challenge = session.nonce if server_certificate is None else server_certificate + session.nonce
+        try:
+            channel.verify(challenge, params.ClientSignature.Signature)
+        except ua.uaerrors.SignatureError:
+            raise ServiceError(ua.StatusCodes.BadApplicationSignatureInvalid) from None
+        user = session.validate_identity(params, security.certificate)
+        if moving and user != session.user:
+            _logger.warning("Rejected moving session %s to a new channel with a different user", session.name)
+            raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+        result = ua.ActivateSessionResult()
+        for _ in params.ClientSoftwareCertificates:
+            result.Results.append(ua.StatusCode())
+        session.user = user
+        session.services.user = user
+        session.nonce = create_nonce(SERVER_NONCE_LENGTH)
+        result.ServerNonce = session.nonce
+        session.state = SessionState.Activated
+        if moving:
+            session.bind(channel)
+        session.touch()
+        _logger.info("Activated session %s for user %s", session.name, user)
+        return result
+
+    async def close_session(self, channel: SessionChannel, token: ua.NodeId, delete_subscriptions: bool) -> None:
+        session = self.resolve(channel, token, requires_activated=False)
+        await session.close(delete_subscriptions)
+
+    async def on_channel_closed(self, channel: SessionChannel) -> None:
+        for session in list(self.sessions.values()):
+            if session.bound_channel_id != channel.channel_id:
+                continue
+            if session.state == SessionState.Created:
+                await session.close(False)
+            else:
+                session.unbind()
+
+    async def sweep(self) -> float:
+        now = time.monotonic()
+        wait = 1.0
+        pending_limit = self.iserver.max_pending_activation_seconds
+        for session in list(self.sessions.values()):
+            if session.state == SessionState.Created and pending_limit > 0:
+                remaining = pending_limit - (now - session.created_at)
+            else:
+                remaining = session.revised_timeout_ms / 1000 - session.idle_seconds(now)
+            if remaining <= 0:
+                _logger.info("Session %s expired", session.name)
+                await session.close(False)
+            else:
+                wait = min(wait, remaining)
+        return max(wait, 0.05)
+
+    def start(self) -> None:
+        if self._sweep_task is None or self._sweep_task.done():
+            self._sweep_task = asyncio.create_task(self._sweep_loop())
+
+    async def _sweep_loop(self) -> None:
+        while True:
+            try:
+                wait = await self.sweep()
+            except Exception:
+                _logger.exception("Session sweep failed")
+                wait = 1.0
+            await asyncio.sleep(wait)
+
+    async def close_all(self) -> None:
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            try:
+                await self._sweep_task
+            except asyncio.CancelledError:
+                pass
+            self._sweep_task = None
+        for session in list(self.sessions.values()):
+            await session.close(False)
+
+
+class InternalSession(AbstractSession):
+    """The service set of a Session (or of the server itself) for nodes, helpers and the dispatcher."""
 
     def __init__(
         self,
@@ -58,169 +475,27 @@ class InternalSession(AbstractSession):
         name: str,
         user: User = User(role=UserRole.Anonymous),
         external: bool = False,
+        session_id: ua.NodeId | None = None,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.iserver: InternalServer = internal_server
-        # define if session is external, we need to copy some objects if it is internal
         self.external = external
         self.aspace: AddressSpace = aspace
         self.subscription_service: SubscriptionService = submgr
         self.name: str = name
         self.user: User = user
-        self.nonce: bytes | None = None
-        self.state = SessionState.Created
-        self.session_id = ua.NodeId(self._counter)
-        InternalSession._counter += 1
-        self.auth_token = ua.NodeId(secrets.token_bytes(32), 0, ua.NodeIdType.ByteString)
-        self.channel_security: ChannelSecurity | None = None
-        self.channel_owner: object | None = None
-        self.logger.info("Created internal session %s", self.name)
-        self.session_timeout: float | None = None
-        self._last_activity: float = time.monotonic()
-        self._timeout_task: asyncio.Task[None] | None = None
-        if self.external:
-            self.iserver.register_external_session(self)
+        self.session_id: ua.NodeId = (
+            session_id if session_id is not None else internal_server.session_manager.next_session_id()
+        )
+        self.publish_callback: Callable[..., Any] | None = None
 
     def __str__(self) -> str:
-        return (
-            f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id}, auth_token:{self.auth_token})"
-        )
+        return f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id})"
 
     async def get_endpoints(
         self, params: ua.GetEndpointsParameters | None = None, sockname: tuple[str, int] | None = None
     ) -> list[ua.EndpointDescription]:
         return await self.iserver.get_endpoints(params, sockname)
-
-    def is_activated(self) -> bool:
-        return self.state == SessionState.Activated
-
-    async def create_session(
-        self, params: ua.CreateSessionParameters, sockname: tuple[str, int] | None = None
-    ) -> ua.CreateSessionResult:
-        self.logger.info("Create session request")
-        result = ua.CreateSessionResult()
-        result.SessionId = self.session_id
-        result.AuthenticationToken = self.auth_token
-        requested_timeout_ms = float(params.RequestedSessionTimeout or 0)
-        revised_ms = min(
-            max(requested_timeout_ms, self.iserver.min_session_timeout_ms),
-            self.iserver.max_session_timeout_ms,
-        )
-        if revised_ms != requested_timeout_ms:
-            self.logger.info("Clamping RequestedSessionTimeout %.0fms to %.0fms", requested_timeout_ms, revised_ms)
-        result.RevisedSessionTimeout = revised_ms
-        result.MaxRequestMessageSize = 65536
-        self.session_timeout = result.RevisedSessionTimeout / 1000
-
-        if self.iserver.certificate_validator and params.ClientCertificate:
-            await self.iserver.certificate_validator(
-                x509.load_der_x509_certificate(params.ClientCertificate), params.ClientDescription
-            )
-
-        self.nonce = create_nonce(32)
-        result.ServerNonce = self.nonce
-
-        ep_params = ua.GetEndpointsParameters()
-        ep_params.EndpointUrl = params.EndpointUrl
-        result.ServerEndpoints = await self.get_endpoints(params=ep_params, sockname=sockname)
-        return result
-
-    async def close_session(self, delete_subs: bool = True) -> None:
-        self.logger.info("close session %s", self.name)
-        if self.state == SessionState.Closed:
-            return
-        if self.state == SessionState.Activated:
-            InternalSession._current_connections -= 1
-        if InternalSession._current_connections < 0:
-            InternalSession._current_connections = 0
-        self.state = SessionState.Closed
-        if self._timeout_task is not None and self._timeout_task is not asyncio.current_task():
-            self._timeout_task.cancel()
-        if self.external:
-            self.iserver.unregister_external_session(self)
-        if delete_subs:
-            await self.delete_subscriptions(
-                [id for id, sub in self.subscription_service.subscriptions.items() if sub.session_id == self.session_id]
-            )
-
-    def touch(self) -> None:
-        self._last_activity = time.monotonic()
-
-    def _start_timeout_watchdog(self) -> None:
-        if self.session_timeout is None or self.session_timeout <= 0:
-            return
-        if self._timeout_task is not None and not self._timeout_task.done():
-            return
-        self._timeout_task = asyncio.create_task(self._timeout_loop())
-
-    async def _timeout_loop(self) -> None:
-        try:
-            while self.state is not SessionState.Closed:
-                timeout = self.session_timeout or 0
-                idle = time.monotonic() - self._last_activity
-                remaining = timeout - idle
-                if remaining <= 0:
-                    self.logger.info("Session %s idle past %ss; closing", self.name, timeout)
-                    await self.close_session(True)
-                    return
-                await asyncio.sleep(min(remaining, max(timeout / 4, 0.1)))
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            self.logger.exception("Session timeout watchdog crashed")
-
-    def activate_session(
-        self,
-        params: ua.ActivateSessionParameters,
-        peer_certificate: bytes | None,
-        require_same_user: bool = False,
-    ) -> ua.ActivateSessionResult:
-        self.logger.info("activate session")
-        result = ua.ActivateSessionResult()
-        if self.state == SessionState.Closed:
-            raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
-        first_activation = self.state == SessionState.Created
-        if first_activation and InternalSession._current_connections >= InternalSession.max_connections:
-            raise ServiceError(ua.StatusCodes.BadMaxConnectionsReached)
-        for _ in params.ClientSoftwareCertificates:
-            result.Results.append(ua.StatusCode())
-        id_token = identity_token(params)
-        # Check if security policy is supported
-        if not isinstance(id_token, self.iserver.supported_tokens):
-            self.logger.error("Rejected active session UserIdentityToken not supported")
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
-        if self.iserver.user_manager is not None:
-            try:
-                if isinstance(id_token, ua.UserNameIdentityToken):
-                    username, password = self.iserver.decrypt_user_token(self, id_token)
-                elif isinstance(id_token, ua.X509IdentityToken):
-                    peer_certificate = self.iserver.verify_x509_token(self, id_token, params.UserTokenSignature)
-                    username, password = None, None
-                else:
-                    username, password = None, None
-            except (ServiceError, ua.uaerrors.UaStatusCodeError):
-                raise
-            except Exception:
-                raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-
-            user = self.iserver.user_manager.get_user(
-                self.iserver, username=username, password=password, certificate=peer_certificate
-            )
-            if user is None:
-                raise ServiceError(ua.StatusCodes.BadUserAccessDenied)
-            if require_same_user and user != self.user:
-                self.logger.warning("Rejected moving session %s to a new channel with a different user", self.name)
-                raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
-            self.user = user
-        self.nonce = create_nonce(32)
-        result.ServerNonce = self.nonce
-        self.state = SessionState.Activated
-        if first_activation:
-            InternalSession._current_connections += 1
-        self.touch()
-        self._start_timeout_watchdog()
-        self.logger.info("Activated internal session %s for user %s", self.name, self.user)
-        return result
 
     async def read(self, params: ua.ReadParameters) -> list[ua.DataValue]:
         if self.user is None:
@@ -354,12 +629,7 @@ class InternalSession(AbstractSession):
         # is async (RPC). Not part of AbstractSession because the shapes diverge.
         return self.subscription_service.modify_subscription(params, self.session_id)
 
-    # The server-side override takes an extra `callback` (the per-connection
-    # publish-response callback owned by the UaProcessor handling the transfer
-    # request) so the rebound InternalSubscription delivers future publishes
-    # to the new connection's socket. The client-side override has no such
-    # need, hence the signature divergence.
-    async def transfer_subscriptions(  # type: ignore[override]
-        self, params: ua.TransferSubscriptionsParameters, callback: Callable[..., Any]
-    ) -> list[ua.TransferResult]:
-        return await self.subscription_service.transfer_subscriptions(params, self.session_id, callback)
+    async def transfer_subscriptions(self, params: ua.TransferSubscriptionsParameters) -> list[ua.TransferResult]:
+        if self.publish_callback is None:
+            raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
+        return await self.subscription_service.transfer_subscriptions(params, self.session_id, self.publish_callback)

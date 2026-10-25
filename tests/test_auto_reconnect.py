@@ -196,7 +196,7 @@ async def test_new_session_created_when_server_forgot() -> None:
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         old_auth_token = client.uaclient.session.authentication_token
-        srv.iserver._external_sessions.pop(old_auth_token, None)
+        srv.iserver.session_manager.sessions.pop(old_auth_token, None)
         await _force_transport_close_and_wait(client)
         await _wait_until_state(client, UaClientState.CONNECTED, timeout=5.0)
         assert client.uaclient.session.authentication_token != old_auth_token
@@ -218,7 +218,7 @@ async def test_session_state_persistence_resumes_session_across_processes(tmp_pa
     # (matches the real-world case where session persistence actually matters).
     sub = await first.create_subscription(50)
     first_auth_token = first.uaclient.session.authentication_token
-    assert first_auth_token in srv.iserver._external_sessions
+    assert first_auth_token in srv.iserver.session_manager.sessions
     assert state_path.exists()
     assert state_path.stat().st_mode & 0o777 == 0o600
 
@@ -263,7 +263,7 @@ async def test_session_state_persistence_falls_back_when_server_forgot(tmp_path:
     assert state_path.exists()
 
     # Force the server to forget the session before the new client comes up.
-    srv.iserver._external_sessions.pop(first_auth_token, None)
+    srv.iserver.session_manager.sessions.pop(first_auth_token, None)
 
     second = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
     second.session_state_path = state_path
@@ -288,14 +288,14 @@ async def test_server_expires_session_after_timeout() -> None:
     await client.connect(auto_reconnect=False)
     try:
         old_auth_token = client.uaclient.session.authentication_token
-        assert old_auth_token in srv.iserver._external_sessions
+        assert old_auth_token in srv.iserver.session_manager.sessions
         proto = client.uaclient.protocol
         assert proto is not None
         assert proto.transport is not None
         proto.transport.close()
         loop = asyncio.get_event_loop()
         deadline = loop.time() + 3.0
-        while old_auth_token in srv.iserver._external_sessions:
+        while old_auth_token in srv.iserver.session_manager.sessions:
             if loop.time() > deadline:
                 raise AssertionError("Session was not expired after session_timeout")
             await asyncio.sleep(0.05)
@@ -328,7 +328,7 @@ async def test_subscription_recreated_when_transfer_fails() -> None:
         old_handles = set(sub._monitored_items.keys())
 
         srv.iserver.isession.subscription_service.subscriptions.pop(old_sub_id, None)
-        srv.iserver._external_sessions.pop(client.uaclient.session.authentication_token, None)
+        srv.iserver.session_manager.sessions.pop(client.uaclient.session.authentication_token, None)
 
         await _force_transport_close_and_wait(client)
         await _wait_until_state(client, UaClientState.CONNECTED, timeout=5.0)

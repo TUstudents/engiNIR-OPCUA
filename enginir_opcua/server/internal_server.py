@@ -17,7 +17,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from enginir_opcua import ua
-from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from ..common.callback import CallbackService
 from ..common.connection import ChannelSettings
@@ -28,7 +27,7 @@ from ..crypto.validator import CertificateValidatorMethod
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
-from .internal_session import InternalSession
+from .internal_session import InternalSession, SessionManager
 from .subscription_service import SubscriptionService
 from .user_managers import PermissiveUserManager, UserManager
 
@@ -66,9 +65,6 @@ class InternalServer:
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
-        # auth_token -> InternalSession: lets a fresh UaProcessor reattach to an existing
-        # session on ActivateSession (spec Part 4 §6.7 reconnect path).
-        self._external_sessions: dict[ua.NodeId, "InternalSession"] = {}
         # Server-side limits — clamp client-requested values to avoid resource exhaustion
         # when clients abandon long-lived sessions. Tighten on a per-deployment basis.
         self.max_session_timeout_ms: float = 600_000
@@ -115,10 +111,8 @@ class InternalServer:
         self.user_manager = user_manager
         self.certificate_validator: CertificateValidatorMethod | None = None
         """hook to validate a certificate, raises a ServiceError when not valid"""
-        # create a session to use on server side
-        self.isession = InternalSession(
-            self, self.aspace, self.subscription_service, "Internal", user=User(role=UserRole.Admin)
-        )
+        self.session_manager = SessionManager(self)
+        self.isession: InternalSession = self.session_manager.new_in_process_session()
         self.current_time_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         self.server_status_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus))
         self.time_task: asyncio.Task[None] | None = None
@@ -252,6 +246,7 @@ class InternalServer:
         if not self.disabled_clock:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
+        self.session_manager.start()
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
@@ -259,7 +254,14 @@ class InternalServer:
             self._time_task_stop.set()
             await self.time_task
         self.method_service.stop()
-        await self.isession.close_session()
+        await self.session_manager.close_all()
+        await self.isession.delete_subscriptions(
+            [
+                sub_id
+                for sub_id, sub in self.subscription_service.subscriptions.items()
+                if sub.session_id == self.isession.session_id
+            ]
+        )
         await self.history_manager.stop()
 
     async def _set_current_time_loop(self) -> None:
@@ -351,20 +353,6 @@ class InternalServer:
 
     def register_server2(self, params: ua.RegisterServer2Parameters) -> None:
         return self.register_server(params.Server, params.DiscoveryConfiguration)
-
-    def create_session(
-        self, name: str, user: User = User(role=UserRole.Anonymous), external: bool = False
-    ) -> InternalSession:
-        return InternalSession(self, self.aspace, self.subscription_service, name, user=user, external=external)
-
-    def lookup_external_session(self, auth_token: ua.NodeId) -> "InternalSession | None":
-        return self._external_sessions.get(auth_token)
-
-    def register_external_session(self, session: "InternalSession") -> None:
-        self._external_sessions[session.auth_token] = session
-
-    def unregister_external_session(self, session: "InternalSession") -> None:
-        self._external_sessions.pop(session.auth_token, None)
 
     async def enable_history_data_change(
         self, node: Node, period: timedelta | None = timedelta(days=7), count: int = 0
