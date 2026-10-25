@@ -16,7 +16,7 @@ Spec baseline:
 - Section numbers below are the 1.05 ones. Where 1.04 says something different, that's noted.
 
 Differences between 1.04 and 1.05 found so far (they matter for interoperability with older peers):
-- **Hello `ProtocolVersion`** (Part 6, 7.1.2.3). In 1.04 the client sends the *latest* version it supports, and the server must always accept a version higher than its own. In 1.05 the server rejects with `Bad_ProtocolVersionUnsupported` only if it supports neither the requested version nor any lower one, and returns the version it will use in the Acknowledge. Both editions define version `0`, so they're wire-compatible today. Check the server's Hello handling against both in the `server` review.
+- **Hello `ProtocolVersion`** (Part 6, 7.1.2.3). In 1.04 the client sends the *latest* version it supports, and the server must always accept a version higher than its own. In 1.05 the server rejects with `Bad_ProtocolVersionUnsupported` only if it supports neither the requested version nor any lower one, and returns the version it will use in the Acknowledge. Both editions define version `0`, so they're wire-compatible today. The server never checks the version and always answers `0`, which is correct for both while `0` is the only version (SRV-8).
 - **DiagnosticInfo nesting** (Part 6, 5.2.2.12). 1.04 requires decoders to support at least 100 nesting levels. 1.05 requires at least 4 and says decoders aren't expected to support more than 10. The limit our decoder enforces should satisfy both: support at least 4, and reject deep nesting with an error instead of recursing without bound.
 - **XmlElement** is marked *Deprecated* in 1.05 (Part 6, 5.2.2.8). Decoders still have to handle it (see UA-37).
 - **Channel-bound session signatures** (Part 4, 6.1.8, new in 1.05). CreateSession and ActivateSession signatures include the channel's certificates, but only for SecurityPolicies with `SecureChannelEnhancements = TRUE` (the newer policies). The RSA policies asyncua supports keep the legacy calculation, so nothing changes until new policies are added.
@@ -439,3 +439,178 @@ Highest impact:
 3. **CLI-12**: file reads are truncated silently on servers that return short reads, and empty files fail.
 4. **CLI-1**: timed-out requests leak, and one unexpected response id closes the connection.
 5. **CLI-9, CLI-10**: generator arguments silently return nothing, and the subscription lifetime and keep-alive counts break the 3× rule for fast intervals.
+
+## asyncua/server
+
+The scripts used for the "Verified" findings below started a real `Server` on localhost and talked to it with `Client`, raw `UaClient` calls or a raw socket. Release information comes from `git tag --contains` on the full upstream history.
+
+### uaprocessor.py, internal_session.py, internal_server.py (sessions and authentication)
+
+- **SRV-1 (bug, security, critical)** (verified, spec-checked): **session hijack through ActivateSession on a new channel.** The reconnect path added in `aec7430b` (2026-05-13; in every tag from `v1.0` to `v2.1.0`) works like this:
+  - When a channel without a session receives ActivateSession, `_process_message` looks up the session by `RequestHeader.AuthenticationToken`. It then **assigns `self.session = existing` and rebinds all of that session's subscriptions** to the new channel (`uaprocessor.py:278-289`). The client signature and identity token are checked only after that.
+  - If the checks fail, the exception is turned into a ServiceFault, but `self.session` stays assigned. That session is still `Activated` with the victim's user and role, so every later request on the attacker's channel runs as the victim.
+  - None of the checks that Part 4, 5.7.3 requires for moving a session to a new channel are made (1.04: 5.6.3). The client certificate must match the original channel's, the user identity must be the same, and SecurityPolicy and SecurityMode must be the same. Anonymous over Sign must fail, and requests on the old channel must be rejected afterwards.
+  - The token is the only secret, and it is a small sequential integer (SRV-2).
+  - Verified, default server: an attacker channel guesses tokens 1000–1009. ActivateSession fails for every one of them, yet afterwards the attacker reads values and adds nodes as the victim's `Admin` user. The victim's subscription receives nothing more, because its publish callbacks now point at the attacker's channel.
+  - Verified, hardened server (`Basic256Sha256_SignAndEncrypt` only, `CertificateUserManager` with one admin certificate, a validator that rejects every other certificate, as in `examples/server-with-encryption.py`): the attacker opens a channel with an **untrusted** certificate (SRV-3), guesses token 1001, gets `BadInternalError` back from ActivateSession, and still writes the setpoint.
+  - Fix: run every check before touching `self.session` or the subscriptions, and only bind once all of them pass. Add the 5.7.3 checks (same channel for the first activation; same certificate, policy, mode and user for a move), detach the session from the old channel, and use random tokens (SRV-2).
+- **SRV-2 (bug, security)** (spec-checked):
+  - `InternalSession.auth_token` and `session_id` are class-level counters (`1000, 1001, …` and `10, 11, …`). Part 4, 7.35 (1.04: 7.31) calls the `SessionAuthenticationToken` the secret form of the session id. When the server can't tie it to the channel, it must be a random ByteString of at least 32 bytes. This server does tie sessions to channels, but by object identity in `UaProcessor`, not by checking the token.
+  - The `AuthenticationToken` of ordinary requests is never compared with `self.session.auth_token`.
+  - A second CreateSession on the same channel replaces `self.session`. The first session is left behind with its watchdog task still running, until its own timeout closes it.
+  - `_current_connections`, `_counter` and `_auth_counter` are class attributes, so two `Server` instances in one process share them.
+- **SRV-3 (bug, security)** (verified, spec-checked): **the certificate validator can be bypassed.** `set_certificate_validator()` is the only application-level trust check, and it only runs in `InternalSession.create_session`, on `params.ClientCertificate`:
+  - When `ClientCertificate` is empty, the check is skipped (`if self.iserver.certificate_validator and params.ClientCertificate`). Verified: with a validator that rejects everything, the normal connect fails with `BadCertificateUntrusted`. A client that leaves `ClientCertificate` out of CreateSession connects over `Basic256Sha256_SignAndEncrypt` and reads `ServerState`.
+  - The certificate passed to the validator is never compared with the certificate that opened the channel. Part 4, 5.7.2 says the server shall verify that they are the same. A client can present someone else's trusted certificate in CreateSession, then sign ActivateSession with its own channel key.
+  - OpenSecureChannel doesn't consult the validator at all. So GetEndpoints, FindServers, RegisterServer (SRV-5) and the SRV-1 path all work on channels opened with untrusted certificates.
+  - Introduced with the validator hook in `0cd54642` (2023-08-25). First released in `v1.0.5a1`, and present in every release since.
+  - Fix: validate the peer certificate when the channel is opened, and require `ClientCertificate` to equal the channel certificate whenever the mode isn't None.
+- **SRV-4 (bug, security)** (verified): **subscriptions are shared across sessions.**
+  - `SubscriptionService` keeps one dict for the whole server. Delete/ModifySubscription, SetPublishingMode, Create/Modify/Delete/SetMonitoringMode on monitored items, Publish acknowledgements, Republish and TransferSubscriptions look up any subscription id without checking `sub.session_id`.
+  - Subscription ids are sequential, starting at 78. Verified: session B deleted session A's subscription and got `Good`.
+  - `TransferSubscriptions` also lacks the Part 4, 5.14.7 checks: the user identity must match the owner's, or the user needs the transfer right. It updates `pub_result_callback` but **not** `pub_request_callback`, so a transferred subscription keeps taking Publish requests from the old channel. It sends no `Good_SubscriptionTransferred` status change to the old session, and ignores `SendInitialValues`.
+  - Publish raises `BadNoSubscription` only when the *server* has no subscriptions at all, and `publish_request_limit` is based on the count across all sessions.
+- **SRV-5 (bug, security)** (verified, spec-checked): RegisterServer and RegisterServer2 are accepted from any client, with no session, on any channel, including SecurityPolicy None. Every `Server` acts as a discovery server.
+  - Part 4, 5.5.5 (1.04: 5.4.5) requires the registration to come over a SecureChannel, and its `serverUri` to match the `applicationUri` in the certificate of that channel.
+  - Verified: an anonymous client registered `urn:evil` with `opc.tcp://evil:4840`, and `FindServers` then returned it to everyone.
+  - Fix: either drop discovery-server behaviour unless it's enabled explicitly, or enforce the spec rule.
+- **SRV-6 (bug, security)** (spec-checked): user identity tokens are under-checked (`internal_server.decrypt_user_token`, `verify_x509_token`):
+  - The encrypted password secret ends with the server nonce (Part 4, 7.40.2.2; 1.04: 7.36.2.2, "Legacy Encrypted Token Secret Format"). The code strips `len(nonce)` bytes **without comparing them** with the session's current nonce. So an encrypted token captured in one session can be replayed in any later session.
+  - A password that arrives unencrypted is accepted even when the endpoint's `UserTokenPolicy` requires encryption, including over SecurityPolicy None.
+  - `PolicyId` is never matched against the policies the endpoint offers.
+  - The `EncryptionAlgorithm` and signature algorithm aren't checked against the policy (both are `TODO`s). Plain SHA-1 RSA signatures are accepted.
+  - The certificate in an `X509IdentityToken` isn't passed to the certificate validator. Proof of possession is the only check, and after that the user manager decides.
+- **SRV-7 (bug, security default)** (verified): the default `PermissiveUserManager` gives `Admin` to the username `admin`/`Admin` with **any** password, and `User` to everything else. `Admin` bypasses `AccessLevel` and `WriteMask` (SRV-16), and is the only role allowed to AddNodes, DeleteNodes or change references.
+  - Verified: `set_user("admin"); set_password("wrong-password")` wrote a read-only variable and its `BrowseName`.
+  - Together with the defaults (NoSecurity endpoint on, no certificate validator), a server started from the examples accepts unauthenticated administrators. This belongs to the security-defaults work; it's listed here so it isn't lost.
+- **SRV-8 (bug)**:
+  - Other requests that arrive before a session exists get `BadUserAccessDenied`. They should get `BadSessionIdInvalid`. The separate `except BadUserAccessDenied` branch in `process_message` is unreachable, because the `except UaStatusCodeError` above it catches it first. Publish has a dead `if not self.session: return False`.
+  - `_session_watchdog_loop` reads the session timeout once at start. On expiry it closes the session but leaves the TCP connection open.
+  - Hello handling (the open question from the 1.04/1.05 list at the top): the server never looks at the client's `ProtocolVersion` and always answers `0`. That's fine for both editions while `0` is the only version. It doesn't enforce the 4096-byte `EndpointUrl` limit, or the 8192-byte minimum buffer sizes (Part 6, 7.1.2.3).
+
+### binary_server_asyncio.py, server.py
+
+- **SRV-9 (bug, DoS)** (verified): `OPCUAProtocol.data_received` buffers until the length from the header has arrived, without comparing that length with `max_recv_buffer` or `max_message_size`. It also re-copies the whole buffer (`self._buffer += data`, then `Buffer(self._buffer)`) for every TCP segment.
+  - Verified: one connection that sent `HELF` with a length of 2 GiB, then 64 MiB of zeros, was still open, holding 61 MiB in `_buffer`. Sending took 9.8 s because of the quadratic copying.
+  - This is before Hello, so it needs no credentials, and each of the 1000 allowed connections can do it.
+  - Fix: reject a chunk whose header length is larger than the receive buffer size (`Bad_TcpMessageTooLarge`, Part 6, 7.1.5) or, before Hello, larger than 8192. Use a `bytearray` or a list of segments instead of concatenating `bytes`.
+- **SRV-10 (bug)** (verified):
+  - `Server.start()` calls `_setup_server_nodes()`, which *appends* endpoints and policy factories. After `stop()` and `start()`, `GetEndpoints` returns every endpoint twice (verified: 1, then 2).
+  - `register_to_discovery()` starts a new renewal task on every call, but keeps only the last handle, so the earlier tasks keep running and `stop()` doesn't cancel them. `_renew_registration` drops the `discovery_configuration` (there's a `FIXME`).
+  - `Server.default_timeout` ("timeout in milliseconds for sessions and secure channel") isn't used anywhere.
+
+### subscription_service.py, internal_subscription.py
+
+- **SRV-11 (bug)** (verified, spec-checked): **the publishing interval is never revised.** Part 4, 5.14.2 says that for a requested value of 0 or less, the server shall use its fastest supported interval. Verified: requests for `0` and `-5` come back unchanged.
+  - With an interval ≤ 0, `start()` doesn't create the publishing loop. Each change then publishes at once with no rate limit, keep-alives are never sent, and the lifetime counter never runs, so the subscription never expires. Huge intervals aren't capped either.
+  - `ModifySubscription` ignores every requested value (there's a comment saying so) and returns the old ones.
+  - `MaxNotificationsPerPublish` is ignored, and `MoreNotifications` is always `False`, so one publish can exceed the negotiated message size.
+  - The lifetime counter only starts counting once the keep-alive count has been reached.
+  - The `Bad_Timeout` status change for an expired subscription is never sent (there's a `FIXME`).
+  - `_notification_seq` doesn't roll over to 1 after 2³²−1 (Part 4, 5.14.1.1). A subscription with a 1 ms interval that has data every cycle would fail to encode after about 50 days.
+- **SRV-12 (bug)** (spec-checked):
+  - `republish()` *pops* the message from `_not_acknowledged_results`, so a Republish acts like an acknowledgement, and a second Republish of the same number finds nothing.
+  - For an unknown sequence number or subscription, it returns an empty `NotificationMessage` with `Good`. It should return `Bad_MessageNotAvailable` or `Bad_SubscriptionIdInvalid` (Part 4, 5.14.6).
+  - Part 4, 6.7 tells a reconnecting client to call Republish in a loop until it gets `Bad_MessageNotAvailable`, so a spec-following client either never ends that loop or gets empty messages.
+  - Found by reading the code, not run.
+
+### monitored_item_service.py
+
+- **SRV-13 (bug)** (verified, spec-checked): queue handling.
+  - A requested `QueueSize` of 0 or 1 is revised to the server maximum (10 000) instead of 1. Part 4, 7.21 says 0 or 1 means a queue of 1 for data items. Verified: requesting 0 returns 10 000. asyncua's own client requests 0 by default, so every data change item queues up to 10 000 values instead of the latest one.
+  - `ModifyMonitoredItems` with an unknown id raises `TypeError: 'StatusCode' object is not callable` (`result.StatusCode(...)` at line 106). The **whole request** then fails with `BadInternalError` (verified).
+  - A valid Modify copies the requested `QueueSize` without capping it. `0` there means *unlimited* to `_enqueue_event` (`size != 0`), so any client can make one item's queue grow without bound.
+  - The sampling interval is never revised.
+  - `DiscardOldest` is ignored (the oldest value is always dropped), and the `Overflow` InfoBit is never set.
+  - `MonitoringMode.Sampling` is treated like `Reporting` (Part 4, 5.13.1.3).
+- **SRV-14 (bug)** (verified): filters.
+  - An event monitored item without an `EventFilter` raises `AttributeError` (`mdata.filter.WhereClause`), and the whole CreateMonitoredItems request fails with `BadInternalError` (verified). It should fail just that item, with `Bad_MonitoredItemFilterInvalid`.
+  - No `EventFilterResult` is returned.
+  - An event item on a node that doesn't exist fails with `BadServiceUnsupported` instead of `BadNodeIdUnknown`.
+  - The absolute deadband compares each value with the previously *sampled* value, not the last *reported* one (Part 4, 7.22.2). A value that drifts slowly by less than the deadband per sample is therefore never reported.
+  - A deadband on a non-numeric or array value raises `TypeError` inside the write path.
+  - `Percent` deadband is accepted, logs "not implemented" and reports everything.
+  - In the `WhereClauseEvaluator`, `OfType` ignores subtypes, `Like` raises `NotImplementedError` (the event is dropped), and `Cast` is treated as `True`.
+
+### address_space.py (Read, Write, Browse, Call, NodeManagement)
+
+- **SRV-15 (bug)** (verified, spec-checked): **`IndexRange` is ignored**, for Read, Write and HistoryRead (Part 4, 7.27).
+  - Verified: reading `[1, 2, 3, 4]` with `IndexRange="1:2"` returns all four values.
+  - Writing `[9.0]` with `IndexRange="1"` returns `Good` and replaces the **whole array** with `[9.0]`. A client that updates one element of an array destroys the rest of it.
+  - Read also ignores `TimestampsToReturn` and `DataEncoding`.
+- **SRV-16 (bug)** (verified):
+  - Write access checks: `Admin` skips the `AccessLevel` and `WriteMask` checks entirely. Verified: it changed `BrowseName` and wrote a read-only value.
+  - For other users, a missing `CurrentWrite` in `AccessLevel` returns `BadUserAccessDenied`; it should be `BadNotWritable`. Read checks neither `AccessLevel` nor `UserAccessLevel` (`BadNotReadable`).
+  - `_is_expected_variant_type` only compares `VariantType`. A scalar is accepted for an array variable, because `ValueRank` and `ArrayDimensions` aren't checked (hand-over from the client review).
+  - A value of a valid subtype is refused when the stored value has a different concrete type.
+  - For DataTypes with id > 25, whichever type is written first is accepted.
+  - `set_attribute_value_setter` says the setter can "return appropriate status codes to the client". In fact its return value is ignored, Write answers `Good`, and data change subscribers are still notified with the value the setter rejected.
+- **SRV-17 (bug)** (verified): Browse and TranslateBrowsePaths.
+  - A node that doesn't exist gives `BadNodeIdInvalid` instead of `BadNodeIdUnknown` (`_browse`, `_translate_browsepath_to_nodeid`, and `MethodService._call`). This was seen from the client side under COM-14.
+  - `RequestedMaxReferencesPerNode` is ignored and no continuation points are made, so `BrowseNext` doesn't exist (`BadServiceUnsupported`). `ResultMask` and `View` are ignored.
+  - An invalid `BrowseDirection` returns an empty `Good` result.
+  - An empty `RelativePath` raises `IndexError` (`Elements[-1]`), and the whole request fails with `BadInternalError` (verified). It should fail just that path, with `Bad_NothingToDo`.
+- **SRV-18 (bug, security)** (verified, spec-checked): Call.
+  - There's no check that `MethodId` is a method of `ObjectId` (`Bad_MethodInvalid`, Part 4, 5.12.2). Verified: a method on a custom object ran with the `Server` object passed in as its parent.
+  - No `Executable`/`UserExecutable` or role check, so an anonymous client can call any method that has a callback.
+  - Input arguments aren't checked against the method's `InputArguments`. Verified: two extra arguments led to a Python `TypeError`, reported as `BadUnexpectedError`. It should be `Bad_TooManyArguments`, `Bad_ArgumentsMissing` or `Bad_TypeMismatch` for each argument.
+  - Synchronous callbacks run in a `ThreadPoolExecutor`, which contradicts the docstring (SRV-24).
+- **SRV-19 (cleanup)**:
+  - `BrowseNext`, `HistoryUpdate`, `SetTriggering`, `Cancel` and `QueryFirst`/`QueryNext` have no handler and return `BadServiceUnsupported`. `HistoryManager.update_history` and `InternalSession.history_update`/`browse_next` exist but are never reached.
+  - AddNodes doesn't validate `NodeClass` against the attributes, or the `ReferenceTypeId`, and accepts new nodes in namespace 0.
+  - `translate_browsepaths_to_nodeids` has three `FIXME`s, including the magic `4294967295` for `RemainingPathIndex`.
+
+### history.py, history_sql.py
+
+- **SRV-20 (bug)** (verified, spec-checked): `HistoryDict` read semantics (Part 11, 6.5.3.2; Part 4, 5.11.3).
+  - With no start time and an end time given, the end time is ignored. Verified: values 0–9, end = t4 returns `[9, 8, 7]`, which are all *after* the end.
+  - `NumValuesPerNode` cuts the result off **without** a continuation point (verified: `[0, 1]`, cont `None`). The spec requires a continuation point when there's more data.
+  - The continuation point is the timestamp of the next value. When more values than one page share a timestamp, the client gets the same page forever (verified: four identical pages `[0, 1, 2]`).
+  - In `HistorySQLite._get_bounds`, the second page of a backwards read (no start time) is read *forwards*, because the continuation timestamp is now the start.
+  - A value without `SourceTimestamp` raises `TypeError` when it's saved (in a background task) and again on every read of that node (verified). The `# type: ignore[operator]` comments hide this.
+  - `HistoryRead` doesn't check the `HistoryRead` access bits, whether the node exists, or whether it's historized. Those cases return an empty `Good` result instead of `BadNodeIdUnknown` or `Bad_HistoryOperationUnsupported`.
+  - `ReadProcessedDetails`/`ReadAtTimeDetails` return `BadNotImplemented` instead of `Bad_HistoryOperationUnsupported`. `TimestampsToReturn` is ignored.
+- **SRV-21 (bug)** (verified): event history in memory works only for the `Server` object.
+  - Events that come back through the internal subscription have `emitting_node == Server`. `HistoryDict.save_event` then raises `KeyError` on `_events_periods` for every other source, inside fire-and-forget tasks. Verified with an object `Boiler`: every save raised `KeyError: i=2253`, and `read_event_history` returned `[]`. The tests use the `Server` object as the source, which hides this.
+  - When `historize_node_event()` runs before an `EventGenerator` has added `GeneratesEvent` references, it subscribes to no event types and stores nothing.
+  - `SubHandler` keeps a reference to only the last task it created, so earlier save tasks can be garbage-collected before they finish, and saves can complete out of order.
+  - `save_event` contains a duplicated line.
+- **SRV-22 (bug)** (verified): `HistorySQLite`.
+  - `_get_table_name` uses `repr(identifier)`, so string NodeIds become `2_'Boiler.Temp'` and GUIDs `2_UUID('…')`. `validate_table_name` rejects the quote and the parenthesis. Verified: `new_historized_node` raises `SqlInjectionError` for any string or GUID NodeId, so the SQLite backend only works with numeric NodeIds. Broken since the validation was added in `22b6a757` (2023-01-22).
+  - The event table columns are created from the properties' **DisplayNames**, but rows are inserted using the event object's attribute names, which are **BrowseNames**. A custom property whose display name differs from its browse name, or contains a space, breaks either CREATE TABLE or every INSERT. That's the "custom events weren't stored" symptom from COM-27.
+  - Events are stored under `event.SourceNode`, read under the source id, and their retention period is looked up by `emitting_node`.
+  - Old events are deleted `WHERE Time < ?`, but `Time` is a BLOB column and the parameter is text, so nothing is ever deleted. The `count` limit is ignored for events.
+  - The hand-over items from the common review are confirmed. With no matching select clause the query is `SELECT "_Timestamp", FROM`, and `select_clause.Attribute` should be `AttributeId`.
+  - With `NumValuesPerNode = 0`, all rows are loaded into memory before being cut down to `max_history_data_response_size`, and HistoryRead has no access check (SRV-20). Use `LIMIT max + 1`.
+  - Values are ordered by `_Id`, not by `SourceTimestamp`, and rows with a NULL `SourceTimestamp` are never returned.
+  - The code relies on the `sqlite3` default datetime adapters, which are deprecated since Python 3.12.
+  - For the identifier injection, see COM-54.
+
+### event_generator.py
+
+- **SRV-23 (bug)** (verified):
+  - `init()` *overwrites* the emitting node's `EventNotifier` with `{SubscribeToEvents}`. Verified: creating a generator after `historize_node_event()` clears the `HistoryRead` bit.
+  - `DaylightSavingInOffset = tm_isdst != -1` is `True` whenever DST information is known, including in winter. Verified: `tm_isdst = 0` (Europe/Berlin in winter) still gives `True`. It should be `tm_isdst > 0`.
+  - Without `message`, the default message is meant to be the source's browse name, but `ua.LocalizedText(name).Text` assigns a plain `str`. Verified: the client receives `LocalizedText(Text=None)`.
+  - Events aren't passed up the notifier hierarchy. Clients usually subscribe to the `Server` object for all events (Part 3, `HasNotifier`/`HasEventSource`), and here that subscription gets only events emitted *by* the `Server` object. Verified: an event from `Boiler` reached the `Boiler` item but not the `Server` item.
+
+### Docs: docs/usage/server/overview.rst, docstrings
+
+- **SRV-24 (doc)**:
+  - `docs/usage/server/overview.rst` contains only its title.
+  - The `Server` class docstring says "All methods are threadsafe". They aren't. The address space and the services have no locking, and synchronous method callbacks run in a thread pool (SRV-18).
+  - `set_security_policy` shows a default list of three policies, but the default enables seven, including `NoSecurity`.
+  - The `set_attribute_value_setter` docstring is covered under SRV-16.
+  - The comment on `max_lifetime_count` says "PublishingInterval is left to the client", which is the gap in SRV-11.
+  - `InternalSession.browse_next` cites the 1.04 section numbers.
+
+### Summary: asyncua/server
+
+24 findings (SRV-1 … SRV-24): 22 bugs, 1 doc and 1 cleanup. Seven of the bugs have security impact (SRV-1 to SRV-6 and SRV-18), and SRV-7, the permissive default user manager, is a security default. Highest impact:
+1. **SRV-1**: anyone who can open a channel can take over another client's activated session, including its user role and subscriptions. The token is a small sequential number, and the attacker's own failed ActivateSession is enough. This works against the hardened example configuration. It is a regression from May 2026, in releases `v1.0`–`v2.1.0`. It should be fixed and reported the same way as COM-39, but more urgently, because it needs no prior access.
+2. **SRV-3**: the certificate validator only runs in CreateSession, and is skipped when the client leaves out its certificate. It has been bypassable since it was introduced in 1.0.5 (2023).
+3. **SRV-4, SRV-5, SRV-6, SRV-18**: no per-session ownership of subscriptions, unauthenticated RegisterServer, replayable password tokens, and method calls without object, argument or permission checks.
+4. **SRV-9**: an unauthenticated client can make the server buffer gigabytes, at quadratic cost.
+5. **SRV-15**: a Write with `IndexRange` silently replaces the whole array.
+6. **SRV-11, SRV-13**: the publishing interval isn't revised, and queue sizes 0/1 become 10 000, which changes the data clients get by default. A Modify can make a queue unbounded.
+7. **SRV-20, SRV-21, SRV-22**: in-memory event history only works for the `Server` object, the SQLite backend rejects string and GUID NodeIds, and history paging can loop forever.
