@@ -6,7 +6,7 @@ from enginir_opcua.common.structures104 import load_custom_struct
 
 
 async def main():
-    url = "opc.tcp://localhost:4840/freeopcua/server/"
+    url = "opc.tcp://localhost:4840/enginir-opcua/server/"
     # url = 'opc.tcp://commsvr.com:51234/UA/CAS_UA_Server'
     async with Client(url=url) as client:
         uri = "http://examples.freeopcua.github.io"

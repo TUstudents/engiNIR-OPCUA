@@ -8,7 +8,7 @@ from enginir_opcua import Client, ua
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)
 
-    client = Client("opc.tcp://admin@localhost:4840/freeopcua/server/")  # connect using a user
+    client = Client("opc.tcp://admin@localhost:4840/enginir-opcua/server/")  # connect using a user
     try:
         client.connect()
 

@@ -51,7 +51,7 @@ class HelloServer:
 
         objects = self.server.nodes.objects
 
-        freeopcua_namespace = await self.server.get_namespace_index("urn:freeopcua:python:server")
+        freeopcua_namespace = await self.server.get_namespace_index("urn:enginir:opcua:server")
         hellower = await objects.get_child("0:Hellower")
         hellower_say_hello = await hellower.get_child("0:SayHello")
 
@@ -85,8 +85,8 @@ class HelloServer:
 async def main():
     script_dir = Path(__file__).parent
     async with HelloServer(
-        "opc.tcp://0.0.0.0:4840/freeopcua/server/",
-        "FreeOpcUa Example Server",
+        "opc.tcp://0.0.0.0:4840/enginir-opcua/server/",
+        "engiNIR OPC UA Example Server",
         script_dir / "test_saying.xml",
     ) as server:
         while True:

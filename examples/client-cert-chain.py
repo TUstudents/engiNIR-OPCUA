@@ -6,7 +6,7 @@ from enginir_opcua import Client, ua
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.uacrypto import CertProperties
 
-url = "opc.tcp://localhost:4840/freeopcua/server/"
+url = "opc.tcp://localhost:4840/enginir-opcua/server/"
 namespace = "http://examples.freeopcua.github.io"
 
 CERT_BASE = Path(__file__).parent / "examples" / "certificates" / "chain"

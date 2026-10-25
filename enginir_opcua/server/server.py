@@ -94,11 +94,11 @@ class Server:
     """
 
     def __init__(self, iserver: InternalServer | None = None, user_manager: UserManager | None = None) -> None:
-        self.endpoint: ParseResult = urlparse("opc.tcp://0.0.0.0:4840/freeopcua/server/")
-        self._application_uri: str = "urn:freeopcua:python:server"
-        self.product_uri: str = "urn:freeopcua.github.io:python:server"
-        self.name: str = "FreeOpcUa Python Server"
-        self.manufacturer_name: str = "FreeOpcUa"
+        self.endpoint: ParseResult = urlparse("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
+        self._application_uri: str = "urn:enginir:opcua:server"
+        self.product_uri: str = "urn:enginir:opcua"
+        self.name: str = "engiNIR OPC UA Server"
+        self.manufacturer_name: str = "engiNIR"
         self.application_type: ua.ApplicationType = ua.ApplicationType.ClientAndServer
         self.default_timeout: int = 60 * 60 * 1000
         self.iserver: InternalServer = iserver if iserver else InternalServer(user_manager=user_manager)
@@ -272,7 +272,7 @@ class Server:
         This uri is supposed to be unique. If you intend to register
         your server to a discovery server, it really should be unique in
         your system!
-        default is : "urn:freeopcua:python:server"
+        default is : "urn:enginir:opcua:server"
 
         Per OPC UA Part 5 §6.3.1, both NamespaceArray[1] and ServerArray[0]
         shall equal the ApplicationUri.

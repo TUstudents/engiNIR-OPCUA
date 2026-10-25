@@ -880,7 +880,7 @@ async def test_array_size_one_value(opc):
 
 
 async def test_use_namespace(opc):
-    idx = await opc.opc.get_namespace_index("urn:freeopcua:python:server")
+    idx = await opc.opc.get_namespace_index("urn:enginir:opcua:server")
     assert 1 == idx
     root = opc.opc.nodes.root
     myvar = await root.add_variable(idx, "var_in_custom_namespace", [5])

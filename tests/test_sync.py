@@ -44,7 +44,7 @@ def tloop():
 def server(tloop):
     s = Server(tloop=tloop)
     s.disable_clock(True)
-    s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/freeopcua/server/")
+    s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/enginir-opcua/server/")
     uri = "http://examples.freeopcua.github.io"
     ns_idx = s.register_namespace(uri)
     myobj = s.nodes.objects.add_object(ns_idx, "MyObject")
@@ -92,7 +92,7 @@ def test_sync_server_set_application_uri(tloop):
     """Sync Server must expose set_application_uri / get_application_uri (GH-1967)."""
     s = Server(tloop=tloop)
     s.disable_clock(True)
-    new_uri = "urn:freeopcua:python:server:sync_test_app_uri"
+    new_uri = "urn:enginir:opcua:server:sync_test_app_uri"
     s.set_application_uri(new_uri)
     assert s.get_application_uri() == new_uri
     # Namespace index 1 holds the application URI.

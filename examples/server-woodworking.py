@@ -64,7 +64,7 @@ async def main():
     script_dir = os.path.dirname(__file__)
     async with HelloServer(
         "opc.tcp://0.0.0.0:4840",
-        "FreeOpcUa Example Server",
+        "engiNIR OPC UA Example Server",
         script_dir,
     ) as server:
         while True:

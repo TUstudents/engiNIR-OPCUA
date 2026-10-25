@@ -27,8 +27,8 @@ def multiply(parent, x, y):
 async def main():
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:4840/freeopcua/server/")
-    server.set_server_name("FreeOpcUa Example Server")
+    server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
+    server.set_server_name("engiNIR OPC UA Example Server")
     server.set_security_policy(
         [
             ua.SecurityPolicyType.NoSecurity,

@@ -648,7 +648,7 @@ async def _uaserver() -> None:
     if args.private_key:
         await server.load_private_key(args.private_key)
     server.disable_clock(args.disable_clock)
-    server.set_server_name("FreeOpcUa Example Server")
+    server.set_server_name("engiNIR OPC UA Example Server")
     if args.xml:
         await server.import_xml(args.xml)
     if args.populate:
@@ -658,7 +658,7 @@ async def _uaserver() -> None:
             print("multiply method call with parameters: ", x, y)
             return x * y
 
-        uri = "http://examples.freeopcua.github.io"
+        uri = "urn:enginir:opcua:examples"
         idx = await server.register_namespace(uri)
         objects = server.nodes.objects
         myobj = await objects.add_object(idx, "MyObject")

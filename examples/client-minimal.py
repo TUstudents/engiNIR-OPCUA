@@ -2,7 +2,7 @@ import asyncio
 
 from enginir_opcua import Client
 
-url = "opc.tcp://localhost:4840/freeopcua/server/"
+url = "opc.tcp://localhost:4840/enginir-opcua/server/"
 namespace = "http://examples.freeopcua.github.io"
 
 

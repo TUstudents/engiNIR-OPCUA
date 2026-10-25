@@ -30,7 +30,7 @@ async def task():
     """All communication takes place within this task.
     For the sake of simplicity, all (OPC UA) calls are executed purely sequentially.
     """
-    url = "opc.tcp://localhost:4840/freeopcua/server/"
+    url = "opc.tcp://localhost:4840/enginir-opcua/server/"
 
     async with Client(url=url) as client:
         uri = "http://examples.freeopcua.github.io"

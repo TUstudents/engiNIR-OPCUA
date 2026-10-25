@@ -8,7 +8,7 @@ _logger = logging.getLogger(__name__)
 
 
 async def main():
-    url = "opc.tcp://localhost:4840/freeopcua/server/"
+    url = "opc.tcp://localhost:4840/enginir-opcua/server/"
     async with Client(url=url) as client:
         _logger.info("Root node is: %r", client.nodes.root)
         _logger.info("Objects node is: %r", client.nodes.objects)

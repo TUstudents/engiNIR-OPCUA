@@ -36,7 +36,7 @@ async def test_discovery(server, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         servers = await client.find_servers()
-        new_app_uri = "urn:freeopcua:python:server:test_discovery"
+        new_app_uri = "urn:enginir:opcua:server:test_discovery"
         await server.set_application_uri(new_app_uri)
         await server.register_to_discovery(discovery_server.endpoint.geturl(), 0)
         # let server register registration
@@ -50,7 +50,7 @@ async def test_discovery(server, discovery_server):
 async def test_unregister_discovery(server, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
-        new_app_uri = "urn:freeopcua:python:server:test_discovery2"
+        new_app_uri = "urn:enginir:opcua:server:test_discovery2"
         await server.set_application_uri(new_app_uri)
         # register without automatic renewal
         await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
@@ -69,10 +69,10 @@ async def test_find_servers2(server, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         servers = await client.find_servers()
-        new_app_uri1 = "urn:freeopcua:python:server:test_discovery1"
+        new_app_uri1 = "urn:enginir:opcua:server:test_discovery1"
         await server.set_application_uri(new_app_uri1)
         await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
-        new_app_uri2 = "urn:freeopcua:python:test_discovery2"
+        new_app_uri2 = "urn:enginir:opcua:test_discovery2"
         await server.set_application_uri(new_app_uri2)
         await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         await asyncio.sleep(0.1)  # let server register registration
@@ -83,12 +83,12 @@ async def test_find_servers2(server, discovery_server):
         assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
         assert new_app_uri2 in [s.ApplicationUri for s in new_servers]
         # now do a query with filer
-        new_servers = await client.find_servers(["urn:freeopcua:python:server"])
+        new_servers = await client.find_servers(["urn:enginir:opcua:server"])
         assert len(new_servers) - len(servers) == 0
         assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
         assert new_app_uri2 not in [s.ApplicationUri for s in new_servers]
         # now do a query with filer
-        new_servers = await client.find_servers(["urn:freeopcua:python"])
+        new_servers = await client.find_servers(["urn:enginir:opcua"])
         assert len(new_servers) - len(servers) == 2
         assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
         assert new_app_uri2 in [s.ApplicationUri for s in new_servers]
@@ -961,7 +961,7 @@ assert not loaded, loaded
 
 async def test_set_application_uri_updates_server_array(server):
     """set_application_uri must update both NamespaceArray[1] and ServerArray[0] (GH-1966)."""
-    new_uri = "urn:freeopcua:python:server:test_server_array"
+    new_uri = "urn:enginir:opcua:server:test_server_array"
     await server.set_application_uri(new_uri)
 
     ns = await server.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).read_value()
@@ -1022,3 +1022,15 @@ async def test_process_rejects_a_repeated_hello_and_closes_the_connection() -> N
 
     assert transport.write.call_args.args[0].startswith(b"ERRF")
     assert keep_open is False
+
+
+async def test_default_application_identity_is_enginir() -> None:
+    srv = Server()
+    clt = Client("opc.tcp://127.0.0.1:4840")
+    assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
+    assert srv.get_application_uri() == "urn:enginir:opcua:server"
+    assert srv.product_uri == "urn:enginir:opcua"
+    assert srv.name == "engiNIR OPC UA Server"
+    assert srv.manufacturer_name == "engiNIR"
+    assert clt.application_uri == "urn:enginir:opcua:client"
+    assert clt.product_uri == "urn:enginir:opcua"

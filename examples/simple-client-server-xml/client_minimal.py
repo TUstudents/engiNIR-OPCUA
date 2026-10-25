@@ -17,7 +17,7 @@ class HelloClient:
 
 
 async def main():
-    async with HelloClient("opc.tcp://localhost:4840/freeopcua/server/") as client:
+    async with HelloClient("opc.tcp://localhost:4840/enginir-opcua/server/") as client:
         root = client.nodes.root
         print("Root node is: ", root)
         objects = client.nodes.objects

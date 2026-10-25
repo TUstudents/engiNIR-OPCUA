@@ -9,8 +9,8 @@ _logger = logging.getLogger(__name__)
 
 
 async def main():
-    url = "opc.tcp://localhost:4840/freeopcua/server/"
-    # url = "opc.tcp://admin@localhost:4840/freeopcua/server/"  #connect using a user
+    url = "opc.tcp://localhost:4840/enginir-opcua/server/"
+    # url = "opc.tcp://admin@localhost:4840/enginir-opcua/server/"  #connect using a user
     async with Client(url=url) as client:
         # Client has a few methods to get proxy to UA nodes that should always be in address space such as Root or Objects
         _logger.info("Objects node is: %r", client.nodes.root)

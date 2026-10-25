@@ -116,8 +116,8 @@ class Client:
 
         self.name = "Pure Python Async Client"
         self.description = self.name
-        self.application_uri = "urn:example.org:FreeOpcUa:opcua-asyncio"
-        self.product_uri = "urn:freeopcua.github.io:client"
+        self.application_uri = "urn:enginir:opcua:client"
+        self.product_uri = "urn:enginir:opcua"
         self.server_uri: str | None = None
         self.security_policy = security_policies.SecurityPolicyNone()
         self.secure_channel_id = None

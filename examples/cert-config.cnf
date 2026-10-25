@@ -7,12 +7,12 @@ x509_extensions = v3_ext
 prompt = no
 
 [req_distinguished_name]
-CN= freeopcua@somewhere
+CN= enginir-opcua@somewhere
 O= My Organization
 DC= helitack
 
 [ v3_ext ]
-subjectAltName = URI:urn:example.org:FreeOpcUa:opcua-asyncio
+subjectAltName = URI:urn:enginir:opcua:client
 keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
 extendedKeyUsage = clientAuth, serverAuth
 basicConstraints = critical, CA:false

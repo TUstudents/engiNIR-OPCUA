@@ -51,7 +51,7 @@ async def test_write_callback(mocker):
     server = Server()
     idx = 0
     # get Objects node, this is where we should put our custom stuff
-    opc_url = f"opc.tcp://127.0.0.1:{port_num}/freeopcua/server/"
+    opc_url = f"opc.tcp://127.0.0.1:{port_num}/enginir-opcua/server/"
     server.set_endpoint(opc_url)
     await server.init()
     objects = server.nodes.objects

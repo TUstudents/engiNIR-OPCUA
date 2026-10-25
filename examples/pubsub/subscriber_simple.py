@@ -86,7 +86,7 @@ async def main():
     # setup our server
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:4841/freeopcua/server/")
+    server.set_endpoint("opc.tcp://0.0.0.0:4841/enginir-opcua/server/")
 
     # setup our own namespace, not really necessary but should as spec
     uri = "http://examples.freeopcua.github.io"

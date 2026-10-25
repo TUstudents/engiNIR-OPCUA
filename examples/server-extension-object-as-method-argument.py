@@ -22,7 +22,7 @@ async def main():
 
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:4840/freeopcua/server/")
+    server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
 
     obj = server.get_objects_node()

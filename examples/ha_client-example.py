@@ -44,10 +44,10 @@ async def start_servers():
     for port in ports:
         server = Server()
         await server.init()
-        url = f"opc.tcp://0.0.0.0:{port}/freeopcua/server/"
+        url = f"opc.tcp://0.0.0.0:{port}/enginir-opcua/server/"
         urls.append(url)
         server.set_endpoint(url)
-        server.set_server_name("FreeOpcUa Example Server {port}")
+        server.set_server_name("engiNIR OPC UA Example Server {port}")
         # setup our own namespace
         uri = "http://examples.freeopcua.github.io"
         idx = await server.register_namespace(uri)

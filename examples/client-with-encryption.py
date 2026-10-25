@@ -27,7 +27,7 @@ private_key = Path(cert_base / f"certificates/peer-private-key-example-{cert_idx
 async def task(loop):
     host_name = socket.gethostname()
     client_app_uri = f"urn:{host_name}:foobar:myselfsignedclient"
-    url = "opc.tcp://127.0.0.1:4840/freeopcua/server/"
+    url = "opc.tcp://127.0.0.1:4840/enginir-opcua/server/"
 
     await setup_self_signed_certificate(
         private_key,

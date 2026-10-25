@@ -11,7 +11,7 @@ _logger = logging.getLogger("enginir_opcua")
 
 
 async def main():
-    url = "opc.tcp://localhost:4840/freeopcua/server/"
+    url = "opc.tcp://localhost:4840/enginir-opcua/server/"
     async with Client(url=url) as client:
         uri = "http://examples.freeopcua.github.io"
         idx = await client.get_namespace_index(uri)

@@ -16,7 +16,7 @@ async def main() -> None:
     this script is running: the supervisor reconnects transparently and the
     subscription resumes producing notifications without user intervention.
     """
-    client = Client(url="opc.tcp://localhost:4840/freeopcua/server/")
+    client = Client(url="opc.tcp://localhost:4840/enginir-opcua/server/")
     await client.connect(auto_reconnect=True, reconnect_max_delay=2.0)
     try:
         idx = await client.get_namespace_index(uri="http://examples.freeopcua.github.io")

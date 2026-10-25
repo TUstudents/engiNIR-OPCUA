@@ -205,7 +205,7 @@ async def discovery_server():
     # start our own server
     srv = Server()
     await srv.init()
-    await srv.set_application_uri("urn:freeopcua:python:discovery")
+    await srv.set_application_uri("urn:enginir:opcua:discovery")
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_discovery}")
     await srv.start()
     yield srv
@@ -387,7 +387,7 @@ async def ha_servers(server_key_and_cert):
         srv = Server()
         srvs.append(srv)
         await srv.init()
-        await srv.set_application_uri("urn:freeopcua:python:discovery")
+        await srv.set_application_uri("urn:enginir:opcua:discovery")
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
         srv.set_security_policy(
             [

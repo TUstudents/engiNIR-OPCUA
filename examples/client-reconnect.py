@@ -13,7 +13,7 @@ async def main():
     transparently, and the supervisor re-creates subscriptions for us. We
     consume notifications via the async-iterator API.
     """
-    client = Client(url="opc.tcp://localhost:4840/freeopcua/server/")
+    client = Client(url="opc.tcp://localhost:4840/enginir-opcua/server/")
     await client.connect(auto_reconnect=True, reconnect_max_delay=2.0)
     try:
         async with await client.create_subscription(500) as sub:

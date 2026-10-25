@@ -35,7 +35,7 @@ async def main():
     await server.init()
 
     await server.set_application_uri(server_app_uri)
-    server.set_endpoint("opc.tcp://0.0.0.0:4840/freeopcua/server/")
+    server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
 
     # Below is only required if the server should generate its own certificate,

@@ -6,8 +6,8 @@ sys.path.insert(0, "../..")
 from enginir_opcua.sync import Client
 
 if __name__ == "__main__":
-    with Client("opc.tcp://localhost:4840/freeopcua/server/") as client:
-        # client = Client("opc.tcp://admin@localhost:4840/freeopcua/server/") #connect using a user
+    with Client("opc.tcp://localhost:4840/enginir-opcua/server/") as client:
+        # client = Client("opc.tcp://admin@localhost:4840/enginir-opcua/server/") #connect using a user
 
         # Client has a few methods to get proxy to UA nodes that should always be in address space such as Root or Objects
         # Node objects have methods to read and write node attributes as well as browse or populate address space

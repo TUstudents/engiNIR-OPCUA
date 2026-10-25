@@ -22,7 +22,7 @@ async def main():
     server.limits.max_chunk_count = 10
     print(server.limits)
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:4840/freeopcua/server/")
+    server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 
     # set up our own namespace, not really necessary but should as spec
     uri = "http://examples.freeopcua.github.io"

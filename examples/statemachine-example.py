@@ -12,7 +12,7 @@ if __name__ == "__main__":
     async def main():
         server = Server()
         await server.init()
-        server.set_endpoint("opc.tcp://0.0.0.0:4840/freeopcua/server/")
+        server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
         idx = await server.register_namespace("http://examples.freeopcua.github.io")
 
         # get an instance of the StateMachine-Class def "__init__(self, server=None, parent=None, idx=None, name=None):"

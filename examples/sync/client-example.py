@@ -11,7 +11,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)
 
     with ThreadLoop() as tloop:
-        with Client("opc.tcp://localhost:4840/freeopcua/server/", tloop=tloop) as client:
+        with Client("opc.tcp://localhost:4840/enginir-opcua/server/", tloop=tloop) as client:
             client.load_type_definitions()
             print("Objects node is: ", client.nodes.objects)
             print("Children of root are: ", client.nodes.root.get_children())
