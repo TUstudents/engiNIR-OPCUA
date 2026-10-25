@@ -8,7 +8,7 @@ from enginir_opcua import Client, Server, ua
 from enginir_opcua.common.connection import (
     MessageAborted,
     MessageChunk,
-    SecureConnection,
+    SecureChannel,
     TransportError,
     TransportLimits,
 )
@@ -71,15 +71,15 @@ async def test_com61_response_over_limit_becomes_service_fault(server: Server) -
         assert await client.get_node(small.nodeid).read_value() == "small"
 
 
-def _connection(limits: TransportLimits) -> SecureConnection:
-    connection = SecureConnection(SecurityPolicyNone(), limits)
+def _channel(limits: TransportLimits) -> SecureChannel:
+    connection = SecureChannel(SecurityPolicyNone(), limits)
     connection.security_token.ChannelId = 1
     return connection
 
 
 def test_com36_capacity_is_positive_for_8192() -> None:
     """Part 6, 6.7.2: a Hello buffer of 8192 gives chunks that carry data."""
-    connection = _connection(TransportLimits(max_send_buffer=8192))
+    connection = _channel(TransportLimits(max_send_buffer=8192))
     data = connection.message_to_binary(b"a" * 20000, request_id=1)
     assert len(data) > 20000
     assert len(data) // 3 <= 8192
@@ -87,7 +87,7 @@ def test_com36_capacity_is_positive_for_8192() -> None:
 
 def test_com36_chunk_size_without_capacity_is_an_error() -> None:
     """Part 6, 7.1.2.3: a buffer too small for any body is refused, not turned into zero chunks."""
-    connection = _connection(TransportLimits(max_send_buffer=16))
+    connection = _channel(TransportLimits(max_send_buffer=16))
     with pytest.raises(ua.UaError):
         connection.message_to_binary(b"a" * 500, request_id=1)
 
@@ -103,7 +103,7 @@ def chunks_of(data: bytes) -> list[tuple[ua.Header, bytes]]:
 
 def test_com61_abort_chunk_after_late_failure() -> None:
     """Part 6, 6.7.3: a Message that fails after its first chunk is closed with an Abort chunk."""
-    connection = _connection(TransportLimits(max_send_buffer=8192))
+    connection = _channel(TransportLimits(max_send_buffer=8192))
     to_binary = MessageChunk.to_binary
     calls = []
 
@@ -138,7 +138,7 @@ def _chunk(message_type: bytes, chunk_type: bytes, seq: int, request_id: int = 1
 @pytest.mark.parametrize("chunk_type", [ua.ChunkType.Intermediate, ua.ChunkType.Abort])
 def test_com64_open_and_close_need_a_single_final_chunk(message_type: bytes, chunk_type: bytes) -> None:
     """Part 6, 6.7.2.2: OpenSecureChannel and CloseSecureChannel are one final chunk."""
-    connection = _connection(TransportLimits())
+    connection = _channel(TransportLimits())
     with pytest.raises(TransportError) as error:
         connection._receive(_chunk(message_type, chunk_type, 1))
     assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
@@ -147,7 +147,7 @@ def test_com64_open_and_close_need_a_single_final_chunk(message_type: bytes, chu
 
 def test_com64_mixed_message_types_are_rejected() -> None:
     """Part 6, 6.7.3: the chunks of one Message have the same message type."""
-    connection = _connection(TransportLimits())
+    connection = _channel(TransportLimits())
     assert connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1)) is None
     with pytest.raises(TransportError) as error:
         connection._receive(_chunk(ua.MessageType.SecureClose, ua.ChunkType.Single, 2))
@@ -157,7 +157,7 @@ def test_com64_mixed_message_types_are_rejected() -> None:
 
 def test_com64_a_different_request_id_inside_a_message_is_rejected() -> None:
     """Part 6, 6.7.3: chunks of different Messages are not interleaved."""
-    connection = _connection(TransportLimits())
+    connection = _channel(TransportLimits())
     connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1, request_id=1))
     with pytest.raises(TransportError) as error:
         connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Single, 2, request_id=2))
@@ -166,7 +166,7 @@ def test_com64_a_different_request_id_inside_a_message_is_rejected() -> None:
 
 def test_com60_message_above_the_receive_limit_is_tcp_message_too_large() -> None:
     """Part 6, 7.1.2.3 and 7.1.5: a Message above the announced size ends the connection with Table 79's code."""
-    connection = _connection(TransportLimits(max_chunk_count=2))
+    connection = _channel(TransportLimits(max_chunk_count=2))
     connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 1))
     connection._receive(_chunk(ua.MessageType.SecureMessage, ua.ChunkType.Intermediate, 2))
     with pytest.raises(TransportError) as error:
@@ -197,7 +197,7 @@ async def test_com60_client_fails_pending_requests_on_too_many_chunks(raw_server
     """Part 6, 7.1.2.3: a response with more chunks than the client announced fails the request."""
     uaclient, peer = await connect_client(raw_server)
     assert uaclient.protocol is not None
-    uaclient.protocol._connection.limits.max_chunk_count = 2
+    uaclient.protocol._channel.limits.max_chunk_count = 2
     request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
     await peer.receive()
     await peer.send(b"".join(secure_chunk(b"C", 1, seq, b"x") for seq in range(1, 4)))
@@ -264,7 +264,7 @@ async def test_srv25_bad_signature_sends_security_checks_failed_and_closes(
     client = await signing_client(signing_server)
     async with client:
         assert client.uaclient.protocol is not None
-        crypto = client.uaclient.protocol._connection.security_policy.symmetric_cryptography
+        crypto = client.uaclient.protocol._channel.security_policy.symmetric_cryptography
         genuine = crypto.signature
         monkeypatch.setattr(crypto, "signature", lambda data: bytes(len(genuine(data))))
         with pytest.raises(ua.uaerrors.BadSecurityChecksFailed):

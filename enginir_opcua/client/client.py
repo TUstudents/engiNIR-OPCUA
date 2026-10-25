@@ -244,7 +244,7 @@ class Client:
 
     async def set_security_string(self, string: str) -> None:
         """
-        Set SecureConnection mode.
+        Set SecureChannel mode.
         :param string: Mode format ``Policy,Mode,certificate,private_key[,server_certificate]``
         where:
         - ``Policy`` is ``Basic256Sha256``, ``Aes128Sha256RsaOaep`` or ``Aes256Sha256RsaPss``
@@ -282,7 +282,7 @@ class Client:
         certificate_chain: Sequence[str | uacrypto.CertProperties | bytes | Path] | None = None,
     ) -> None:
         """
-        Set SecureConnection mode.
+        Set SecureChannel mode.
         Call this before connect()
         """
         if server_certificate is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -372,7 +373,7 @@ class MessageChunk:
     __repr__ = __str__
 
 
-class SecureConnection:
+class SecureChannel:
     """
     Common logic for client and server
     """
@@ -392,6 +393,27 @@ class SecureConnection:
         self.remote_nonce: int | bytes = 0
         self._allow_prev_token = False
         self._limits = limits
+        self.last_used = time.monotonic()
+
+    @property
+    def channel_id(self) -> int:
+        return self.security_token.ChannelId
+
+    @property
+    def policy_uri(self) -> str:
+        return self.security_policy.URI
+
+    @property
+    def security_mode(self) -> ua.MessageSecurityMode:
+        return self.security_policy.Mode
+
+    @property
+    def peer_certificate(self) -> bytes | None:
+        return self.security_policy.peer_certificate
+
+    @property
+    def local_certificate(self) -> bytes | None:
+        return self.security_policy.host_certificate
 
     @property
     def limits(self) -> TransportLimits:
@@ -673,6 +695,7 @@ class SecureConnection:
     def _receive(self, msg: MessageChunk) -> ua.Message | AbortedMessage | None:
         header = msg.MessageHeader
         self._check_incoming_chunk(msg)
+        self.last_used = time.monotonic()
         if header.ChunkType not in (ua.ChunkType.Single, ua.ChunkType.Intermediate, ua.ChunkType.Abort):
             raise self._reject_chunk(ua.StatusCodes.BadTcpMessageTypeInvalid, "Unsupported chunk type")
         if header.MessageType != ua.MessageType.SecureMessage and header.ChunkType != ua.ChunkType.Single:

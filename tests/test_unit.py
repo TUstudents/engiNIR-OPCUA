@@ -19,7 +19,7 @@ from enginir_opcua.common import structures
 from enginir_opcua.common.connection import (
     AbortedMessage,
     MessageChunk,
-    SecureConnection,
+    SecureChannel,
     TransportError,
     TransportLimits,
 )
@@ -1409,15 +1409,15 @@ def _incoming_chunk(seq: int, body: bytes, chunk_type=ua.ChunkType.Intermediate)
     return chunk
 
 
-def _connection(limits: TransportLimits) -> SecureConnection:
-    connection = SecureConnection(SecurityPolicyNone(), limits)
+def _channel(limits: TransportLimits) -> SecureChannel:
+    connection = SecureChannel(SecurityPolicyNone(), limits)
     connection.security_token.ChannelId = 1
     return connection
 
 
 def test_incomplete_message_is_capped_by_max_message_size():
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=4096)
-    connection = _connection(limits)
+    connection = _channel(limits)
     body = bytes(1000)
 
     for seq in range(1, 5):
@@ -1430,7 +1430,7 @@ def test_incomplete_message_is_capped_by_max_message_size():
 
 def test_a_message_within_max_message_size_still_arrives():
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=4096)
-    connection = _connection(limits)
+    connection = _channel(limits)
     body = bytes(1000)
 
     for seq in range(1, 4):
@@ -1443,7 +1443,7 @@ def test_a_message_within_max_message_size_still_arrives():
 
 def test_a_configured_zero_message_size_means_the_default_not_unlimited() -> None:
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=0)
-    connection = _connection(limits)
+    connection = _channel(limits)
 
     assert limits.max_message_size == 100 * 1024 * 1024
     for seq in range(1, 51):
@@ -1454,7 +1454,7 @@ def test_a_configured_zero_message_size_means_the_default_not_unlimited() -> Non
 
 def test_the_accumulated_size_resets_between_messages():
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=4096)
-    connection = _connection(limits)
+    connection = _channel(limits)
     body = bytes(1000)
 
     for seq in range(1, 4):
@@ -1468,7 +1468,7 @@ def test_the_accumulated_size_resets_between_messages():
 
 def test_an_aborted_message_frees_its_accumulated_size():
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=4096)
-    connection = _connection(limits)
+    connection = _channel(limits)
     body = bytes(1000)
 
     for seq in range(1, 4):

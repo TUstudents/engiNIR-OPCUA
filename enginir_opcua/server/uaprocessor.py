@@ -12,7 +12,7 @@ from ..common.connection import (
     AbortedMessage,
     MessageAborted,
     MessageTooLarge,
-    SecureConnection,
+    SecureChannel,
     TransportError,
     TransportLimits,
     error_message_to_binary,
@@ -56,7 +56,7 @@ class UaProcessor:
         # rely on dict insertion order (therefore can't use set())
         self._publish_results_subs: dict[ua.IntegerId, Literal[True]] = {}
         self._limits = copy.deepcopy(limits)  # Copy limits because they get overriden
-        self._connection = SecureConnection(SecurityPolicyNone(), self._limits)
+        self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
         self._closing: bool = False
         self._hello_received: bool = False
         self._session_watchdog_task: asyncio.Task | None = None
@@ -81,12 +81,12 @@ class UaProcessor:
         return HELLO_MAX_CHUNK_SIZE
 
     def set_policies(self, policies):
-        self._connection.set_policy_factories(policies)
+        self._channel.set_policy_factories(policies)
 
     def send_response(self, requesthandle, seqhdr, response, msgtype=ua.MessageType.SecureMessage):
         response.ResponseHeader.RequestHandle = requesthandle
         try:
-            data = self._connection.message_to_binary(
+            data = self._channel.message_to_binary(
                 struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
             )
         except MessageTooLarge:
@@ -96,7 +96,7 @@ class UaProcessor:
             fault = ua.ServiceFault()
             fault.ResponseHeader.RequestHandle = requesthandle
             fault.ResponseHeader.ServiceResult = ua.StatusCode(ua.StatusCodes.BadResponseTooLarge)
-            data = self._connection.message_to_binary(
+            data = self._channel.message_to_binary(
                 struct_to_binary(fault), message_type=msgtype, request_id=seqhdr.RequestId
             )
         except MessageAborted as e:
@@ -107,14 +107,14 @@ class UaProcessor:
     def open_secure_channel(self, algohdr, seqhdr, body):
         request = struct_from_binary(ua.OpenSecureChannelRequest, body)
 
-        if not self._connection.is_open():
+        if not self._channel.is_open():
             # Only call select_policy if the channel isn't open. Otherwise
             # it will break the Secure channel renewal.
-            self._connection.select_policy(
+            self._channel.select_policy(
                 algohdr.SecurityPolicyURI, algohdr.SenderCertificate, request.Parameters.SecurityMode
             )
 
-        channel = self._connection.open(request.Parameters, self.iserver)
+        channel = self._channel.open(request.Parameters, self.iserver)
         # send response
         response = ua.OpenSecureChannelResponse()
         response.Parameters = channel
@@ -181,7 +181,7 @@ class UaProcessor:
 
     async def process(self, header, body):
         try:
-            msg = self._connection.receive_from_header_and_body(header, body)
+            msg = self._channel.receive_from_header_and_body(header, body)
         except ua.uaerrors.BadUserAccessDenied:
             _logger.warning("Unauthenticated user attempted to connect")
             return False
@@ -198,7 +198,7 @@ class UaProcessor:
             if header.MessageType == ua.MessageType.SecureOpen:
                 self.open_secure_channel(msg.security_header(), msg.sequence_header(), msg.body())
             elif header.MessageType == ua.MessageType.SecureClose:
-                self._connection.close()
+                self._channel.close()
                 return False
             elif header.MessageType == ua.MessageType.SecureMessage:
                 return await self.process_message(msg.sequence_header(), msg.body())
@@ -263,8 +263,8 @@ class UaProcessor:
         else:
             self._check_session_binding(requesthdr)
             user = self.session.user
-            if self._connection.security_policy.permissions is not None:
-                if self._connection.security_policy.permissions.check_validity(user, typeid, body) is False:
+            if self._channel.security_policy.permissions is not None:
+                if self._channel.security_policy.permissions.check_validity(user, typeid, body) is False:
                     raise ua.uaerrors.BadUserAccessDenied
 
         self.session_last_activity = time.monotonic()
@@ -286,16 +286,16 @@ class UaProcessor:
             self._session_watchdog_task = asyncio.create_task(self._session_watchdog_loop())
             response = ua.CreateSessionResponse()
             response.Parameters = sessiondata
-            response.Parameters.ServerCertificate = self._connection.security_policy.host_certificate
+            response.Parameters.ServerCertificate = self._channel.security_policy.host_certificate
             data = b""
-            if self._connection.security_policy.peer_certificate is not None:
-                data += self._connection.security_policy.peer_certificate
+            if self._channel.security_policy.peer_certificate is not None:
+                data += self._channel.security_policy.peer_certificate
             if params.ClientNonce is not None:
                 data += params.ClientNonce
             response.Parameters.ServerSignature.Signature = (
-                self._connection.security_policy.asymmetric_cryptography.signature(data)
+                self._channel.security_policy.asymmetric_cryptography.signature(data)
             )
-            response.Parameters.ServerSignature.Algorithm = self._connection.security_policy.AsymmetricSignatureURI
+            response.Parameters.ServerSignature.Algorithm = self._channel.security_policy.AsymmetricSignatureURI
             # _logger.info("sending create session response")
             self.send_response(requesthdr.RequestHandle, seqhdr, response)
 
@@ -320,16 +320,16 @@ class UaProcessor:
             moving = session.channel_owner is not self
             if moving:
                 self._check_session_move(session, params)
-            if self._connection.security_policy.host_certificate is None:
+            if self._channel.security_policy.host_certificate is None:
                 data = session.nonce
             else:
-                data = self._connection.security_policy.host_certificate + session.nonce
+                data = self._channel.security_policy.host_certificate + session.nonce
             try:
-                self._connection.security_policy.asymmetric_cryptography.verify(data, params.ClientSignature.Signature)
+                self._channel.security_policy.asymmetric_cryptography.verify(data, params.ClientSignature.Signature)
             except ua.uaerrors.SignatureError:
                 raise ServiceError(ua.StatusCodes.BadApplicationSignatureInvalid) from None
             result = session.activate_session(
-                params, self._connection.security_policy.peer_certificate, require_same_user=moving
+                params, self._channel.security_policy.peer_certificate, require_same_user=moving
             )
             if moving:
                 self._attach_session(session)
@@ -377,7 +377,7 @@ class UaProcessor:
             self.send_response(requesthdr.RequestHandle, seqhdr, response)
         elif typeid == ua.NodeId(ua.ObjectIds.CloseSecureChannelRequest_Encoding_DefaultBinary):
             _logger.info("close secure channel request (%s)", user)
-            self._connection.close()
+            self._channel.close()
             response = ua.CloseSecureChannelResponse()
             self.send_response(requesthdr.RequestHandle, seqhdr, response)
             return False
@@ -619,7 +619,7 @@ class UaProcessor:
         return True
 
     def _channel_security(self) -> ChannelSecurity:
-        policy = self._connection.security_policy
+        policy = self._channel.security_policy
         return ChannelSecurity(policy.peer_certificate, policy.URI, policy.Mode)
 
     @staticmethod
