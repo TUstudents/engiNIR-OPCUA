@@ -147,7 +147,7 @@ class MonitoredItemService:
         dv = self.aspace.read_attribute_value(node_id, ua.AttributeIds.EventNotifier)
         ev_notify_byte = dv.Value.Value if dv.Value is not None else None
 
-        if ev_notify_byte is None or not ua.ua_binary.test_bit(ev_notify_byte, ua.EventNotifier.SubscribeToEvents):
+        if ev_notify_byte is None or not ua.ua_binary.is_bit_set(ev_notify_byte, ua.EventNotifier.SubscribeToEvents):
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadServiceUnsupported)
             return result
         mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, mdata.filter.WhereClause)

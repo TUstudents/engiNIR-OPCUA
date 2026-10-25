@@ -106,8 +106,8 @@ class AttributeService:
                     or al.Value is None
                     or ual.Value is None
                     or not al.StatusCode.is_good()
-                    or not ua.ua_binary.test_bit(al.Value.Value, ua.AccessLevel.CurrentWrite)
-                    or not ua.ua_binary.test_bit(ual.Value.Value, ua.AccessLevel.CurrentWrite)
+                    or not ua.ua_binary.is_bit_set(al.Value.Value, ua.AccessLevel.CurrentWrite)
+                    or not ua.ua_binary.is_bit_set(ual.Value.Value, ua.AccessLevel.CurrentWrite)
                 ):
                     res.append(ua.StatusCode(ua.StatusCodes.BadUserAccessDenied))
                     continue
