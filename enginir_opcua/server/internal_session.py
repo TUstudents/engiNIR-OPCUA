@@ -310,7 +310,7 @@ class InternalSession(AbstractSession):
         self, params: ua.CreateMonitoredItemsParameters
     ) -> list[ua.MonitoredItemCreateResult]:
         """Returns Future"""
-        subscription_result = await self.subscription_service.create_monitored_items(params)
+        subscription_result = await self.subscription_service.create_monitored_items(params, self.session_id)
         await self.iserver.callback_service.dispatch(
             CallbackType.ItemSubscriptionCreated, ServerItemCallback(params, subscription_result, None, self.external)
         )
@@ -319,27 +319,27 @@ class InternalSession(AbstractSession):
     async def modify_monitored_items(
         self, params: ua.ModifyMonitoredItemsParameters
     ) -> list[ua.MonitoredItemModifyResult]:
-        subscription_result = self.subscription_service.modify_monitored_items(params)
+        subscription_result = self.subscription_service.modify_monitored_items(params, self.session_id)
         await self.iserver.callback_service.dispatch(
             CallbackType.ItemSubscriptionModified, ServerItemCallback(params, subscription_result, None, self.external)
         )
         return subscription_result
 
     async def set_monitoring_mode(self, params: ua.SetMonitoringModeParameters) -> list[ua.StatusCode]:
-        return await self.subscription_service.set_monitoring_mode(params)
+        return await self.subscription_service.set_monitoring_mode(params, self.session_id)
 
     async def set_publishing_mode(self, params: ua.SetPublishingModeParameters) -> list[ua.StatusCode]:
-        return await self.subscription_service.set_publishing_mode(params)
+        return await self.subscription_service.set_publishing_mode(params, self.session_id)
 
     def republish(self, params: ua.RepublishParameters) -> ua.NotificationMessage:
-        return self.subscription_service.republish(params)
+        return self.subscription_service.republish(params, self.session_id)
 
     async def delete_subscriptions(self, ids: list[int]) -> list[ua.StatusCode]:
-        return await self.subscription_service.delete_subscriptions(ids)
+        return await self.subscription_service.delete_subscriptions(ids, self.session_id)
 
     async def delete_monitored_items(self, params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
         # This is an async method, dues to symmetry with client code
-        subscription_result = self.subscription_service.delete_monitored_items(params)
+        subscription_result = self.subscription_service.delete_monitored_items(params, self.session_id)
         await self.iserver.callback_service.dispatch(
             CallbackType.ItemSubscriptionDeleted, ServerItemCallback(params, subscription_result, None, self.external)
         )
@@ -347,12 +347,12 @@ class InternalSession(AbstractSession):
         return subscription_result
 
     def publish(self, acks: Iterable[ua.SubscriptionAcknowledgement] | None = None) -> tuple[int, list[ua.StatusCode]]:
-        return self.subscription_service.publish(acks or [])
+        return self.subscription_service.publish(acks or [], self.session_id)
 
     def modify_subscription(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
         # Sync because the underlying service is sync; the client-side UaSession
         # is async (RPC). Not part of AbstractSession because the shapes diverge.
-        return self.subscription_service.modify_subscription(params)
+        return self.subscription_service.modify_subscription(params, self.session_id)
 
     # The server-side override takes an extra `callback` (the per-connection
     # publish-response callback owned by the UaProcessor handling the transfer
