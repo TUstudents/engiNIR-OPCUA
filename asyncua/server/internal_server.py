@@ -105,7 +105,7 @@ class InternalServer:
         self.current_time_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         self.server_status_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus))
         self.time_task: asyncio.Task[None] | None = None
-        self._time_task_stop = False
+        self._time_task_stop = asyncio.Event()
         self.match_discovery_endpoint_url: bool = True
         self.match_discovery_source_ip: bool = True
         self.supported_tokens = (ua.AnonymousIdentityToken, ua.X509IdentityToken, ua.UserNameIdentityToken)
@@ -233,24 +233,28 @@ class InternalServer:
         )
         await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_StartTime)).write_value(status.StartTime)
         if not self.disabled_clock:
+            self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
         if self.time_task:
-            self._time_task_stop = True
+            self._time_task_stop.set()
             await self.time_task
         self.method_service.stop()
         await self.isession.close_session()
         await self.history_manager.stop()
 
     async def _set_current_time_loop(self) -> None:
-        while not self._time_task_stop:
+        while not self._time_task_stop.is_set():
             status = copy(await self.server_status_node.read_value())
             status.CurrentTime = datetime.now(timezone.utc)
             await self.server_status_node.write_value(status)
             await self.current_time_node.write_value(status.CurrentTime)
-            await asyncio.sleep(1)
+            try:
+                await asyncio.wait_for(self._time_task_stop.wait(), 1)
+            except asyncio.TimeoutError:
+                pass
 
     def get_new_channel_id(self) -> int:
         self._channel_id_counter += 1
