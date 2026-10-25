@@ -191,3 +191,8 @@ async def test_cry9_symmetric_round_trip_pads_to_the_aes_block(
 def test_cry9_abstract_bases_are_enforced(base: Any) -> None:
     with pytest.raises(TypeError):
         base()
+
+
+def test_ws_b_security_policy_type_lives_in_the_crypto_package_and_stays_exported_from_ua() -> None:
+    assert ua.SecurityPolicyType is security_policies.SecurityPolicyType
+    assert ua.SecurityPolicyType.__module__.startswith("enginir_opcua.crypto")

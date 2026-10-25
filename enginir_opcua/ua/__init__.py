@@ -7,3 +7,4 @@ from .uaprotocol_auto import *
 from .uaprotocol_hand import *
 from .uatypes import *  # TODO: This should be renamed to uatypes_hand
 from .uaerrors import UaStatusCodeErrors
+from ..crypto.security_policy_type import SecurityPolicyType

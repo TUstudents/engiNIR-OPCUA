@@ -8,8 +8,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ..ua import MessageSecurityMode, SecurityPolicyType, UaError
+from ..ua import MessageSecurityMode, UaError
 from ..ua.uaerrors import SignatureError
+from .security_policy_type import SecurityPolicyType
 
 if TYPE_CHECKING:
     from ..crypto.permission_rules import PermissionRuleset
