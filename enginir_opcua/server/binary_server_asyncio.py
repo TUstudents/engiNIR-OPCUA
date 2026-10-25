@@ -122,6 +122,9 @@ class OPCUAProtocol(asyncio.Protocol):
                     # we jsut wait for more data, that happens.
                     # worst case recv will go in timeout or it hangs and it should be fine too
                     return
+                except ua.UaStatusCodeError as e:
+                    self._fail(e.code, "Malformed message header")
+                    return
                 if header.header_size + header.body_size <= header.header_size:
                     # malformed header prevent invalid access of your buffer
                     _logger.error("Got malformed header %s", header)
@@ -156,11 +159,12 @@ class OPCUAProtocol(asyncio.Protocol):
 
     def _reject_oversized_chunk(self, packet_size: int, limit: int) -> None:
         _logger.warning("Closing connection from %s: chunk of %s bytes exceeds %s", self.peer_name, packet_size, limit)
+        self._fail(ua.StatusCodes.BadTcpMessageTooLarge, f"Chunk size {packet_size} exceeds {limit}")
+
+    def _fail(self, status: int, reason: str = "") -> None:
         self._buffer = b""
         if self.transport is not None:
-            error = ua.ErrorMessage(
-                ua.StatusCode(ua.StatusCodes.BadTcpMessageTooLarge), f"Chunk size {packet_size} exceeds {limit}"
-            )
+            error = ua.ErrorMessage(ua.StatusCode(status), reason)
             self.transport.write(uatcp_to_binary(ua.MessageType.Error, error))
             self.transport.close()
 

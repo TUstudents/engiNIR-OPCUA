@@ -42,6 +42,12 @@ class RawPeer:
     async def send_hello(self, hello: ua.Hello) -> None:
         await self.send(uatcp_to_binary(ua.MessageType.Hello, hello))
 
+    async def send_message(
+        self, message_type: bytes, body: bytes, chunk_type: bytes = b"F", size: int | None = None
+    ) -> None:
+        announced = CONNECTION_PROTOCOL_HEADER.size + len(body) if size is None else size
+        await self.send(CONNECTION_PROTOCOL_HEADER.pack(message_type, chunk_type, announced) + body)
+
     async def receive(self, timeout: float = 5.0) -> tuple[bytes, bytes]:
         header = await asyncio.wait_for(self._reader.readexactly(CONNECTION_PROTOCOL_HEADER.size), timeout)
         message_type, _, message_size = CONNECTION_PROTOCOL_HEADER.unpack(header)
@@ -53,6 +59,12 @@ class RawPeer:
         if message_type != ua.MessageType.Acknowledge:
             raise AssertionError(f"expected an Acknowledge, got {message_type!r}")
         return struct_from_binary(ua.Acknowledge, Buffer(body))
+
+    async def receive_error(self, timeout: float = 5.0) -> ua.ErrorMessage:
+        message_type, body = await self.receive(timeout)
+        if message_type != ua.MessageType.Error:
+            raise AssertionError(f"expected an Error, got {message_type!r}")
+        return struct_from_binary(ua.ErrorMessage, Buffer(body))
 
     async def is_closed_by_peer(self, timeout: float = 5.0) -> bool:
         try:
