@@ -125,3 +125,233 @@ Differences between 1.04 and 1.05 found so far (they matter for interoperability
 4. **UA-29**: the `DataChangeFilter` default trigger override has no effect.
 5. **UA-12 to UA-14**: `ExpandedNodeId` string form, parsing and equality.
 6. **UA-24**: `DiagnosticInfo` bit layout and nesting.
+
+---
+
+## asyncua/common
+
+### utils.py
+
+- **COM-1 (bug, robustness)**: `Buffer.read()` and `Buffer.skip()` only check `size > self._size`, so a negative size is accepted and moves the cursor *backwards*. Verified:
+  - `_Bytes.unpack` and `_String.unpack` pass any length other than `-1` straight through.
+  - A String whose length on the wire is `-5` decodes as `'abcde'` and leaves the cursor at `-1`, with 11 bytes "remaining" in a 10-byte buffer.
+  - Malformed or hostile input can therefore make the decoder re-read data, and an array of such elements could loop without ever reaching the end.
+  - Part 6, 5.2.2.4 and 5.2.5 define only `-1` (null). Fix: in `read()` and `skip()`, raise on `size < 0`, and reject lengths below `-1` in the String, ByteString and array decoders.
+- **COM-2 (bug)**: `Buffer.copy(size)` creates a window over the same data, but `__bytes__` returns `data[cur_pos:]` and `rewind()` resets `_size` to `len(data) - cur_pos`. Both ignore the window. Verified: `bytes(Buffer(b"0123456789").copy(3))` gives all 10 bytes, and after `rewind()` the window's length is 10. `connection.py:477` rewinds a body buffer, so check it there.
+- **COM-3 (cleanup)**: `fields_with_resolved_types` assigns resolved types to the `Field` objects returned by `dataclasses.fields()`. Those are the class's shared field objects, so calling it permanently changes the dataclass metadata for all later users. It should return resolved copies instead (it's only used by `xmlexporter.py:542`).
+
+### callback.py
+
+- **COM-4 (bug)**: `CallbackService.addListener` stores listeners in a dict keyed by `priority`. A second listener added with the same priority, including the default `0`, **replaces** the first without any warning. Verified: after adding `a` and then `b` to `PreWrite`, only `b` is called. Fix: keep a list per priority, or a sorted list of `(priority, sequence, listener)`.
+- **COM-5 (cleanup)**: `call_listener` decides whether to await based on `inspect.iscoroutinefunction(listener)`. An object with an `async def __call__` isn't detected, so its coroutine is never awaited. Calling the listener and awaiting the result when `inspect.isawaitable(result)` covers every case. The `CallbackType` docstring lists `:ivar MonitoredItem:`, which isn't a member, and leaves out the real members. The API uses camelCase (`addListener`, `setName`).
+
+### session_interface.py, and spec links across the codebase
+
+- **COM-6 (doc, codebase-wide)**: about 50 docstring links use the old URL forms `reference.opcfoundation.org/Core/Part4/v104/<section>` and `/v104/Core/docs/...`. The site now redirects those to the **current** edition, keeping the section number. Part 4 renumbered its service sets in 1.05, so these links land on the wrong section. Spec-checked against both editions:
+  - Browse (1.04 §5.8.2) opens AddNodes in 1.05.
+  - Call (1.04 §5.11.2) opens Read.
+  - CreateSubscription (1.04 §5.13.2) opens CreateMonitoredItems.
+  - Every link in `session_interface.py` is affected.
+  - Fix: either use the versioned form `/specs/OPC-10000-4/v1.04/<section>`, which still serves 1.04, or update the numbers to 1.05.
+  - The docstrings also copy spec sentences word for word ("This Service is used to…"). The licence (see `docs/opcua-spec/README.md`) argues for short paraphrases instead.
+
+### methods.py
+
+- **COM-7 (doc)**: `@uamethod` turns return values into output arguments according to rules nobody wrote down:
+  - `None` becomes no outputs.
+  - A `tuple` becomes one output argument per element.
+  - A `list` becomes a single array output.
+  - A `StatusCode` or `CallMethodResult` is passed through as is.
+  - The decorator also works out whether it's wrapping a method (`self`) by checking `isinstance(parent, ua.NodeId)`.
+  - None of this is in the docstring or `docs/`. The `call_method`/`call_method_full` docstrings say `methodid` is a browse name or a `NodeId`, but a `Node` is accepted too. The `_call_method` docstring documents `:param server:`, but the parameter is called `session`.
+- **COM-8 (cleanup)**: `call_method_full` calls `res.StatusCode.check()`, so a failed call raises with only the top-level code. The per-argument `InputArgumentResults` (which argument was wrong) and `InputArgumentDiagnosticInfos` are thrown away, although they're exactly what the caller needs to fix a `BadInvalidArgument`. Attach them to the exception.
+
+### ua_utils.py
+
+- **COM-9 (bug)**: `val_to_string` and `string_to_val` are documented as a round-trip pair ("not too hard to parse back"), but aren't. Verified:
+  - **Enums**: `val_to_string(NodeClass.Object)` gives `"Object"`, but `string_to_val` only accepts digits or the UANodeSet form `Name_Value`. `string_to_val("Object", NodeClass)` raises `IndexError`.
+  - **Lists of strings**: elements aren't quoted, and `string_to_val` splits on `,`. So `["a,b", "c"]` comes back as `["a", "b", "c"]`.
+  - **Unsupported types**: VariantTypes the function doesn't handle (ExtensionObject, DataValue, Variant, DiagnosticInfo) reach `issubclass(vtype, Enum)` with an enum *member* and raise `TypeError` instead of the intended `NotImplementedError`.
+- **COM-10 (cleanup)**: `string_to_val` for Boolean returns `False` for anything it doesn't recognise (`"TRUE"`, `"yes"`, a typo) instead of raising. Integer types aren't range-checked (`"300"` is accepted for a Byte and only fails later during encoding). XML only allows `true`/`false`/`1`/`0`, so the XML importer isn't affected, but the CLI tools and other callers are.
+- **COM-11 (doc)**: several docstrings don't match their functions:
+  - `get_base_data_type` says it takes a "NodeId of a datatype" and returns "NodeId … or None". It takes and returns a `Node`, and raises `UaError` instead of returning `None`.
+  - `get_node_supertypes` says `node` "can be an ua.Node or ua.NodeId", but only a `Node` works.
+  - `get_nodes_of_namespace` accepts any `server: Any`, but reads `server.iserver.aspace`, so it only works on a local `Server`. A namespace URI that isn't in the namespace array raises a bare `ValueError` from `list.index`.
+
+### node.py
+
+- **COM-12 (bug, interop)** (spec-checked): `Node.write_value()` goes through `value_to_datavalue`, which stamps every value it builds with `SourceTimestamp=now`, unless the caller passes a ready-made `DataValue`.
+  - Per Part 4, 5.11.4, a server has to use timestamps it's sent, and has to answer `Bad_WriteNotSupported` if it doesn't support writing them.
+  - So a plain `node.write_value(5.0)` from a client fails on any server that doesn't allow timestamp writes (many PLC servers don't) and overwrites the source timestamp on servers that do.
+  - Client writes should leave both timestamps empty by default. On a local `Server`, the address space can set them.
+  - This is also the "error" the docs blame on Int64 vs Double in `docs/usage/common/node-nodeid.rst` (UA-45). That type-mismatch claim is a separate issue: it's true only for servers that reject the subtype.
+- **COM-13 (bug)** (spec-checked): `write_array_dimensions(value: int)` writes a **scalar** UInt32, but the ArrayDimensions attribute is `UInt32[]`, with one entry per dimension (Part 3, Variable and VariableType attributes). Verified: after `write_array_dimensions(3)` the attribute holds `3`, and `read_array_dimensions()`, annotated `-> list[int]`, returns `3`. Our server accepted the scalar without checking the type (see the `server` review).
+- **COM-14 (bug)**: `get_references`/`get_children` never look at `BrowseResult.StatusCode`. Browsing a node that doesn't exist returns `[]` instead of raising. Verified: the raw result was `BadNodeIdInvalid` (it should be `BadNodeIdUnknown`, see the server review). `_browse_next` likewise ends quietly with partial results when `BrowseNext` fails (e.g. `BadContinuationPointInvalid`). If it stops early, it doesn't release the continuation point.
+- **COM-15 (bug, interop)** (spec-checked): `read_raw_history()` and `read_event_history()` called with no arguments send `StartTime = EndTime = DateTime.min` and `NumValuesPerNode = 0`. That leaves all three parameters unspecified, but Part 11, 6.5.2 and 6.5.3 require at least two of them. A conforming server can reject the request. The defaults should be something valid, for example `EndTime = now`, or callers should be required to pass the range.
+- **COM-16 (bug)**: continuation points in history reads aren't handled properly:
+  - `read_event_history` never follows them, so only the first page of events is returned and the rest is silently lost. `history_read_events` doesn't even accept a continuation point.
+  - `read_raw_history` stops after the first page when `numvalues > 0` or when the server repeats a continuation point, and in both cases leaves the continuation point open on the server. `ReleaseContinuationPoints` is never sent. Servers limit continuation points per session, so leaking them eventually causes `BadNoContinuationPoints`.
+- **COM-17 (doc)**: `history_read`, `history_read_events` and `read_*_history` all say "result code from server is checked and an exception is raised". `history_read` and `history_read_events` don't check anything. `get_path` says it "may return an empty list", but it always includes the node itself. `get_child` and `get_children_by_path` take the first target without checking `RemainingPathIndex`, so a path that leaves the server returns an intermediate node as if it were the target. `get_children_by_path` is annotated `list[list[Node | None]]`, but returns `list[list[Node] | None]`.
+
+### manage_nodes.py
+
+- **COM-18 (bug, data loss)**: `delete_nodes(recursive=True)`, and so `Node.delete(recursive=True)`, collects descendants via `get_children()`, which follows **all** forward hierarchical references, including `Organizes` and `HasNotifier`/`HasEventSource`. Verified:
+  - Deleting folder A, which only *organizes* a folder owned by `Objects`, also deletes that folder.
+  - With a cycle of hierarchical references (C `HasNotifier` → B, its parent), `_add_childs` recurses until `RecursionError`.
+  - The same node can be collected more than once.
+  - Fix: follow only ownership references (`HasChild`: `HasComponent`, `HasProperty`, `HasSubtype`, and so on), and track visited nodes.
+- **COM-19 (bug)**: `create_data_type` adds the node with `ParentNodeId` and `ReferenceTypeId = HasSubtype`, so the server already creates both directions of the reference. It then adds an extra inverse `HasSubtype` reference and **ignores the result** (`results` is never checked). Either drop the extra call or check the result.
+- **COM-20 (cleanup)**: the defaults for new variables don't match the spec's meaning of these attributes. Verified:
+  - A 1-D list gets `ValueRank = 0` (`OneOrMoreDimensions`) instead of `1`.
+  - A multi-dimensional value pins `ArrayDimensions` to the current shape, e.g. `[2, 2]`. Part 3 defines ArrayDimensions as the *maximum* length per dimension, with `0` meaning unknown, so this declares that larger arrays aren't allowed.
+  - Every node created here gets its browse name as its `Description`.
+  - `_create_variable_type` drops falsy initial values (`if value:` ignores `0`, `False`, `[]`).
+- **COM-21 (question)**: in `create_method`/`_vtype_to_argument`, an argument type given as a list (`[ua.VariantType.Int32]`) uses the first element as the type but leaves `ValueRank = -1` (scalar). If a list is meant to declare an array argument, the array-ness is lost. All generated `Argument`s also have an empty `Name` and `Description`, so clients see unnamed method arguments. `create_reference_type(symmetric=False)` without an `inversename` creates a non-symmetric reference type with no `InverseName`, which Part 3 requires. The `create_encoding` error message has a typo ("QualigiedName").
+
+### instantiate_util.py
+
+- **COM-22 (bug)** (spec-checked): `_instantiate_node` instantiates `OptionalPlaceholder` children when `instantiate_optional=True` (the default), and `MandatoryPlaceholder` children always, as if they were ordinary declarations. Per Part 3, 6.4.4.4.4–5, a placeholder doesn't define an instance's BrowseName. It only declares that instances may (or must) be added later, and its sub-declarations aren't considered for instantiation. Verified: `add_object(..., FileDirectoryType)` creates literal children `<FileDirectoryName>` and `<FileName>` next to the real methods. Placeholders should be skipped.
+- **COM-23 (bug)**: `_instantiate_node` doesn't check the `AddNodesResult` status (line 112). If the add fails, it carries on with the null `AddedNodeId`. Verified: instantiating with a node id that already exists (`BadNodeIdExists`) returns `Node(i=0)` with no error, and tries to instantiate children under that null id.
+- **COM-24 (cleanup)**: the abstract-type check lists `ReferenceType` twice and leaves out `VariableType`, so an abstract VariableType isn't rejected. Only the first `HasModellingRule` reference is looked at. `is_child_present` re-browses the new node once per child declaration, which costs N extra round trips from a client.
+
+### copy_node_util.py
+
+- **COM-25 (bug)**: `copy_node(recursive=True)` has the same problems as recursive delete (COM-18). It walks `get_children_descriptions()`, which follows **all** hierarchical references, so nodes the source only *organizes* get duplicated as well, and a hierarchical cycle recurses without end. Like COM-23, `_copy_node` doesn't check the `AddNodesResult` status.
+- **COM-26 (bug)**: `_read_and_copy_attrs`, used by both `copy_node` and `instantiate`, never copies `EventNotifier` or `IsAbstract`. That's correct when instantiating from an ObjectType, which has no `EventNotifier` attribute. But `copy_node` of an Object that can emit events produces a copy with `EventNotifier = 0`, and copying an abstract type produces a concrete one. When copying the root node, the reference type to the new parent is guessed (`Organizes` under folders, otherwise `HasComponent`), so a copied property is attached with `HasComponent` instead of `HasProperty`.
+
+### events.py
+
+- **COM-27 (bug)**: `Event.get_event_props_as_fields_dict()` (used by `server/history_sql.py:291` to store events) builds a `Variant` for every attribute that isn't internal:
+  - A property that is still `None` with a non-nullable type raises. Verified: a fresh custom event fails with `UaError: Non array Variant of type 21 cannot have value None`, i.e. `Message` is unset.
+  - `CustomEvent.init()` sets `self._freeze = True`, which is neither in `internal_properties` nor in `data_types`. By reading the code, `data_types["_freeze"]` therefore raises `KeyError`.
+  - So custom events can't be turned into a field dict. While checking this I found that SQL event history with a custom event type is broken end to end. Reading events back logs `near "FROM": syntax error`, and the in-memory SQLite database had no tables after the event was triggered. That's carried over to the `server` review as a reproduction.
+- **COM-28 (cleanup)**: `_select_clause_from_childs` compares `ref.ReferenceTypeId == ua.ObjectIds.HasProperty`, a `NodeId` against an `int`, which is always `False`. So the property branch never runs, and every property is also browsed for children, which costs one extra round trip per property when building a filter. `browse_path_to_attribute_name` joins only the `Name`s, so `ns=0 Severity` and `ns=2 Severity` map to the same attribute. `Event.from_event_fields` uses `sattr.AttributeId.name`, which fails if `AttributeId` is a plain `int`, as it is after decoding. `to_event_fields` already converts it with `ua.AttributeIds(...)`.
+- **COM-29 (cleanup)**: `where_clause_from_evtype` builds `EventType InList [all subtypes]`. It browses the whole subtype tree from the client first, and misses event types added to the server later. Part 4's `OfType` filter operator does this check on the server in one operand. `_event_type_nodes_up_to_base` returns `[]` when a type has no single parent, which gives a filter with no select clauses.
+
+### subscription.py
+
+- **COM-30 (bug)**: `modify_monitored_item` sets `item.mfilter = results[0].FilterResult`, replacing the item's *filter* with the server's *filter result*: an `ExtensionObject`, `EventFilterResult` or `None`. Verified on an event subscription:
+  - After `modify_monitored_item(handle, 100)`, the stored filter is an `ExtensionObject`. `_explode_events` then rejects every event ("monitored item has no event filter"), so events stop arriving with only a log warning (1 event before the modify, still 1 after).
+  - The same wrong value is used when the item is recreated after a reconnect.
+  - The new sampling interval and queue size aren't stored either, so a recreate restores the old ones.
+  - The result's `StatusCode` isn't checked.
+- **COM-31 (bug)**: `modify_monitored_item` with an unknown handle raises `RuntimeError: coroutine raised StopIteration`. Verified. `next()` without a default raises `StopIteration` inside a coroutine, so the following `if not item_to_change: raise ValueError(...)` can never run. Use `next(..., None)`.
+- **COM-32 (bug)**: after the server revises a subscription's parameters, `self.parameters` keeps the *requested* values in most cases:
+  - `_create` never stores the revised values.
+  - `Client.create_subscription` only calls `update()` when both the interval and the derived keep-alive count changed, and `update()` copies the *requested* modify parameters, not the revised result.
+  - `is_stale()` computes its deadline from these values. A server that raises the publishing interval or keep-alive count therefore makes the stale-subscription watchdog fire early and recreate a healthy subscription.
+  - Found by reading the code; not reproduced.
+- **COM-33 (bug)**: delivery happens inside the client's single publish loop (`ua_session._publish_loop` awaits each callback):
+  - In iterator mode, `_deliver` does `await queue.put()` on a bounded queue (`queue_maxsize=1000`). A subscription created without a handler whose iterator is never consumed (or is consumed slowly) blocks the publish loop once the queue is full. **All** subscriptions on the session then stop receiving data and keep-alives, and the server may eventually time them out.
+  - Slow async legacy handlers have the same effect.
+  - The `_dispatch_to_handler` docstring says the handler runs "in its own task", but it's awaited inline.
+- **COM-34 (bug)**: local state goes out of sync with the server:
+  - `unsubscribe()` checks only `results[0]`, then removes **all** given handles locally, even ones the server failed to delete.
+  - `set_monitoring_mode()` doesn't update the stored `monitoring_mode`, so a recreate after a reconnect restores the old mode.
+  - `set_monitoring_mode()` also sends `None` for items that don't have a server handle yet.
+  - `recreate()` always sets `DiscardOldest=True`, regardless of the original request.
+- **COM-35 (doc)**: the `subscribe_data_change` overloads declare `sampling_interval=0.0`, but the implementation defaults to `50.0`. The `deadband_monitor` docstring says the queue size defaults to 1, but it's `0`. The class docstring's `:param server:` describes a parameter that is called `server` but holds a session.
+
+### connection.py
+
+- **COM-36 (bug, robustness)** (spec-checked): `TransportLimits.create_acknowledge_and_set_limits` accepts any buffer size from the peer's Hello. Part 6, 7.1.2.3 requires `ReceiveBufferSize` and `SendBufferSize` to be at least 8192 bytes (1024 with ECC policies). Verified:
+  - After `Hello(ReceiveBufferSize=16)`, the server's send buffer is 16, `max_body_size()` is `-8`, and `message_to_chunks` turns a 500-byte response into **zero chunks**. The response is silently never sent, and the client waits until it times out.
+  - Values just above the header size (e.g. 32) produce one chunk per few bytes instead.
+  - Fix: reject Hellos below the minimum with `Bad_TcpMessageTooLarge`/`Bad_ProtocolVersionUnsupported`-style errors, or clamp them up. `update_client_limits` should validate the Acknowledge the same way.
+- **COM-37 (bug)** (spec-checked): `SecureConnection.open` (server side) copies `RequestedLifetime` into `RevisedLifetime` unchanged, both when issuing and when renewing. Part 4, OpenSecureChannel requires the server to return a lifetime greater than 0 and a sensible value. A client requesting `0` gets a token that expires immediately, and a client requesting about 49 days (`UInt32` max) gets keys that are never rotated, which weakens the reason for token renewal. Clamp the value to a configured minimum and maximum.
+- **COM-38 (cleanup)**: `TransportLimits.create_hello_limits` is never called, and has a bug: it sets `MaxMessageSize = self.max_chunk_count`. Delete it or fix it. The client sends the `ua.Hello` defaults instead: 2³¹−1 for both buffers and `0` (no limit) for message size and chunk count. The server's `TokenId` is the constant `13` for every new channel ("random value"). `_receive` checks `packet_size > max_recv_buffer` only *after* the chunk has been decrypted and verified, so an oversized chunk costs the full crypto work before it's rejected. The `InvalidSignature` retry path calls `body.rewind()`, which ignores a buffer window (COM-2).
+
+### structures.py (legacy, pre-1.04 type dictionaries)
+
+- **COM-39 (security, high)**: **a server can execute arbitrary Python code in the client.** `Client.load_type_definitions()` (and `Server.load_type_definitions()`, plus the sync wrappers) works like this:
+  1. It reads the server's OPC Binary type dictionary (`structures.py:268`).
+  2. It builds Python source from it (`EnumType.get_code`, `Struct.get_code`).
+  3. It `exec`s that source (`_generate_python_class`, line 336).
+  - Names are passed through `clean_name`, but `EnumeratedValue`'s **`Value` attribute is pasted into the source unchanged** (`f"    {name} = {value}\n"`). Through `get_default_value(..., enums)`, it also ends up as a struct field's default value.
+  - Verified with a harmless payload: an enum value of `__import__('builtins').__setattr__('PWNED_BY_SERVER', True) or 1` in the dictionary XML ran in the client process. Any client that calls `load_type_definitions()` against a malicious or compromised server, or a man-in-the-middle when security is off, can be taken over.
+  - `StructGenerator.save_to_file` writes the same injected code into a `.py` file for later import.
+  - Fix: stop generating source code. Build the enums and dataclasses with `IntEnum(name, members)` and `make_dataclass`, as `structures104` already does. At the very least, parse `Value` with `int()` and reject anything else.
+  - This resolves UA-43. The 1.04 path (`structures104.py`) is safe: every name goes through `clean_name`, enum values arrive as typed integers from `EnumDefinition`, and classes are built with `make_dataclass`/`IntEnum(...)`, not from source text.
+
+### structures104.py
+
+- **COM-40 (bug)**: generated structure and enum classes go into **process-wide** registries (`ua.extension_objects_by_typeid`, `extension_objects_by_datatype`, `enums_by_datatype`, and attributes on the `ua` module). These are keyed by NodeIds that contain a namespace **index**, which only means something within one server session.
+  - Two `Client`s in the same process, connected to different servers that both use e.g. `ns=2;i=5001` for different structures (common for PLCs from the same vendor), overwrite each other's classes. Values from one server are then decoded with the other server's class.
+  - `_set_ua_attribute` only warns about collisions of the *name* attribute.
+  - Found by reading the code; not reproduced. The registries would have to be per session, or at least keyed by namespace URI.
+- **COM-41 (bug)** (spec-checked): `new_struct_field(array=True)` sets `ArrayDimensions = [1]`. Part 3 (StructureField) defines ArrayDimensions as the maximum length per dimension, with `0` for unknown, so `[1]` declares that the array holds at most one element. Use `[0]`, or leave ArrayDimensions null.
+- **COM-42 (cleanup)**: `make_enum` builds members from `clean_name(field.Name)`, so two fields whose names clean to the same identifier (`"A-B"` and `"A_B"`) silently collapse into one. `load_enum_xml_import` uses `DisplayName.Text` as the class name without `clean_name`. The default values for generated structures share the "different on every call" problem of UA-28: `Guid` is `uuid.uuid4()` and `DateTime` is `now()`.
+
+### type_dictionary_builder.py
+
+- **COM-43 (cleanup)**: `StructNode.add_field(type_name, field_name, is_array)` has its parameter names swapped. Callers pass the field name first and the type second (`add_field("Speed", ua.VariantType.Double)`), and the method forwards them in that order to `DataTypeDictionaryBuilder.add_field(type_name, variable_name, …)`. Verified that the generated dictionary is correct, so only the names (and the `isinstance(field_name, StructNode)` branch, which is really about the type) are misleading. `_add_dictionary` and `_create_data_type` don't check the `AddNodesResult` status codes, and `_link_nodes` ignores the `add_references` results. Nothing in the tests exercises this module.
+
+### statemachine.py
+
+- **COM-44 (bug)**: `FiniteStateMachine.install()` always fails with `InstantiationError … i=2771 is abstract`. `FiniteStateMachineType` is `IsAbstract="true"` in the nodeset, and `tests/test_common.py::test_instantiate_abstract` checks exactly that, but the helper instantiates the type directly. Verified: `examples/finitestatemachine-example.py` crashes on start. The helper would need to create (or be given) a concrete subtype, with the states and transitions as its `InstanceDeclaration`s.
+- **COM-45 (bug)**: `FiniteStateMachine.set_available_states` *returns* `ValueError(...)` for invalid input instead of raising it. `set_available_transitions` writes a valid list and then falls through to an unconditional `raise ValueError(...)`, so it **always** raises when `optionals=True`. Found by reading the code; it couldn't be run because of COM-44.
+- **COM-46 (bug)**: `StateMachine.install(optionals=True)` checks `"TransitionTime" not in childnames`, but `childnames` holds `QualifiedName` objects, so the test is always true. It then always adds a `TransitionTime` property, and it creates it in **namespace 0** (`add_property(0, …)`), the reserved OPC UA namespace. If `TransitionTime` already exists, the second property collides with it.
+- **COM-47 (cleanup)**:
+  - `add_state`/`add_transition` reject state number `0` (`if not state.number`), and `_write_state` skips writing it.
+  - `FromState` is written without a locale while `ToState` uses `self.locale`.
+  - The module and class docstrings link to `v104` pages (see COM-6).
+  - `Transition`'s docstring says `number` "identifies the current state", copied from `State`.
+  - The module lives in `common`, but imports `Server` and only works server-side.
+
+### xmlparser.py
+
+- **COM-48 (bug, interop)**: `IsOptional`, `IsUnion` and the definition-level `IsOptional` are read with `bool(attr)` / `if el.attrib.get(...)`. For an attribute string, `"false"` is truthy, so explicit `IsOptional="false"` / `IsUnion="false"` count as **true**. Verified: importing a two-field structure written with `IsUnion="false"` and `IsOptional="false"` produced `StructureType.Union` with both fields optional. The binary encoding of that type is then wrong for every client.
+  - The bundled UA-Nodeset files only ever write `"true"`, so they aren't affected. Nodesets from other modelling tools that write explicit defaults are.
+  - `_to_bool` (via `string_to_val`) already handles this for the node attributes. Use it here too.
+- **COM-49 (bug)**: in `_parse_value` for `DateTime`, `utc.localize(obj.value)` returns a new object, which is thrown away. So naive timestamps stay naive despite the comment "Forcing to UTC". Empty `<String/>` and `<XmlElement/>` values (`text is None`) go to the `Null` branch before the "support importing null strings" code runs, so they import as `None`, not `""`.
+- **COM-50 (cleanup)**:
+  - `_parse_body` drops every child whose value is empty (`if val:`), so empty strings and empty nested structures disappear from ExtensionObject bodies.
+  - `get_nodeset_namespaces` only accepts `PublicationDate` as `…T…Z` or with a `%z` offset. `xs:dateTime` also allows fractional seconds, which raise `ValueError`.
+  - When there are several localized `DisplayName`/`Description` elements, only the last one is kept.
+  - `NodeData.symname` has a FIXME saying it's never used.
+
+### xmlimporter.py
+
+- **COM-51 (bug)**: `add_method` ignores the `Executable` attribute that the parser reads into `obj.executable`. Imported methods always get `MethodAttributes`' default `Executable = UserExecutable = True`, so a method marked `Executable="false"` in the nodeset becomes callable. Verified that the default applies to imported methods. `add_method` instead sets `AccessLevel`, `UserAccessLevel`, `MinimumSamplingInterval` and `ArrayDimensions`, which `MethodAttributes` doesn't have; those lines are copied from `add_variable` and can't apply.
+- **COM-52 (bug)**: `_check_if_namespace_meta_information_is_added` creates every NamespaceMetadata object with `IsNamespaceSubset = True`, even when the whole nodeset of that namespace has just been imported. Per Part 5 (NamespaceMetadataType), that tells clients the server only has part of the namespace. In `_check_required_models`, the missing-model log line reads `missing_model["Version"]`, which raises `KeyError` when a `RequiredModel` has no `Version`. `PublicationDate` values are compared as **strings** in different formats (our server's `…Z` against the file's value, which may have fractional seconds or an offset). `_parse_version` fails on versions that aren't purely numeric (`1.0.0-rc1`).
+- **COM-53 (cleanup)**:
+  - Attributes guarded with `if obj.<attr>:` drop legitimate zero or false values. `AccessLevel="0"` imports as `CurrentRead` (the default `1`). `add_variable_type` uses `if obj.value:`, so values `0`, `False` and `""` are lost (`add_variable` correctly uses `is not None`).
+  - `_to_nodeid` maps an empty or missing NodeId string to `i=12` (**String**). For a missing `DataType`, the UANodeSet schema default is `i=24` (BaseDataType).
+  - `_to_nodeid` also checks the standard `ObjectIds` names *before* the file's own `<Aliases>`, so a nodeset alias that happens to share a standard name is ignored.
+  - In `_add_variable_value` for `LocalizedText`, `myargs` (with `Encoding` removed) is built and then not used, and `LocalizedText(**dict(obj.value))` is called with the unfiltered dict.
+
+### sql_injection.py (and how history_sql.py uses it)
+
+- **COM-54 (security, medium)**: `validate_table_name` is the only guard, and only table names go through it. `server/history_sql.py` puts these into SQL text without escaping:
+  - column names (`_get_event_columns`, `_list_to_sql_str`), which are event property **browse names**
+  - `event_type` and `event.Time` (`VALUES (NULL, "{event.Time}", "{event_type}", …)`, line 183)
+  - A browse name containing `"` (from an imported nodeset or a custom event type) breaks out of the quoted identifier.
+  - Names from a *remote client's* event filter are filtered against the known field names first (`_get_select_clauses`), so a client can't inject SQL through HistoryRead. The exposure is through the server's own information model.
+  - Fix: bind values with `?` placeholders (including the timestamp and the event type), and escape identifiers by doubling `"` instead of keeping a blacklist. `validate_table_name` also lets `\n`, `-` and `/` through, and has no length limit.
+- **Hand-over to the `server` review** (`history_sql.py`): when no requested select clause matches a stored field, the query becomes `SELECT "_Timestamp", FROM …`, which is the `near "FROM": syntax error` seen under COM-27. A clause with an empty `BrowsePath` reads `select_clause.Attribute`, but the field is `AttributeId`, so it always hits the `AttributeError` branch. Custom events weren't stored at all in the COM-27 reproduction.
+
+### xmlexporter.py
+
+- **COM-55 (bug)**: exporting and re-importing loses attributes. Verified by exporting nodes from one server and importing them into another:
+  - A reference type with `Symmetric=True, IsAbstract=True` comes back as `Symmetric=False, IsAbstract=False`. `add_etree_reference_type` writes only `InverseName`.
+  - An abstract structure DataType comes back concrete. `add_etree_datatype` never writes `IsAbstract`.
+  - A variable with `AccessLevel=0` comes back with `AccessLevel=1` (readable). The exporter skips `0` as if it were a default, and the importer's default is `CurrentRead` (COM-53).
+  - `StructureWithSubtypedValues` definitions are exported without a marker, so they re-import as plain structures.
+  - `WriteMask`/`UserWriteMask` are never exported (FIXME in `_add_node_common`).
+- **COM-56 (cleanup)**: `fields_with_resolved_types` permanently changes dataclass metadata during export (COM-3). Structure field `ArrayDimensions` are joined with `", "`, while variable `ArrayDimensions` use `","`. Both parse, but the output is inconsistent.
+
+### Summary: asyncua/common
+
+56 findings (COM-1 … COM-56): 35 bugs (two of them security: COM-39 high, COM-54 medium; plus COM-1 and COM-36 robustness), 5 doc, 15 cleanup and 1 question. Bugs marked "Verified" were reproduced by running code. COM-27 (partly), COM-32, COM-40 and COM-45 are from reading the code.
+
+Highest impact:
+1. **COM-39**: `load_type_definitions()` executes code from the server's type dictionary. Remote code execution in the client.
+2. **COM-1, COM-36**: a negative length moves the decoder backwards, and a tiny Hello buffer size makes the server silently drop responses.
+3. **COM-12**: `Node.write_value()` always sends a SourceTimestamp, and many servers reject that with `Bad_WriteNotSupported`.
+4. **COM-18, COM-25**: recursive delete and copy follow `Organizes`, so they delete or duplicate nodes owned elsewhere, and loop on cycles.
+5. **COM-22, COM-23**: instantiation creates literal `<Placeholder>` nodes and ignores failed adds.
+6. **COM-30**: `modify_monitored_item` silently breaks event subscriptions.
+7. **COM-48, COM-55**: XML import treats `"false"` as true; export and re-import loses Symmetric, IsAbstract and AccessLevel.
+8. **COM-15, COM-16**: history reads send invalid default ranges, lose pages of events and leak continuation points.
+9. **COM-40**: generated types are registered process-wide by namespace *index*, so multiple servers in one process collide.
+10. **COM-44**: the `FiniteStateMachine` helper (and its example) can't work, because the type is abstract.
