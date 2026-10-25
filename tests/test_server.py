@@ -919,7 +919,6 @@ async def test_null_auth(server):
         pass
 
 
-@pytest.mark.slow("asyncua/server/server.py", "asyncua/server/binary_server_asyncio.py")
 async def test_start_server_when_port_is_in_use(server: Server):
     server2 = Server()
     await server2.init()

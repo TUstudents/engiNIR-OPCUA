@@ -209,7 +209,6 @@ def test_sync_server_get_node(server, idx):
     assert vars[0].read_value() == 6.7
 
 
-@pytest.mark.slow("asyncua/sync.py", "asyncua/server/address_space.py", "asyncua/server/internal_server.py")
 async def test_sync_server_creating_shelf_files_works(tloop: ThreadLoop, tmp_path: Path) -> None:
     shelf_file_path: Path = tmp_path / "shelf_file"
 

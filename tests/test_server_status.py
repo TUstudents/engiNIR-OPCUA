@@ -27,7 +27,6 @@ async def test_server_status_timestamps_match_components(opc: Any, field: str) -
     assert getattr(status, field) == component_value
 
 
-@pytest.mark.slow("asyncua/server/internal_server.py")
 async def test_server_status_clock_updates_preserve_fields(server: Server) -> None:
     status_node = server.get_node(ua.ObjectIds.Server_ServerStatus)
     await server.set_build_info("urn:test", "Manufacturer", "Product", "2.0", "42", datetime.now(timezone.utc))

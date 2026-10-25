@@ -239,7 +239,6 @@ async def pubsub_dest_nodes(server) -> list[NodeId]:
     return dest_nodes
 
 
-@pytest.mark.slow("asyncua/pubsub")
 async def test_datasource_and_subscribed_dataset(
     server: Server, pubsub_dest_nodes: list[Node], pusbsub_src_nodes: list[Node]
 ):

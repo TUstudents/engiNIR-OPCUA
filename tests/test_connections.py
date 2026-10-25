@@ -49,7 +49,6 @@ async def test_safe_disconnect():
     await c.disconnect()
 
 
-@pytest.mark.slow("asyncua/client", "asyncua/server/binary_server_asyncio.py")
 async def test_client_connection_lost():
     class LostSubHandler:
         def __init__(self) -> None:
@@ -82,7 +81,6 @@ async def test_client_connection_lost():
             await cl.get_namespace_array()
 
 
-@pytest.mark.slow("asyncua/client", "asyncua/server/binary_server_asyncio.py")
 async def test_client_connection_lost_callback():
     port = find_free_port()
     srv = Server()
@@ -109,7 +107,6 @@ async def test_client_connection_lost_callback():
         assert isinstance(clb.ex, Exception)
 
 
-@pytest.mark.slow("asyncua/client", "asyncua/server/internal_session.py", "asyncua/server/uaprocessor.py")
 async def test_session_watchdog():
     port = find_free_port()
     srv = Server()
