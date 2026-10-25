@@ -13,10 +13,13 @@ from enginir_opcua import ua
 from enginir_opcua.common import uamethod, utils
 
 from .address_space import AddressSpace
-from .internal_subscription import InternalSubscription
+from .internal_subscription import InternalSubscription, SubscriptionState
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
+    from .uaprocessor import PublishRequestData
+
+MAX_PENDING_NOTICES_PER_SESSION = 100
 
 
 class SubscriptionService:
@@ -33,6 +36,7 @@ class SubscriptionService:
         self._sub_id_counter = 77
         self.standard_events: dict[int, Any] = {}
         self._conditions: dict[ua.NodeId, Any] = {}
+        self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
 
     async def create_subscription(
         self,
@@ -47,9 +51,13 @@ class SubscriptionService:
             self.logger.warning("Refusing subscription: at max_subscriptions=%s", max_subs)
             raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
         result = ua.CreateSubscriptionResult()
-        result.RevisedPublishingInterval = params.RequestedPublishingInterval
-        result.RevisedLifetimeCount = self._clamp_lifetime_count(params.RequestedLifetimeCount)
-        result.RevisedMaxKeepAliveCount = self._clamp_keep_alive_count(params.RequestedMaxKeepAliveCount)
+        (
+            result.RevisedPublishingInterval,
+            result.RevisedLifetimeCount,
+            result.RevisedMaxKeepAliveCount,
+        ) = self._revise(
+            params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
+        )
         self._sub_id_counter += 1
         result.SubscriptionId = self._sub_id_counter
         no_acks_limit = self.iserver.max_unacked_messages_per_subscription if self.iserver else 5000
@@ -61,25 +69,38 @@ class SubscriptionService:
             session_id,
             request_callback=request_callback,
             delete_callback=lambda: self.subscriptions.pop(result.SubscriptionId, None),
+            expire_callback=self._on_expired if request_callback is not None else None,
             no_acks_limit=no_acks_limit,
             max_queue_size=max_queue_size,
             publishing_enabled=params.PublishingEnabled,
+            max_notifications_per_publish=self._revise_max_notifications(params.MaxNotificationsPerPublish),
+            priority=params.Priority,
         )
         await internal_sub.start()
         self.subscriptions[result.SubscriptionId] = internal_sub
         return result
 
-    def _clamp_lifetime_count(self, requested: int) -> int:
-        if self.iserver is None:
-            return requested
-        cap = self.iserver.max_lifetime_count
+    def _setting(self, name: str, default: float) -> float:
+        return getattr(self.iserver, name, default) if self.iserver else default
+
+    def _revise_max_notifications(self, requested: int) -> int:
+        cap = int(self._setting("max_notifications_per_publish", 10_000))
         return min(requested, cap) if requested > 0 else cap
 
-    def _clamp_keep_alive_count(self, requested: int) -> int:
-        if self.iserver is None:
-            return requested
-        cap = self.iserver.max_keep_alive_count
-        return min(requested, cap) if requested > 0 else cap
+    def _revise(self, interval: float, lifetime: int, keep_alive: int) -> tuple[float, int, int]:
+        minimum = self._setting("min_publishing_interval_ms", 50.0)
+        maximum = self._setting("max_publishing_interval_ms", 3_600_000.0)
+        if interval != interval or interval <= 0:
+            interval = minimum
+        interval = min(max(interval, minimum), maximum)
+        keep_alive = min(max(keep_alive, 1), int(self._setting("max_keep_alive_count", 5_000)))
+        lifetime = min(lifetime, int(self._setting("max_lifetime_count", 15_000)))
+        lifetime = max(lifetime, 3 * keep_alive)
+        limit = int(self._setting("max_subscription_lifetime_ms", 86_400_000.0) // interval)
+        if lifetime > limit:
+            keep_alive = min(keep_alive, max(1, limit // 3))
+            lifetime = max(limit, 3 * keep_alive)
+        return interval, lifetime, keep_alive
 
     def _owned(self, subscription_id: int, session_id: ua.NodeId) -> InternalSubscription | None:
         sub = self.subscriptions.get(subscription_id)
@@ -91,18 +112,61 @@ class SubscriptionService:
         sub = self._owned(subscription_id, session_id)
         if sub is None:
             raise utils.ServiceError(ua.StatusCodes.BadSubscriptionIdInvalid)
+        sub.reset_lifetime()
         return sub
+
+    def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
+        self.subscriptions.pop(sub.data.SubscriptionId, None)
+        pending = self._pending_notices.setdefault(sub.session_id, [])
+        if len(pending) >= MAX_PENDING_NOTICES_PER_SESSION:
+            pending.pop(0)
+        pending.append((notice, sub.pub_result_callback))
+
+    def pending_notice(self, session_id: ua.NodeId) -> tuple[ua.PublishResult, Callable[..., Any]] | None:
+        pending = self._pending_notices.get(session_id)
+        if not pending:
+            return None
+        notice = pending.pop(0)
+        if not pending:
+            del self._pending_notices[session_id]
+        return notice
+
+    def drop_pending_notices(self, session_id: ua.NodeId) -> None:
+        self._pending_notices.pop(session_id, None)
+
+    async def on_publish_request(self, session_id: ua.NodeId, requestdata: "PublishRequestData") -> bool:
+        notice = self.pending_notice(session_id)
+        if notice is not None:
+            result, callback = notice
+            await callback(result, requestdata)
+            return True
+        late = [
+            sub
+            for sub in self.subscriptions.values()
+            if sub.session_id == session_id and sub.state is SubscriptionState.LATE
+        ]
+        late.sort(key=lambda sub: (-sub.priority, sub.served_at))
+        for sub in late:
+            if await sub.publish_results(requestdata):
+                return True
+        return False
 
     def modify_subscription(
         self, params: ua.ModifySubscriptionParameters, session_id: ua.NodeId
     ) -> ua.ModifySubscriptionResult:
-        # Requested params are ignored, result = params set during create_subscription.
         self.logger.info("modify subscription")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         result = ua.ModifySubscriptionResult()
-        result.RevisedPublishingInterval = sub.data.RevisedPublishingInterval
-        result.RevisedLifetimeCount = sub.data.RevisedLifetimeCount
-        result.RevisedMaxKeepAliveCount = sub.data.RevisedMaxKeepAliveCount
+        result.RevisedPublishingInterval, result.RevisedLifetimeCount, result.RevisedMaxKeepAliveCount = self._revise(
+            params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
+        )
+        sub.update_parameters(
+            result.RevisedPublishingInterval,
+            result.RevisedLifetimeCount,
+            result.RevisedMaxKeepAliveCount,
+            self._revise_max_notifications(params.MaxNotificationsPerPublish),
+            params.Priority,
+        )
         return result
 
     async def delete_subscriptions(self, ids: list[int], session_id: ua.NodeId) -> list[ua.StatusCode]:
@@ -136,8 +200,9 @@ class SubscriptionService:
             if sub is None:
                 results.append(ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid))
             else:
-                sub.publish([ack.SequenceNumber])
-                results.append(ua.StatusCode())
+                known = sub.acknowledge(ack.SequenceNumber)
+                code = ua.StatusCodes.Good if known else ua.StatusCodes.BadSequenceNumberUnknown
+                results.append(ua.StatusCode(code))
         return len(owned), results
 
     async def create_monitored_items(
@@ -203,7 +268,7 @@ class SubscriptionService:
                 continue
             sub.session_id = session_id
             sub.pub_result_callback = callback
-            result.AvailableSequenceNumbers = sorted(sub._not_acknowledged_results.keys())
+            result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
             results.append(result)
         return results
 
