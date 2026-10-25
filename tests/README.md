@@ -15,7 +15,10 @@ Tests that reproduce a review finding carry its ID in the name, for example `tes
 | `raw_peer` | Sending hand-made UA-TCP bytes to the module's `server` and reading the raw replies: Hello and buffer limits, malformed chunks, connection handling |
 | `raw_server` | Acting as a hostile server for a client under test: `peer = await raw_server.accept()` hands over the client's connection as a `RawPeer` |
 | `tampered_responses` | Acting as a hostile server: `tampered_responses.on(ua.CreateSessionResponse, change)` modifies every response of that type before it's encoded |
+| `signing_server` | A server with only Basic256Sha256 Sign and the users of `two_sessions`; connect with `signing_client(server, "alice")` |
 | `two_sessions` | Ownership and isolation checks: a fresh server with users `alice` and `bob`, each connected with their own client |
+
+`SessionProbe` (in `harness.py`, no fixture) is a client with an open None-policy channel on which a test creates several sessions and sends requests under any session's token: `probe = await SessionProbe.open(url)`, `create_session()`, `activate(token)`, `read_server_state(token)`, `send(token, request, response_type)`, `send_edited(token, request, response_type, edit)` for malformed bodies, `close_session(token)`. Use it for session binding, limits, channel moves and Publish queue tests; open a second probe for a second channel.
 
 ## Spec byte vectors
 
