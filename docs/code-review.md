@@ -789,3 +789,114 @@ Checked against Part 14 (1.05.06). The UADP layout is in 7.2.4.4 (NetworkMessage
 3. **PUB-3**: the receive timeout is a factor of a million off, and never reset. Configuration version mismatches aren't detected.
 4. **PUB-5**: `PubSub.start()` hides startup failures, connections are registered in the address space zero or several times, and the remove methods do nothing.
 5. **PUB-7**: the network interface and loopback settings don't take effect for multicast.
+
+## asyncua/sync.py, asyncua/tools.py, asyncua/observer.py
+
+### sync.py and docs/usage/sync/overview.rst
+
+- **SYN-1 (bug)** (verified): **calling the sync API from a sync subscription handler deadlocks.**
+  - `_SubHandler` calls the user's handler on the ThreadLoop's own event loop thread. When the handler calls any sync method (e.g. `node.read_value()`), `ThreadLoop.post()` schedules a coroutine on that same loop and then blocks it, waiting for the result.
+  - Verified with a 3 s ThreadLoop timeout: the read inside `datachange_notification` failed with `TimeoutError` after 3.0 s. With the default `sync_wrapper_timeout = 120`, the whole client, every subscription included, stalls for two minutes per notification.
+  - Neither the docs nor the docstrings mention this. Either run sync handlers on a separate worker thread, or detect a call from the loop thread and raise a clear error.
+- **SYN-2 (bug)** (verified): when `ThreadLoop.post()` times out it raises `TimeoutError`, but leaves the coroutine running. Verified: a coroutine that outlived a 0.5 s timeout still ran to completion. A Write or method Call that "timed out" for the caller can therefore still be carried out later. Fix: cancel the future on timeout.
+- **SYN-3 (bug)** (verified):
+  - `Client.disconnect()` (and `disconnect_sessionless`, `disconnect_socket`) stops the client's private ThreadLoop, and a thread can't be started twice. Verified: `connect(); disconnect(); connect()` raises `ThreadLoopNotRunning`.
+  - The sync `Client` exposes neither `auto_reconnect` nor `reconnect_max_delay`/`reconnect_request_timeout`, so sync users have no reconnect path at all.
+  - The sync `Server` has no `user_manager` parameter.
+- **SYN-4 (cleanup)**:
+  - `_to_async` converts `SyncNode`, `Client` and `Server` in positional arguments (including nested lists), but in keyword arguments only a bare `SyncNode`. `delete_nodes(nodes=[...])` therefore passes `SyncNode`s into async code.
+  - `_to_sync` turns tuples into lists, so `delete_nodes` returns a list instead of the documented tuple. It doesn't convert dicts.
+  - `ThreadLoop.stop()` stops and closes the loop without cancelling pending tasks, which gives "Task was destroyed but it is pending" warnings.
+  - If `run()` fails before it notifies, `ThreadLoop.start()` waits forever.
+  - `Server.get_node(SyncNode)` passes the `SyncNode` straight to the async `Node`.
+  - There are typos in both class docstrings ("defualt").
+  - `docs/usage/sync/overview.rst` is a single paragraph. It doesn't cover the ThreadLoop, the timeout, handler threading (SYN-1) or the lifetime of a client (SYN-3).
+
+### tools.py (the `ua*` command-line tools)
+
+- **TOOL-1 (bug)** (verified):
+  - `uawrite` and `uacall` offer `--datatype` choices that `_val_to_variant` doesn't know. Verified: `bytestring`, `xmlelement` and `localizedtext` fail with "Invalid datatype", and `datetime` with `NotImplementedError`. The converter only checks `"ByteString"`, `"xml"` and `"LocalizedText"`, which argparse rejects.
+  - The `Guid` and `ByteString` branches call `bytes(str)`, which raises `TypeError` (verified). There's no `guid` choice.
+  - With `--datatype guess`, any value containing a comma is turned into an array, so string values can't contain commas.
+- **TOOL-2 (bug)**:
+  - `uaclient` describes itself as "Connect to server and start python shell", with `root`, `objects` and `mynode` available. It connects, resolves the node and exits; `embed()` is never called.
+  - `uaserver --shell` calls the blocking `embed()` *inside* the running event loop, so the server answers no requests while the shell is open.
+  - `uadiscover --network` prints an empty "Server n:" heading for each result (the printing is commented out).
+  - Ctrl-C in `uasubscribe` ("Type Ctr-C to exit") and `uaserver` ends with a traceback. `asyncio.run` cancels the coroutine and then raises `KeyboardInterrupt` outside it, where the `except KeyboardInterrupt` doesn't see it.
+  - `--timeout` is `type=int`, so sub-second timeouts can't be given.
+  - `uasubscribe -t event` treats an explicit `-n i=84` as "no node given" (there's a `FIXME`).
+  - `str_to_datetime` returns naive datetimes for user input but timezone-aware defaults.
+- **TOOL-3 (bug, security, low)**:
+  - `--password` (and a password in the URL) is visible in the process list and the shell history. Offer a prompt or an environment variable.
+  - `uaserver` listens on `0.0.0.0` with the default endpoints (including NoSecurity) and the default user manager (SRV-7). With `--populate` it adds a writable variable and a callable method. That's fine for a demo, but the help text should say so.
+
+### observer.py
+
+- **OBS-1 (doc)**: `Observer` is a public extension point, used by `UaSession` and `Subscription` to report request timings, state changes and notifications. It isn't mentioned in `docs/` or in any docstring. No other findings: hook exceptions are caught and logged, and the null observer avoids the timing overhead.
+
+### Summary: sync, tools, observer
+
+8 findings: 6 bugs, 1 doc and 1 cleanup. One bug has (low) security impact: TOOL-3. Highest impact:
+1. **SYN-1**: using the sync API inside a sync subscription handler stalls the client for the full wrapper timeout (120 s by default).
+2. **SYN-2**: operations that time out in the sync wrapper still run afterwards.
+3. **SYN-3**: a sync client can't reconnect after `disconnect()`, and auto-reconnect isn't exposed.
+4. **TOOL-1, TOOL-2**: several advertised `--datatype` choices fail, `uaclient` doesn't open the shell it describes, and `uaserver --shell` blocks the server.
+
+---
+
+## Overall summary
+
+The review covers every hand-written module in `asyncua/`, plus the matching `docs/` pages. That's 171 findings:
+
+| Area | Findings | Bug | Security-only | Doc | Cleanup | Question |
+|---|---|---|---|---|---|---|
+| `ua` (UA-) | 46 | 20 | – | 7 | 16 | 3 |
+| `common` (COM-) | 56 | 33 | 2 | 5 | 15 | 1 |
+| `client` (CLI-) | 17 | 12 | – | 2 | 3 | – |
+| `server` (SRV-) | 24 | 22 | – | 1 | 1 | – |
+| `crypto` (CRY-) | 12 | 9 | – | – | 3 | – |
+| `pubsub` (PUB-) | 8 | 7 | – | 1 | – | – |
+| `sync`, `tools`, `observer` (SYN-, TOOL-, OBS-) | 8 | 6 | – | 1 | 1 | – |
+| **Total** | **171** | **109** | **2** | **17** | **39** | **4** |
+
+Twenty-three findings touch security. Three are fixed so far:
+- **COM-39** (code execution from legacy type dictionaries), commit `6f9f1a14`, upstream branch `fix/legacy-type-dictionary-exec`.
+- **SRV-1** (session hijack) and **SRV-3** (validator bypass), commit `7c63c2ec`, upstream branch `fix/session-activation-checks`.
+- **SRV-2** (sequential session tokens) is partly fixed in the same commit.
+
+Suggested order for the bug-fixing pass:
+1. **Remaining security bugs that a remote peer can trigger**:
+   - SRV-4 (subscriptions shared across sessions)
+   - SRV-5 (unauthenticated RegisterServer)
+   - SRV-6 and CRY-8 (replayable and RSA-1.5 password tokens)
+   - SRV-9 (pre-Hello buffering)
+   - SRV-18 (Call without object, argument or permission checks)
+   - CLI-6, CLI-7, CLI-14 (client-side nonce and endpoint checks)
+   - PUB-1 (refuse PubSub security modes that aren't implemented)
+   - COM-54 (SQL identifiers)
+   - CRY-6 (constant-time MAC comparison)
+2. **Secure by default**, the goal stated at the start of this work:
+   - SRV-7 (permissive user manager)
+   - CRY-1 (validator defaults)
+   - CRY-5 (policy key limits)
+   - CRY-3 (revocation and chains)
+   - CRY-11 (generated certificates, key file mode)
+   - the NoSecurity default endpoint
+   - TOOL-3
+   - the README and docs pages
+3. **Data correctness**:
+   - SRV-15 (`IndexRange` replaces whole arrays)
+   - SRV-11, SRV-12, SRV-13 (publishing interval, Republish, queue sizes)
+   - CLI-3, CLI-4, CLI-5 (publish loop and acknowledgements)
+   - CLI-12 (truncated file reads)
+   - SRV-20, SRV-21, SRV-22 (history)
+   - PUB-2, PUB-3 (UADP encoding, reader timeout)
+   - SYN-2 (timed-out sync calls still run)
+   - the COM bugs marked data loss or interop
+4. **Robustness**:
+   - SYN-1 (sync handler deadlock)
+   - SRV-8, SRV-10, SRV-14, SRV-16, SRV-17
+   - CLI-1, CLI-8, CLI-9, CLI-10
+   - PUB-4 to PUB-7
+   - TOOL-1, TOOL-2
+5. **Docs and cleanup**: the doc and cleanup items, the empty client and server overview pages, and the PubSub and Observer documentation.
