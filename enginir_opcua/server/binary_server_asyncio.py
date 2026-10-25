@@ -62,7 +62,7 @@ class OPCUAProtocol(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.peer_name = transport.get_extra_info("peername")
-        if len(self.clients) >= self.iserver.max_connections:
+        if len(self.clients) >= self.iserver.max_connections and not self._close_oldest_channel_without_session():
             _logger.warning(
                 "Refusing connection from %s: at max_connections=%s",
                 self.peer_name,
@@ -86,6 +86,15 @@ class OPCUAProtocol(asyncio.Protocol):
         )
         if self.iserver.max_pending_activation_seconds > 0:
             self._activation_watchdog_task = asyncio.create_task(self._activation_watchdog())
+
+    def _close_oldest_channel_without_session(self) -> bool:
+        idle = [c for c in self.clients if c.processor is not None and c.processor.session is None]
+        if not idle:
+            return False
+        oldest = min(idle, key=lambda c: c.processor.last_used if c.processor is not None else 0.0)
+        _logger.warning("Closing the oldest channel without a session (%s) to make room", oldest.peer_name)
+        oldest._close()
+        return True
 
     def _schedule_channel_expiry(self, seconds: float) -> None:
         if self._expiry_timer is not None:

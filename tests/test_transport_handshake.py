@@ -1,10 +1,11 @@
 import asyncio
 import struct
+from collections.abc import AsyncIterator
 from unittest.mock import Mock
 
 import pytest
 
-from enginir_opcua import Server, ua
+from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient, UASocketProtocol
 from enginir_opcua.common.connection import TransportLimits, error_message_to_binary
 from enginir_opcua.common.utils import Buffer
@@ -12,6 +13,7 @@ from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 
+from .conftest import find_free_port
 from .harness import RawPeer, RawServer, connect_client
 
 HELLO = ua.Hello(ReceiveBufferSize=65536, SendBufferSize=65536)
@@ -108,8 +110,11 @@ def short_hello_deadline(server: Server, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.fixture
-def no_free_connection(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(server.iserver, "max_connections", len(server.bserver.clients))  # type: ignore[union-attr]
+async def no_free_connection(server: Server, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    async with Client(server.endpoint.geturl()):
+        assert server.bserver is not None
+        monkeypatch.setattr(server.iserver, "max_connections", len(server.bserver.clients))
+        yield
 
 
 async def test_srv26_no_hello_is_closed_with_timeout(short_hello_deadline: None, raw_peer: RawPeer) -> None:
@@ -301,3 +306,26 @@ async def test_srv25_client_ignores_an_error_reason_over_4096_bytes(raw_server: 
     await peer.send(uatcp_to_binary(ua.MessageType.Error, error))
     with pytest.raises(ua.uaerrors.BadTimeout):
         await hello_task
+
+
+async def test_srv27_oldest_unused_channel_is_closed_at_the_limit() -> None:
+    """Part 4, 5.6.2.1: at the limit the oldest channel without a session makes room for the new connection."""
+    server = Server()
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    await server.start()
+    server.iserver.max_connections = 2
+    peers = []
+    try:
+        for _ in range(3):
+            peer = await RawPeer.connect(server.endpoint.hostname, server.endpoint.port)
+            peers.append(peer)
+            await peer.send_hello(HELLO)
+            await peer.receive_acknowledge()
+        first, second, _ = peers
+        assert await first.is_closed_by_peer()
+        assert not await second.is_closed_by_peer(timeout=0.3)
+    finally:
+        for peer in peers:
+            await peer.close()
+        await server.stop()

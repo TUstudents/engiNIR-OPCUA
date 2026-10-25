@@ -66,6 +66,10 @@ class UaProcessor:
         self._watchdog_interval: float = 1.0
         self.on_token_window: Callable[[float], None] | None = None
 
+    @property
+    def last_used(self) -> float:
+        return self._channel.last_used
+
     def channel_expires_in(self) -> float:
         return self._channel.expires_in()
 
