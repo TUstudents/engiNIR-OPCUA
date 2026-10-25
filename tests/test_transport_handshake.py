@@ -55,3 +55,42 @@ def test_srv9_receive_buffer_is_extended_in_place() -> None:
     assert protocol._reader.buffer is buffer
     assert isinstance(buffer, bytearray)
     assert len(buffer) == 1008
+
+
+@pytest.mark.parametrize("field", ["ReceiveBufferSize", "SendBufferSize"])
+@pytest.mark.parametrize("size", [0, 16, 8191])
+async def test_com36_hello_below_8192_is_rejected(raw_peer: RawPeer, field: str, size: int) -> None:
+    """Part 6, 7.1.2.3: buffers of at least 8192 bytes; the Error names the field."""
+    hello = ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535)
+    setattr(hello, field, size)
+    await raw_peer.send_hello(hello)
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadInvalidArgument
+    assert field in error.Reason
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_com36_hello_with_8192_buffers_is_accepted(raw_peer: RawPeer) -> None:
+    """Part 6, 7.1.2.3: 8192 is the smallest allowed buffer."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=8192, SendBufferSize=8192))
+    acknowledge = await raw_peer.receive_acknowledge()
+    assert (acknowledge.ReceiveBufferSize, acknowledge.SendBufferSize) == (8192, 8192)
+
+
+async def test_srv8_endpoint_url_over_4096_is_rejected(raw_peer: RawPeer) -> None:
+    """Part 6, 7.1.2.3: the EndpointUrl is limited to 4096 bytes."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535, EndpointUrl="o" * 4097))
+    await assert_error_and_close(raw_peer, ua.StatusCodes.BadTcpEndpointUrlInvalid)
+
+
+async def test_srv8_endpoint_url_of_4096_bytes_is_accepted(raw_peer: RawPeer) -> None:
+    """Part 6, 7.1.2.3: the EndpointUrl is limited to 4096 bytes."""
+    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535, EndpointUrl="o" * 4096))
+    await raw_peer.receive_acknowledge()
+
+
+@pytest.mark.parametrize("version", [0, 1, 5, 2**32 - 1])
+async def test_srv8_any_protocol_version_gets_zero(raw_peer: RawPeer, version: int) -> None:
+    """Part 6, 7.1.2.3 and 7.1.2.4: a higher version than ours is accepted and answered with 0."""
+    await raw_peer.send_hello(ua.Hello(ProtocolVersion=version, ReceiveBufferSize=65535, SendBufferSize=65535))
+    assert (await raw_peer.receive_acknowledge()).ProtocolVersion == 0

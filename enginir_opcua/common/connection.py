@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 _logger = logging.getLogger("enginir_opcua.uaprotocol")
 
 HELLO_MAX_CHUNK_SIZE = 8192
+MIN_BUFFER_SIZE = 8192
+MAX_ENDPOINT_URL_BYTES = 4096
 MAX_ERROR_REASON_BYTES = 4096
 KNOWN_MESSAGE_TYPES = frozenset(
     {
@@ -127,7 +129,19 @@ class TransportLimits:
             _logger.error("Number of message chunks: %s is > configured max chunk count: %s", sz, self.max_chunk_count)
         return within_limit
 
+    @staticmethod
+    def check_hello(msg: ua.Hello) -> None:
+        for name in ("ReceiveBufferSize", "SendBufferSize"):
+            size = getattr(msg, name)
+            if size < MIN_BUFFER_SIZE:
+                raise TransportError(
+                    ua.StatusCodes.BadInvalidArgument, f"{name} {size} is below the minimum of {MIN_BUFFER_SIZE}"
+                )
+        if len((msg.EndpointUrl or "").encode()) > MAX_ENDPOINT_URL_BYTES:
+            raise TransportError(ua.StatusCodes.BadTcpEndpointUrlInvalid, "EndpointUrl is too long")
+
     def create_acknowledge_and_set_limits(self, msg: ua.Hello) -> ua.Acknowledge:
+        self.check_hello(msg)
         ack = ua.Acknowledge()
         ack.ReceiveBufferSize = min(msg.SendBufferSize, self.max_recv_buffer)
         ack.SendBufferSize = min(msg.ReceiveBufferSize, self.max_send_buffer)
