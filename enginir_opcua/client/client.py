@@ -1210,7 +1210,10 @@ class Client:
         params.UserIdentityToken.PolicyId = policy.PolicyId
 
     def _encrypt_password(self, password: str, policy_uri: str) -> tuple[bytes, str]:
-        pubkey = uacrypto.x509_from_der(self.security_policy.peer_certificate).public_key()
+        server_certificate = uacrypto.x509_from_der(self.security_policy.peer_certificate)
+        if server_certificate is None:
+            raise ua.UaError("The server certificate is needed to encrypt the password")
+        pubkey = server_certificate.public_key()
         # see specs part 4, 7.36.3: if the token is encrypted, password
         # shall be converted to UTF-8 and serialized with server nonce
         passwd = password.encode("utf8")

@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient
@@ -24,6 +25,14 @@ def _rewrite_user_token(
     monkeypatch.setattr(UaClient, "activate_session", rewritten)
 
 
+def _public_key(der: bytes) -> rsa.RSAPublicKey:
+    certificate = uacrypto.x509_from_der(der)
+    assert certificate is not None
+    public_key = certificate.public_key()
+    assert isinstance(public_key, rsa.RSAPublicKey)
+    return public_key
+
+
 def _secret(password: str, nonce: bytes) -> bytes:
     return ua.ua_binary.Primitives.Bytes.pack(password.encode("utf8") + nonce)
 
@@ -40,7 +49,7 @@ async def test_srv6_password_bound_to_another_nonce_is_rejected(
     """Part 4, 7.40.2.2: the encrypted secret ends with the current server nonce; any other nonce is a replay."""
 
     def replay(token: ua.UserNameIdentityToken, server_certificate: bytes) -> None:
-        public_key = uacrypto.x509_from_der(server_certificate).public_key()
+        public_key = _public_key(server_certificate)
         token.Password = uacrypto.encrypt_rsa_oaep(public_key, _secret(PASSWORD, b"\x00" * 32))
 
     _rewrite_user_token(monkeypatch, replay)
@@ -56,7 +65,7 @@ async def test_cry8_rsa15_password_is_rejected_on_basic256sha256(
     """Part 4, 7.40.2: the secret is encrypted with the algorithm of the UserTokenPolicy's SecurityPolicy."""
 
     def encrypt_with_rsa15(client: Client, password: str, policy_uri: str) -> tuple[bytes, str]:
-        public_key = uacrypto.x509_from_der(client.security_policy.peer_certificate).public_key()
+        public_key = _public_key(client.security_policy.peer_certificate)
         return uacrypto.encrypt_rsa15(public_key, _secret(password, client._server_nonce or b"")), RSA_15
 
     monkeypatch.setattr(Client, "_encrypt_password", encrypt_with_rsa15)

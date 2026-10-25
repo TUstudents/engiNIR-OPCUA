@@ -269,7 +269,7 @@ async def setup_self_signed_certificate(
 
     if generate_cert is False:
         cert = await load_certificate(cert_file)
-        generate_cert = check_certificate(cert, app_uri, host_name)
+        generate_cert = bool(check_certificate(cert, app_uri, host_name))
 
     if generate_cert:
         subject_alt_names: list[x509.GeneralName] = [

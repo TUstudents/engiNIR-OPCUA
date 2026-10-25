@@ -17,6 +17,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 from enginir_opcua.crypto import uacrypto
+from enginir_opcua.ua import UaError
 
 BASE_DIR = Path(__file__).parent.parent
 EXAMPLE_CERT_PATH = BASE_DIR / "examples" / "certificate-example.der"
@@ -102,9 +103,9 @@ def test_x509_from_der_invalid_data():
     assert uacrypto.x509_from_der(b"") is None
 
     # Test with invalid data that doesn't start with a SEQUENCE tag
-    with pytest.raises(ValueError):
+    with pytest.raises(UaError):
         uacrypto.x509_from_der(b"invalid data")
 
     # Test with data that starts with a SEQUENCE tag but is otherwise invalid
-    with pytest.raises(ValueError):
+    with pytest.raises(UaError):
         uacrypto.x509_from_der(b"\x30\x03\x01\x02\x03")
