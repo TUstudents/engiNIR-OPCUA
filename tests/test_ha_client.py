@@ -26,6 +26,8 @@ from .conftest import (
 )
 from .test_subscriptions import MySubHandler
 
+pytestmark = pytest.mark.slow("asyncua/client", "asyncua/common/subscription.py")
+
 
 class TestHaClient:
     @pytest.mark.asyncio

@@ -13,6 +13,7 @@ RW_NODE = "i=3078"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
+@pytest.mark.slow("asyncua/tools.py", "tools")
 def test_cli_tools(running_server):
     # admin privileges are only needed for uawrite
     url = running_server.replace("//", "//admin@")
@@ -46,6 +47,7 @@ def test_cli_tools(running_server):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
+@pytest.mark.slow("asyncua/tools.py", "tools")
 def test_cli_tools_which_require_sigint(running_server):
     url = running_server
     tools = (["tools/uaserver"], ["tools/uasubscribe", "-u", url, "-n", RW_NODE])

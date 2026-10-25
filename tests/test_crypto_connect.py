@@ -416,6 +416,7 @@ async def test_secure_channel_key_expiration(srv_crypto_one_cert, mocker):
         assert clt.uaclient.security_policy.symmetric_cryptography.Prev_Decryptor is None
 
 
+@pytest.mark.slow("asyncua/crypto", "asyncua/client/client.py", "asyncua/client/ua_client.py")
 async def test_always_catch_new_cert_on_set_security():
     """
     Test client reconnection after server cert update.

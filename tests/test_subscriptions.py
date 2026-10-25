@@ -1204,6 +1204,12 @@ async def test_too_many_publish(opc, mocker):
 
 
 @pytest.mark.parametrize("opc", ["client"], indirect=True, scope="function")
+@pytest.mark.slow(
+    "asyncua/client",
+    "asyncua/common/subscription.py",
+    "asyncua/server/internal_subscription.py",
+    "asyncua/server/subscription_service.py",
+)
 async def test_timeout_publish(opc, mocker):
     mocker.patch.object(opc.opc.uaclient.session, "ensure_publish_loop", lambda: None)
 

@@ -84,6 +84,9 @@ async def disposable_opc(request):
     await srv.stop()
 
 
+@pytest.mark.slow(
+    "asyncua/common/xmlimporter.py", "asyncua/common/xmlparser.py", "asyncua/server/address_space.py", "nodeset"
+)
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
