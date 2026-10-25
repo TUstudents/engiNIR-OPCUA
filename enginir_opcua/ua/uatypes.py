@@ -751,7 +751,7 @@ class RelativePathElement:
     data_type = NodeId(537)
 
     ReferenceTypeId: "ua.NodeId" = field(default_factory=NodeId)
-    IsInverse: "ua.Boolean" = True
+    IsInverse: "ua.Boolean" = False
     IncludeSubtypes: "ua.Boolean" = True
     TargetName: "ua.QualifiedName" = field(default_factory=QualifiedName)
 

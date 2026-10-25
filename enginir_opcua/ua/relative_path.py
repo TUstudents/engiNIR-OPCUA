@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from enum import IntEnum
 
-from enginir_opcua.ua.object_ids import ObjectIdNames, ObjectIds
-from enginir_opcua.ua.uaerrors import UaInvalidParameterError
+from enginir_opcua.ua.object_ids import ObjectIdNames, ObjectIds, ReferenceTypeIds
+from enginir_opcua.ua.uaerrors import UaStringParsingError
 from enginir_opcua.ua.uatypes import NodeId, NodeIdType, QualifiedName, RelativePath, RelativePathElement
 
 _NS_IDX_PATTERN = re.compile(r"([0-9]*):")
@@ -32,9 +32,9 @@ class RelativePathElementFormatter:
             self._target_name = element.TargetName
 
             if not element.IsInverse and element.IncludeSubtypes:
-                if element.ReferenceTypeId.Identifier == ObjectIds.HierarchicalReferences:
+                if _is_standard_id(element.ReferenceTypeId, ObjectIds.HierarchicalReferences):
                     self._element_type = RelativePathElementType.AnyHierarchical
-                elif element.ReferenceTypeId.Identifier == ObjectIds.Aggregates:
+                elif _is_standard_id(element.ReferenceTypeId, ObjectIds.Aggregates):
                     self._element_type = RelativePathElementType.AnyComponent
                 else:
                     self._element_type = RelativePathElementType.ForwardReference
@@ -45,9 +45,6 @@ class RelativePathElementFormatter:
                 else:
                     self._element_type = RelativePathElementType.InverseReference
                 self._reference_type_name = _find_reference_type_name(element.ReferenceTypeId)
-
-            if self._element_type is None:
-                raise UaInvalidParameterError("RelativePathElementType is not specified.")
 
     @staticmethod
     def parse(string: str) -> tuple["RelativePathElementFormatter", str]:
@@ -112,17 +109,17 @@ class RelativePathElementFormatter:
                         name.append(head)
                         rest = rest[1:]
                         continue
-                    raise ValueError(f"Invalid escape sequence '&{head}' in browse path.")
-                raise ValueError("Unexpected end after escape character '&'.")
+                    raise UaStringParsingError(f"Invalid escape sequence '&{head}' in browse path.")
+                raise UaStringParsingError("Unexpected end after escape character '&'.")
             name.append(head)
             rest = rest[1:]
 
         if is_reference and head != ">":
-            raise ValueError("Missing closing '>' for reference type name in browse path.")
+            raise UaStringParsingError("Missing closing '>' for reference type name in browse path.")
 
         if len(name) == 0:
             if is_reference:
-                raise ValueError("Reference type name is null in browse path.")
+                raise UaStringParsingError("Reference type name is null in browse path.")
             if idx == 0:
                 return None, rest
 
@@ -145,7 +142,9 @@ class RelativePathElementFormatter:
             is_inverse = True
 
         if reference_type_id is None:
-            raise ValueError(f"Could not convert BrowseName to a ReferenceTypeId: {self._reference_type_name}")
+            raise UaStringParsingError(
+                f"Could not convert BrowseName to a ReferenceTypeId: {self._reference_type_name}"
+            )
 
         return RelativePathElement(
             ReferenceTypeId=reference_type_id,
@@ -166,22 +165,22 @@ class RelativePathElementFormatter:
             self._element_type == RelativePathElementType.ForwardReference
             or self._element_type == RelativePathElementType.InverseReference
         ):
-            if self._reference_type_name and self._reference_type_name.Name:
-                path.append("<")
-                if not self._include_subtypes:
-                    path.append("#")
-                if self._element_type == RelativePathElementType.InverseReference:
-                    path.append("!")
-                if self._reference_type_name.NamespaceIndex != 0:
-                    path.append(f"{self._reference_type_name.NamespaceIndex}:")
-                path.append(_encode_name(self._reference_type_name.Name))
-                path.append(">")
+            if not self._reference_type_name or not self._reference_type_name.Name:
+                raise UaStringParsingError("A forward or inverse step needs a reference type name.")
+            path.append("<")
+            if not self._include_subtypes:
+                path.append("#")
+            if self._element_type == RelativePathElementType.InverseReference:
+                path.append("!")
+            if self._reference_type_name.NamespaceIndex != 0:
+                path.append(f"{self._reference_type_name.NamespaceIndex}:")
+            path.append(_encode_name(self._reference_type_name.Name))
+            path.append(">")
 
-        # Append the target browse name component.
-        if self._target_name and self._target_name.Name:
+        if self._target_name and (self._target_name.Name or self._target_name.NamespaceIndex != 0):
             if self._target_name.NamespaceIndex != 0:
                 path.append(f"{self._target_name.NamespaceIndex}:")
-            path.append(_encode_name(self._target_name.Name))
+            path.append(_encode_name(self._target_name.Name or ""))
 
         return "".join(path)
 
@@ -211,7 +210,7 @@ class RelativePathFormatter:
                     el, rest = RelativePathElementFormatter.parse(rest)
                     formatter._elements.append(el)
             except Exception as e:
-                raise ValueError(f"Cannot parse relative path: {string}") from e
+                raise UaStringParsingError(f"Cannot parse relative path: {string}") from e
 
         return formatter
 
@@ -230,18 +229,23 @@ def _encode_name(name: str) -> str:
     return "".join([ch if ch not in _RESERVED_CHARS else f"&{ch}" for ch in name])
 
 
+def _is_standard_id(node_id: NodeId, identifier: int) -> bool:
+    return node_id.NamespaceIndex == 0 and node_id.Identifier == identifier
+
+
 def _find_reference_type(reference_type_name: QualifiedName) -> NodeId:
-    type_id = getattr(ObjectIds, reference_type_name.Name, None)
-    if type_id is not None:
-        return NodeId(Identifier=type_id, NamespaceIndex=0)
-    raise ValueError("Non-standard ReferenceTypes are not supported.")
+    if reference_type_name.NamespaceIndex == 0:
+        type_id = getattr(ObjectIds, reference_type_name.Name, None)
+        if isinstance(type_id, int) and type_id in ReferenceTypeIds:
+            return NodeId(Identifier=type_id, NamespaceIndex=0)
+    raise UaStringParsingError(f"Non-standard ReferenceTypes are not supported: {reference_type_name}")
 
 
 def _find_reference_type_name(reference_type_id: NodeId) -> QualifiedName:
-    if reference_type_id.Identifier in ObjectIdNames.keys():
+    if reference_type_id.NamespaceIndex == 0 and reference_type_id.Identifier in ReferenceTypeIds:
         id_type = reference_type_id.NodeIdType
         if id_type == NodeIdType.TwoByte or id_type == NodeIdType.FourByte or id_type == NodeIdType.Numeric:
             type_id: int = reference_type_id.Identifier
             return QualifiedName.from_string(ObjectIdNames[type_id])
-        raise ValueError("Non-integer NodeIds are not supported.")
-    raise ValueError("Non-standard ReferenceTypes are not supported.")
+        raise UaStringParsingError("Non-integer NodeIds are not supported.")
+    raise UaStringParsingError(f"Non-standard ReferenceTypes are not supported: {reference_type_id}")
