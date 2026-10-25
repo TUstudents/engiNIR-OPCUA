@@ -22,6 +22,9 @@ port_num3 = find_free_port()
 uri_crypto = "opc.tcp://127.0.0.1:{0:d}".format(port_num1)
 uri_no_crypto = "opc.tcp://127.0.0.1:{0:d}".format(port_num2)
 uri_crypto_cert = "opc.tcp://127.0.0.1:{0:d}".format(port_num3)
+uri_crypto_basic128rsa15 = f"opc.tcp://127.0.0.1:{find_free_port()}"
+uri_crypto_encrypted_key = f"opc.tcp://127.0.0.1:{find_free_port()}"
+uri_crypto_standalone = f"opc.tcp://127.0.0.1:{find_free_port()}"
 BASE_DIR = Path(__file__).parent.parent
 EXAMPLE_PATH = BASE_DIR / "examples"
 srv_crypto_params = [
@@ -46,7 +49,7 @@ encrypted_private_key_peer_creds = {
 }
 
 
-@pytest.fixture(params=srv_crypto_params)
+@pytest.fixture(scope="module", params=srv_crypto_params)
 async def srv_crypto_encrypted_key_one_cert(request):
     peer_certificate = encrypted_private_key_peer_creds["certificate"]
     user_manager = CertificateUserManager()
@@ -56,7 +59,7 @@ async def srv_crypto_encrypted_key_one_cert(request):
     srv = Server(user_manager=user_manager)
 
     await srv.init()
-    srv.set_endpoint(uri_crypto_cert)
+    srv.set_endpoint(uri_crypto_encrypted_key)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
@@ -66,7 +69,7 @@ async def srv_crypto_encrypted_key_one_cert(request):
     await srv.stop()
 
 
-@pytest.fixture(params=srv_crypto_params)
+@pytest.fixture(scope="module", params=srv_crypto_params)
 async def srv_crypto_all_certs(request):
     # start our own server
     srv = Server()
@@ -81,7 +84,7 @@ async def srv_crypto_all_certs(request):
     await srv.stop()
 
 
-@pytest.fixture(params=srv_crypto_params)
+@pytest.fixture(scope="module", params=srv_crypto_params)
 async def srv_crypto_one_cert(request):
     peer_certificate = peer_creds["certificate"]
     user_manager = CertificateUserManager()
@@ -101,13 +104,13 @@ async def srv_crypto_one_cert(request):
     await srv.stop()
 
 
-@pytest.fixture(params=srv_crypto_params)
+@pytest.fixture(scope="module", params=srv_crypto_params)
 async def srv_crypto_all_cert_basic128rsa15(request):
     # start our own server
     srv = Server()
     key, cert = request.param
     await srv.init()
-    srv.set_endpoint(uri_crypto)
+    srv.set_endpoint(uri_crypto_basic128rsa15)
     srv.set_security_policy([ua.SecurityPolicyType.Basic128Rsa15_Sign])
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
@@ -117,7 +120,7 @@ async def srv_crypto_all_cert_basic128rsa15(request):
     await srv.stop()
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 async def srv_no_crypto():
     # start our own server
     srv = Server()
@@ -161,7 +164,7 @@ async def test_basic256(srv_crypto_all_certs):
 
 async def test_basic128rsa15(srv_crypto_all_cert_basic128rsa15):
     _, cert = srv_crypto_all_cert_basic128rsa15
-    clt = Client(uri_crypto)
+    clt = Client(uri_crypto_basic128rsa15)
     print(await clt.connect_and_get_server_endpoints())
     await clt.set_security_string(
         f"Basic128Rsa15,Sign,{EXAMPLE_PATH / 'certificate-example.der'},{EXAMPLE_PATH / 'private-key-example.pem'},{cert}"
@@ -280,7 +283,7 @@ async def test_certificate_handling_success(srv_crypto_one_cert):
 
 async def test_encrypted_private_key_handling_success(srv_crypto_encrypted_key_one_cert):
     _, cert = srv_crypto_encrypted_key_one_cert
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_encrypted_key)
     await clt.set_security(
         security_policies.SecurityPolicyBasic256Sha256,
         encrypted_private_key_peer_creds["certificate"],
@@ -295,7 +298,7 @@ async def test_encrypted_private_key_handling_success(srv_crypto_encrypted_key_o
 
 async def test_encrypted_private_key_handling_success_with_cert_props(srv_crypto_encrypted_key_one_cert):
     _, cert = srv_crypto_encrypted_key_one_cert
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_encrypted_key)
     user_cert = uacrypto.CertProperties(encrypted_private_key_peer_creds["certificate"], "DER")
     user_key = uacrypto.CertProperties(
         path_or_content=encrypted_private_key_peer_creds["private_key"],
@@ -350,7 +353,7 @@ async def test_encrypted_private_key_handling_failure(srv_crypto_one_cert):
 
 async def test_certificate_handling_mismatched_creds(srv_crypto_one_cert):
     _, cert = srv_crypto_one_cert
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_cert, timeout=1)
     with pytest.raises((AttributeError, TimeoutError)):
         # either exception can be raise, depending on used python version
         # and crypto library version
@@ -367,7 +370,7 @@ async def test_certificate_handling_mismatched_creds(srv_crypto_one_cert):
 
 
 async def test_secure_channel_key_expiration(srv_crypto_one_cert, mocker):
-    timeout = 3
+    timeout = 1
     _, cert = srv_crypto_one_cert
     clt = Client(uri_crypto_cert)
     clt.secure_channel_timeout = timeout * 1000
@@ -422,13 +425,13 @@ async def test_always_catch_new_cert_on_set_security():
     # Client connecting with encryption to server
     srv = Server()
     await srv.init()
-    srv.set_endpoint(uri_crypto_cert)
+    srv.set_endpoint(uri_crypto_standalone)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     key, cert = srv_crypto_params[0]
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
     await srv.start()
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_standalone, timeout=1)
     peer_cert = peer_creds["certificate"]
     peer_key = peer_creds["private_key"]
     security_string = f"Basic256Sha256,SignAndEncrypt,{peer_cert},{peer_key}"
@@ -440,7 +443,7 @@ async def test_always_catch_new_cert_on_set_security():
     # Simulation of a server cert renewal
     srv = Server()
     await srv.init()
-    srv.set_endpoint(uri_crypto_cert)
+    srv.set_endpoint(uri_crypto_standalone)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     key, cert = srv_crypto_params[1]
     await srv.load_certificate(cert)
@@ -472,13 +475,13 @@ async def test_anonymous_rejection():
     srv = Server(user_manager=user_manager)
 
     await srv.init()
-    srv.set_endpoint(uri_crypto_cert)
+    srv.set_endpoint(uri_crypto_standalone)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     srv.set_identity_tokens([ua.UserNameIdentityToken, ua.X509IdentityToken])
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
     await srv.start()
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_standalone)
     await clt.set_security(
         security_policies.SecurityPolicyBasic256Sha256,
         peer_creds["certificate"],
@@ -507,15 +510,21 @@ async def test_security_level_endpoints(srv_crypto_all_certs: tuple[Server, str]
         assert end_point.SecurityLevel == SECURITY_POLICY_TYPE_MAP[policy_type][2]
 
 
-async def test_certificate_validator(srv_crypto_one_cert):
-    # the used certificate is not compliant with a valid OPC UA certificate so only unhappy flow can be tested!
-
+@pytest.fixture
+async def srv_crypto_one_cert_with_validator(srv_crypto_one_cert):
     srv, cert = srv_crypto_one_cert
-
     validator = CertificateValidator(
         options=CertificateValidatorOptions.BASIC_VALIDATION | CertificateValidatorOptions.PEER_CLIENT
     )
     srv.set_certificate_validator(validator)
+    yield validator, cert
+    srv.iserver.certificate_validator = None
+
+
+async def test_certificate_validator(srv_crypto_one_cert_with_validator):
+    # the used certificate is not compliant with a valid OPC UA certificate so only unhappy flow can be tested!
+
+    validator, cert = srv_crypto_one_cert_with_validator
 
     clt = Client(uri_crypto_cert)
     await clt.set_security(

@@ -33,14 +33,14 @@ def divide(parent, x, y):
     return x / y
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def tloop():
     with ThreadLoop() as tl:
         tl.loop.set_debug(True)
         yield tl
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def server(tloop):
     s = Server(tloop=tloop)
     s.disable_clock(True)
@@ -339,7 +339,7 @@ def test_create_struct_sync_client(client):
     new_struct(
         client,
         idx,
-        "MyMyStruct",
+        "MyMyStructClient",
         [
             new_struct_field("MyBool", ua.VariantType.Boolean),
             new_struct_field("MyUInt32", ua.VariantType.UInt32, array=True),
@@ -347,7 +347,7 @@ def test_create_struct_sync_client(client):
     )
 
     client.load_data_type_definitions()
-    mystruct = ua.MyMyStruct()
+    mystruct = ua.MyMyStructClient()
     mystruct.MyUInt32 = [78, 79]
     var = client.nodes.objects.add_variable(idx, "my_struct", mystruct)
     val = var.read_value()

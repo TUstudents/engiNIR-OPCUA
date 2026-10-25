@@ -240,6 +240,17 @@ async def test_delete_nodes_with_inverse_references(opc):
     await opc.opc.delete_nodes([fold])
 
 
+async def test_delete_nodes_removes_one_way_references(opc):
+    fold = await opc.opc.nodes.objects.add_folder(2, "FolderOneWayRefs")
+    target = await fold.add_variable(2, "OneWayTarget", 1.0)
+    source = await fold.add_variable(2, "OneWaySource", 2.0)
+    await source.add_reference(target.nodeid, reftype=ua.ObjectIds.HasEffect, forward=True, bidirectional=False)
+    assert [target] == await source.get_referenced_nodes(refs=ua.ObjectIds.HasEffect)
+    await opc.opc.delete_nodes([target])
+    assert [] == await source.get_referenced_nodes(refs=ua.ObjectIds.HasEffect)
+    await opc.opc.delete_nodes([fold], recursive=True)
+
+
 async def test_delete_nodes_recursive(opc):
     obj = opc.opc.nodes.objects
     fold = await obj.add_folder(2, "FolderToDeleteR")

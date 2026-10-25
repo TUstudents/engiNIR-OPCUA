@@ -13,7 +13,16 @@ from asyncua.client.ua_client import UaClientState
 
 from .conftest import find_free_port
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.slow(
+        "asyncua/client",
+        "asyncua/common/subscription.py",
+        "asyncua/server/internal_session.py",
+        "asyncua/server/internal_subscription.py",
+        "asyncua/server/subscription_service.py",
+    ),
+]
 
 
 async def _start_server(port: int) -> Server:

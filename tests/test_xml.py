@@ -7,9 +7,11 @@ from typing import Any
 import pytest
 from pytz import timezone
 
-from asyncua import Node, ua, uamethod
+from asyncua import Client, Node, Server, ua, uamethod
 from asyncua.common.structures104 import new_enum, new_enum_field, new_struct, new_struct_field
 from asyncua.ua import uaerrors
+
+from .conftest import Opc, find_free_port
 
 _logger = logging.getLogger("asyncua.common.xmlimporter")
 _logger.setLevel(logging.DEBUG)
@@ -67,28 +69,38 @@ async def test_xml_import(opc):
         await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
 
 
-async def test_xml_import_companion_specifications(opc):
-    # if not already shift the new namespaces
-    await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
-    # Test against some companion specifications
-    nodes = await opc.opc.import_xml(NODESET_DI)
-    scales_nodes = await opc.opc.import_xml(NODESET_SCALES)
-    for nodeid in scales_nodes:
-        await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
-    if opc.opc == opc.server:
-        # Only load in server testcase takes to long if the networklayer is involved
-        pack_nodes = await opc.opc.import_xml(NODESET_PACK)
+@pytest.fixture(params=["client", "server"])
+async def disposable_opc(request):
+    srv = Server()
+    await srv.init()
+    port = find_free_port()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    await srv.start()
+    if request.param == "client":
+        async with Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10) as clt:
+            yield Opc(clt, srv)
+    else:
+        yield Opc(srv, srv)
+    await srv.stop()
 
-        # pack_nodes += await opc.opc.import_xml(NODESET_TMC) # @TODO we have a nameming colison
-        for nodeid in pack_nodes:
-            await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
-        ruber_nodes = await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
-        for nodeid in ruber_nodes:
-            await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
+
+async def test_xml_import_companion_specifications(disposable_opc):
+    opc = disposable_opc
+    await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
+    nodes = await opc.opc.import_xml(NODESET_DI)
+    nodes += await opc.opc.import_xml(NODESET_SCALES)
+    if opc.opc == opc.server:
+        nodes += await opc.opc.import_xml(NODESET_PACK)
+        nodes += await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
         nodes += await opc.opc.import_xml(NODESET_IA)
         nodes += await opc.opc.import_xml(NODESET_VISION)
     for nodeid in nodes:
         await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
+    aspace = opc.server.iserver.aspace
+    remaining = set(aspace.keys())
+    assert remaining.isdisjoint(nodes)
+    dangling = [(nodeid, ref.NodeId) for nodeid in remaining for ref in aspace[nodeid].references]
+    assert [ref for ref in dangling if ref[1] not in remaining] == []
 
 
 async def test_xml_import_additional_ns(opc):

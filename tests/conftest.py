@@ -1,6 +1,7 @@
 import asyncio
 import operator
 import socket
+import subprocess
 from asyncio import get_event_loop_policy, sleep
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,50 @@ def find_free_port():
 port_num = find_free_port()
 port_num1 = find_free_port()
 port_discovery = find_free_port()
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--changed-since",
+        metavar="REF",
+        default=None,
+        help="deselect tests marked slow unless git diff REF touches their source paths, their test file or conftest.py",
+    )
+
+
+def _changed_files(rootpath: Path, ref: str) -> set[str]:
+    def git(*args: str) -> list[str]:
+        result = subprocess.run(["git", *args], cwd=rootpath, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise pytest.UsageError(f"--changed-since {ref}: {result.stderr.strip()}")
+        return result.stdout.split()
+
+    return set(git("diff", "--name-only", ref)) | set(git("ls-files", "--others", "--exclude-standard"))
+
+
+def _touches(changed: set[str], paths: list[str]) -> bool:
+    prefixes = [path.rstrip("/") for path in paths]
+    return any(file == prefix or file.startswith(f"{prefix}/") for file in changed for prefix in prefixes)
+
+
+def pytest_collection_modifyitems(config, items):
+    ref = config.getoption("--changed-since")
+    if ref is None:
+        return
+    changed = _changed_files(config.rootpath, ref)
+    if _touches(changed, ["tests/conftest.py"]):
+        return
+    selected, deselected = [], []
+    for item in items:
+        mark = item.get_closest_marker("slow")
+        paths = [*mark.args, item.path.relative_to(config.rootpath).as_posix()] if mark else []
+        if mark is None or _touches(changed, paths):
+            selected.append(item)
+        else:
+            deselected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
 
 
 def pytest_generate_tests(metafunc):

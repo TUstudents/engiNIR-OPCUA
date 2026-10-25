@@ -107,6 +107,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_test_loop_scope = "module"
 asyncio_default_fixture_loop_scope = "module"
+markers = [
+  "slow(*paths): slow test; with --changed-since REF it only runs when one of the given source paths, its test file or tests/conftest.py changed",
+]
 
 [tool.ruff]
 target-version = "py310"
