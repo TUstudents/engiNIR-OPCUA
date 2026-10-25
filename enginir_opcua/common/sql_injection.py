@@ -160,3 +160,8 @@ def validate_table_name(table_name: str) -> None:
     for character in table_name:
         if character in not_allowed_characters:
             raise SqlInjectionError(f"table_name: {table_name} contains invalid character: {character}")
+
+
+def quote_identifier(name: str) -> str:
+    """Quote an SQL identifier, so that any character in it, including a double quote, stays part of the name."""
+    return '"' + name.replace('"', '""') + '"'

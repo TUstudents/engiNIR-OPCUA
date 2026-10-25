@@ -11,7 +11,7 @@ import aiosqlite
 from enginir_opcua import ua
 
 from ..common.events import Event, get_event_properties_from_type_node
-from ..common.sql_injection import validate_table_name
+from ..common.sql_injection import quote_identifier, validate_table_name
 from ..common.utils import Buffer
 from ..ua.ua_binary import variant_from_binary, variant_to_binary
 from .history import HistoryStorageInterface
@@ -176,8 +176,8 @@ class HistorySQLite(HistoryStorageInterface):
             validate_table_name(table)
             await self._db.execute(
                 f'INSERT INTO "{table}" ("_Id", "_Timestamp", "_EventTypeName", {columns}) '
-                f'VALUES (NULL, "{event.Time}", "{event_type}", {placeholders})',  # type: ignore[attr-defined]
-                evtup,
+                f"VALUES (NULL, ?, ?, {placeholders})",
+                (str(event.Time), str(event_type), *evtup),  # type: ignore[attr-defined]
             )
             await self._db.commit()
         except aiosqlite.Error as e:
@@ -296,7 +296,7 @@ class HistorySQLite(HistoryStorageInterface):
     def _get_event_columns(self, ev_fields: list[str]) -> str:
         fields = []
         for field in ev_fields:
-            fields.append(field + " BLOB")
+            fields.append(quote_identifier(field) + " BLOB")
         return self._list_to_sql_str(fields, False)
 
     def _get_select_clauses(self, source_id: ua.NodeId, evfilter: Any) -> tuple[list[str], str]:
@@ -318,5 +318,5 @@ class HistorySQLite(HistoryStorageInterface):
 
     @staticmethod
     def _list_to_sql_str(ls: list[str], quotes: bool = True) -> str:
-        items = [f'"{item}"' if quotes else str(item) for item in ls]
+        items = [quote_identifier(item) if quotes else str(item) for item in ls]
         return ", ".join(items)
