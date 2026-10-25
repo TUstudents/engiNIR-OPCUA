@@ -555,10 +555,8 @@ def test_bad_string():
         ua.NodeId.from_string("i=r;ns=1")
     with pytest.raises(ua.UaStringParsingError):
         ua.NodeId.from_string("ns=1")
-    with pytest.raises(ua.UaError):
-        ua.QualifiedName.from_string("i:yu")
-    with pytest.raises(ua.UaError):
-        ua.QualifiedName.from_string("i:::yu")
+    assert ua.QualifiedName.from_string("i:yu").Name == "i:yu"
+    assert ua.QualifiedName.from_string("i:::yu").Name == "i:::yu"
 
 
 def test_expandednodeid():

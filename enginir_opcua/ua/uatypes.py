@@ -10,6 +10,7 @@ import functools
 import itertools
 import logging
 import operator
+import re
 import types
 import uuid
 from base64 import b64decode, b64encode
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Self, Union, get_args, get_origin
+from urllib.parse import unquote
 
 from enginir_opcua.ua.object_ids import ObjectIds
 
@@ -706,40 +708,62 @@ class ExpandedNodeId(NodeId):
         return ";".join(string)
 
 
+_INDEX_PREFIX_PATTERN = re.compile(r"([0-9]+):")
+
+
+def _decode_uri(uri: str) -> str:
+    return unquote(uri, errors="strict")
+
+
 @dataclass(init=False, order=True, slots=True)
 class QualifiedName:
     """
-    A string qualified with a namespace index.
+    A name qualified with a namespace index (Part 3, 8.3; Part 6, 5.2.2.13).
+
+    The string form is the one of Part 6, 5.1.12, Table 7: the bare name for namespace 0 and
+    ``<index>:<name>`` otherwise.
     """
 
-    NamespaceIndex: "ua.Int16" = 0
+    NamespaceIndex: "ua.UInt16" = 0
     Name: "ua.String" = ""
 
     def __init__(self, Name: str | None = None, NamespaceIndex: int = 0) -> None:
+        if isinstance(Name, int) and isinstance(NamespaceIndex, str):
+            raise TypeError(
+                f"QualifiedName(Name, NamespaceIndex): the arguments are swapped, got ({Name!r}, {NamespaceIndex!r})"
+            )
+        if not isinstance(Name, str | type(None)):
+            raise TypeError(f"QualifiedName Name must be a string or None, got {type(Name).__name__}")
+        if not isinstance(NamespaceIndex, int):
+            raise TypeError(f"QualifiedName NamespaceIndex must be an int, got {type(NamespaceIndex).__name__}")
         object.__setattr__(self, "Name", Name)
         object.__setattr__(self, "NamespaceIndex", NamespaceIndex)
-        if isinstance(self.NamespaceIndex, str) and isinstance(self.Name, int):
-            # originally the order or argument was inversed, try to support it
-            _logger.warning("QualifiedName are str, int, while int, str is expected, switching")
-
-        if not isinstance(self.NamespaceIndex, int) or not isinstance(self.Name, str | type(None)):
-            raise ValueError(f"QualifiedName constructor args have wrong types, {self}")
 
     def to_string(self) -> str:
-        return f"{self.NamespaceIndex}:{self.Name}"
+        name = self.Name or ""
+        if self.NamespaceIndex == 0:
+            if _INDEX_PREFIX_PATTERN.match(name):
+                raise UaError(f"The name {name!r} in namespace 0 would read back as a name in another namespace")
+            return name
+        return f"{self.NamespaceIndex}:{name}"
 
     @staticmethod
-    def from_string(string: str, default_idx: int = 0) -> QualifiedName:
-        if ":" in string:
+    def from_string(string: str, default_idx: int = 0, namespaces: list[str] | None = None) -> QualifiedName:
+        if string.startswith("nsu="):
+            uri, separator, name = string[4:].partition(";")
+            if not separator:
+                raise UaStringParsingError(f"Error parsing string {string}: no name after the namespace URI")
+            if namespaces is None:
+                raise UaStringParsingError(f"Error parsing string {string}: nsu= needs a namespace table")
             try:
-                idx, name = string.split(":", 1)
-                idx = int(idx)
-            except (TypeError, ValueError) as ex:
-                raise UaStringParsingError(f"Error parsing string {string}", ex) from ex
-        else:
-            idx = default_idx
-            name = string
-        return QualifiedName(Name=name, NamespaceIndex=idx)
+                index = namespaces.index(_decode_uri(uri))
+            except ValueError as ex:
+                raise UaStringParsingError(f"Error parsing string {string}: unknown namespace URI", ex) from ex
+            return QualifiedName(Name=name, NamespaceIndex=index)
+        match = _INDEX_PREFIX_PATTERN.match(string)
+        if match:
+            return QualifiedName(Name=string[match.end() :], NamespaceIndex=int(match.group(1)))
+        return QualifiedName(Name=string, NamespaceIndex=default_idx)
 
 
 @dataclass(frozen=False)
