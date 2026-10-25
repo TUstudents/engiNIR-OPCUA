@@ -12,6 +12,7 @@ from enum import Enum, IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
 from dateutil import parser  # type: ignore[attr-defined]
+from dateutil.tz import tzutc
 
 from enginir_opcua import ua
 
@@ -139,6 +140,8 @@ def string_to_val(string: str, vtype: Any) -> Any:
         val = ua.QualifiedName.from_string(string)
     elif vtype == ua.VariantType.DateTime:
         val = parser.parse(string)
+        if val.tzinfo is not None:
+            val = val.astimezone(tzutc())
     elif vtype == ua.VariantType.LocalizedText:
         val = ua.LocalizedText.from_string(string)
     elif vtype == ua.VariantType.StatusCode:

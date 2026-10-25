@@ -8,8 +8,6 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 
-from pytz import utc
-
 from enginir_opcua import ua
 
 from .ua_utils import string_to_val
@@ -280,9 +278,6 @@ class XMLParser:
             obj.value = ua_type_to_python(val_el.text, ntag)
         elif ntag == "DateTime":
             obj.value = ua_type_to_python(val_el.text, ntag)
-            # According to specs, DateTime should be either UTC or with a timezone.
-            if obj.value.tzinfo is None or obj.value.tzinfo.utcoffset(obj.value) is None:
-                utc.localize(obj.value)  # FIXME Forcing to UTC if unaware, maybe should raise?
         elif ntag == "ByteString":
             if val_el.text is None:
                 mytext = b""
