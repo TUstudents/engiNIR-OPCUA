@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from enginir_opcua import Client, Server, ua
@@ -145,3 +147,47 @@ async def test_cry7_sign_asymmetric_without_a_signing_policy_raises(
     _, private_key = credentials
     with pytest.raises(ua.UaError):
         security_policies.sign_asymmetric(private_key, DATA, policy_uri)
+
+
+def _handshake(
+    cls: type[SecurityPolicy], credentials: tuple[object, object], mode: ua.MessageSecurityMode
+) -> tuple[SecurityPolicy, SecurityPolicy]:
+    sender = _policy(cls, credentials, mode)
+    receiver = _policy(cls, credentials, mode)
+    sender.make_local_symmetric_key(SECRET, SEED)
+    receiver.make_remote_symmetric_key(SECRET, SEED, 60000)
+    return sender, receiver
+
+
+@pytest.mark.parametrize("cls", POLICIES)
+@pytest.mark.parametrize("size", [0, 1, 15, 16, 17, 100, 4093])
+async def test_cry9_symmetric_round_trip_pads_to_the_aes_block(
+    cls: type[SecurityPolicy], size: int, credentials: tuple[object, object]
+) -> None:
+    """Part 6, 6.7.2.5.1: padding makes the signed plaintext a multiple of the 16 byte AES block."""
+    sender, receiver = _handshake(cls, credentials, ua.MessageSecurityMode.SignAndEncrypt)
+    body = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
+    crypto = sender.symmetric_cryptography
+    plain = body + crypto.padding(len(body))
+    signed = plain + crypto.signature(plain)
+    assert len(signed) % 16 == 0
+    assert crypto.plain_block_size() == crypto.encrypted_block_size() == 16
+    decrypted = receiver.symmetric_cryptography.decrypt(crypto.encrypt(signed))
+    signature_size = receiver.symmetric_cryptography.vsignature_size()
+    receiver.symmetric_cryptography.verify(decrypted[:-signature_size], decrypted[-signature_size:])
+    assert receiver.symmetric_cryptography.remove_padding(decrypted[:-signature_size]) == body
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        security_policies.Signer,
+        security_policies.Verifier,
+        security_policies.Encryptor,
+        security_policies.Decryptor,
+        security_policies.SecurityPolicy,
+    ],
+)
+def test_cry9_abstract_bases_are_enforced(base: Any) -> None:
+    with pytest.raises(TypeError):
+        base()
