@@ -136,8 +136,8 @@ class Client:
         self._server_nonce = None
         self._session_counter = 1
         self.nodes: Shortcuts = Shortcuts(self.uaclient.session)
-        self.max_messagesize = 0  # No limits
-        self.max_chunkcount = 0  # No limits
+        self.max_messagesize = 0
+        self.max_chunkcount = 0
         self._renew_channel_task: asyncio.Task[None] | None = None
         self._supervisor_task: asyncio.Task[None] | None = None
         self._stale_watchdog_task: asyncio.Task[None] | None = None

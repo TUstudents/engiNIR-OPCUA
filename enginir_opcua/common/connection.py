@@ -94,24 +94,32 @@ class FrameReader:
             del self.buffer[:pos]
 
 
+DEFAULT_MAX_MESSAGE_SIZE = 100 * 1024 * 1024
+DEFAULT_MAX_CHUNK_COUNT = DEFAULT_MAX_MESSAGE_SIZE // 65535 + 1
+
+
 @dataclass
 class TransportLimits:
     """
-    Limits of the tcp transport layer to prevent excessive resource usage
+    Limits of the tcp transport layer to prevent excessive resource usage.
+
+    max_recv_buffer, max_message_size and max_chunk_count are what this side enforces on incoming data and
+    tells the peer. max_send_buffer, send_max_message_size and send_max_chunk_count are what the peer
+    told us and what this side obeys when sending (0 means the peer has no limit).
     """
 
-    # Max size of a chunk we can receive
     max_recv_buffer: int = 65535
-    # Max size of a chunk we can send
     max_send_buffer: int = 65535
-    max_chunk_count: int = ((100 * 1024 * 1024) // 65535) + 1  # max_message_size / max_recv_buffer
-    max_message_size: int = 100 * 1024 * 1024  # 100mb
+    max_chunk_count: int = DEFAULT_MAX_CHUNK_COUNT
+    max_message_size: int = DEFAULT_MAX_MESSAGE_SIZE
+    send_max_message_size: int = 0
+    send_max_chunk_count: int = 0
 
-    @staticmethod
-    def _select_limit(other: ua.UInt32, current_limit: int) -> ua.UInt32:
-        if current_limit <= 0 or other <= 0:
-            return max(other, ua.UInt32(current_limit))
-        return min(other, ua.UInt32(current_limit))
+    def __post_init__(self) -> None:
+        if self.max_message_size == 0:
+            self.max_message_size = DEFAULT_MAX_MESSAGE_SIZE
+        if self.max_chunk_count == 0:
+            self.max_chunk_count = DEFAULT_MAX_CHUNK_COUNT
 
     def is_msg_size_within_limit(self, sz: int) -> bool:
         if self.max_message_size == 0:
@@ -145,42 +153,38 @@ class TransportLimits:
         ack = ua.Acknowledge()
         ack.ReceiveBufferSize = min(msg.SendBufferSize, self.max_recv_buffer)
         ack.SendBufferSize = min(msg.ReceiveBufferSize, self.max_send_buffer)
-        ack.MaxChunkCount = self._select_limit(msg.MaxChunkCount, self.max_chunk_count)
-        ack.MaxMessageSize = self._select_limit(msg.MaxMessageSize, self.max_message_size)
-        have_changes = (
-            self.max_chunk_count != ack.MaxChunkCount
-            or self.max_recv_buffer != ack.ReceiveBufferSize
-            or self.max_send_buffer != ack.SendBufferSize
-            or self.max_message_size != ack.MaxMessageSize
-        )
-        if have_changes:
-            _logger.info("updating server limits to: %s", self)
-            self.max_chunk_count = ack.MaxChunkCount
-            self.max_recv_buffer = ack.ReceiveBufferSize
-            self.max_send_buffer = ack.SendBufferSize
-            self.max_message_size = ack.MaxMessageSize
+        ack.MaxChunkCount = self.max_chunk_count
+        ack.MaxMessageSize = self.max_message_size
+        self.max_recv_buffer = ack.ReceiveBufferSize
+        self.max_send_buffer = ack.SendBufferSize
+        self.send_max_message_size = msg.MaxMessageSize
+        self.send_max_chunk_count = msg.MaxChunkCount
+        _logger.info("updated server limits to: %s", self)
         return ack
 
     def create_hello_limits(self, msg: ua.Hello) -> ua.Hello:
         msg.ReceiveBufferSize = self.max_recv_buffer
         msg.SendBufferSize = self.max_send_buffer
         msg.MaxChunkCount = self.max_chunk_count
-        msg.MaxMessageSize = self.max_chunk_count
+        msg.MaxMessageSize = self.max_message_size
         return msg
 
     def update_client_limits(self, msg: ua.Acknowledge) -> None:
-        have_changes = (
-            self.max_chunk_count != msg.MaxChunkCount
-            or self.max_recv_buffer != msg.SendBufferSize
-            or self.max_send_buffer != msg.ReceiveBufferSize
-            or self.max_message_size != msg.MaxMessageSize
-        )
-        if have_changes:
-            _logger.info("updating client limits to: %s", self)
-            self.max_chunk_count = msg.MaxChunkCount
-            self.max_recv_buffer = msg.SendBufferSize
-            self.max_send_buffer = msg.ReceiveBufferSize
-            self.max_message_size = msg.MaxMessageSize
+        if msg.ProtocolVersion > 0:
+            raise TransportError(ua.StatusCodes.BadProtocolVersionUnsupported, "Acknowledge version is too high")
+        for name, size, sent in (
+            ("ReceiveBufferSize", msg.ReceiveBufferSize, self.max_send_buffer),
+            ("SendBufferSize", msg.SendBufferSize, self.max_recv_buffer),
+        ):
+            if size < MIN_BUFFER_SIZE or size > sent:
+                raise TransportError(
+                    ua.StatusCodes.BadInvalidArgument, f"Acknowledge {name} {size} is outside {MIN_BUFFER_SIZE}..{sent}"
+                )
+        self.max_send_buffer = msg.ReceiveBufferSize
+        self.max_recv_buffer = msg.SendBufferSize
+        self.send_max_message_size = msg.MaxMessageSize
+        self.send_max_chunk_count = msg.MaxChunkCount
+        _logger.info("updated client limits to: %s", self)
 
 
 class MessageChunk:
@@ -350,6 +354,10 @@ class SecureConnection:
         self.remote_nonce: int | bytes = 0
         self._allow_prev_token = False
         self._limits = limits
+
+    @property
+    def limits(self) -> TransportLimits:
+        return self._limits
 
     def set_channel(self, params: Any, request_type: ua.SecurityTokenRequestType, client_nonce: bytes) -> None:
         """

@@ -1435,13 +1435,13 @@ def test_a_message_within_max_message_size_still_arrives():
     assert connection._incoming_parts == []
 
 
-def test_unlimited_max_message_size_is_honoured():
+def test_a_configured_zero_message_size_means_the_default_not_unlimited() -> None:
     limits = TransportLimits(max_recv_buffer=1024, max_chunk_count=1000, max_message_size=0)
     connection = _connection(limits)
-    body = bytes(1000)
 
+    assert limits.max_message_size == 100 * 1024 * 1024
     for seq in range(1, 51):
-        assert connection._receive(_incoming_chunk(seq, body)) is None
+        assert connection._receive(_incoming_chunk(seq, bytes(1000))) is None
 
     assert len(connection._incoming_parts) == 50
 
@@ -1484,7 +1484,7 @@ def test_acknowledge_bounds_each_buffer_by_the_opposite_hello_buffer() -> None:
     assert (limits.max_recv_buffer, limits.max_send_buffer) == (16384, 8192)
 
 
-@pytest.mark.parametrize("initial", [(65535, 65535), (8192, 65535)])
+@pytest.mark.parametrize("initial", [(65535, 65535), (65535, 8192)])
 def test_client_sends_what_the_server_receives_and_receives_what_it_sends(initial: tuple[int, int]) -> None:
     limits = TransportLimits(*initial, 0, 0)
     ack = ua.Acknowledge(ReceiveBufferSize=8192, SendBufferSize=65535)

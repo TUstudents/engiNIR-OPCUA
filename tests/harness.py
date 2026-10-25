@@ -66,6 +66,15 @@ class RawPeer:
             raise AssertionError(f"expected an Error, got {message_type!r}")
         return struct_from_binary(ua.ErrorMessage, Buffer(body))
 
+    async def receive_hello(self, timeout: float = 5.0) -> ua.Hello:
+        message_type, body = await self.receive(timeout)
+        if message_type != ua.MessageType.Hello:
+            raise AssertionError(f"expected a Hello, got {message_type!r}")
+        return struct_from_binary(ua.Hello, Buffer(body))
+
+    async def send_acknowledge(self, acknowledge: ua.Acknowledge) -> None:
+        await self.send(uatcp_to_binary(ua.MessageType.Acknowledge, acknowledge))
+
     async def is_closed_by_peer(self, timeout: float = 5.0) -> bool:
         try:
             return await asyncio.wait_for(self._reader.read(1), timeout) == b""
@@ -78,6 +87,39 @@ class RawPeer:
             await self._writer.wait_closed()
         except ConnectionResetError:
             pass
+
+
+class RawServer:
+    """A listening socket that hands the first connection of a client under test to the test as a RawPeer."""
+
+    def __init__(self, server: asyncio.Server, connected: asyncio.Future[RawPeer], port: int) -> None:
+        self._server = server
+        self._connected = connected
+        self.host = "127.0.0.1"
+        self.port = port
+
+    @classmethod
+    async def start(cls) -> RawServer:
+        connected: asyncio.Future[RawPeer] = asyncio.get_running_loop().create_future()
+
+        def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            if not connected.done():
+                connected.set_result(RawPeer(reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        return cls(server, connected, server.sockets[0].getsockname()[1])
+
+    @property
+    def url(self) -> str:
+        return f"opc.tcp://{self.host}:{self.port}"
+
+    async def accept(self, timeout: float = 5.0) -> RawPeer:
+        return await asyncio.wait_for(self._connected, timeout)
+
+    async def close(self) -> None:
+        if self._connected.done():
+            await self._connected.result().close()
+        self._server.close()
 
 
 ResponseTamper = Callable[[Any], None]

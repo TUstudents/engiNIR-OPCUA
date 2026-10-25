@@ -21,7 +21,7 @@ from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
-from ..common.connection import SecureConnection, TransportLimits
+from ..common.connection import SecureConnection, TransportError, TransportLimits
 from ..common.utils import wait_for
 from ..crypto import security_policies
 from ..observer import NULL_OBSERVER, Observer
@@ -72,7 +72,7 @@ class UASocketProtocol(asyncio.Protocol):
         self._request_handle = 0
         self._callbackmap: dict[int, asyncio.Future[Any]] = {}
         if limits is None:
-            limits = TransportLimits(65535, 65535, 0, 0)
+            limits = TransportLimits()
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
         self._connection = SecureConnection(security_policy, limits)
@@ -143,6 +143,11 @@ class UASocketProtocol(asyncio.Protocol):
                     response.ResponseHeader.ServiceResult.check()
                     self._open_secure_channel_exchange = response
                     self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
+            except TransportError as e:
+                self.logger.error("Closing connection to server: %s (%s)", e.reason, ua.StatusCode(e.status))
+                self._fail_all_pending(ua.UaStatusCodeError(e.status))
+                self.disconnect_socket()
+                return
             except ua.UaStatusCodeError as e:
                 self.logger.error("Got error status from server: %s", e)
                 self._fail_all_pending(e)
@@ -289,10 +294,12 @@ class UASocketProtocol(asyncio.Protocol):
             self.logger.warning("disconnect_socket was called but transport is None")
 
     async def send_hello(self, url: str, max_messagesize: int = 0, max_chunkcount: int = 0) -> ua.Acknowledge:
-        hello = ua.Hello()
-        hello.EndpointUrl = url
-        hello.MaxMessageSize = max_messagesize
-        hello.MaxChunkCount = max_chunkcount
+        limits = self._connection.limits
+        if max_messagesize:
+            limits.max_message_size = max_messagesize
+        if max_chunkcount:
+            limits.max_chunk_count = max_chunkcount
+        hello = limits.create_hello_limits(ua.Hello(EndpointUrl=url))
         ack: asyncio.Future[ua.Acknowledge] = asyncio.Future()
         self._callbackmap[0] = ack
         if self.transport is not None:

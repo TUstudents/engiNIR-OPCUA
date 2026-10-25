@@ -1,12 +1,18 @@
+import asyncio
 import struct
 from unittest.mock import Mock
 
 import pytest
 
 from enginir_opcua import Server, ua
+from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.common.connection import TransportLimits
+from enginir_opcua.common.utils import Buffer
 from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
+from enginir_opcua.server.uaprocessor import UaProcessor
+from enginir_opcua.ua.ua_binary import struct_to_binary
 
-from .harness import RawPeer
+from .harness import RawPeer, RawServer
 
 HELLO = ua.Hello(ReceiveBufferSize=65536, SendBufferSize=65536)
 
@@ -123,3 +129,107 @@ async def test_srv26_connection_over_limit_gets_not_enough_resources(
 ) -> None:
     """Part 6, 7.1.2.3 and 7.1.5: a server that cannot take the connection says so before it closes."""
     await assert_error_and_close(raw_peer, ua.StatusCodes.BadTcpNotEnoughResources)
+
+
+def hello_limits(hello_max_message_size: int, hello_max_chunk_count: int) -> ua.Hello:
+    return ua.Hello(
+        ReceiveBufferSize=65535,
+        SendBufferSize=65535,
+        MaxMessageSize=hello_max_message_size,
+        MaxChunkCount=hello_max_chunk_count,
+    )
+
+
+def test_com60_ack_carries_request_limits_and_hello_limits_become_send_limits() -> None:
+    """Part 6, 7.1.2.3 and 7.1.2.4: the Hello limits describe responses, the Acknowledge limits describe requests."""
+    limits = TransportLimits(max_chunk_count=7, max_message_size=100_000)
+    ack = limits.create_acknowledge_and_set_limits(hello_limits(500, 3))
+    assert (ack.MaxMessageSize, ack.MaxChunkCount) == (100_000, 7)
+    assert (limits.max_message_size, limits.max_chunk_count) == (100_000, 7)
+    assert (limits.send_max_message_size, limits.send_max_chunk_count) == (500, 3)
+
+
+def test_com60_zero_peer_limit_does_not_unbound_receive() -> None:
+    """Part 6, 7.1.2.3: 0 from the peer means no limit on what we send, not on what we receive."""
+    limits = TransportLimits(max_chunk_count=7, max_message_size=100_000)
+    ack = limits.create_acknowledge_and_set_limits(hello_limits(0, 0))
+    assert (ack.MaxMessageSize, ack.MaxChunkCount) == (100_000, 7)
+    assert (limits.max_message_size, limits.max_chunk_count) == (100_000, 7)
+    assert (limits.send_max_message_size, limits.send_max_chunk_count) == (0, 0)
+
+
+def test_com60_configured_zero_is_replaced_by_the_defaults() -> None:
+    """Part 6, 7.1.2.3: an own receive limit of 0 would let a peer send without bound."""
+    limits = TransportLimits(max_chunk_count=0, max_message_size=0)
+    assert (limits.max_message_size, limits.max_chunk_count) == (100 * 1024 * 1024, 1601)
+
+
+def test_com60_client_checks_responses_against_its_own_limits() -> None:
+    """Part 6, 7.1.2.4: the Acknowledge limits are the server's request limits, not ours for responses."""
+    limits = TransportLimits(max_chunk_count=2, max_message_size=1000)
+    limits.update_client_limits(ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65535, MaxMessageSize=10**6))
+    assert (limits.max_message_size, limits.max_chunk_count) == (1000, 2)
+    assert (limits.send_max_message_size, limits.send_max_chunk_count) == (10**6, 0)
+
+
+async def test_com60_negotiation_does_not_touch_server_configuration() -> None:
+    """Part 6, 7.1.2.4: the negotiated values belong to the connection."""
+    configured = TransportLimits()
+    processor = UaProcessor(Mock(), Mock(), configured)
+    processor.accept_hello(Buffer(struct_to_binary(hello_limits(500, 3))))
+    assert configured == TransportLimits()
+    assert processor._limits.send_max_chunk_count == 3
+
+
+def test_com38_create_hello_limits_carries_each_limit() -> None:
+    """Part 6, 7.1.2.3: MaxMessageSize is a size, not the chunk count."""
+    limits = TransportLimits(max_recv_buffer=9000, max_send_buffer=10000, max_chunk_count=7, max_message_size=123456)
+    hello = limits.create_hello_limits(ua.Hello())
+    assert (hello.ReceiveBufferSize, hello.SendBufferSize) == (9000, 10000)
+    assert (hello.MaxMessageSize, hello.MaxChunkCount) == (123456, 7)
+
+
+def test_com38_hello_defaults_are_the_library_limits() -> None:
+    """Part 6, 7.1.2.3: not 2^31-1 placeholders."""
+    hello = ua.Hello()
+    assert (hello.ReceiveBufferSize, hello.SendBufferSize) == (65535, 65535)
+    assert (hello.MaxMessageSize, hello.MaxChunkCount) == (100 * 1024 * 1024, 1601)
+
+
+async def test_com38_client_hello_carries_its_own_limits(raw_server: RawServer) -> None:
+    """Part 6, 7.1.2.3: the client tells the server what it can receive."""
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    hello = await peer.receive_hello()
+    assert (hello.ReceiveBufferSize, hello.SendBufferSize) == (65535, 65535)
+    assert (hello.MaxMessageSize, hello.MaxChunkCount) == (100 * 1024 * 1024, 1601)
+    assert hello.EndpointUrl == raw_server.url
+    await peer.send_acknowledge(ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65535))
+    await hello_task
+    uaclient.disconnect_socket()
+
+
+@pytest.mark.parametrize(
+    "acknowledge",
+    [
+        ua.Acknowledge(ProtocolVersion=1, ReceiveBufferSize=65535, SendBufferSize=65535),
+        ua.Acknowledge(ReceiveBufferSize=65536, SendBufferSize=65535),
+        ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65536),
+        ua.Acknowledge(ReceiveBufferSize=100, SendBufferSize=65535),
+        ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=8191),
+    ],
+    ids=["version", "receive-too-large", "send-too-large", "receive-below-8192", "send-below-8192"],
+)
+async def test_com36_client_rejects_invalid_acknowledge(raw_server: RawServer, acknowledge: ua.Acknowledge) -> None:
+    """Part 6, 7.1.2.4: the buffers do not exceed the Hello's and are at least 8192; the version is not higher."""
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    await peer.receive_hello()
+    await peer.send_acknowledge(acknowledge)
+    with pytest.raises(ua.UaStatusCodeError):
+        await hello_task
+    assert await peer.is_closed_by_peer()
