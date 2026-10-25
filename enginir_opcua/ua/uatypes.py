@@ -4,12 +4,12 @@ implement ua datatypes
 
 from __future__ import annotations
 
+import ast
 import binascii
 import functools
 import itertools
 import logging
 import operator
-import re
 import types
 import uuid
 from base64 import b64decode, b64encode
@@ -794,15 +794,16 @@ class RelativePath:
 @dataclass(init=False, slots=True)
 class LocalizedText:
     """
-    A string qualified with a namespace index.
+    Human readable text with an optional locale identifier (Part 6, 5.2.2.14).
+
+    The string form is specific to this library and reads back exactly.
     """
 
     Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
-    Locale: "ua.String| None" = None
+    Locale: "ua.String | None" = None
     Text: "ua.String | None" = None
 
     def __init__(self, Text: str | None = None, Locale: str | None = None) -> None:
-        # need to write init method since args ar inverted in original implementation
         object.__setattr__(self, "Text", Text)
         object.__setattr__(self, "Locale", Locale)
         object.__setattr__(self, "Encoding", 0)
@@ -821,16 +822,28 @@ class LocalizedText:
                 )
 
     def to_string(self) -> str:
-        return self.__str__()
+        return f"LocalizedText(Locale={self.Locale!r}, Text={self.Text!r})"
 
     @staticmethod
     def from_string(string: str) -> LocalizedText:
-        m = re.match(r"^LocalizedText\(Locale='(.*)', Text='(.*)'\)$", string)
-        if m:
-            text = m.group(2) if m.group(2) != str(None) else None
-            locale = m.group(1) if m.group(1) != str(None) else None
-            return LocalizedText(Text=text, Locale=locale)
-        return LocalizedText(string)
+        try:
+            tree = ast.parse(string, mode="eval").body
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return LocalizedText(string)
+        if not (
+            isinstance(tree, ast.Call)
+            and isinstance(tree.func, ast.Name)
+            and tree.func.id == "LocalizedText"
+            and not tree.args
+            and [keyword.arg for keyword in tree.keywords] == ["Locale", "Text"]
+            and all(
+                isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str | type(None))
+                for keyword in tree.keywords
+            )
+        ):
+            return LocalizedText(string)
+        values = [keyword.value.value for keyword in tree.keywords if isinstance(keyword.value, ast.Constant)]
+        return LocalizedText(Text=values[1], Locale=values[0])
 
 
 @dataclass(frozen=True)

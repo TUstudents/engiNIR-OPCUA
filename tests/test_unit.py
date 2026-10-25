@@ -371,7 +371,7 @@ def test_string_to_variant_localized_text_with_none1():
 def test_string_to_variant_localized_text_with_none2():
     locale = None
     string = "my name is ..."
-    string_repr = f"LocalizedText(Locale='{locale}', Text='{string}')"
+    string_repr = f"LocalizedText(Locale={locale!r}, Text={string!r})"
     obj = ua.LocalizedText(string, locale)
     assert obj == string_to_val(string_repr, ua.VariantType.LocalizedText)
     assert obj == string_to_val(string, ua.VariantType.LocalizedText)
