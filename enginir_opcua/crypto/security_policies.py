@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import logging
 import struct
 import time
@@ -365,7 +366,7 @@ class VerifierAesCbc(Verifier):
 
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha1(self.key, data)
-        if signature != expected:
+        if not hmac.compare_digest(signature, expected):
             raise uacrypto.InvalidSignature
 
 
@@ -441,7 +442,7 @@ class VerifierHMac256(Verifier):
 
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha256(self.key, data)
-        if signature != expected:
+        if not hmac.compare_digest(signature, expected):
             raise uacrypto.InvalidSignature
 
 
