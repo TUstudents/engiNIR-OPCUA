@@ -4,7 +4,7 @@ Run the fast tests with `uv run pytest -q -m "not slow"` and everything with `uv
 
 ## Tests for review findings
 
-Tests that reproduce a finding from `docs/code-review.md` carry its ID in the name, for example `test_srv4_bob_cannot_delete_alice_subscription`. The docstring cites the spec section by part and section number only, for example `Part 4, 5.14.1.2`. Never paste spec text; it's copyrighted (see `docs/opcua-spec/README.md`).
+Tests that reproduce a review finding carry its ID in the name, for example `test_srv4_bob_cannot_delete_alice_subscription`. The docstring cites the spec section by part and section number only, for example `Part 4, 5.14.1.2`. Never paste spec text; it's copyrighted (see `docs/opcua-spec/README.md`).
 
 ## Peer harness
 

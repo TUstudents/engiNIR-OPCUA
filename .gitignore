@@ -46,3 +46,6 @@ t.txt
 
 # OPC UA specifications may not be redistributed, see docs/opcua-spec/README.md
 docs/opcua-spec/downloads/
+
+# Internal review notes are kept outside the repository
+docs/code-review.md
