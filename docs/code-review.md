@@ -614,3 +614,91 @@ The scripts used for the "Verified" findings below started a real `Server` on lo
 5. **SRV-15**: a Write with `IndexRange` silently replaces the whole array.
 6. **SRV-11, SRV-13**: the publishing interval isn't revised, and queue sizes 0/1 become 10 000, which changes the data clients get by default. A Modify can make a queue unbounded.
 7. **SRV-20, SRV-21, SRV-22**: in-memory event history only works for the `Server` object, the SQLite backend rejects string and GUID NodeIds, and history paging can loop forever.
+
+## asyncua/crypto
+
+The certificate-validation rules referred to below are in Part 4, 6.1.3 (the table of checks for "Determining if a Certificate is trusted"). The certificate profile is in Part 6, 6.2.2, and the per-policy key limits are in Part 6, 6.1 (the policy tables are in Part 7).
+
+### validator.py
+
+- **CRY-1 (bug, security)** (verified, spec-checked): **`CertificateValidator` doesn't check trust unless asked to, and passes everything when asked without a store.**
+  - The default options are `BASIC_VALIDATION | PEER_CLIENT`, and `BASIC_VALIDATION` is just `TIME_RANGE | URI`. Neither the certificate signature nor trust is checked. Verified: `CertificateValidator()` accepted a freshly generated self-signed certificate whose only matching property was the URI. The class docstring says it is "a basic certificate validator including trusted store".
+  - `TRUSTED` and `REVOKED` only run `if self._trust_store`. With `TRUSTED_VALIDATION` but no `trust_store`, every certificate is accepted. Verified.
+  - The `else` branch of `examples/server-with-encryption.py` and `client-with-encryption.py` uses `EXT_VALIDATION` without a store, so it accepts any certificate with the right URI and key usage.
+  - Part 4, 6.1.3 says a certificate with an invalid signature shall always be rejected (a self-signed one is its own issuer), and an untrusted one shall get `Bad_CertificateUntrusted`. Fix: make the trust check the default, and raise a configuration error when `TRUSTED` or `REVOKED` is set without a store.
+- **CRY-2 (bug)** (spec-checked):
+  - On the server, the detailed status codes (`Bad_CertificateUntrusted`, `…UriInvalid`, `…TimeInvalid`, …) are sent back to the client. Part 4, 6.1.3 says the server shall report `Bad_SecurityChecksFailed` and log the detail.
+  - The host name check is commented out. A client using the validator never checks that the server certificate names the host it connected to (`Bad_CertificateHostNameInvalid`).
+  - A missing extension gives `BadCertificateInvalid` even for checks that weren't requested. With `URI` set and no `app_description`, it raises `AttributeError`.
+  - Revocation is checked only for the leaf certificate, not for the CAs in the chain.
+  - The docstring lists "ApplicationDescription" as an exception for revoked certificates; it should say `BadCertificateRevoked`.
+
+### truststore.py
+
+- **CRY-3 (bug, security)** (spec-checked, from reading the code; not run):
+  - `is_revoked()` compares serial numbers only, ignoring the issuer. A CRL from any CA revokes every certificate with the same serial from any other CA.
+  - CRL signatures aren't verified against the issuing CA.
+  - A CA without a CRL isn't reported (`Bad_CertificateRevocationUnknown`). Part 4, 6.1.3 requires the revocation check as in RFC 5280, 6.3.
+  - `is_trusted()` calls `verifier.verify(cert, [])` with no intermediates, and `x509_from_der` drops the rest of a chain the peer sent. A chain whose intermediate CA isn't itself in the trust directory can't be validated.
+  - The trust anchor policy requires `cA = TRUE`. Part 6, 6.2.2 (1.05) says application instance certificates, self-signed ones included, shall have `cA = FALSE`. So a spec-conforming self-signed peer certificate placed in the trust directory most likely can't be trusted. This needs a test.
+- **CRY-4 (cleanup)**:
+  - The file filter `re.match(".*(der|pem)", name)` matches any name containing "der" or "pem", such as `header.txt` or `notes-pem.md`. One unreadable file aborts the whole `load()`.
+  - An untrusted certificate is logged with `_logger.exception`, a full traceback for every rejected peer.
+  - The logger is named `asyncuagds.validate`, a leftover from another project.
+
+### security_policies.py
+
+- **CRY-5 (bug, security)** (verified, spec-checked): **the policies' key limits and certificate signature algorithms are never enforced.**
+  - Each policy's docstring lists `MinAsymmetricKeyLength`/`MaxAsymmetricKeyLength` (2048–4096 for the SHA-256 policies) and the required `CertificateSignatureAlgorithm`. No code checks either.
+  - Verified: a client with a **1024-bit** RSA certificate connected to a `Basic256Sha256_SignAndEncrypt`-only server and read `ServerState`.
+  - By reading the code, SHA-1-signed certificates are accepted under the SHA-256 policies in the same way.
+  - Part 4, 6.1.3 ("Security Policy Check") and Part 6 (the limits apply to every certificate in the chain) require rejecting both, with `Bad_CertificatePolicyCheckFailed`, reported as `Bad_SecurityChecksFailed` on the server.
+- **CRY-6 (bug, security, low)**: `VerifierHMac256.verify` and `VerifierAesCbc.verify` compare the MAC with `!=`, which isn't constant-time. Use `hmac.compare_digest`.
+- **CRY-7 (bug)**:
+  - Asymmetric signature failures raise `cryptography.exceptions.InvalidSignature`. `uacrypto` defines its own `InvalidSignature` with the same name, and that is the one `connection.py` catches. So a bad ActivateSession, CreateSession or user-token signature ends up as `BadInternalError` instead of `Bad_ApplicationSignatureInvalid`/`Bad_IdentityTokenInvalid`. SRV-1's reproduction got `BadInternalError` for a missing signature (via a `TypeError`).
+  - `sign_asymmetric(…, policy_uri=None/None-URI)` returns **the data itself** as the "signature". The client uses this for X509 user tokens when the token policy has no SecurityPolicyUri.
+  - The SymmetricAlgorithmHeader `TokenId` isn't used to pick the key. Every chunk is tried with the current key and, on failure, with the previous one, so a chunk with a bad MAC costs two decryptions and two verifications.
+  - The previous key's lifetime has the 25 % margin only in `SecurityPolicyBasic256`. The other policies drop it at the bare lifetime.
+- **CRY-8 (bug, security note)**:
+  - `Basic128Rsa15` and `Basic256` are deprecated in 1.04 and 1.05 but still selectable.
+  - `Basic128Rsa15` decrypts OpenSecureChannel with RSA PKCS#1 v1.5. Independently of the channel policy, `decrypt_user_token` accepts `rsa-1_5`-encrypted passwords on any endpoint, Basic256Sha256 included (SRV-6). A PKCS#1 v1.5 decryption that answers differently for bad padding and for a bad password is the classic Bleichenbacher oracle.
+  - Fix: accept only the encryption algorithm of the endpoint's user token policy, and don't offer the deprecated policies unless they are enabled explicitly.
+- **CRY-9 (cleanup)**:
+  - `Signer`, `Verifier`, `Encryptor`, `Decryptor` and `SecurityPolicy` use `__metaclass__ = ABCMeta`, which is Python 2 syntax with no effect in Python 3. The `@abstractmethod`s aren't enforced.
+  - `EncryptorAesCbc`/`DecryptorAesCbc` report the *key* size (32 for AES-256) as the block size, but the AES block is always 16 bytes. Messages are padded to 32-byte blocks. That's valid, but wasteful.
+  - The `SecurityPolicyAes128Sha256RsaOaep` docstring lists the `aes256-cbc` URI for AES-128.
+  - The five policy classes repeat the same `__init__`/`make_*_symmetric_key` bodies, and differ only in algorithms and sizes.
+  - `revolved_expired_key` is a typo for "revoke".
+
+### uacrypto.py
+
+- **CRY-10 (cleanup)**:
+  - `InvalidSignature` is imported from `cryptography` and then shadowed by a local class ("Do not remove this line"). That's the cause of CRY-7. Use a clearly named local exception, or catch both.
+  - `check_certificate()` returns `True` when the certificate has **problems**. Callers ignore the result (`Server.start`, `Client`), apart from `cert_gen`, which uses it to decide on regeneration (CRY-11). The log messages contain typos ("vaild", "this is need for").
+  - `encrypt_basic256` is unused, and despite its name it uses OAEP-SHA256 (Basic256 uses OAEP-SHA1).
+  - `x509_from_der` parses DER lengths by hand without bounds checks, and silently drops everything after the first certificate.
+  - The module has no type annotations.
+
+### cert_gen.py
+
+- **CRY-11 (bug)** (verified, spec-checked):
+  - `generate_self_signed_app_certificate()` sets `BasicConstraints(ca=True, path_length=0)` and `keyCertSign` on every application certificate. Verified on a generated client certificate. Part 6, 6.2.2 (1.05) says `cA` shall be FALSE for application instance certificates. TRUE is only accepted for backwards compatibility, should not be accepted when revocation checks are off, and must be logged as a warning. So certificates made by asyncua are ones that strict 1.05 peers should reject. The docstring claims conformance with Part 4, 6.1 and Part 6, 6.2.2.
+  - `setup_self_signed_certificate()` **overwrites** an existing certificate whenever `check_certificate()` finds anything to warn about, for example a host name missing from the SAN or an application URI mismatch. That includes CA-issued certificates. Verified: an installed certificate without the host name was replaced by a new self-signed one.
+  - The private key is written with the process umask. Verified: mode `0644` (world-readable) with umask `022`. It should be created `0600`.
+
+### permission_rules.py
+
+- **CRY-12 (bug, security)**:
+  - `ADMIN_TYPES` lists RegisterServer and RegisterServer2. `UaProcessor` handles those, and CreateSession, ActivateSession, CloseSession, GetEndpoints and FindServers, *before* the permission check. The admin-only rule for RegisterServer therefore never applies (SRV-5), and those entries in `USER_TYPES` are dead.
+  - `Anonymous` gets an empty permission set, but the default `PermissiveUserManager` maps anonymous logins to `UserRole.User` (SRV-7). On a default server, anonymous clients therefore have full user rights, including Write and Call.
+  - The docstring says "admins and users can read/write", but `Call`, `TransferSubscriptions` and the other user services are allowed too. BrowseNext, HistoryUpdate and SetTriggering are in neither list, so they'll be denied to everyone once implemented.
+  - A role missing from the dict raises `KeyError`, which becomes `BadInternalError`.
+
+### Summary: asyncua/crypto
+
+12 findings (CRY-1 … CRY-12): 9 bugs, 3 cleanup. Six of the bugs have security impact (CRY-1, CRY-3, CRY-5, CRY-6, CRY-8, CRY-12). Together with SRV-3 and SRV-7, they make up most of the security-defaults work. Highest impact:
+1. **CRY-1**: the validator accepts unknown self-signed certificates by default, and accepts everything with `TRUSTED` but no store. The examples' non-trust-store branch is configured this way.
+2. **CRY-5**: certificate key length and signature algorithm aren't checked against the policy. A 1024-bit key is accepted on Basic256Sha256.
+3. **CRY-3**: revocation ignores the issuer and CRL signatures, and certificate chains with intermediates can't be validated.
+4. **CRY-11**: generated application certificates have `cA = TRUE`, `setup_self_signed_certificate` can replace an installed CA-issued certificate, and it writes a world-readable private key.
+5. **CRY-8**: password tokens are accepted RSA-1.5-encrypted on any endpoint, and the deprecated policies are still available.
