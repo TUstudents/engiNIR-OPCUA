@@ -1,13 +1,13 @@
 tmp_test_*
 *.proff
 *.prof
-build*
+/build/
 MANIFEST
 .idea*
 htmlcov*
 docs/_*
 *.pyc
-dist
+/dist/
 *.old
 *.swp
 *.swo
@@ -49,3 +49,12 @@ docs/opcua-spec/downloads/
 
 # Internal review notes are kept outside the repository
 docs/code-review.md
+
+# Build output and tool caches
+*.whl
+*.tar.gz
+__pycache__/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

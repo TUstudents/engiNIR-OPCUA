@@ -10,6 +10,7 @@ Usage Guide
     get-started/opc-ua-basics
     get-started/minimal-server
     get-started/minimal-client
+    get-started/docker
 
 .. toctree::
     :maxdepth: 2
