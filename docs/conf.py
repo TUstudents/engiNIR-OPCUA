@@ -7,9 +7,9 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 from importlib import metadata
 
-project = "opcua-asyncio"
-copyright = "2022, opcua-asyncio contributors"
-author = "opcua-asyncio contributors"
+project = "engiNIR-OPCUA"
+copyright = "2015-2026, opcua-asyncio contributors; 2026, engiNIR-OPCUA contributors"
+author = "opcua-asyncio and engiNIR-OPCUA contributors"
 # release = "0.95.0"
 version = metadata.version('enginir-opcua')
 
@@ -35,7 +35,7 @@ html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 
 html_theme_options = {
-    "github_url": "https://github.com/FreeOpcUa/opcua-asyncio",
+    "github_url": "https://github.com/TUstudents/engiNIR-OPCUA",
     "show_toc_level": 2, # Visible levels in the right navigation
     "show_nav_level": 2, # Default levels of expanded elements in the left navigation
 }
