@@ -1,12 +1,11 @@
 """Release helper run from a developer machine.
 
-Bumps the version, commits, tags, pushes and publishes the package to PyPI.
-Pushing the `v<version>` tag triggers `.github/workflows/release.yml`, which
-creates the matching GitHub release automatically.
+Bumps the version, commits, tags and pushes. Pushing the `v<version>` tag triggers
+`.github/workflows/release.yml`, which creates the GitHub release and publishes the
+package to PyPI with trusted publishing.
 """
 
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -71,13 +70,6 @@ def _restore_pyproject() -> None:
     subprocess.run(["git", "checkout", "--", str(PYPROJECT)], check=True)
 
 
-def _publish() -> None:
-    for directory in ("dist", "build"):
-        shutil.rmtree(directory, ignore_errors=True)
-    subprocess.run(["uv", "build"], check=True)
-    subprocess.run(["uv", "publish", "--check-url", "https://pypi.org/simple/asyncua/"], check=True)
-
-
 def release(bump: str) -> None:
     branch = _current_branch()
     if branch not in ALLOWED_BRANCHES:
@@ -115,11 +107,8 @@ def release(bump: str) -> None:
     subprocess.run(["git", "commit", "--allow-empty", "-m", f"new release: {new_version}"], check=True)
     subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {new_version}"], check=True)
 
-    if _confirm("change committed, push to server (creates the GitHub release)?(Y/n)"):
+    if _confirm("change committed, push to server (creates the GitHub release and publishes to PyPI)?(Y/n)"):
         subprocess.run(["git", "push", "--follow-tags"], check=True)
-
-    if _confirm("upload to pip?(Y/n)"):
-        _publish()
 
 
 def _valid_bump(bump: str) -> bool:

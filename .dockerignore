@@ -1,0 +1,7 @@
+.git
+.venv
+dist
+build
+nodeset
+docs/opcua-spec/downloads
+**/__pycache__
