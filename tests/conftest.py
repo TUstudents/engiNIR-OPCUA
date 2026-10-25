@@ -4,7 +4,7 @@ import socket
 import subprocess
 from asyncio import get_event_loop_policy, sleep
 from collections import namedtuple
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from multiprocessing import Condition, Event, Process
@@ -18,7 +18,9 @@ from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode
 from enginir_opcua.client.ua_client import UASocketState
 from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
+from enginir_opcua.server.uaprocessor import UaProcessor
 
+from .harness import TWO_SESSION_USERS, RawPeer, ResponseTampering, TwoSessions, TwoUserManager
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -527,3 +529,46 @@ async def wait_for_status_change(ha_client, client, status):
             break
         await sleep(SLEEP)
     assert srv_info.status == status
+
+
+@pytest.fixture
+async def raw_peer(server: Server) -> AsyncIterator[RawPeer]:
+    peer = await RawPeer.connect(server.endpoint.hostname, server.endpoint.port)
+    yield peer
+    await peer.close()
+
+
+@pytest.fixture
+def tampered_responses(monkeypatch: pytest.MonkeyPatch) -> ResponseTampering:
+    tampering = ResponseTampering()
+    send_response = UaProcessor.send_response
+
+    def send_tampered_response(
+        processor: UaProcessor,
+        requesthandle: Any,
+        seqhdr: Any,
+        response: Any,
+        msgtype: bytes = ua.MessageType.SecureMessage,
+    ) -> None:
+        tampering.apply(response)
+        send_response(processor, requesthandle, seqhdr, response, msgtype)
+
+    monkeypatch.setattr(UaProcessor, "send_response", send_tampered_response)
+    return tampering
+
+
+@pytest.fixture
+async def two_sessions() -> AsyncIterator[TwoSessions]:
+    port = find_free_port()
+    srv = Server(user_manager=TwoUserManager())
+    await srv.init()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    await srv.start()
+    alice = Client(f"opc.tcp://alice:{TWO_SESSION_USERS['alice']}@127.0.0.1:{port}")
+    bob = Client(f"opc.tcp://bob:{TWO_SESSION_USERS['bob']}@127.0.0.1:{port}")
+    await alice.connect()
+    await bob.connect()
+    yield TwoSessions(server=srv, alice=alice, bob=bob)
+    await bob.disconnect()
+    await alice.disconnect()
+    await srv.stop()
