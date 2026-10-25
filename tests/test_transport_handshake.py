@@ -6,11 +6,11 @@ import pytest
 
 from enginir_opcua import Server, ua
 from enginir_opcua.client.ua_client import UaClient, UASocketProtocol
-from enginir_opcua.common.connection import TransportLimits
+from enginir_opcua.common.connection import TransportLimits, error_message_to_binary
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
-from enginir_opcua.ua.ua_binary import struct_to_binary
+from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 
 from .harness import RawPeer, RawServer, connect_client
 
@@ -279,3 +279,25 @@ async def test_cli18_client_fails_pending_requests_on_a_bad_frame(
     with pytest.raises(error):
         await hello_task
     assert await peer.is_closed_by_peer()
+
+
+def test_srv25_error_reason_is_cut_at_4096_bytes() -> None:
+    """Part 6, 7.1.2.5: the Reason of an Error message is at most 4096 bytes."""
+    data = error_message_to_binary(ua.StatusCodes.BadTimeout, "é" * 3000)
+    header = header_from_binary(Buffer(data))
+    error = struct_from_binary(ua.ErrorMessage, Buffer(data[header.header_size :]))
+    assert error.Error.value == ua.StatusCodes.BadTimeout
+    assert 0 < len(error.Reason.encode()) <= 4096
+
+
+async def test_srv25_client_ignores_an_error_reason_over_4096_bytes(raw_server: RawServer) -> None:
+    """Part 6, 7.1.2.5: a longer Reason is ignored; the StatusCode still fails the request."""
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    await peer.receive_hello()
+    error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadTimeout), "r" * 5000)
+    await peer.send(uatcp_to_binary(ua.MessageType.Error, error))
+    with pytest.raises(ua.uaerrors.BadTimeout):
+        await hello_task

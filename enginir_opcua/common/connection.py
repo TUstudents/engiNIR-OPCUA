@@ -656,9 +656,11 @@ class SecureConnection:
             self._limits.update_client_limits(msg)
             return msg
         if header.MessageType == ua.MessageType.Error:
-            msg = struct_from_binary(ua.ErrorMessage, body)
-            _logger.warning("Received an error: %s", msg)
-            return msg
+            error = struct_from_binary(ua.ErrorMessage, body)
+            if len((error.Reason or "").encode()) > MAX_ERROR_REASON_BYTES:
+                error.Reason = ""
+            _logger.warning("Received an error: %s", error)
+            return error
         raise ua.UaError(f"Unsupported message type {header.MessageType!r}")
 
     def _drop_incoming_parts(self) -> None:
