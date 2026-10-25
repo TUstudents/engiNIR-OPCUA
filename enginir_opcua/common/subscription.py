@@ -385,7 +385,7 @@ class Subscription:
                 item = await self._event_queue.get()
             else:
                 item = await asyncio.wait_for(self._event_queue.get(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         if item is None:
             raise StopAsyncIteration
@@ -402,7 +402,7 @@ class Subscription:
         try:
             results = await self.server.delete_subscriptions([self.subscription_id])
             results[0].check()
-        except (ConnectionError, OSError, asyncio.TimeoutError):
+        except (TimeoutError, ConnectionError, OSError):
             self.logger.info("delete_subscriptions: transport unavailable; local cleanup only")
         finally:
             self._deleted = True

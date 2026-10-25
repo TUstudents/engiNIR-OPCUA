@@ -373,7 +373,7 @@ async def test_xml_guid_array(opc, tmpdir):
 
 async def test_xml_datetime(opc, tmpdir):
     o = await opc.opc.nodes.objects.add_variable(
-        3, "myxmlvar-dt", datetime.datetime.now(datetime.timezone.utc), ua.VariantType.DateTime
+        3, "myxmlvar-dt", datetime.datetime.now(datetime.UTC), ua.VariantType.DateTime
     )
     await _test_xml_var_type(opc, tmpdir, o, "datetime")
     await opc.opc.delete_nodes([o])
@@ -385,7 +385,7 @@ async def test_xml_datetime_array(opc, tmpdir):
         "myxmlvar-array",
         [
             datetime.datetime.now(),
-            datetime.datetime.now(datetime.timezone.utc),
+            datetime.datetime.now(datetime.UTC),
             datetime.datetime.now(timezone("Asia/Tokyo")),
         ],
         ua.VariantType.DateTime,

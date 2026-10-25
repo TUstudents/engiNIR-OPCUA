@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timezone
+from datetime import UTC
 
 import pytest
 
@@ -23,7 +23,7 @@ class _Receiver:
 
 
 def _message() -> bytes:
-    header = UadpDataSetMessageHeader(True, UInt16(5), DateTime.now(timezone.utc), None, UInt16(0))
+    header = UadpDataSetMessageHeader(True, UInt16(5), DateTime.now(UTC), None, UInt16(0))
     message = UadpNetworkMessage(UadpHeader(UInt16(16)), Payload=[UadpDataSetVariant(Header=header, Data=[Variant(1)])])
     return message.to_binary()
 

@@ -1,6 +1,6 @@
 # engiNIR-OPCUA
 
-OPC UA / IEC 62541 client and server library for Python 3.10+, built on asyncio.
+OPC UA / IEC 62541 client and server library for Python 3.12+, built on asyncio.
 
 This repository is a fork of [FreeOpcUa/opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0, made on 2026-10-25. The original library was written by Olivier Roulet-Dubonnet and the opcua-asyncio contributors.
 

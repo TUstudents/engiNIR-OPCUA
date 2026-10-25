@@ -1,8 +1,7 @@
 import asyncio
-import sys
 from asyncio import Future, TimeoutError, sleep, wait_for
 from copy import copy
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -96,9 +95,6 @@ async def test_subscription_failure(opc):
 
 @pytest.mark.parametrize("handler_class", [MySubHandlerCounter, MySubHandlerCounterAsync])
 async def test_subscription_overload(opc, handler_class):
-    if sys.version_info.major == 3 and sys.version_info.minor == 7:
-        pytest.skip("this test seems to be hanging in version 3.7.x")
-
     nb = 10
     myhandler = handler_class()
     o = opc.opc.nodes.objects
@@ -561,7 +557,7 @@ async def test_subscribe_server_time(opc):
     assert isinstance(handle, int)
     node, val, _data = await myhandler.result()
     assert server_time_node == node
-    delta = datetime.now(timezone.utc) - val
+    delta = datetime.now(UTC) - val
     assert delta < timedelta(seconds=2)
     await sub.unsubscribe(handle)
     await sub.delete()
@@ -784,7 +780,7 @@ async def test_events_default(opc):
     myhandler = MySubHandler()
     sub = await opc.opc.create_subscription(100, myhandler)
     handle = await sub.subscribe_events()
-    tid = datetime.now(timezone.utc)
+    tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
     ev = await myhandler.result()
@@ -806,7 +802,7 @@ async def test_events_MyObject(opc):
     myhandler = MySubHandler()
     sub = await opc.opc.create_subscription(100, myhandler)
     handle = await sub.subscribe_events(o)
-    tid = datetime.now(timezone.utc)
+    tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
     ev = await myhandler.result()
@@ -829,7 +825,7 @@ async def test_events_wrong_source(opc):
     myhandler = MySubHandler()
     sub = await opc.opc.create_subscription(100, myhandler)
     handle = await sub.subscribe_events()
-    tid = datetime.now(timezone.utc)
+    tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
     with pytest.raises(TimeoutError):  # we should not receive event
@@ -856,7 +852,7 @@ async def test_events_CustomEvent(opc):
     evgen.event.PropertyString = propertystring
     serverity = 500
     evgen.event.Severity = serverity
-    tid = datetime.now(timezone.utc)
+    tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
     ev = await myhandler.result()
@@ -952,7 +948,7 @@ async def test_events_CustomEvent_MyObject(opc):
     propertystring = "This is my test"
     evgen.event.PropertyNum = propertynum
     evgen.event.PropertyString = propertystring
-    tid = datetime.now(timezone.utc)
+    tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
     ev = await myhandler.result()

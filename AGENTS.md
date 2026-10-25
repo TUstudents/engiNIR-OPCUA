@@ -13,7 +13,7 @@
 - Do not add comments to the code. The code should be self-explanatory. If it is not, refactor it.
 - Line length limit is 120 characters.
 - Use `ruff` for formatting and linting: `uv run ruff check` and `uv run ruff format`.
-- Target Python 3.10+. Use modern syntax (`X | Y` unions, `list[...]`, `dict[...]`, etc.).
+- Target Python 3.12+ (development uses 3.14). Use modern syntax (`X | Y` unions, `list[...]`, `dict[...]`, etc.).
 
 ## Communication
 

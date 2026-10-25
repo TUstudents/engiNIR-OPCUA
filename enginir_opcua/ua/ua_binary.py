@@ -16,7 +16,7 @@ from dataclasses import Field, fields, is_dataclass
 from enum import Enum, IntFlag
 from io import BytesIO
 from types import UnionType
-from typing import IO, Any, TypeVar, get_args, get_origin
+from typing import IO, Any, get_args, get_origin
 
 from enginir_opcua import ua
 
@@ -34,7 +34,6 @@ from .uatypes import (
 
 _logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
 
 _string_encoding = contextvars.ContextVar("ua_string_encoding", default="utf-8")
 
@@ -778,7 +777,7 @@ def create_enum_deserializer(uatype: type[IntFlag] | type[Enum]) -> Callable[[An
     return lambda val: uatype(Primitives.Int32.unpack(val))
 
 
-def from_binary(uatype: type[T] | str, data: Buffer | IO) -> T:
+def from_binary[T](uatype: type[T] | str, data: Buffer | IO) -> T:
     """
     unpack data given an uatype as a string or a python dataclass using ua types
     """
@@ -843,7 +842,7 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     return decode
 
 
-def struct_from_binary(objtype: type[T] | str, data: IO | Buffer) -> T:
+def struct_from_binary[T](objtype: type[T] | str, data: IO | Buffer) -> T:
     """
     unpack an ua struct. Arguments are an objtype as Python dataclass or string
     """

@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -41,7 +41,7 @@ async def test_com54_event_time_and_type_are_bound_as_parameters() -> None:
     history._db = db  # type: ignore[assignment]
     source = ua.NodeId(2253)
     history._datachanges_period[source] = None
-    time = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    time = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
     event_type = ua.NodeId('x", "y', 2)
     event = SimpleNamespace(
         SourceNode=source,

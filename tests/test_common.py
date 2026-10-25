@@ -9,7 +9,7 @@ import contextlib
 import math
 import tempfile
 from base64 import b64encode
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -585,13 +585,13 @@ async def test_get_children_by_path(opc):
 async def test_datetime_read_value(opc):
     time_node = opc.opc.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
     dt = await time_node.read_value()
-    utcnow = datetime.now(timezone.utc)
+    utcnow = datetime.now(UTC)
     delta = utcnow - dt
     assert delta < timedelta(seconds=2)
 
 
 async def test_datetime_write_value(opc):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     objects = opc.opc.nodes.objects
     v1 = await objects.add_variable(4, "test_datetime", now)
     tid = await v1.read_value()

@@ -2,7 +2,7 @@
 engiNIR-OPCUA Documentation
 ===========================
 
-OPC UA / IEC 62541 client and server library for Python 3.10+ and PyPy, built on asyncio.
+OPC UA / IEC 62541 client and server library for Python 3.12+, built on asyncio.
 
 engiNIR-OPCUA is a modified version of `opcua-asyncio <https://github.com/FreeOpcUa/opcua-asyncio>`_ 2.1.0,
 forked on 2026-10-25.

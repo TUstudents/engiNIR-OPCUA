@@ -6,10 +6,9 @@ Helper function and classes depending on ua object are in ua_utils.py
 import asyncio
 import logging
 import os
-import sys
 from collections.abc import Awaitable
 from dataclasses import Field, fields
-from typing import Any, TypeVar, get_type_hints
+from typing import Any, get_type_hints
 
 from ..ua.uaerrors import UaError
 
@@ -129,21 +128,9 @@ def fields_with_resolved_types(
     return fields_
 
 
-_T = TypeVar("_T")
-
-
-async def wait_for(aw: Awaitable[_T], timeout: int | float | None) -> _T:
+async def wait_for[T](aw: Awaitable[T], timeout: int | float | None) -> T:
     """
-    Wrapped version of asyncio.wait_for that does not swallow cancellations
-
-    There is a bug in asyncio.wait_for before Python version 3.12 that prevents the inner awaitable from being cancelled
-    when the task is cancelled from the outside.
-
-    See https://github.com/python/cpython/issues/87555 and https://github.com/python/cpython/issues/86296
+    asyncio.wait_for. Kept as a single place to change timeout handling; since Python 3.12 it no longer
+    swallows cancellations (https://github.com/python/cpython/issues/87555).
     """
-    if sys.version_info >= (3, 12):
-        return await asyncio.wait_for(aw, timeout)
-
-    import wait_for2
-
-    return await wait_for2.wait_for(aw, timeout)
+    return await asyncio.wait_for(aw, timeout)
