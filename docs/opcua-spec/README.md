@@ -41,4 +41,6 @@ The online reference serves the current 1.05 edition and **1.04** (published 201
 
 The "current" column shows the editions served when this table was written (2026-10). The links always go to the latest edition.
 
+File Transfer (`FileType`, `FileDirectoryType`) is Part 5, Annex C in 1.04 and moved to its own part, [OPC 10000-20](https://reference.opcfoundation.org/specs/OPC-10000-20), in 1.05. Download it with `fetch_specs.py download --parts 20 --editions current`.
+
 The 1.05 Part 7 only defines how profiles are structured. The profiles themselves are maintained in the online database at [profiles.opcfoundation.org](https://profiles.opcfoundation.org/). The 1.04 Part 7 still contains the full profile tables.

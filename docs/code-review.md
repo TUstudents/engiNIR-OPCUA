@@ -19,6 +19,7 @@ Differences between 1.04 and 1.05 found so far (they matter for interoperability
 - **Hello `ProtocolVersion`** (Part 6, 7.1.2.3). In 1.04 the client sends the *latest* version it supports, and the server must always accept a version higher than its own. In 1.05 the server rejects with `Bad_ProtocolVersionUnsupported` only if it supports neither the requested version nor any lower one, and returns the version it will use in the Acknowledge. Both editions define version `0`, so they're wire-compatible today. Check the server's Hello handling against both in the `server` review.
 - **DiagnosticInfo nesting** (Part 6, 5.2.2.12). 1.04 requires decoders to support at least 100 nesting levels. 1.05 requires at least 4 and says decoders aren't expected to support more than 10. The limit our decoder enforces should satisfy both: support at least 4, and reject deep nesting with an error instead of recursing without bound.
 - **XmlElement** is marked *Deprecated* in 1.05 (Part 6, 5.2.2.8). Decoders still have to handle it (see UA-37).
+- **Channel-bound session signatures** (Part 4, 6.1.8, new in 1.05). CreateSession and ActivateSession signatures include the channel's certificates, but only for SecurityPolicies with `SecureChannelEnhancements = TRUE` (the newer policies). The RSA policies asyncua supports keep the legacy calculation, so nothing changes until new policies are added.
 
 ---
 
@@ -355,3 +356,86 @@ Highest impact:
 8. **COM-15, COM-16**: history reads send invalid default ranges, lose pages of events and leak continuation points.
 9. **COM-40**: generated types are registered process-wide by namespace *index*, so multiple servers in one process collide.
 10. **COM-44**: the `FiniteStateMachine` helper (and its example) can't work, because the type is abstract.
+
+---
+
+## asyncua/client
+
+### ua_client.py
+
+- **CLI-1 (bug)**: a request that times out leaves its future in `UASocketProtocol._callbackmap`:
+  - `send_request` wraps the future in `wait_for(...)`, which cancels it on timeout, but nothing removes the map entry. It stays until a late response arrives (which then logs "Future for request id … is already done") or the connection closes.
+  - A client hitting many timeouts against a slow server keeps growing the map.
+  - A *response* for an id that isn't in the map makes `_call_callback` raise `UaError`, which `_process_received_data` handles by **closing the connection**. Only one unexpected response is enough.
+  - Fix: pop the entry on timeout or cancellation, and log responses for unknown ids instead of dropping the connection.
+- **CLI-2 (doc)**: `Client.register_server`/`unregister_server` (`client.py:694, 716`) say "if discovery_configuration is provided, the newer register_server2 service call is used". They actually call `RegisterServer2` **and then** `RegisterServer` as well. `unregister_server`'s docstring says "register a server". The low-level `UaClient.unregister_server`/`unregister_server2` are identical copies of the register methods; only the caller's `IsOnline = False` makes them unregister. That's correct, but the docstrings don't say so.
+
+### ua_session.py
+
+- **CLI-3 (bug)** (spec-checked): `_publish_loop` keeps exactly **one** Publish request outstanding for the whole session, and sends it with `timeout=0` (no timeout).
+  - Part 4, 5.14.5 allows one-at-a-time "in many cases". But when the latency is higher than the publishing interval, the client *shall* pipeline, sending more than one Publish request per subscription.
+  - With several subscriptions, or a fast subscription over a slow link, the server can return at most one NotificationMessage per round trip for **all** subscriptions together. Notifications then queue up on the server and get dropped once its queue limits are reached.
+  - With no timeout, a lost Publish response leaves the loop waiting forever. Only the stale-subscription watchdog notices.
+  - Fix: keep N requests in flight (e.g. one or two per subscription, with a cap), and give them a timeout based on the keep-alive interval.
+- **CLI-4 (bug)**: race between deleting the last subscription and creating a new one. `ensure_publish_loop()` only starts a loop when the old task is done. If the last subscription is deleted and a new one created while the old loop's Publish request is still in flight:
+  - The server answers that request with `BadNoSubscription`, and the loop **returns**.
+  - The new subscription then has no publish loop and never receives data.
+  - Found by reading the code; not reproduced.
+- **CLI-5 (bug)**: acknowledgements get lost in two places:
+  - `_publish_loop` drops `pending_acks` whenever a Publish fails (timeout, parse error, any exception).
+  - Messages fetched with `republish()` (`Subscription._republish_gaps`) are never acknowledged.
+  - Unacknowledged messages stay in the server's retransmission queue until it overflows, and reconnect logic later sees `AvailableSequenceNumbers` it already processed.
+  - Acks should be kept until a Publish request carrying them has been sent successfully.
+
+### client.py
+
+- **CLI-6 (bug, security)** (spec-checked): `create_session()` doesn't check the `ServerNonce` length. Part 4 (CreateSession) requires 32–128 bytes and says "the Client shall check the length". The nonce is the challenge the client signs to prove possession of its certificate, and that the password and user-certificate tokens are bound to. `open_secure_channel()` doesn't check the OpenSecureChannel `ServerNonce` length either, which Part 4 requires to equal the policy's `SecureChannelNonceLength`. A server or man-in-the-middle could send an empty nonce, and the channel keys and signatures would then be derived from client-side randomness only.
+- **CLI-7 (bug, security)** (spec-checked): no protection against endpoint downgrade.
+  - Part 4 (CreateSession, `serverEndpoints`): if the client picked its security settings from a discovery endpoint, it "shall verify" the endpoint list returned by CreateSession against that list.
+  - `set_security()` calls GetEndpoints over an unsecured channel, takes the server certificate from the matching endpoint and discards the list. `create_session()` only looks up its own endpoint in `ServerEndpoints`.
+  - A man-in-the-middle on the discovery connection can therefore hide the stronger endpoints or substitute a server certificate, and the client won't notice.
+  - Fix: keep the discovery result and compare it with `ServerEndpoints` (security modes, policies and certificates).
+- **CLI-8 (bug)**: `_renew_channel_loop` calculates its sleep interval (`secure_channel_timeout * 0.75`) once, before the loop starts. When a renewal returns a different `RevisedLifetime`, `open_secure_channel` updates `secure_channel_timeout`, but the loop keeps the old interval. A shorter revised lifetime lets the token expire before the next renewal. A `RevisedLifetime` of `0` (see COM-37) would make the loop renew without pause. Recompute the interval every time round the loop, with a minimum.
+- **CLI-9 (bug)**: `register_nodes`, `unregister_nodes` and `browse_nodes` take `nodes: Iterable[Node]` but iterate it twice: once to build the request, then again to zip with the results. With a generator, the second pass is empty. Verified: `browse_nodes(<generator>)` returns 0 results, and `register_nodes(<generator>)` returns `[]` after registering the nodes on the server without updating the `Node` objects. Fix: `nodes = list(nodes)` first.
+- **CLI-10 (bug)** (spec-checked): `create_subscription(period)` always requests `RequestedLifetimeCount = 10000` and a keep-alive count of `session_timeout / period * 0.75`. Part 4 (CreateSubscription) requires the lifetime count to be at least three times the keep-alive count. Verified: with the session timeout used in the test, intervals of 100 ms and 50 ms request keep-alive counts of 4500 and 9000, both above 10000/3. Conforming servers revise these values, and the revised values aren't stored (COM-32).
+  - For ordinary intervals the keep-alive is very long: with the default one-hour session, a 1 s subscription only sends a keep-alive every 45 minutes. A dead subscription (`is_stale`) or a broken publish loop is then noticed after more than an hour.
+  - The docstring cites "Part4 5.13.2", which is the 1.04 numbering (COM-6).
+- **CLI-11 (cleanup)**:
+  - `_refresh_endpoints_quiet()` is called on security errors during reconnect ("refreshing endpoints"), but throws the GetEndpoints result away, and runs with the current security policy, so it most likely fails the same way. After a server certificate change, auto-reconnect keeps failing forever, which is safer than silently trusting a new certificate. Either remove the call or make re-fetching the certificate an explicit, validated step.
+  - `register_namespace()` writes the whole `NamespaceArray` back (read, modify, write), which most servers don't allow and which races with other clients.
+
+### ua_file_transfer.py and ua_file.py
+
+- **CLI-12 (bug)** (spec-checked): `UaFile.read()`, in both modules, reads the whole file with a **single** `Read(handle, length=Size)` call. File Transfer is Part 20 in 1.05 (Part 5, Annex C in 1.04). Per Part 20, 4.2.4:
+  - The server "is allowed to return less data than specified length", and an empty result means end of file. So on servers that cap the length (e.g. at `MaxByteStringLength` or by message size), large files come back **truncated without any error**.
+  - `length` must be positive, so reading an empty file (`Size = 0`) fails with `Bad_InvalidArgument`.
+  - `Size` is a `UInt64`, but it's passed as an `Int32`, so files over 2 GiB fail to encode.
+  - The read should loop in chunks until an empty `ByteString` comes back. `read()` also ignores the current file position (it always asks for `Size` bytes).
+- **CLI-13 (cleanup)**: `asyncua/client/ua_file.py` is an older, smaller copy of `ua_file_transfer.UaFile` with the same bugs. It also passes `open_mode` as a string (`"r"`/`"w"`) while the newer one uses `OpenFileMode`. Pick one and deprecate the other. `ua_file_transfer.UaFile.open()` logs the `OpenFileMode` *class* instead of the mode it uses. The module docstring cites "OPC 10000-5 V1.04 … Annex C"; in 1.05 that's OPC 10000-20.
+
+### ha/ha_client.py, ha/reconciliator.py
+
+- **CLI-14 (bug, security)**: like CLI-7, but on every reconnect. When `HaSecurityConfig.server_certificate` isn't set, each `HaClient.reconnect()` calls `client.set_security(**config)`, and `set_security()` re-fetches the server certificate from an unsecured GetEndpoints call. An HA pair configured "with security" therefore trusts whatever certificate is presented each time it fails over or reconnects. The docstring and docs don't say that `server_certificate` is required for real protection.
+- **CLI-15 (bug)**: in `KeepAlive.run()`:
+  - It catches `asyncio.CancelledError` and only sets the status (there's a FIXME saying this is wrong), so cancelling the task doesn't stop it. Only `stop_event` does.
+  - After connecting, the loop waits a fixed `asyncio.sleep(3)` "for HaManager to connect clients".
+  - `HaManager` only ever selects a server with `ServiceLevel >= 200` (Healthy). If all servers are *Degraded* (2–199, which per Part 4, 6.6.2.4.2 means partly operational), no client is active at all and the application gets no data. That's spec-checked as far as the ServiceLevel ranges go; whether falling back to the best degraded server is wanted is a design question.
+- **CLI-16 (cleanup)**:
+  - Only `HaMode.WARM` is implemented (`COLD`, `HOT_A` and `HOT_B` raise `NotImplementedError`), but the class docstring and the enum read as if all four modes are supported.
+  - `delete_subscriptions` for an unknown name logs a warning and then raises `KeyError` from `self.sub_names.remove()`.
+  - `generate_sub_name` loops forever without yielding once all 9999 names are taken.
+  - `HaSecurityConfig`/`set_security` accept a security `mode` but no user credentials, so HA clients can only use anonymous or URL-embedded logins.
+  - The `HaMode` comments cite Part 4, 6.6.2.4.5.x; those numbers are correct in both 1.04 and 1.05.
+
+### docs/usage/client/overview.rst
+
+- **CLI-17 (doc)**: the page only says to create a `Client`, plus three `.. todo::` placeholders ("Show different examples, with / without security", namespaces, browsing). The URL example uses backslashes, `opc.tcp:\\<server>:4840`; it should be `opc.tcp://<server>:4840`. Nothing in `docs/` covers auto-reconnect, subscriptions in iterator mode, session persistence or the HA client, though each has substantial API surface.
+
+### Summary: asyncua/client
+
+17 findings (CLI-1 … CLI-17): 12 bugs (three of them with security impact: CLI-6, CLI-7 and CLI-14), 2 doc and 3 cleanup. Bugs marked "Verified" were reproduced by running code. CLI-4 is from reading the code, and CLI-6, CLI-7 and CLI-14 were checked against the code paths and the spec text but not exercised against a hostile server. Highest impact:
+1. **CLI-6, CLI-7, CLI-14**: missing client-side checks the spec requires: nonce lengths, and comparing the CreateSession endpoints with the discovery result. Server certificates fetched over unsecured connections are trusted on first use, and with HA on every reconnect.
+2. **CLI-3, CLI-4, CLI-5**: the publish loop has only one outstanding request, can die in a delete/create race, and loses acknowledgements.
+3. **CLI-12**: file reads are truncated silently on servers that return short reads, and empty files fail.
+4. **CLI-1**: timed-out requests leak, and one unexpected response id closes the connection.
+5. **CLI-9, CLI-10**: generator arguments silently return nothing, and the subscription lifetime and keep-alive counts break the 3× rule for fast intervals.
