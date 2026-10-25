@@ -40,6 +40,8 @@ class InternalSubscription:
         no_acks_limit: int = 500,
         max_queue_size: int = 10_000,
         publishing_enabled: bool = True,
+        max_notifications_per_publish: int = 10_000,
+        priority: int = 0,
     ) -> None:
         """
         :param loop: Event loop instance
@@ -67,6 +69,8 @@ class InternalSubscription:
         self._notification_seq = 1
         self._no_acks_limit = no_acks_limit
         self.max_queue_size = max_queue_size
+        self.max_notifications_per_publish: int = max_notifications_per_publish
+        self.priority: int = priority
         self._not_acknowledged_results: dict[int, ua.PublishResult] = {}
         self._startup = True
         self._publishing_enabled = publishing_enabled
@@ -83,6 +87,20 @@ class InternalSubscription:
         if self.data.RevisedPublishingInterval > 0.0:
             self._closing = False
             self._task = asyncio.create_task(self._subscription_loop())
+
+    def update_parameters(
+        self,
+        interval: float,
+        lifetime_count: int,
+        keep_alive_count: int,
+        max_notifications_per_publish: int,
+        priority: int,
+    ) -> None:
+        self.data.RevisedPublishingInterval = interval
+        self.data.RevisedLifetimeCount = lifetime_count
+        self.data.RevisedMaxKeepAliveCount = keep_alive_count
+        self.max_notifications_per_publish = max_notifications_per_publish
+        self.priority = priority
 
     async def stop(self) -> None:
         if self._task:
@@ -109,11 +127,10 @@ class InternalSubscription:
         Start the publication loop running at the RevisedPublishingInterval.
         """
         ts = time.monotonic()
-        period = self.data.RevisedPublishingInterval / 1000.0
         try:
             await self.publish_results()
             while not self._closing:
-                next_ts = ts + period
+                next_ts = ts + self.data.RevisedPublishingInterval / 1000.0
                 sleep_time = next_ts - time.monotonic()
                 ts = next_ts
                 await asyncio.sleep(max(sleep_time, 0))

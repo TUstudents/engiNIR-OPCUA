@@ -47,9 +47,13 @@ class SubscriptionService:
             self.logger.warning("Refusing subscription: at max_subscriptions=%s", max_subs)
             raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
         result = ua.CreateSubscriptionResult()
-        result.RevisedPublishingInterval = params.RequestedPublishingInterval
-        result.RevisedLifetimeCount = self._clamp_lifetime_count(params.RequestedLifetimeCount)
-        result.RevisedMaxKeepAliveCount = self._clamp_keep_alive_count(params.RequestedMaxKeepAliveCount)
+        (
+            result.RevisedPublishingInterval,
+            result.RevisedLifetimeCount,
+            result.RevisedMaxKeepAliveCount,
+        ) = self._revise(
+            params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
+        )
         self._sub_id_counter += 1
         result.SubscriptionId = self._sub_id_counter
         no_acks_limit = self.iserver.max_unacked_messages_per_subscription if self.iserver else 5000
@@ -64,22 +68,34 @@ class SubscriptionService:
             no_acks_limit=no_acks_limit,
             max_queue_size=max_queue_size,
             publishing_enabled=params.PublishingEnabled,
+            max_notifications_per_publish=self._revise_max_notifications(params.MaxNotificationsPerPublish),
+            priority=params.Priority,
         )
         await internal_sub.start()
         self.subscriptions[result.SubscriptionId] = internal_sub
         return result
 
-    def _clamp_lifetime_count(self, requested: int) -> int:
-        if self.iserver is None:
-            return requested
-        cap = self.iserver.max_lifetime_count
+    def _setting(self, name: str, default: float) -> float:
+        return getattr(self.iserver, name, default) if self.iserver else default
+
+    def _revise_max_notifications(self, requested: int) -> int:
+        cap = int(self._setting("max_notifications_per_publish", 10_000))
         return min(requested, cap) if requested > 0 else cap
 
-    def _clamp_keep_alive_count(self, requested: int) -> int:
-        if self.iserver is None:
-            return requested
-        cap = self.iserver.max_keep_alive_count
-        return min(requested, cap) if requested > 0 else cap
+    def _revise(self, interval: float, lifetime: int, keep_alive: int) -> tuple[float, int, int]:
+        minimum = self._setting("min_publishing_interval_ms", 50.0)
+        maximum = self._setting("max_publishing_interval_ms", 3_600_000.0)
+        if interval != interval or interval <= 0:
+            interval = minimum
+        interval = min(max(interval, minimum), maximum)
+        keep_alive = min(max(keep_alive, 1), int(self._setting("max_keep_alive_count", 5_000)))
+        lifetime = min(lifetime, int(self._setting("max_lifetime_count", 15_000)))
+        lifetime = max(lifetime, 3 * keep_alive)
+        limit = int(self._setting("max_subscription_lifetime_ms", 86_400_000.0) // interval)
+        if lifetime > limit:
+            keep_alive = min(keep_alive, max(1, limit // 3))
+            lifetime = max(limit, 3 * keep_alive)
+        return interval, lifetime, keep_alive
 
     def _owned(self, subscription_id: int, session_id: ua.NodeId) -> InternalSubscription | None:
         sub = self.subscriptions.get(subscription_id)
@@ -96,13 +112,19 @@ class SubscriptionService:
     def modify_subscription(
         self, params: ua.ModifySubscriptionParameters, session_id: ua.NodeId
     ) -> ua.ModifySubscriptionResult:
-        # Requested params are ignored, result = params set during create_subscription.
         self.logger.info("modify subscription")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         result = ua.ModifySubscriptionResult()
-        result.RevisedPublishingInterval = sub.data.RevisedPublishingInterval
-        result.RevisedLifetimeCount = sub.data.RevisedLifetimeCount
-        result.RevisedMaxKeepAliveCount = sub.data.RevisedMaxKeepAliveCount
+        result.RevisedPublishingInterval, result.RevisedLifetimeCount, result.RevisedMaxKeepAliveCount = self._revise(
+            params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
+        )
+        sub.update_parameters(
+            result.RevisedPublishingInterval,
+            result.RevisedLifetimeCount,
+            result.RevisedMaxKeepAliveCount,
+            self._revise_max_notifications(params.MaxNotificationsPerPublish),
+            params.Priority,
+        )
         return result
 
     async def delete_subscriptions(self, ids: list[int], session_id: ua.NodeId) -> list[ua.StatusCode]:
