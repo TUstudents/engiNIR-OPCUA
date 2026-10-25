@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 from enginir_opcua import ua
 from enginir_opcua.ua.uaerrors import UaInvalidParameterError
 
-from ..crypto.uacrypto import InvalidSignature
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary
 
 if TYPE_CHECKING:
@@ -126,7 +125,7 @@ class MessageChunk:
         h = header_from_binary(data)
         try:
             return MessageChunk.from_header_and_body(security_policy, h, data)
-        except InvalidSignature:
+        except ua.uaerrors.SignatureError:
             return MessageChunk.from_header_and_body(security_policy, h, data, use_prev_key=True)
 
     @staticmethod
@@ -473,7 +472,7 @@ class SecureConnection:
             try:
                 pos = body.cur_pos
                 chunk = MessageChunk.from_header_and_body(self.security_policy, header, body, use_prev_key=False)
-            except InvalidSignature:
+            except ua.uaerrors.SignatureError:
                 body.rewind(cur_pos=pos)
                 chunk = MessageChunk.from_header_and_body(self.security_policy, header, body, use_prev_key=True)
             return self._receive(chunk)

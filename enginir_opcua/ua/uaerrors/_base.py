@@ -9,6 +9,14 @@ class UaError(RuntimeError):
     pass
 
 
+class SignatureError(UaError):
+    pass
+
+
+class DecryptionError(UaError):
+    pass
+
+
 class _StatusCodeAttribute:
     def __get__(self, instance: "UaStatusCodeError | None", owner: type["UaStatusCodeError"]) -> Any:
         if instance is None:

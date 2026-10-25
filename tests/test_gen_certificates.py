@@ -411,6 +411,6 @@ async def test_check_certificate_hostname_is_case_insensitive() -> None:
         key, "myserver", {"organizationName": "Bar Ltd"}, subject_alt_names, extended=[], days=1
     )
 
-    assert check_certificate(cert, app_uri, "myhostname") is False
-    assert check_certificate(cert, app_uri, "MYHOSTNAME") is False
-    assert check_certificate(cert, app_uri, "otherhost") is True
+    assert check_certificate(cert, app_uri, "myhostname") == []
+    assert check_certificate(cert, app_uri, "MYHOSTNAME") == []
+    assert len(check_certificate(cert, app_uri, "otherhost")) == 1

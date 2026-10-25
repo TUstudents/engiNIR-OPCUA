@@ -294,7 +294,10 @@ class UaProcessor:
                 data = session.nonce
             else:
                 data = self._connection.security_policy.host_certificate + session.nonce
-            self._connection.security_policy.asymmetric_cryptography.verify(data, params.ClientSignature.Signature)
+            try:
+                self._connection.security_policy.asymmetric_cryptography.verify(data, params.ClientSignature.Signature)
+            except ua.uaerrors.SignatureError:
+                raise ServiceError(ua.StatusCodes.BadApplicationSignatureInvalid) from None
             result = session.activate_session(
                 params, self._connection.security_policy.peer_certificate, require_same_user=moving
             )
