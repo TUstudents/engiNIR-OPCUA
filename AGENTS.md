@@ -18,7 +18,7 @@
 ## Communication
 
 - Do not summarize changes after editing files. The diff is visible directly.
-- Never include "🤖 Generated with [Claude Code](https://claude.com/claude-code)", Claude session links, or any similar attribution footer in pull request descriptions, comments, or issues.
+- Never include "🤖 Generated with [Claude Code](https://claude.com/claude-code)", Claude session links, or any similar attribution footer in commit messages, pull request descriptions, comments, or issues. This includes `Co-Authored-By: Claude` and `Claude-Session:` trailers.
 
 ## Testing
 
