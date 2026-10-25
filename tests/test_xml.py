@@ -18,7 +18,7 @@ _logger.setLevel(logging.DEBUG)
 _logger = logging.getLogger("asyncua.common.xmlparser")
 _logger.setLevel(logging.DEBUG)
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("restore_ua_registry")]
 
 BASE_DIR = pathlib.Path(__file__).parent.absolute()
 CUSTOM_NODES_XML_PATH = BASE_DIR / "custom_nodes.xml"

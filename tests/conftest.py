@@ -4,6 +4,7 @@ import socket
 import subprocess
 from asyncio import get_event_loop_policy, sleep
 from collections import namedtuple
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from multiprocessing import Condition, Event, Process
@@ -24,6 +25,32 @@ RETRY = 20
 SLEEP = 0.4
 PORTS_USED = set()
 Opc = namedtuple("Opc", ["opc", "server"])
+
+UA_REGISTRIES = (
+    ua.extension_objects_by_datatype,
+    ua.extension_objects_by_typeid,
+    ua.extension_object_typeids,
+    ua.datatype_by_extension_object,
+    ua.enums_by_datatype,
+    ua.enums_datatypes,
+    ua.basetype_by_datatype,
+    ua.basetype_datatypes,
+)
+
+
+@pytest.fixture
+def restore_ua_registry() -> Iterator[None]:
+    registries = [dict(registry) for registry in UA_REGISTRIES]
+    ua_attributes = dict(vars(ua))
+    yield
+    for registry, saved in zip(UA_REGISTRIES, registries):
+        registry.clear()
+        registry.update(saved)
+    for name in set(vars(ua)) - set(ua_attributes):
+        delattr(ua, name)
+    for name, value in ua_attributes.items():
+        if vars(ua).get(name) is not value:
+            setattr(ua, name, value)
 
 
 def find_free_port():
