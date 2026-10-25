@@ -26,6 +26,17 @@ if __name__ == "__main__":
         name, nb, datatype = line.split(",")
         outputfile.write("ObjectIdNames[{0}] = '{1}'\n".format(nb, name))
 
+    reference_type_ids = []
+    with open(nodeset_source.NODE_IDS_CSV) as inputfile:
+        for line in inputfile:
+            name, nb, datatype = line.split(",")
+            if datatype.strip() == "ReferenceType":
+                reference_type_ids.append(int(nb))
+    outputfile.write("\n\nReferenceTypeIds = frozenset({\n")
+    for nb in reference_type_ids:
+        outputfile.write(f"    {nb},\n")
+    outputfile.write("})\n")
+
     inputfile = open(nodeset_source.ATTRIBUTE_IDS_CSV)
     outputfile = open(BASE_DIR / "enginir_opcua" / "ua" / "attribute_ids.py", "w")
     outputfile.write(

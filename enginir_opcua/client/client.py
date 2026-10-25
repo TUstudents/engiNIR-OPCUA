@@ -1527,7 +1527,7 @@ class Client:
         for p in relative_paths:
             try:
                 rpath = ua.RelativePath.from_string(p) if isinstance(p, str) else p
-            except ValueError as e:
+            except ua.UaStringParsingError as e:
                 raise ua.UaStringParsingError(f"Failed to parse one of RelativePath: {p}") from e
             bpath = ua.BrowsePath()
             bpath.StartingNode = starting_node

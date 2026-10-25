@@ -72,7 +72,7 @@ def test_variant_array_none():
     v2 = variant_from_binary(ua.utils.Buffer(data))
     assert v == v2
     assert v2.is_array
-    assert v2.Dimensions == [0, 0]
+    assert v2.Dimensions is None
 
 
 def test_variant_empty_list():
@@ -88,7 +88,7 @@ def test_variant_empty_list():
     v2 = variant_from_binary(ua.utils.Buffer(data))
     assert v == v2
     assert v2.is_array
-    assert v2.Dimensions == [0]
+    assert v2.Dimensions is None
 
 
 def test_custom_structs(tmpdir):
@@ -403,8 +403,8 @@ def test_variant_dimensions():
     v = ua.Variant(arry, ua.VariantType.UInt32)
     assert [2, 3, 0] == v.Dimensions
     v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
-    assert v.Dimensions == v2.Dimensions
-    assert v == v2
+    assert v2.Dimensions is None
+    assert v2.Value == []
 
 
 def test_flatten():

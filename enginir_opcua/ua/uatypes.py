@@ -751,7 +751,7 @@ class RelativePathElement:
     data_type = NodeId(537)
 
     ReferenceTypeId: "ua.NodeId" = field(default_factory=NodeId)
-    IsInverse: "ua.Boolean" = True
+    IsInverse: "ua.Boolean" = False
     IncludeSubtypes: "ua.Boolean" = True
     TargetName: "ua.QualifiedName" = field(default_factory=QualifiedName)
 
@@ -1127,12 +1127,11 @@ class DiagnosticInfo:
     :vartype Encoding: Byte
     :ivar SymbolicId:
     :vartype SymbolicId: Int32
-    :ivar NamespaceURI:
-    :vartype NamespaceURI: Int32
+    :ivar NamespaceUri:
+    :vartype NamespaceUri: Int32
     :ivar Locale:
     :vartype Locale: Int32
     :ivar LocalizedText:
-    :vartype LocalizedText: Int32
     :vartype LocalizedText: Int32
     :ivar AdditionalInfo:
     :vartype AdditionalInfo: String
@@ -1146,12 +1145,12 @@ class DiagnosticInfo:
 
     Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
     SymbolicId: "ua.Int32 | None" = None
-    NamespaceURI: "ua.Int32 | None" = None
+    NamespaceUri: "ua.Int32 | None" = None
     Locale: "ua.Int32 | None" = None
     LocalizedText: "ua.Int32 | None" = None
     AdditionalInfo: "ua.String | None" = None
     InnerStatusCode: "ua.StatusCode | None" = None
-    InnerDiagnosticInfo: "ua.ExtensionObject | None" = None
+    InnerDiagnosticInfo: "ua.DiagnosticInfo | None" = None
 
 
 def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantTypeCustom:

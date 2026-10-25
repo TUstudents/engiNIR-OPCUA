@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextvars
 import functools
 import logging
+import math
 import struct
 import sys
 import typing
@@ -20,7 +21,7 @@ from typing import IO, Any, get_args, get_origin
 
 from enginir_opcua import ua
 
-from ..common.utils import Buffer
+from ..common.utils import Buffer, NotEnoughData
 from .uaerrors import UaError
 from .uatypes import (
     type_allow_subclass,
@@ -36,6 +37,62 @@ _logger = logging.getLogger(__name__)
 
 
 _string_encoding = contextvars.ContextVar("ua_string_encoding", default="utf-8")
+_nesting_depth = contextvars.ContextVar("ua_binary_nesting_depth", default=0)
+
+MAX_NESTING_DEPTH: int = 100
+MAX_ZERO_SIZE_ARRAY_COUNT: int = 65_536
+MAX_DIAGNOSTIC_INFO_DEPTH: int = 10
+
+
+def _bounded[**P, R](decode: Callable[P, R]) -> Callable[P, R]:
+    @functools.wraps(decode)
+    def bounded(*args: P.args, **kwargs: P.kwargs) -> R:
+        depth = _nesting_depth.get()
+        if depth >= MAX_NESTING_DEPTH:
+            raise UaError(f"Data nested deeper than {MAX_NESTING_DEPTH} levels")
+        token = _nesting_depth.set(depth + 1)
+        try:
+            return decode(*args, **kwargs)
+        finally:
+            _nesting_depth.reset(token)
+
+    return bounded
+
+
+def _read(data: Buffer | IO, size: int) -> bytes:
+    if size < 0:
+        raise UaError(f"Invalid length {size}")
+    result = data.read(size)
+    if len(result) != size:
+        raise NotEnoughData(f"Not enough data left, request for {size}, we have {len(result)}")
+    return result
+
+
+def _check_array_count(data: Buffer | IO, count: int, element_size: int) -> None:
+    if count < -1:
+        raise UaError(f"Invalid array length {count}")
+    if element_size == 0:
+        if count > MAX_ZERO_SIZE_ARRAY_COUNT:
+            raise UaError(f"Array of {count} elements without content exceeds {MAX_ZERO_SIZE_ARRAY_COUNT}")
+    elif isinstance(data, Buffer) and count * element_size > len(data):
+        raise NotEnoughData(f"Array of {count} elements does not fit the {len(data)} bytes left")
+
+
+def _as_list(data: Any, allow_bytes: bool = False) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, str) or (isinstance(data, bytes | bytearray | memoryview) and not allow_bytes):
+        raise UaError(f"Expected a sequence for an array, got {type(data).__name__}")
+    try:
+        return list(data)
+    except TypeError as ex:
+        raise UaError(f"Expected a sequence for an array, got {type(data).__name__}") from ex
+
+
+def _can_be_empty(uatype: Any) -> bool:
+    return (
+        isinstance(uatype, type) and is_dataclass(uatype) and not issubclass(uatype, ua.UaUnion) and not fields(uatype)
+    )
 
 
 def get_string_encoding() -> str:
@@ -58,9 +115,8 @@ def get_safe_type_hints(cls: type, extra_ns: dict[str, Any] | None = None) -> di
     return typing.get_type_hints(cls, globalns=None, localns=localns)
 
 
-def test_bit(data: int, offset: int) -> int:
-    mask = 1 << offset
-    return data & mask
+def is_bit_set(data: int, offset: int) -> bool:
+    return bool(data & (1 << offset))
 
 
 def set_bit(data: int, offset: int) -> int:
@@ -98,7 +154,7 @@ class _Bytes:
         length = Primitives.Int32.unpack(data)
         if length == -1:
             return None
-        return data.read(length)
+        return _read(data, length)
 
 
 class _String:
@@ -150,7 +206,7 @@ class _Guid:
         f1 = struct.pack(">I", Primitives.UInt32.unpack(data))
         f2 = struct.pack(">H", Primitives.UInt16.unpack(data))
         f3 = struct.pack(">H", Primitives.UInt16.unpack(data))
-        f4 = data.read(8)
+        f4 = _read(data, 8)
         # concat byte fields
         b = f1 + f2 + f3 + f4
 
@@ -168,23 +224,22 @@ class _Primitive1:
         return struct.pack(self.format, data)
 
     def unpack(self, data: Buffer | IO) -> Any:
-        return struct.unpack(self.format, data.read(self.size))[0]
+        return struct.unpack(self.format, _read(data, self.size))[0]
 
-    def pack_array(self, data: Sequence[Any] | None) -> bytes:
+    def pack_array(self, data: Iterable[Any] | None) -> bytes:
         if data is None:
             return Primitives.Int32.pack(-1)
-        if not isinstance(data, tuple | list):
-            _logger.warning('ua_binary.py > _Primitive1 > pack_array > data: %s is not a instance of "list"!', data)
-            return Primitives.Int32.pack(-1)  # to prevent crashing while runtime
-        size_data = Primitives.Int32.pack(len(data))
-        return size_data + struct.pack(self._fmt.format(len(data)), *data)
+        items = _as_list(data, allow_bytes=True)
+        size_data = Primitives.Int32.pack(len(items))
+        return size_data + struct.pack(self._fmt.format(len(items)), *items)
 
     def unpack_array(self, data: Buffer | IO, length: int) -> tuple[Any, ...] | None:
+        _check_array_count(data, length, self.size)
         if length == -1:
             return None
         if length == 0:
             return ()
-        return struct.unpack(self._fmt.format(length), data.read(self.size * length))
+        return struct.unpack(self._fmt.format(length), _read(data, self.size * length))
 
 
 class Primitives1:
@@ -260,16 +315,17 @@ def create_uatype_array_serializer(vtype: ua.VariantType) -> Callable[[Any], byt
         return data_type.pack_array
     serializer = create_uatype_serializer(vtype)
 
-    def serialize(array: Sequence[Any] | None) -> bytes:
+    def serialize(array: Iterable[Any] | None) -> bytes:
         if array is None:
             return b"\xff\xff\xff\xff"
-        length = Primitives.Int32.pack(len(array))
-        return length + b"".join(serializer(val) for val in array)
+        items = _as_list(array)
+        length = Primitives.Int32.pack(len(items))
+        return length + b"".join(serializer(val) for val in items)
 
     return serialize
 
 
-def pack_uatype_array(vtype: ua.VariantType, array: Sequence[Any] | None) -> bytes:
+def pack_uatype_array(vtype: ua.VariantType, array: Iterable[Any] | None) -> bytes:
     return create_uatype_array_serializer(vtype)(array)
 
 
@@ -284,7 +340,10 @@ def _create_uatype_array_deserializer(vtype: ua.VariantType) -> Callable[[Any], 
     else:  # Revert to slow serial unpacking.
         deserialize_element = _create_uatype_deserializer(vtype)
 
+        element_size = 0 if vtype == ua.VariantType.Null else 1
+
         def unpack_array(data: Buffer | IO, length: int) -> Iterable[Any]:
+            _check_array_count(data, length, element_size)
             return (deserialize_element(data) for _ in range(length))
 
     def deserialize(data: Buffer | IO) -> list[Any] | None:
@@ -374,6 +433,10 @@ def field_serializer(uatype: Any, is_optional: bool, dataclazz: type) -> Callabl
 @functools.cache
 def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
     """Given a dataclass, return a function that serializes instances of this dataclass"""
+    if dataclazz is ua.LocalizedText:
+        return _localizedtext_to_binary
+    if dataclazz is ua.DiagnosticInfo:
+        return diagnosticinfo_to_binary
     data_fields = fields(dataclazz)
     # The result is cached, so get_type_hints only runs once per class.
     try:
@@ -388,12 +451,12 @@ def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
 
         def union_serialize(obj: Any) -> bytes:
             bin = Primitives.UInt32.pack(obj.Encoding)
-            # 0 => None
-            # 1.. => union fields
-            if obj.Encoding > 0 and obj.Encoding <= len(encoding_funcs):
-                serialize = encoding_funcs[obj.Encoding - 1]
-                return b"".join([bin, serialize(obj.Value)])
-            return bin
+            if obj.Encoding == 0:
+                return bin
+            if obj.Encoding > len(encoding_funcs):
+                raise UaError(f"Union {dataclazz.__name__} has {len(encoding_funcs)} fields, not {obj.Encoding}")
+            serialize = encoding_funcs[obj.Encoding - 1]
+            return b"".join([bin, serialize(obj.Value)])
 
         return union_serialize
     option_fields_encodings = [  # Name and binary encoding of optional fields
@@ -424,6 +487,51 @@ def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
     return serialize
 
 
+def _localizedtext_to_binary(obj: ua.LocalizedText) -> bytes:
+    mask = 0
+    parts: list[bytes] = []
+    if obj.Locale:
+        mask |= 0x01
+        parts.append(Primitives.String.pack(obj.Locale))
+    if obj.Text:
+        mask |= 0x02
+        parts.append(Primitives.String.pack(obj.Text))
+    return Primitives.Byte.pack(mask) + b"".join(parts)
+
+
+_DIAGNOSTIC_INFO_INDEX_FIELDS = (
+    ("SymbolicId", 0x01),
+    ("NamespaceUri", 0x02),
+    ("Locale", 0x08),
+    ("LocalizedText", 0x04),
+)
+_DIAGNOSTIC_INFO_ADDITIONAL_INFO = 0x10
+_DIAGNOSTIC_INFO_INNER_STATUS_CODE = 0x20
+_DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO = 0x40
+
+
+def diagnosticinfo_to_binary(info: ua.DiagnosticInfo, _level: int = 1) -> bytes:
+    if _level > MAX_DIAGNOSTIC_INFO_DEPTH:
+        raise UaError(f"DiagnosticInfo nested deeper than {MAX_DIAGNOSTIC_INFO_DEPTH} levels")
+    mask = 0
+    parts: list[bytes] = []
+    for name, bit in _DIAGNOSTIC_INFO_INDEX_FIELDS:
+        value = getattr(info, name)
+        if value is not None:
+            mask |= bit
+            parts.append(Primitives.Int32.pack(value))
+    if info.AdditionalInfo is not None:
+        mask |= _DIAGNOSTIC_INFO_ADDITIONAL_INFO
+        parts.append(Primitives.String.pack(info.AdditionalInfo))
+    if info.InnerStatusCode is not None:
+        mask |= _DIAGNOSTIC_INFO_INNER_STATUS_CODE
+        parts.append(to_binary(ua.StatusCode, info.InnerStatusCode))
+    if info.InnerDiagnosticInfo is not None:
+        mask |= _DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO
+        parts.append(diagnosticinfo_to_binary(info.InnerDiagnosticInfo, _level + 1))
+    return Primitives.Byte.pack(mask) + b"".join(parts)
+
+
 def struct_to_binary(obj: Any) -> bytes:
     serializer = create_dataclass_serializer(obj.__class__)
     return serializer(obj)
@@ -436,14 +544,14 @@ def create_enum_serializer(uatype: type) -> Callable[[Any], bytes]:
         if hasattr(uatype, "datatype"):
             typename = uatype.datatype()
         return getattr(Primitives, typename).pack
-    if isinstance(uatype, Enum):
-        return lambda val: Primitives.Int32.pack(val.value)
-    return Primitives.Int32.pack
+    if issubclass(uatype, int):
+        return Primitives.Int32.pack
+    return lambda val: Primitives.Int32.pack(val.value)
 
 
 def strip_optional(tp: Any) -> Any:
     """Return the type with NoneType stripped if tp is Optional."""
-    if get_origin(tp) is UnionType:
+    if get_origin(tp) in (UnionType, typing.Union):
         args = tuple(a for a in get_args(tp) if a is not type(None))
         if len(args) == 1:
             return args[0]
@@ -479,7 +587,7 @@ def to_binary(uatype: type, val: Any) -> bytes:
 
 
 @functools.cache
-def create_list_serializer(uatype: Any) -> Callable[[Sequence[Any] | None], bytes]:
+def create_list_serializer(uatype: Any) -> Callable[[Iterable[Any] | None], bytes]:
     """
     Given a type, return a function that takes a list of instances
     of that type and serializes it.
@@ -494,19 +602,20 @@ def create_list_serializer(uatype: Any) -> Callable[[Sequence[Any] | None], byte
     none_val = Primitives.Int32.pack(-1)
     type_serializer: Callable[[Any], bytes] | None = None
 
-    def serialize(val: Sequence[Any] | None) -> bytes:
+    def serialize(val: Iterable[Any] | None) -> bytes:
         nonlocal type_serializer
         if val is None:
             return none_val
         if type_serializer is None:
             type_serializer = create_type_serializer(uatype)
-        data_size = Primitives.Int32.pack(len(val))
-        return data_size + b"".join(type_serializer(el) for el in val)
+        items = _as_list(val)
+        data_size = Primitives.Int32.pack(len(items))
+        return data_size + b"".join(type_serializer(el) for el in items)
 
     return serialize
 
 
-def list_to_binary(uatype: type, val: Sequence[Any] | None) -> bytes:
+def list_to_binary(uatype: type, val: Iterable[Any] | None) -> bytes:
     return create_list_serializer(uatype)(val)
 
 
@@ -546,33 +655,34 @@ def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
 
 
 def nodeid_from_binary(data: BytesIO | Buffer) -> ua.NodeId | ua.ExpandedNodeId:
-    encoding = ord(data.read(1))
-    nidtype = ua.NodeIdType(encoding & 0b00111111)
+    encoding = _read(data, 1)[0]
+    try:
+        nidtype = ua.NodeIdType(encoding & 0b00111111)
+    except ValueError as ex:
+        raise UaError(f"Unknown NodeId encoding: {encoding & 0b00111111}") from ex
     uri = None
     server_idx = None
 
     if nidtype == ua.NodeIdType.TwoByte:
-        identifier = ord(data.read(1))
+        identifier = _read(data, 1)[0]
         nidx = 0
     elif nidtype == ua.NodeIdType.FourByte:
-        nidx, identifier = struct.unpack("<BH", data.read(3))
+        nidx, identifier = struct.unpack("<BH", _read(data, 3))
     elif nidtype == ua.NodeIdType.Numeric:
-        nidx, identifier = struct.unpack("<HI", data.read(6))
+        nidx, identifier = struct.unpack("<HI", _read(data, 6))
     elif nidtype == ua.NodeIdType.String:
         nidx = Primitives.UInt16.unpack(data)
         identifier = Primitives.String.unpack(data)
     elif nidtype == ua.NodeIdType.ByteString:
         nidx = Primitives.UInt16.unpack(data)
         identifier = Primitives.Bytes.unpack(data)
-    elif nidtype == ua.NodeIdType.Guid:
+    else:
         nidx = Primitives.UInt16.unpack(data)
         identifier = Primitives.Guid.unpack(data)
-    else:
-        raise UaError(f"Unknown NodeId encoding: {nidtype}")
 
-    if test_bit(encoding, 7):
+    if is_bit_set(encoding, 7):
         uri = Primitives.String.unpack(data)
-    if test_bit(encoding, 6):
+    if is_bit_set(encoding, 6):
         server_idx = Primitives.UInt32.unpack(data)
 
     if uri is not None or server_idx is not None:
@@ -585,7 +695,7 @@ def variant_to_binary(var: ua.Variant) -> bytes:
     try:
         if var.is_array or isinstance(var.Value, list | tuple):
             body = pack_uatype_array(var.VariantType, ua.flatten(var.Value))
-            if var.Dimensions is None:
+            if var.Dimensions is None or len(var.Dimensions) < 2 or min(var.Dimensions) <= 0:
                 encoding |= 0b1000_0000
             else:
                 encoding |= 0b1100_0000
@@ -602,21 +712,28 @@ def variant_to_binary(var: ua.Variant) -> bytes:
     return Primitives.Byte.pack(encoding) + body
 
 
+@_bounded
 def variant_from_binary(data: Buffer | IO) -> ua.Variant:
     dimensions = None
     array = False
-    encoding = ord(data.read(1))
+    encoding = _read(data, 1)[0]
     int_type = encoding & 0b00111111
     vtype = ua.datatype_to_varianttype(int_type)
-    if test_bit(encoding, 7):
+    if is_bit_set(encoding, 7):
         value = unpack_uatype_array(vtype, data)
         array = True
     else:
         value = unpack_uatype(vtype, data)
-    if test_bit(encoding, 6):
+    if is_bit_set(encoding, 6):
+        if not array:
+            raise UaError("Variant has dimensions but is not an array")
         dimensions = unpack_uatype_array(ua.VariantType.Int32, data)
-        if value is not None:
+        if not dimensions or min(dimensions) < 0:
+            raise UaError(f"Variant has invalid dimensions {dimensions}")
+        if value:
             value = _reshape(value, dimensions)
+        elif value is not None and 0 not in dimensions:
+            raise UaError(f"Variant has dimensions {dimensions} but no elements")
     return ua.Variant(value, vtype, dimensions, is_array=array)
 
 
@@ -629,59 +746,73 @@ per-deployment basis if you legitimately exchange larger dense arrays.
 """
 
 
-def _reshape(flat: list[Any], dims: list[int]) -> list[Any]:
-    subdims = dims[1:]
-    subsize = 1
-    for i in subdims:
-        if i == 0:
-            i = 1
-        subsize *= i
-    declared = dims[0] * subsize
+def _reshape(flat: list[Any], dims: Sequence[int]) -> list[Any]:
+    if not dims or min(dims) <= 0:
+        raise UaError(f"Invalid Variant Dimensions {list(dims)}")
+    declared = math.prod(dims)
     if declared > MAX_RESHAPE_ELEMENTS:
         raise UaError(
             f"Variant Dimensions declare {declared} elements, exceeds MAX_RESHAPE_ELEMENTS={MAX_RESHAPE_ELEMENTS}"
         )
-    while declared > len(flat):
-        flat.append([])
-    if not subdims or subdims == [0]:
+    if declared != len(flat):
+        raise UaError(f"Variant Dimensions {list(dims)} declare {declared} elements, the array has {len(flat)}")
+    return _split(flat, dims)
+
+
+def _split(flat: list[Any], dims: Sequence[int]) -> list[Any]:
+    if len(dims) == 1:
         return flat
-    return [_reshape(flat[i : i + subsize], subdims) for i in range(0, len(flat), subsize)]
+    subdims = dims[1:]
+    subsize = math.prod(subdims)
+    return [_split(flat[i : i + subsize], subdims) for i in range(0, len(flat), subsize)]
 
 
-def extensionobject_from_binary(data: Buffer) -> Any:
+def _window(data: Buffer | IO, length: int) -> Buffer:
+    if isinstance(data, Buffer):
+        window = data.copy(length)
+        data.skip(length)
+        return window
+    return Buffer(_read(data, length))
+
+
+def _is_null_nodeid(nodeid: ua.NodeId) -> bool:
+    return nodeid.NamespaceIndex == 0 and nodeid.Identifier == 0
+
+
+@_bounded
+def extensionobject_from_binary(data: Buffer | IO) -> Any:
     """
     Convert binary-coded ExtensionObject to a Python object.
     Returns an object, or None if TypeId is zero
     """
     typeid = nodeid_from_binary(data)
-    encoding = ord(data.read(1))
-    body = None
-    if encoding & (1 << 0):
+    encoding = _read(data, 1)[0]
+    if encoding > 2:
+        raise UaError(f"Unknown ExtensionObject encoding {encoding}")
+    registered = typeid in ua.extension_objects_by_typeid
+    window: Buffer | None = None
+    unframed = False
+    if encoding != 0:
         length = Primitives.Int32.unpack(data)
+        if length < -1:
+            raise UaError(f"Invalid ExtensionObject length {length}")
         if length == -1:
-            # Interop fix for old OPC/UA implementations that fail to fill in the length
-            body = data
-        elif length < 1:
-            body = Buffer(b"")
+            if encoding != 1 or not registered:
+                raise UaError(f"ExtensionObject {typeid} without length")
+            unframed = True
         else:
-            body = data.copy(length)
-            data.skip(length)
-    if typeid.Identifier == 0:
+            window = _window(data, length)
+    if _is_null_nodeid(typeid):
         return ua.ExtensionObject()
-    if typeid in ua.extension_objects_by_typeid:
+    if registered and encoding != 2:
         cls = ua.extension_objects_by_typeid[typeid]
-        if body is None:
+        if not unframed and window is None:
             raise UaError(f"parsing ExtensionObject {cls.__name__} without data")
-        return from_binary(cls, body)
-    if body is not None:
-        body_data = body.read(len(body))
-    else:
-        body_data = None
-    e = ua.ExtensionObject(
-        TypeId=typeid,
-        Body=body_data,
-    )
-    return e
+        return from_binary(cls, data if unframed else window)  # type: ignore[arg-type]
+    opaque = ua.ExtensionObject(TypeId=typeid, Body=None if window is None else bytes(window))
+    if encoding == 2:
+        object.__setattr__(opaque, "Encoding", 2)
+    return opaque
 
 
 def _encoding_for_class_via_mro(cls: type) -> Any:
@@ -704,7 +835,10 @@ def extensionobject_to_binary(obj: Any) -> bytes:
     Returns a binary string
     """
     if isinstance(obj, ua.ExtensionObject):
-        return struct_to_binary(obj)
+        if obj.Body is None:
+            return nodeid_to_binary(obj.TypeId) + Primitives.Byte.pack(0)
+        encoding = 0x02 if obj.Encoding == 2 else 0x01
+        return nodeid_to_binary(obj.TypeId) + Primitives.Byte.pack(encoding) + Primitives.Bytes.pack(obj.Body)
     if obj is None:
         type_id = ua.NodeId()
         encoding = 0
@@ -719,7 +853,7 @@ def extensionobject_to_binary(obj: Any) -> bytes:
         nodeid_to_binary(type_id),
         Primitives.Byte.pack(encoding),
     ]
-    if body:
+    if body is not None:
         packet.append(Primitives.Bytes.pack(body))
     return b"".join(packet)
 
@@ -730,11 +864,17 @@ def _create_list_deserializer(uatype: Any) -> Callable[[Buffer | IO], list[Any]]
     # lists don't infinitely re-enter during codec construction.
     element_deserializer: Callable[[Any], Any] | None = None
 
+    element_size = 1
+
     def _deserialize(data: Buffer | IO) -> list[Any]:
-        nonlocal element_deserializer
+        nonlocal element_deserializer, element_size
         size = Primitives.Int32.unpack(data)
         if element_deserializer is None:
             element_deserializer = _create_type_deserializer(uatype, type(None))
+            element_size = 0 if _can_be_empty(resolve_uatype(uatype)[0]) else 1
+        _check_array_count(data, size, element_size)
+        if size == -1:
+            return []
         return [element_deserializer(data) for _ in range(size)]
 
     return _deserialize
@@ -774,7 +914,15 @@ def create_enum_deserializer(uatype: type[IntFlag] | type[Enum]) -> Callable[[An
             typename = uatype.datatype()
         unpack = getattr(Primitives, typename).unpack
         return lambda val: uatype(unpack(val))
-    return lambda val: uatype(Primitives.Int32.unpack(val))
+
+    def decode_enum(data: Buffer | IO) -> Any:
+        value = Primitives.Int32.unpack(data)
+        try:
+            return uatype(value)
+        except ValueError as ex:
+            raise UaError(f"{value} is not a valid {uatype.__name__}") from ex
+
+    return decode_enum
 
 
 def from_binary[T](uatype: type[T] | str, data: Buffer | IO) -> T:
@@ -789,6 +937,8 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     if isinstance(objtype, str):
         objtype = getattr(ua, objtype)
     assert isinstance(objtype, type)
+    if objtype is ua.DiagnosticInfo:
+        return diagnosticinfo_from_binary
     if issubclass(objtype, Enum):
         return create_enum_deserializer(objtype)  # type: ignore[arg-type]
     if issubclass(objtype, ua.UaUnion):
@@ -797,14 +947,14 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
         union_field_deserializers = [_create_type_deserializer(t, union_type) for t in union_type._union_types]
         byte_decode = next(_create_type_deserializer(f.type, type(None)) for f in typefields if f.name == "Encoding")
 
+        @_bounded
         def decode_union(data: Buffer | IO) -> Any:
             enc = byte_decode(data)
+            if enc > len(union_field_deserializers):
+                raise UaError(f"Union {objtype.__name__} has {len(union_field_deserializers)} fields, not {enc}")
             obj: Any = objtype()
             obj.Encoding = enc
-            # encoding value
-            # 0 => empty union
-            # 1..union_fiels => index of the
-            if enc > 0 and enc <= len(union_field_deserializers):
+            if enc > 0:
                 obj.Value = union_field_deserializers[enc - 1](data)
             else:
                 obj.Value = None
@@ -829,17 +979,46 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
             deserialize_field = _create_type_deserializer(field_type, objtype)
         dc_field_deserializers.append((field, optional_enc_bit, deserialize_field))
 
+    unassigned_bits_mask = ~functools.reduce(lambda mask, item: mask | item[1], dc_field_deserializers, 0)
+
+    @_bounded
     def decode(data: Buffer | IO) -> Any:
         kwargs: dict[str, Any] = {}
         enc: int = 0
         for field, optional_enc_bit, deserialize_field in dc_field_deserializers:
             if field.name == "Encoding":
                 enc = deserialize_field(data)
+                if enc & unassigned_bits_mask:
+                    raise UaError(f"{objtype.__name__} has unassigned encoding bits {enc & unassigned_bits_mask:#x}")
             elif optional_enc_bit == 0 or enc & optional_enc_bit:
                 kwargs[field.name] = deserialize_field(data)
         return objtype(**kwargs)
 
     return decode
+
+
+def _diagnosticinfo_from_binary(data: Buffer | IO, level: int) -> ua.DiagnosticInfo:
+    if level > MAX_DIAGNOSTIC_INFO_DEPTH:
+        raise UaError(f"DiagnosticInfo nested deeper than {MAX_DIAGNOSTIC_INFO_DEPTH} levels")
+    mask = Primitives.Byte.unpack(data)
+    if mask & 0x80:
+        raise UaError(f"DiagnosticInfo has unassigned encoding bits {mask & 0x80:#x}")
+    kwargs: dict[str, Any] = {}
+    for name, bit in _DIAGNOSTIC_INFO_INDEX_FIELDS:
+        if mask & bit:
+            kwargs[name] = Primitives.Int32.unpack(data)
+    if mask & _DIAGNOSTIC_INFO_ADDITIONAL_INFO:
+        kwargs["AdditionalInfo"] = Primitives.String.unpack(data)
+    if mask & _DIAGNOSTIC_INFO_INNER_STATUS_CODE:
+        kwargs["InnerStatusCode"] = from_binary(ua.StatusCode, data)
+    if mask & _DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO:
+        kwargs["InnerDiagnosticInfo"] = _diagnosticinfo_from_binary(data, level + 1)
+    return ua.DiagnosticInfo(**kwargs)
+
+
+@_bounded
+def diagnosticinfo_from_binary(data: Buffer | IO) -> ua.DiagnosticInfo:
+    return _diagnosticinfo_from_binary(data, 1)
 
 
 def struct_from_binary[T](objtype: type[T] | str, data: IO | Buffer) -> T:
@@ -862,12 +1041,11 @@ def header_to_binary(hdr: ua.Header) -> bytes:
 
 def header_from_binary(data: Buffer | IO) -> ua.Header:
     hdr = ua.Header()
-    hdr.MessageType, hdr.ChunkType, hdr.packet_size = struct.unpack("<3scI", data.read(8))
+    hdr.MessageType, hdr.ChunkType, hdr.packet_size = struct.unpack("<3scI", _read(data, 8))
     hdr.body_size = hdr.packet_size - 8
     if hdr.MessageType in (ua.MessageType.SecureOpen, ua.MessageType.SecureClose, ua.MessageType.SecureMessage):
         hdr.body_size -= 4
         hdr.ChannelId = Primitives.UInt32.unpack(data)
-        hdr.header_size = 12
     return hdr
 
 
