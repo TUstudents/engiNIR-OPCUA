@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from enginir_opcua import ua
+from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.ua_binary import variant_from_binary, variant_to_binary
 from enginir_opcua.ua.uatypes import datatype_to_varianttype
 
@@ -152,3 +153,11 @@ def test_variant_guess_nodeid_subclasses() -> None:
     assert ua.Variant(ua.NumericNodeId(5)).VariantType is ua.VariantType.NodeId
     assert ua.Variant(ua.NodeId(5)).VariantType is ua.VariantType.NodeId
     assert ua.Variant(ua.ExpandedNodeId(5)).VariantType is ua.VariantType.ExpandedNodeId
+
+
+def test_null_xml_element_scalar_round_trips() -> None:
+    """Part 6, 5.1.2: XmlElement is nullable, so a scalar None has to encode."""
+    variant = ua.Variant(None, ua.VariantType.XmlElement)
+    assert variant_from_binary(Buffer(variant_to_binary(variant))) == ua.Variant(
+        ua.XmlElement(), ua.VariantType.XmlElement
+    )

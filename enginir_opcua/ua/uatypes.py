@@ -1316,6 +1316,10 @@ _NULL_SCALAR_FACTORIES: dict[VariantType, Callable[[], Any]] = {
 }
 
 
+def register_null_scalar(vtype: VariantType, factory: Callable[[], Any]) -> None:
+    _NULL_SCALAR_FACTORIES[vtype] = factory
+
+
 def get_default_value(vtype: VariantType) -> Any:
     """
     Given a variant type return default value for this type

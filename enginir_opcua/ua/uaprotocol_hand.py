@@ -255,6 +255,9 @@ class XmlElement:
     Value: uatypes.String = ""
 
 
+uatypes.register_null_scalar(uatypes.VariantType.XmlElement, XmlElement)
+
+
 @dataclass(slots=True)
 class DataChangeFilter(auto.DataChangeFilter):
     Trigger: auto.DataChangeTrigger = auto.DataChangeTrigger.StatusValue
