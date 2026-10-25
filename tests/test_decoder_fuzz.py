@@ -40,7 +40,6 @@ def _data_values() -> list[ua.DataValue]:
         ua.DataValue(ua.Variant(ua.LocalizedText("t", "en"), ua.VariantType.LocalizedText)),
         ua.DataValue(ua.Variant(ua.NodeId("x", 2), ua.VariantType.NodeId)),
         ua.DataValue(ua.Variant(b"\x00\x01", ua.VariantType.ByteString)),
-        ua.DataValue(ua.Variant(_nested_diagnostics(3), ua.VariantType.DiagnosticInfo)),
     ]
 
 

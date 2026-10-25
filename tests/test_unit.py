@@ -70,7 +70,7 @@ def test_variant_array_none():
     v = ua.Variant(None, VariantType=ua.VariantType.Null, Dimensions=[0, 0])
     data = variant_to_binary(v)
     v2 = variant_from_binary(ua.utils.Buffer(data))
-    assert v == v2
+    assert v2 == ua.Variant(None, VariantType=ua.VariantType.Null, is_array=True)
     assert v2.is_array
     assert v2.Dimensions is None
 
@@ -86,7 +86,7 @@ def test_variant_empty_list():
     v = ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True, Dimensions=[0])
     data = variant_to_binary(v)
     v2 = variant_from_binary(ua.utils.Buffer(data))
-    assert v == v2
+    assert v2 == ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True)
     assert v2.is_array
     assert v2.Dimensions is None
 

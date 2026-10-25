@@ -2,7 +2,8 @@ import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
-from enginir_opcua.ua.ua_binary import from_binary, struct_to_binary, variant_from_binary, variant_to_binary
+from enginir_opcua.ua.ua_binary import diagnosticinfo_to_binary, from_binary, struct_to_binary, variant_from_binary
+from enginir_opcua.ua.uaerrors import UaError
 
 
 def _nested(levels: int) -> ua.DiagnosticInfo:
@@ -99,8 +100,8 @@ def test_ua24_diagnostic_info_inside_a_structure() -> None:
     assert from_binary(ua.ResponseHeader, Buffer(struct_to_binary(header))) == header
 
 
-def test_ua24_diagnostic_info_inside_a_variant() -> None:
-    """Part 6, 5.2.2.16: built-in type 25 is a DiagnosticInfo."""
+def test_ua24_diagnostic_info_inside_a_variant_is_rejected() -> None:
+    """Part 6, 5.1.9: a Variant can't hold a DiagnosticInfo, so a peer's Variant of type 25 fails to decode."""
     info = ua.DiagnosticInfo(LocalizedText=1, InnerDiagnosticInfo=ua.DiagnosticInfo(Locale=2))
-    variant = ua.Variant(info, ua.VariantType.DiagnosticInfo)
-    assert variant_from_binary(Buffer(variant_to_binary(variant))).Value == info
+    with pytest.raises(UaError):
+        variant_from_binary(Buffer(bytes([ua.VariantType.DiagnosticInfo.value]) + diagnosticinfo_to_binary(info)))
