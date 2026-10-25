@@ -8,6 +8,7 @@ from abc import ABCMeta, abstractmethod
 from typing import TYPE_CHECKING
 
 from ..ua import MessageSecurityMode, SecurityPolicyType, UaError
+from ..ua.uaerrors import SignatureError
 
 if TYPE_CHECKING:
     from ..crypto.permission_rules import PermissionRuleset
@@ -262,7 +263,7 @@ class Cryptography(CryptographyNone):
         if self._use_prev_key:
             if self.Prev_Decryptor and self.Prev_Verifier:
                 return True
-            raise uacrypto.InvalidSignature
+            raise SignatureError("signature does not match the data")
         return False
 
     @use_prev_key.setter
@@ -367,7 +368,7 @@ class VerifierAesCbc(Verifier):
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha1(self.key, data)
         if not hmac.compare_digest(signature, expected):
-            raise uacrypto.InvalidSignature
+            raise SignatureError("signature does not match the data")
 
 
 class EncryptorAesCbc(Encryptor):
@@ -443,7 +444,7 @@ class VerifierHMac256(Verifier):
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha256(self.key, data)
         if not hmac.compare_digest(signature, expected):
-            raise uacrypto.InvalidSignature
+            raise SignatureError("signature does not match the data")
 
 
 class SignerPssSha256(Signer):

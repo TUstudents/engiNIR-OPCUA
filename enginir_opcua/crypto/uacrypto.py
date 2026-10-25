@@ -5,19 +5,15 @@ from pathlib import Path
 
 import anyio
 from cryptography import x509
-
-# We redefine InvalidSignature as part of this module. Do not remove this line.
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ..ua.uaerrors import DecryptionError, SignatureError
+
 _logger = logging.getLogger(__name__)
-
-
-class InvalidSignature(Exception):  # type: ignore # noqa: F811
-    pass
 
 
 @dataclass
@@ -162,18 +158,26 @@ def sign_pss_sha256(private_key, data):
     )
 
 
+def _verify(certificate, data, signature, rsa_padding, algorithm):
+    try:
+        certificate.public_key().verify(signature, data, rsa_padding, algorithm)
+    except InvalidSignature as exc:
+        raise SignatureError("signature does not match the data") from exc
+
+
 def verify_sha1(certificate, data, signature):
-    certificate.public_key().verify(signature, data, padding.PKCS1v15(), hashes.SHA1())
+    _verify(certificate, data, signature, padding.PKCS1v15(), hashes.SHA1())
 
 
 def verify_sha256(certificate, data, signature):
-    certificate.public_key().verify(signature, data, padding.PKCS1v15(), hashes.SHA256())
+    _verify(certificate, data, signature, padding.PKCS1v15(), hashes.SHA256())
 
 
 def verify_pss_sha256(certificate, data, signature):
-    certificate.public_key().verify(
-        signature,
+    _verify(
+        certificate,
         data,
+        signature,
         padding.PSS(mgf=padding.MGF1(algorithm=hashes.SHA256()), salt_length=32),
         hashes.SHA256(),
     )
@@ -206,24 +210,29 @@ def encrypt_rsa15(public_key, data):
     return ciphertext
 
 
+def _decrypt_rsa(private_key, data, rsa_padding):
+    try:
+        return private_key.decrypt(bytes(data), rsa_padding)
+    except ValueError as exc:
+        raise DecryptionError("RSA decryption failed") from exc
+
+
 def decrypt_rsa_oaep(private_key, data):
-    text = private_key.decrypt(
-        bytes(data), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
+    return _decrypt_rsa(
+        private_key, data, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
     )
-    return text
 
 
 def decrypt_rsa_oaep_sha256(private_key, data):
-    text = private_key.decrypt(
-        bytes(data),
+    return _decrypt_rsa(
+        private_key,
+        data,
         padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
     )
-    return text
 
 
 def decrypt_rsa15(private_key, data):
-    text = private_key.decrypt(bytes(data), padding.PKCS1v15())
-    return text
+    return _decrypt_rsa(private_key, data, padding.PKCS1v15())
 
 
 def cipher_aes_cbc(key, init_vec):
@@ -238,7 +247,10 @@ def cipher_encrypt(cipher, data):
 
 def cipher_decrypt(cipher, data):
     decryptor = cipher.decryptor()
-    return decryptor.update(data) + decryptor.finalize()
+    try:
+        return decryptor.update(data) + decryptor.finalize()
+    except ValueError as exc:
+        raise DecryptionError("AES decryption failed") from exc
 
 
 def hmac_sha1(key, message):
