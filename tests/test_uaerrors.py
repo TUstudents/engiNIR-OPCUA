@@ -31,3 +31,15 @@ def test_code(errors):
 def test_string_repr(errors):
     assert "BadInternal" in str(errors["direct"])
     assert "BadInternal" in str(errors["indirect"])
+
+
+def test_ua2_only_integer_keys_registered() -> None:
+    assert all(isinstance(key, int) for key in UaStatusCodeError._subclasses)
+
+
+def test_ua4_status_code_errors_codes() -> None:
+    error = uaerrors.UaStatusCodeErrors([0, status_code_bad_internal, 0x80010000])
+    assert error.codes == [0, status_code_bad_internal, 0x80010000]
+    assert error.code == status_code_bad_internal
+    assert uaerrors.UaStatusCodeErrors([0, 0]).code is None
+    assert "BadInternalError" in str(error)

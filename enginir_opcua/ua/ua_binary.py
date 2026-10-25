@@ -620,6 +620,8 @@ def list_to_binary(uatype: type, val: Iterable[Any] | None) -> bytes:
 
 
 def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
+    if isinstance(nodeid, ua.ExpandedNodeId) and nodeid.NamespaceUri and nodeid.NamespaceIndex:
+        nodeid = ua.ExpandedNodeId(nodeid.Identifier, 0, nodeid.NodeIdType, nodeid.NamespaceUri, nodeid.ServerIndex)
     if nodeid.NodeIdType == ua.NodeIdType.TwoByte:
         packed = struct.pack("<BB", nodeid.NodeIdType.value, nodeid.Identifier)
     elif nodeid.NodeIdType == ua.NodeIdType.FourByte:
