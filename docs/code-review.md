@@ -12,13 +12,14 @@ Severity:
 Spec baseline:
 - Findings are checked against **OPC 10000 v1.05**. Look up any cited section with `python docs/opcua-spec/fetch_specs.py show <part> <section> [--edition v1.04]`.
 - The current editions are 1.05.07 for Parts 4 and 6 and 1.05.06 for Parts 1 and 3. **v1.04** (2017-11-22) is also online for every part. 1.00–1.03 and the intermediate 1.05.x releases aren't online.
-- The generated code comes from the `nodeset` submodule, UA-Nodeset **1.05.02** (2022-11-01).
+- The generated code was built from UA-Nodeset tag **`UA-1.05.07-2026-05-01`** (core model 1.05.07, published 2026-05-01; see the header of `asyncua/server/standard_address_space/standard_address_space_services.py`). `schemas/update_ua_nodeset.py` clones UA-Nodeset into `schemas/UA-Nodeset-master/` for that; the `nodeset` submodule is an older copy (commit `526c5e59`, 2023) that only the tests use. An earlier version of this line said the code came from the submodule's 1.05.02, which was wrong.
 - Section numbers below are the 1.05 ones. Where 1.04 says something different, that's noted.
 
 Differences between 1.04 and 1.05 found so far (they matter for interoperability with older peers):
 - **Hello `ProtocolVersion`** (Part 6, 7.1.2.3). In 1.04 the client sends the *latest* version it supports, and the server must always accept a version higher than its own. In 1.05 the server rejects with `Bad_ProtocolVersionUnsupported` only if it supports neither the requested version nor any lower one, and returns the version it will use in the Acknowledge. Both editions define version `0`, so they're wire-compatible today. The server never checks the version and always answers `0`, which is correct for both while `0` is the only version (SRV-8).
 - **DiagnosticInfo nesting** (Part 6, 5.2.2.12). 1.04 requires decoders to support at least 100 nesting levels. 1.05 requires at least 4 and says decoders aren't expected to support more than 10. The limit our decoder enforces should satisfy both: support at least 4, and reject deep nesting with an error instead of recursing without bound.
 - **XmlElement** is marked *Deprecated* in 1.05 (Part 6, 5.2.2.8). Decoders still have to handle it (see UA-37).
+- **`DesignToolOnly` in UANodeSet files** (Part 6, F.7, new in 1.05). Nodes marked this way are for modelling tools only and are not added to the address space. Current companion nodesets use it (see COM-57).
 - **Channel-bound session signatures** (Part 4, 6.1.8, new in 1.05). CreateSession and ActivateSession signatures include the channel's certificates, but only for SecurityPolicies with `SecureChannelEnhancements = TRUE` (the newer policies). The RSA policies asyncua supports keep the legacy calculation, so nothing changes until new policies are added.
 
 ---
@@ -320,6 +321,17 @@ Differences between 1.04 and 1.05 found so far (they matter for interoperability
   - `_to_nodeid` maps an empty or missing NodeId string to `i=12` (**String**). For a missing `DataType`, the UANodeSet schema default is `i=24` (BaseDataType).
   - `_to_nodeid` also checks the standard `ObjectIds` names *before* the file's own `<Aliases>`, so a nodeset alias that happens to share a standard name is ignored.
   - In `_add_variable_value` for `LocalizedText`, `myargs` (with `Encoding` removed) is built and then not used, and `LocalizedText(**dict(obj.value))` is called with the unfiltered dict.
+- **COM-57 (bug, interop)** (verified, spec-checked; added 2026-10-25, after the module review): `xmlparser.py` and the importer ignore the `DesignToolOnly` attribute of `UAObject` and `UAVariable`, which is new in 1.05 (Part 6, F.7; 1.04 has no such attribute).
+  - Per F.7, a node with `DesignToolOnly="true"` is only a placeholder for modelling tools. It isn't part of the address space, has no `ParentNodeId`, mustn't be the target of references from other nodes, and its children aren't added.
+  - The importer adds it like any other object. The server rejects it with `BadParentNodeIdInvalid`, and `import_xml()` aborts.
+  - Verified with the current UA-Nodeset: DI 1.05.0 (2025-11-15) contains 9 such nodes and fails at the first one (`ns=1;i=73`, `Configuration`). Machinery 1.04.2 contains one. So the current DI can't be loaded, and neither can anything built on it (ADI, Machinery, LADS, …). The DI in the `nodeset` submodule (2023) predates the attribute, which is why the tests pass.
+  - Fix: read the attribute in `xmlparser.py`, and skip such nodes, and references to them, in the importer.
+- **COM-58 (bug, interop)** (verified; added 2026-10-25, after the module review): `add_object` skips the AddNodes status check for DataTypeEncoding objects, which often fail to add, and recognises them only by the DisplayNames `"Default Binary"`, `"Default XML"` and `"Default Json"`.
+  - The standard name is `"Default JSON"`. Part 6 v1.04, 5.4.1 names it, and the core 1.05.07 model uses it for all 359 of its JSON encodings. The `"Default Json"` spelling matches no standard nodeset.
+  - Verified with LADS 1.0.0, on DI 1.05.0 with COM-57 worked around, AMB 1.01.1 and Machinery 1.03.0. Its `"Default JSON"` encoding object `i=5044` fails with `BadParentNodeIdInvalid`, and the import aborts.
+  - With the DisplayName changed to `"Default Json"` the import completes, but the exemption only hides the failure. Six LADS encoding objects are missing from the address space, and the `HasEncoding` references from the LADS DataTypes to them are dropped (logged as "could not be imported and are probably broken"). `import_xml()` still returns the NodeIds of the six missing nodes.
+  - The encoding objects of DI (12) and AMB (4) are added correctly, so parent resolution fails only for some files. The cause wasn't traced.
+  - Fix: recognise encoding objects by their type definition (`DataTypeEncodingType`, `i=76`) instead of by name, add them through the inverse `HasEncoding` reference of their DataType, and make `import_xml()` raise or report every node it couldn't add instead of returning its NodeId.
 
 ### sql_injection.py (and how history_sql.py uses it)
 
@@ -343,7 +355,7 @@ Differences between 1.04 and 1.05 found so far (they matter for interoperability
 
 ### Summary: asyncua/common
 
-56 findings (COM-1 … COM-56): 35 bugs (two of them security: COM-39 high, COM-54 medium; plus COM-1 and COM-36 robustness), 5 doc, 15 cleanup and 1 question. Bugs marked "Verified" were reproduced by running code. COM-27 (partly), COM-32, COM-40 and COM-45 are from reading the code.
+58 findings (COM-1 … COM-58): 37 bugs (two of them security: COM-39 high, COM-54 medium; plus COM-1 and COM-36 robustness), 5 doc, 15 cleanup and 1 question. COM-57 and COM-58 were added on 2026-10-25, after the module review, while loading companion specifications. Bugs marked "Verified" were reproduced by running code. COM-27 (partly), COM-32, COM-40 and COM-45 are from reading the code.
 
 Highest impact:
 1. **COM-39**: `load_type_definitions()` executes code from the server's type dictionary. Remote code execution in the client.
@@ -352,7 +364,7 @@ Highest impact:
 4. **COM-18, COM-25**: recursive delete and copy follow `Organizes`, so they delete or duplicate nodes owned elsewhere, and loop on cycles.
 5. **COM-22, COM-23**: instantiation creates literal `<Placeholder>` nodes and ignores failed adds.
 6. **COM-30**: `modify_monitored_item` silently breaks event subscriptions.
-7. **COM-48, COM-55**: XML import treats `"false"` as true; export and re-import loses Symmetric, IsAbstract and AccessLevel.
+7. **COM-57, COM-58, COM-48, COM-55**: current 1.05 companion nodesets (DI 1.05, LADS) can't be imported at all; XML import treats `"false"` as true; export and re-import loses Symmetric, IsAbstract and AccessLevel.
 8. **COM-15, COM-16**: history reads send invalid default ranges, lose pages of events and leak continuation points.
 9. **COM-40**: generated types are registered process-wide by namespace *index*, so multiple servers in one process collide.
 10. **COM-44**: the `FiniteStateMachine` helper (and its example) can't work, because the type is abstract.
@@ -846,18 +858,18 @@ Checked against Part 14 (1.05.06). The UADP layout is in 7.2.4.4 (NetworkMessage
 
 ## Overall summary
 
-The review covers every hand-written module in `asyncua/`, plus the matching `docs/` pages. That's 171 findings:
+The review covers every hand-written module in `asyncua/`, plus the matching `docs/` pages. That's 173 findings:
 
 | Area | Findings | Bug | Security-only | Doc | Cleanup | Question |
 |---|---|---|---|---|---|---|
 | `ua` (UA-) | 46 | 20 | – | 7 | 16 | 3 |
-| `common` (COM-) | 56 | 33 | 2 | 5 | 15 | 1 |
+| `common` (COM-) | 58 | 35 | 2 | 5 | 15 | 1 |
 | `client` (CLI-) | 17 | 12 | – | 2 | 3 | – |
 | `server` (SRV-) | 24 | 22 | – | 1 | 1 | – |
 | `crypto` (CRY-) | 12 | 9 | – | – | 3 | – |
 | `pubsub` (PUB-) | 8 | 7 | – | 1 | – | – |
 | `sync`, `tools`, `observer` (SYN-, TOOL-, OBS-) | 8 | 6 | – | 1 | 1 | – |
-| **Total** | **171** | **109** | **2** | **17** | **39** | **4** |
+| **Total** | **173** | **111** | **2** | **17** | **39** | **4** |
 
 Twenty-three findings touch security. Three are fixed so far:
 - **COM-39** (code execution from legacy type dictionaries), commit `6f9f1a14`, upstream branch `fix/legacy-type-dictionary-exec`.
