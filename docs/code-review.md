@@ -263,7 +263,7 @@ Differences between 1.04 and 1.05 found so far (they matter for interoperability
 
 ### structures.py (legacy, pre-1.04 type dictionaries)
 
-- **COM-39 (security, high)**: **a server can execute arbitrary Python code in the client.** `Client.load_type_definitions()` (and `Server.load_type_definitions()`, plus the sync wrappers) works like this:
+- **COM-39 (security, high, fixed in `6f9f1a14`)**: **a server can execute arbitrary Python code in the client.** `Client.load_type_definitions()` (and `Server.load_type_definitions()`, plus the sync wrappers) works like this:
   1. It reads the server's OPC Binary type dictionary (`structures.py:268`).
   2. It builds Python source from it (`EnumType.get_code`, `Struct.get_code`).
   3. It `exec`s that source (`_generate_python_class`, line 336).
