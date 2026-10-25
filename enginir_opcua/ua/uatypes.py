@@ -1232,9 +1232,9 @@ def get_default_value(vtype: VariantType) -> Any:
     if vtype == VariantType.String:
         return None
     if vtype == VariantType.DateTime:
-        return datetime.now(UTC)
+        return get_win_epoch()
     if vtype == VariantType.Guid:
-        return uuid.uuid4()
+        return uuid.UUID(int=0)
     if vtype == VariantType.XmlElement:
         return None
     if vtype == VariantType.NodeId:
@@ -1253,6 +1253,8 @@ def get_default_value(vtype: VariantType) -> Any:
         return DataValue()
     if vtype == VariantType.Variant:
         return Variant()
+    if vtype == VariantType.DiagnosticInfo:
+        return DiagnosticInfo()
     raise RuntimeError(f"function take a uatype as argument, got: {vtype}")
 
 
