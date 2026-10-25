@@ -9,15 +9,18 @@ import asyncio
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.permission_rules import User, UserRole
+from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
 from enginir_opcua.server.internal_server import InternalServer
 from enginir_opcua.ua.ua_binary import struct_from_binary, uatcp_to_binary
 
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
+EXAMPLES = Path(__file__).parent.parent / "examples"
 
 
 class RawPeer:
@@ -104,3 +107,19 @@ class TwoSessions:
     server: Server
     alice: Client
     bob: Client
+
+
+async def signing_client(server: Server, user: str = "alice") -> Client:
+    """A client for the signing_server fixture: Basic256Sha256, Sign, logged in as one of TWO_SESSION_USERS."""
+    client = Client(server.endpoint.geturl())
+    await client.set_security(
+        SecurityPolicyBasic256Sha256,
+        str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"),
+        str(EXAMPLES / "certificates" / "peer-private-key-example-1.pem"),
+        None,
+        str(EXAMPLES / "certificate-example.der"),
+        ua.MessageSecurityMode.Sign,
+    )
+    client.set_user(user)
+    client.set_password(TWO_SESSION_USERS[user])
+    return client

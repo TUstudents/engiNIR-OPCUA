@@ -20,7 +20,7 @@ from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 
-from .harness import TWO_SESSION_USERS, RawPeer, ResponseTampering, TwoSessions, TwoUserManager
+from .harness import EXAMPLES, TWO_SESSION_USERS, RawPeer, ResponseTampering, TwoSessions, TwoUserManager
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -572,4 +572,18 @@ async def two_sessions() -> AsyncIterator[TwoSessions]:
     yield TwoSessions(server=srv, alice=alice, bob=bob)
     await bob.disconnect()
     await alice.disconnect()
+    await srv.stop()
+
+
+@pytest.fixture
+async def signing_server() -> AsyncIterator[Server]:
+    srv = Server(user_manager=TwoUserManager())
+    await srv.init()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_Sign])
+    srv.set_identity_tokens([ua.UserNameIdentityToken])
+    await srv.load_certificate(EXAMPLES / "certificate-example.der")
+    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    await srv.start()
+    yield srv
     await srv.stop()

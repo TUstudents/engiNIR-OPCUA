@@ -1,59 +1,15 @@
-from collections.abc import AsyncIterator, Callable
-from pathlib import Path
-from typing import Any
+from collections.abc import Callable
 
 import pytest
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient
-from enginir_opcua.crypto import security_policies, uacrypto
-from enginir_opcua.crypto.permission_rules import User, UserRole
-from enginir_opcua.server.internal_server import InternalServer
+from enginir_opcua.crypto import uacrypto
 
-from .conftest import find_free_port
+from .harness import TWO_SESSION_USERS, signing_client
 
-EXAMPLES = Path(__file__).parent.parent / "examples"
-USER = "alice"
-PASSWORD = "alice-password"
+PASSWORD = TWO_SESSION_USERS["alice"]
 RSA_15 = "http://www.w3.org/2001/04/xmlenc#rsa-1_5"
-
-
-class OneUserManager:
-    def get_user(
-        self, iserver: InternalServer, username: str | None = None, password: str | None = None, certificate: Any = None
-    ) -> User | None:
-        if username == USER and password == PASSWORD:
-            return User(role=UserRole.User, name=username)
-        return None
-
-
-@pytest.fixture
-async def signing_server() -> AsyncIterator[Server]:
-    srv = Server(user_manager=OneUserManager())
-    await srv.init()
-    srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
-    srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_Sign])
-    srv.set_identity_tokens([ua.UserNameIdentityToken])
-    await srv.load_certificate(EXAMPLES / "certificate-example.der")
-    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
-    await srv.start()
-    yield srv
-    await srv.stop()
-
-
-async def _signing_client(srv: Server) -> Client:
-    client = Client(srv.endpoint.geturl())
-    await client.set_security(
-        security_policies.SecurityPolicyBasic256Sha256,
-        str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"),
-        str(EXAMPLES / "certificates" / "peer-private-key-example-1.pem"),
-        None,
-        str(EXAMPLES / "certificate-example.der"),
-        ua.MessageSecurityMode.Sign,
-    )
-    client.set_user(USER)
-    client.set_password(PASSWORD)
-    return client
 
 
 def _rewrite_user_token(
@@ -73,7 +29,7 @@ def _secret(password: str, nonce: bytes) -> bytes:
 
 
 async def test_signing_server_accepts_correct_token(signing_server: Server) -> None:
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     async with client:
         assert await client.nodes.server_state.read_value() == ua.ServerState.Running
 
@@ -88,7 +44,7 @@ async def test_srv6_password_bound_to_another_nonce_is_rejected(
         token.Password = uacrypto.encrypt_rsa_oaep(public_key, _secret(PASSWORD, b"\x00" * 32))
 
     _rewrite_user_token(monkeypatch, replay)
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -104,7 +60,7 @@ async def test_cry8_rsa15_password_is_rejected_on_basic256sha256(
         return uacrypto.encrypt_rsa15(public_key, _secret(password, client._server_nonce or b"")), RSA_15
 
     monkeypatch.setattr(Client, "_encrypt_password", encrypt_with_rsa15)
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -120,7 +76,7 @@ async def test_srv6_plaintext_password_is_rejected_when_policy_requires_encrypti
         token.EncryptionAlgorithm = None
 
     _rewrite_user_token(monkeypatch, plaintext)
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -133,7 +89,7 @@ async def test_srv6_unknown_policy_id_is_rejected(signing_server: Server, monkey
         token.PolicyId = "no-such-policy"
 
     _rewrite_user_token(monkeypatch, unknown_policy)
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -141,7 +97,7 @@ async def test_srv6_unknown_policy_id_is_rejected(signing_server: Server, monkey
 
 async def test_srv6_token_without_password_goes_to_the_user_manager(signing_server: Server) -> None:
     """A token without a password carries no secret to encrypt; the user manager decides about it."""
-    client = await _signing_client(signing_server)
+    client = await signing_client(signing_server)
     client.set_password("")
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await client.connect()

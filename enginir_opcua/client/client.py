@@ -41,6 +41,9 @@ from .ua_client import StateSubscription, UaClient, UaClientState
 
 _logger = logging.getLogger(__name__)
 
+SESSION_NONCE_MIN_LENGTH = 32
+SESSION_NONCE_MAX_LENGTH = 128
+
 _T = TypeVar("_T")
 
 # Task-scoped flag: when True, the pre-request hook bypasses its RECONNECTING
@@ -674,6 +677,7 @@ class Client:
         # length should be equal to the length of key of symmetric encryption
         params.ClientNonce = create_nonce(self.security_policy.secure_channel_nonce_length)
         result = await self.uaclient.open_secure_channel(params)
+        self._check_secure_channel_nonce(result.ServerNonce)
         if self.secure_channel_timeout != result.SecurityToken.RevisedLifetime:
             _logger.info(
                 "Requested secure channel timeout to be %dms, got %dms instead",
@@ -779,6 +783,7 @@ class Client:
         params.RequestedSessionTimeout = self.session_timeout
         params.MaxResponseMessageSize = 0  # means no max size
         response = await self.uaclient.create_session(params)
+        self._check_session_nonce(response.ServerNonce)
         if self.security_policy.host_certificate is None:
             data = nonce
         else:
@@ -1142,8 +1147,24 @@ class Client:
         else:
             self._add_user_auth(params, username, password)
         res = await self.uaclient.activate_session(params)
+        self._check_session_nonce(res.ServerNonce)
         self._server_nonce = res.ServerNonce
         return res
+
+    def _check_session_nonce(self, nonce: bytes | None) -> None:
+        if self.security_policy.Mode == ua.MessageSecurityMode.None_:
+            return
+        if nonce is None or not SESSION_NONCE_MIN_LENGTH <= len(nonce) <= SESSION_NONCE_MAX_LENGTH:
+            _logger.error("Server sent a session nonce of %s bytes", None if nonce is None else len(nonce))
+            raise ua.uaerrors.BadNonceInvalid
+
+    def _check_secure_channel_nonce(self, nonce: bytes | None) -> None:
+        if self.security_policy.Mode == ua.MessageSecurityMode.None_:
+            return
+        expected = self.security_policy.secure_channel_nonce_length
+        if nonce is None or len(nonce) != expected:
+            _logger.error("Server sent a secure channel nonce of %s bytes, expected %s", len(nonce or b""), expected)
+            raise ua.uaerrors.BadNonceInvalid
 
     def _add_anonymous_auth(self, params: ua.ActivateSessionParameters) -> None:
         params.UserIdentityToken = ua.AnonymousIdentityToken()
