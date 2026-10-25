@@ -83,6 +83,7 @@ class UASocketProtocol(asyncio.Protocol):
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
         self._channel = SecureChannel(security_policy, limits)
+        self._acknowledged_version = 0
         self._reader = FrameReader(lambda: self._channel.limits.max_recv_buffer)
 
         self.state: UASocketState = UASocketState.INITIALIZED
@@ -134,8 +135,10 @@ class UASocketProtocol(asyncio.Protocol):
         self._process_received_message(msg)
         if header.MessageType == ua.MessageType.SecureOpen:
             params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+            self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
             response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
             response.ResponseHeader.ServiceResult.check()
+            self._channel.check_open_response(response.Parameters, params, self._acknowledged_version)
             self._open_secure_channel_exchange = response
             self._channel.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
 
@@ -296,7 +299,9 @@ class UASocketProtocol(asyncio.Protocol):
         self._callbackmap[0] = ack
         if self.transport is not None:
             self.transport.write(uatcp_to_binary(ua.MessageType.Hello, hello))
-        return await wait_for(ack, self.timeout)
+        acknowledge = await wait_for(ack, self.timeout)
+        self._acknowledged_version = acknowledge.ProtocolVersion
+        return acknowledge
 
     async def open_secure_channel(self, params: ua.OpenSecureChannelParameters) -> OpenSecureChannelResult:
         self.logger.info("open_secure_channel")

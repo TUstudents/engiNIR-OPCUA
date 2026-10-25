@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from enginir_opcua import ua
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
+from ..crypto.security_policies import SecurityPolicyNone
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from .utils import Buffer, NotEnoughData
 
@@ -68,6 +69,15 @@ class AbortedMessage:
         except Exception:
             error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadUnexpectedError), "")
         return AbortedMessage(chunk.SequenceHeader.RequestId, error)
+
+
+class OpenRequestError(UaError):
+    """A verified OpenSecureChannel request with an invalid parameter; answered with a ServiceFault."""
+
+    def __init__(self, status: int, reason: str = "") -> None:
+        super().__init__(status, reason)
+        self.status = status
+        self.reason = reason
 
 
 class MessageTooLarge(UaError):
@@ -550,8 +560,72 @@ class SecureChannel:
             if policy.matches(uri, mode):
                 self.security_policy = policy.create(peer_certificate)
                 return
-        if self.security_policy.URI != uri or (mode is not None and self.security_policy.Mode != mode):
-            raise ua.UaError(f"No matching policy: {uri}, {mode}")
+        if self.security_policy.URI == uri and (mode is None or self.security_policy.Mode == mode):
+            return
+        if any(policy.matches(uri) for policy in self._policies) or self.security_policy.URI == uri:
+            raise OpenRequestError(ua.StatusCodes.BadSecurityModeRejected, f"Mode {mode} is not configured for {uri}")
+        raise OpenRequestError(ua.StatusCodes.BadSecurityPolicyRejected, f"No matching policy: {uri}")
+
+    def validate_open_request(
+        self,
+        message_channel_id: int,
+        security_header: ua.AsymmetricAlgorithmHeader,
+        params: ua.OpenSecureChannelParameters,
+        protocol_version: int,
+    ) -> None:
+        renew = params.RequestType == ua.SecurityTokenRequestType.Renew
+        if renew and self._open:
+            self._check_renew_identity(message_channel_id, security_header, params)
+        elif not self._open and message_channel_id != 0:
+            raise TransportError(ua.StatusCodes.BadTcpSecureChannelUnknown, "Issue must use channel id 0")
+        policy = self.security_policy
+        if policy.URI != SecurityPolicyNone.URI:
+            if not security_header.SenderCertificate or not security_header.ReceiverCertificateThumbPrint:
+                raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Certificate or thumbprint is missing")
+            thumbprint = hashlib.sha1(policy.host_certificate or b"").digest()
+            if security_header.ReceiverCertificateThumbPrint != thumbprint:
+                raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
+        if params.ClientProtocolVersion != protocol_version:
+            raise OpenRequestError(ua.StatusCodes.BadProtocolVersionUnsupported, "Protocol version differs from Hello")
+        if renew != self._open:
+            raise OpenRequestError(ua.StatusCodes.BadRequestTypeInvalid, "Request type does not fit the channel state")
+        if policy.URI != SecurityPolicyNone.URI:
+            nonce = params.ClientNonce or b""
+            if len(nonce) != policy.secure_channel_nonce_length or (renew and nonce == self.remote_nonce):
+                raise OpenRequestError(ua.StatusCodes.BadNonceInvalid, "Client nonce is not valid")
+
+    def _check_renew_identity(
+        self,
+        message_channel_id: int,
+        security_header: ua.AsymmetricAlgorithmHeader,
+        params: ua.OpenSecureChannelParameters,
+    ) -> None:
+        if message_channel_id != self.channel_id:
+            raise TransportError(ua.StatusCodes.BadTcpSecureChannelUnknown, "Renew names another channel")
+        sender = security_header.SenderCertificate or b""
+        peer = self.security_policy.peer_certificate or b""
+        if (
+            security_header.SecurityPolicyURI != self.security_policy.URI
+            or params.SecurityMode != self.security_policy.Mode
+            or (peer and not sender.startswith(peer))
+        ):
+            raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Renew changes policy, mode or certificate")
+
+    def check_open_response(
+        self,
+        response: ua.OpenSecureChannelResult,
+        params: ua.OpenSecureChannelParameters,
+        protocol_version: int,
+    ) -> None:
+        token = response.SecurityToken
+        if response.ServerProtocolVersion != protocol_version:
+            raise ua.uaerrors.BadProtocolVersionUnsupported()
+        if token.ChannelId == 0 or token.TokenId == 0 or token.RevisedLifetime == 0:
+            raise ua.uaerrors.BadSecureChannelIdInvalid()
+        if self.security_policy.URI != SecurityPolicyNone.URI:
+            nonce = response.ServerNonce or b""
+            if len(nonce) != self.security_policy.secure_channel_nonce_length or nonce == params.ClientNonce:
+                raise ua.uaerrors.BadNonceInvalid()
 
     def message_to_binary(
         self, message: bytes, message_type: ua.MessageType = ua.MessageType.SecureMessage, request_id: int = 0
@@ -658,9 +732,10 @@ class SecureChannel:
             security_header = struct_from_binary(ua.AsymmetricAlgorithmHeader, data)
 
             if not self.is_open():
-                # Only call select_policy if the channel isn't open. Otherwise
-                # it will break the Secure channel renewal.
-                self.select_policy(security_header.SecurityPolicyURI, security_header.SenderCertificate)
+                try:
+                    self.select_policy(security_header.SecurityPolicyURI, security_header.SenderCertificate)
+                except OpenRequestError as e:
+                    raise TransportError(e.status, e.reason) from e
 
         slot: TokenSlot | None = None
         if header.MessageType in (ua.MessageType.SecureMessage, ua.MessageType.SecureClose):

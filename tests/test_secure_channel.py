@@ -1,3 +1,4 @@
+import hashlib
 import os
 from types import SimpleNamespace
 
@@ -5,7 +6,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 
 from enginir_opcua import ua
-from enginir_opcua.common.connection import FrameReader, SecureChannel, TransportError, TransportLimits
+from enginir_opcua.common.connection import (
+    FrameReader,
+    OpenRequestError,
+    SecureChannel,
+    TransportError,
+    TransportLimits,
+)
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto import uacrypto
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyNone
@@ -181,3 +188,149 @@ def test_com62_expires_in_counts_down_to_the_end_of_the_last_window() -> None:
     pair.renew()
     pair.server.open(ua.OpenSecureChannelParameters(RequestType=ua.SecurityTokenRequestType.Renew), pair._ids)
     assert pair.server.expires_in() == pytest.approx(lifetime * 1.25)
+
+
+def open_params(
+    request_type: ua.SecurityTokenRequestType = ua.SecurityTokenRequestType.Issue,
+    nonce: bytes = b"",
+    mode: ua.MessageSecurityMode = ua.MessageSecurityMode.None_,
+    version: int = 0,
+) -> ua.OpenSecureChannelParameters:
+    return ua.OpenSecureChannelParameters(
+        ClientProtocolVersion=version, RequestType=request_type, SecurityMode=mode, ClientNonce=nonce
+    )
+
+
+def signed_header(channel: SecureChannel, certificate: bytes | None = None) -> ua.AsymmetricAlgorithmHeader:
+    policy = channel.security_policy
+    return ua.AsymmetricAlgorithmHeader(
+        SecurityPolicyURI=policy.URI,
+        SenderCertificate=certificate if certificate is not None else policy.peer_certificate,
+        ReceiverCertificateThumbPrint=hashlib.sha1(policy.host_certificate or b"").digest(),
+    )
+
+
+def test_com63_renew_on_an_unopened_channel_is_request_type_invalid() -> None:
+    """Part 4, 5.6.2.3: Renew needs an open channel."""
+    server = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    params = open_params(ua.SecurityTokenRequestType.Renew)
+    with pytest.raises(OpenRequestError) as error:
+        server.validate_open_request(0, ua.AsymmetricAlgorithmHeader(), params, 0)
+    assert error.value.status == ua.StatusCodes.BadRequestTypeInvalid
+
+
+def test_com63_issue_on_an_open_channel_is_request_type_invalid() -> None:
+    """Part 4, 5.6.2.3: a second Issue must not replace the channel id and keys."""
+    pair = open_pair()
+    with pytest.raises(OpenRequestError) as error:
+        pair.server.validate_open_request(0, ua.AsymmetricAlgorithmHeader(), open_params(), 0)
+    assert error.value.status == ua.StatusCodes.BadRequestTypeInvalid
+
+
+def test_com63_renew_must_name_the_channel() -> None:
+    """Part 6, 6.7.4: a Renew carries the SecureChannelId of the channel."""
+    pair = open_pair()
+    params = open_params(ua.SecurityTokenRequestType.Renew)
+    with pytest.raises(TransportError) as error:
+        pair.server.validate_open_request(pair.server.channel_id + 1, ua.AsymmetricAlgorithmHeader(), params, 0)
+    assert error.value.status == ua.StatusCodes.BadTcpSecureChannelUnknown
+
+
+def test_com63_issue_must_use_channel_id_zero() -> None:
+    """Part 6, 6.7.7: Issue uses channel id 0."""
+    server = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    with pytest.raises(TransportError) as error:
+        server.validate_open_request(5, ua.AsymmetricAlgorithmHeader(), open_params(), 0)
+    assert error.value.status == ua.StatusCodes.BadTcpSecureChannelUnknown
+
+
+def test_com63_protocol_version_must_match_the_hello() -> None:
+    """Part 6, 6.7.4: ClientProtocolVersion equals the Hello's ProtocolVersion."""
+    server = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    with pytest.raises(OpenRequestError) as error:
+        server.validate_open_request(0, ua.AsymmetricAlgorithmHeader(), open_params(version=3), 0)
+    assert error.value.status == ua.StatusCodes.BadProtocolVersionUnsupported
+
+
+def test_com63_nonce_of_the_wrong_length_is_nonce_invalid() -> None:
+    """Part 6, 6.7.4: the ClientNonce has the length of the policy."""
+    pair = open_pair(policy=True)
+    server = SecureChannel(pair.server.security_policy, TransportLimits())
+    header = signed_header(server)
+    mode = ua.MessageSecurityMode.Sign
+    for nonce in (b"", os.urandom(16), os.urandom(33)):
+        with pytest.raises(OpenRequestError) as error:
+            server.validate_open_request(0, header, open_params(nonce=nonce, mode=mode), 0)
+        assert error.value.status == ua.StatusCodes.BadNonceInvalid
+    server.validate_open_request(0, header, open_params(nonce=os.urandom(32), mode=mode), 0)
+
+
+def test_com63_renew_nonce_must_not_repeat() -> None:
+    """Part 6, 6.7.4: a nonce is never reused."""
+    pair = open_pair(policy=True)
+    header = signed_header(pair.server)
+    params = open_params(
+        ua.SecurityTokenRequestType.Renew, nonce=pair.server.remote_nonce, mode=ua.MessageSecurityMode.Sign
+    )
+    with pytest.raises(OpenRequestError) as error:
+        pair.server.validate_open_request(pair.server.channel_id, header, params, 0)
+    assert error.value.status == ua.StatusCodes.BadNonceInvalid
+
+
+def test_com63_thumbprint_must_name_our_certificate() -> None:
+    """Part 6, 6.7.2.3: ReceiverCertificateThumbprint is compared with our certificate."""
+    pair = open_pair(policy=True)
+    server = SecureChannel(pair.server.security_policy, TransportLimits())
+    header = signed_header(server)
+    header.ReceiverCertificateThumbPrint = bytes(20)
+    with pytest.raises(TransportError) as error:
+        server.validate_open_request(0, header, open_params(nonce=os.urandom(32), mode=ua.MessageSecurityMode.Sign), 0)
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+
+
+@pytest.mark.parametrize("change", ["certificate", "policy", "mode"])
+def test_com63_renew_must_keep_certificate_policy_and_mode(change: str) -> None:
+    """Part 6, 6.7.4: a Renew comes from the same certificate with the same policy and mode."""
+    pair = open_pair(policy=True)
+    header = signed_header(pair.server)
+    mode = ua.MessageSecurityMode.Sign
+    if change == "certificate":
+        header.SenderCertificate = (EXAMPLES / "certificate-example.der").read_bytes()
+    elif change == "policy":
+        header.SecurityPolicyURI = SecurityPolicyNone.URI
+    else:
+        mode = ua.MessageSecurityMode.SignAndEncrypt
+    params = open_params(ua.SecurityTokenRequestType.Renew, os.urandom(32), mode)
+    with pytest.raises(TransportError) as error:
+        pair.server.validate_open_request(pair.server.channel_id, header, params, 0)
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+
+
+def test_com63_a_valid_renew_passes() -> None:
+    """Part 6, 6.7.4: the checks do not refuse a proper Renew."""
+    pair = open_pair(policy=True)
+    header = signed_header(pair.server)
+    params = open_params(ua.SecurityTokenRequestType.Renew, os.urandom(32), ua.MessageSecurityMode.Sign)
+    pair.server.validate_open_request(pair.server.channel_id, header, params, 0)
+
+
+@pytest.mark.parametrize("mutation", ["lifetime", "token", "channel", "version", "nonce"])
+def test_com63_client_rejects_an_invalid_open_response(mutation: str) -> None:
+    """Part 6, 6.7.4: the client checks ids, lifetime, versions and nonce of the response."""
+    pair = open_pair(policy=True)
+    nonce = os.urandom(32)
+    params = open_params(ua.SecurityTokenRequestType.Renew, nonce, ua.MessageSecurityMode.Sign)
+    result = pair.server.open(params, pair._ids)
+    pair.client.check_open_response(result, params, 0)
+    if mutation == "lifetime":
+        result.SecurityToken.RevisedLifetime = 0
+    elif mutation == "token":
+        result.SecurityToken.TokenId = 0
+    elif mutation == "channel":
+        result.SecurityToken.ChannelId = 0
+    elif mutation == "version":
+        result.ServerProtocolVersion = 1
+    else:
+        result.ServerNonce = nonce
+    with pytest.raises(ua.UaStatusCodeError):
+        pair.client.check_open_response(result, params, 0)

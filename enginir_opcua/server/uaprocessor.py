@@ -13,6 +13,7 @@ from ..common.connection import (
     AbortedMessage,
     MessageAborted,
     MessageTooLarge,
+    OpenRequestError,
     SecureChannel,
     TransportError,
     TransportLimits,
@@ -60,6 +61,7 @@ class UaProcessor:
         self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
         self._closing: bool = False
         self._hello_received: bool = False
+        self._hello_protocol_version = 0
         self._session_watchdog_task: asyncio.Task | None = None
         self._watchdog_interval: float = 1.0
         self.on_token_window: Callable[[float], None] | None = None
@@ -78,6 +80,7 @@ class UaProcessor:
             raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Malformed Hello") from e
         ack = self._limits.create_acknowledge_and_set_limits(hello)
         self._hello_received = True
+        self._hello_protocol_version = hello.ProtocolVersion
         return uatcp_to_binary(ua.MessageType.Acknowledge, ack)
 
     def max_receive_chunk_size(self) -> int:
@@ -109,23 +112,37 @@ class UaProcessor:
             data = e.written
         self._transport.write(data)
 
-    def open_secure_channel(self, algohdr, seqhdr, body):
-        request = struct_from_binary(ua.OpenSecureChannelRequest, body)
-
-        if not self._channel.is_open():
-            # Only call select_policy if the channel isn't open. Otherwise
-            # it will break the Secure channel renewal.
-            self._channel.select_policy(
-                algohdr.SecurityPolicyURI, algohdr.SenderCertificate, request.Parameters.SecurityMode
+    def open_secure_channel(self, message: ua.Message) -> bool:
+        algohdr = message.security_header()
+        assert isinstance(algohdr, ua.AsymmetricAlgorithmHeader)
+        seqhdr = message.sequence_header()
+        request = struct_from_binary(ua.OpenSecureChannelRequest, message.body())
+        handle = request.RequestHeader.RequestHandle
+        try:
+            if not self._channel.is_open():
+                self._channel.select_policy(
+                    algohdr.SecurityPolicyURI, algohdr.SenderCertificate, request.Parameters.SecurityMode
+                )
+            self._channel.validate_open_request(
+                message.channel_id(), algohdr, request.Parameters, self._hello_protocol_version
             )
-
+        except TransportError as e:
+            _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self._send_error(e.status)
+            return False
+        except OpenRequestError as e:
+            _logger.warning("Rejecting OpenSecureChannel from %s: %s", self.name, e.reason)
+            fault = ua.ServiceFault()
+            fault.ResponseHeader.ServiceResult = ua.StatusCode(e.status)
+            self.send_response(handle, seqhdr, fault, ua.MessageType.SecureOpen)
+            return False
         channel = self._channel.open(request.Parameters, self.iserver, self.iserver.channel_settings)
-        # send response
         response = ua.OpenSecureChannelResponse()
         response.Parameters = channel
-        self.send_response(request.RequestHeader.RequestHandle, seqhdr, response, ua.MessageType.SecureOpen)
+        self.send_response(handle, seqhdr, response, ua.MessageType.SecureOpen)
         if self.on_token_window is not None:
             self.on_token_window(self._channel.expires_in())
+        return True
 
     def get_publish_request(self, subscription_id: ua.IntegerId):
         now = time.monotonic()
@@ -203,11 +220,11 @@ class UaProcessor:
             return False
         if isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
-                self.open_secure_channel(msg.security_header(), msg.sequence_header(), msg.body())
-            elif header.MessageType == ua.MessageType.SecureClose:
+                return self.open_secure_channel(msg)
+            if header.MessageType == ua.MessageType.SecureClose:
                 self._channel.close()
                 return False
-            elif header.MessageType == ua.MessageType.SecureMessage:
+            if header.MessageType == ua.MessageType.SecureMessage:
                 return await self.process_message(msg.sequence_header(), msg.body())
         elif isinstance(msg, AbortedMessage):
             _logger.warning("Request %s was aborted by the client", msg.request_id)

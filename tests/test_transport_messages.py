@@ -22,7 +22,9 @@ from .harness import (
     connect_client,
     open_channel_as_client,
     open_channel_as_server,
+    receive_service_status,
     secure_chunk,
+    send_open_request,
     signing_client,
 )
 
@@ -336,3 +338,70 @@ async def test_com62_server_closes_a_channel_without_a_valid_token(
     """Part 4, 5.6.2.1: when no token is inside its window the server closes the connection."""
     await open_channel_as_client(raw_peer, lifetime=100)
     assert await raw_peer.is_closed_by_peer(timeout=2)
+
+
+def _issue(version: int = 0) -> ua.OpenSecureChannelParameters:
+    return ua.OpenSecureChannelParameters(
+        ClientProtocolVersion=version,
+        RequestType=ua.SecurityTokenRequestType.Issue,
+        SecurityMode=ua.MessageSecurityMode.None_,
+        RequestedLifetime=60_000,
+    )
+
+
+async def test_com63_issue_on_an_open_channel_gets_a_service_fault_and_a_close(raw_peer: RawPeer) -> None:
+    """Part 4, 5.6.2.3: a second Issue is refused and does not replace the channel."""
+    channel = await open_channel_as_client(raw_peer)
+    await send_open_request(raw_peer, channel, _issue())
+    assert await receive_service_status(raw_peer, channel) == ua.StatusCodes.BadRequestTypeInvalid
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_com63_renew_on_an_unopened_channel_gets_a_service_fault(raw_peer: RawPeer) -> None:
+    """Part 4, 5.6.2.3: Renew is not an Issue."""
+    await raw_peer.send_hello(ua.Hello())
+    await raw_peer.receive_acknowledge()
+    channel = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    renew = _issue()
+    renew.RequestType = ua.SecurityTokenRequestType.Renew
+    await send_open_request(raw_peer, channel, renew)
+    assert await receive_service_status(raw_peer, channel) == ua.StatusCodes.BadRequestTypeInvalid
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_com63_protocol_version_differing_from_the_hello_is_refused(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.4: ClientProtocolVersion equals the Hello's ProtocolVersion."""
+    await raw_peer.send_hello(ua.Hello())
+    await raw_peer.receive_acknowledge()
+    channel = SecureChannel(SecurityPolicyNone(), TransportLimits())
+    await send_open_request(raw_peer, channel, _issue(version=3))
+    assert await receive_service_status(raw_peer, channel) == ua.StatusCodes.BadProtocolVersionUnsupported
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_com63_renew_naming_another_channel_gets_channel_unknown(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.7: a Renew must carry the channel's id."""
+    channel = await open_channel_as_client(raw_peer)
+    renew = _issue()
+    renew.RequestType = ua.SecurityTokenRequestType.Renew
+    await send_open_request(raw_peer, channel, renew, message_channel_id=channel.channel_id + 1)
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadTcpSecureChannelUnknown
+    assert await raw_peer.is_closed_by_peer()
+
+
+@pytest.mark.parametrize("mutation", ["lifetime", "token"])
+async def test_com63_client_closes_on_an_invalid_open_response(raw_server: RawServer, mutation: str) -> None:
+    """Part 6, 6.7.4: a response with lifetime 0 or token id 0 is a protocol error."""
+    uaclient, peer = await connect_client(raw_server)
+    assert uaclient.protocol is not None
+
+    def tamper(result: ua.OpenSecureChannelResult) -> None:
+        if mutation == "lifetime":
+            result.SecurityToken.RevisedLifetime = 0
+        else:
+            result.SecurityToken.TokenId = 0
+
+    await open_channel_as_server(uaclient, peer, tamper)
+    await asyncio.sleep(0.3)
+    assert uaclient.protocol.is_closed

@@ -119,6 +119,9 @@ class Message:
     def request_id(self) -> int:
         return self._chunks[0].SequenceHeader.RequestId
 
+    def channel_id(self) -> int:
+        return self._chunks[0].MessageHeader.ChannelId
+
     def sequence_header(self) -> SequenceHeader:
         return self._chunks[0].SequenceHeader
 
