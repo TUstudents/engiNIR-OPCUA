@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, "..")
 import time
 
-from asyncua import Server, ua
+from enginir_opcua import Server, ua
 
 # INFO: The concept in this example is that the software model is first built in OPC UA via XML. After that, matching
 # python objects are created based on the UA address space design. Do not use this example to build a UA address space
@@ -40,8 +40,8 @@ class UaObject:
     Python can write to children via write method, which will trigger an update for UA clients
     """
 
-    def __init__(self, asyncua_server, ua_node):
-        self.asyncua_server = asyncua_server
+    def __init__(self, enginir_opcua_server, ua_node):
+        self.enginir_opcua_server = enginir_opcua_server
         self.nodes = {}
         self.b_name = ua_node.read_browse_name().Name
 
@@ -56,7 +56,7 @@ class UaObject:
 
         # subscribe to properties/variables
         handler = SubHandler(self)
-        sub = asyncua_server.create_subscription(500, handler)
+        sub = enginir_opcua_server.create_subscription(500, handler)
         handle = sub.subscribe_data_change(sub_children)
 
     def write_value(self, attr=None):
@@ -77,14 +77,14 @@ class MyObj(UaObject):
     This class mirrors it's UA counterpart and semi-configures itself according to the UA model (generally from XML)
     """
 
-    def __init__(self, asyncua_server, ua_node):
+    def __init__(self, enginir_opcua_server, ua_node):
         # properties and variables; must mirror UA model (based on browsename!)
         self.MyVariable = 0
         self.MyProperty = 0
         self.MyClientWrite = 0
 
         # init the UaObject super class to connect the python object to the UA object
-        super().__init__(asyncua_server, ua_node)
+        super().__init__(enginir_opcua_server, ua_node)
 
         # local values only for use inside python
         self.testval = "python only"

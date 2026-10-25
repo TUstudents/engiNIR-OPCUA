@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, "..")
 import asyncio
 
-from asyncua import Server, ua
+from enginir_opcua import Server, ua
 
 
 async def main():

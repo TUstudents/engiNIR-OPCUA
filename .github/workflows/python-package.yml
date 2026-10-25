@@ -34,7 +34,7 @@ jobs:
           uv run ruff format --check .
       - name: mypy
         run: |
-          uv run mypy asyncua tests
+          uv run mypy enginir_opcua tests
 
   build:
     runs-on: ubuntu-latest

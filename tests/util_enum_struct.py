@@ -2,9 +2,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 
-import asyncua.ua
-from asyncua import Server, ua
-from asyncua.ua import uatypes
+import enginir_opcua.ua
+from enginir_opcua import Server, ua
+from enginir_opcua.ua import uatypes
 
 TEST_DIR = Path(__file__).parent
 
@@ -15,7 +15,7 @@ class ExampleEnum(IntEnum):
     EnumVal3 = 2
 
 
-setattr(asyncua.ua, "ExampleEnum", ExampleEnum)
+setattr(enginir_opcua.ua, "ExampleEnum", ExampleEnum)
 
 
 @dataclass

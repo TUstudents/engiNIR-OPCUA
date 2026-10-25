@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Server, ua
-from asyncua.common.methods import uamethod
+from enginir_opcua import Server, ua
+from enginir_opcua.common.methods import uamethod
 
 
 @uamethod

@@ -8,19 +8,19 @@ from typing import Any
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.client.ua_client import UaClientState
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.client.ua_client import UaClientState
 
 from .conftest import find_free_port
 
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.slow(
-        "asyncua/client",
-        "asyncua/common/subscription.py",
-        "asyncua/server/internal_session.py",
-        "asyncua/server/internal_subscription.py",
-        "asyncua/server/subscription_service.py",
+        "enginir_opcua/client",
+        "enginir_opcua/common/subscription.py",
+        "enginir_opcua/server/internal_session.py",
+        "enginir_opcua/server/internal_subscription.py",
+        "enginir_opcua/server/subscription_service.py",
     ),
 ]
 
@@ -144,7 +144,7 @@ async def test_connection_lost_callback_fires_on_loss() -> None:
 
 async def test_session_reactivated_after_reconnect() -> None:
     """Spec Part 4 §6.7: reconnect re-activates the existing session (auth_token preserved)."""
-    from asyncua.common.subscription import DataChangeEvent
+    from enginir_opcua.common.subscription import DataChangeEvent
 
     port = find_free_port()
     srv = await _start_server(port)
@@ -309,7 +309,7 @@ async def test_server_expires_session_after_timeout() -> None:
 
 async def test_subscription_recreated_when_transfer_fails() -> None:
     """If transfer returns Bad (server dropped the subscription), recreate falls back."""
-    from asyncua.common.subscription import DataChangeEvent
+    from enginir_opcua.common.subscription import DataChangeEvent
 
     port = find_free_port()
     srv = await _start_server(port)
@@ -395,7 +395,7 @@ async def test_reconnect_replays_unacked_notifications_via_republish() -> None:
     unacked NotificationMessage back via Republish. The dispatched payload
     reaches the async-iterator queue as if it had arrived during normal flow.
     """
-    from asyncua.common.subscription import DataChangeEvent
+    from enginir_opcua.common.subscription import DataChangeEvent
 
     port = find_free_port()
     srv = await _start_server(port)

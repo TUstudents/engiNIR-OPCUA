@@ -6,9 +6,9 @@ import asyncio
 import logging
 from datetime import datetime
 
-from asyncua import pubsub, ua
-from asyncua.pubsub.udp import UdpSettings
-from asyncua.ua import Variant
+from enginir_opcua import pubsub, ua
+from enginir_opcua.pubsub.udp import UdpSettings
+from enginir_opcua.ua import Variant
 
 URL = "opc.udp://239.0.0.1:4840"
 PDSNAME = "SimpleDataSet"

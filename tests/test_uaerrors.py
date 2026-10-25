@@ -1,7 +1,7 @@
 import pytest
 
-import asyncua.ua.uaerrors as uaerrors
-from asyncua.ua.uaerrors import UaStatusCodeError
+import enginir_opcua.ua.uaerrors as uaerrors
+from enginir_opcua.ua.uaerrors import UaStatusCodeError
 
 status_code_bad_internal = 0x80020000
 status_code_unknown = "Definitely Not A Status Code"

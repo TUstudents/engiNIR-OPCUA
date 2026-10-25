@@ -1,11 +1,11 @@
 import asyncio
 import logging
 
-from asyncua import ua
-from asyncua.server import Server
+from enginir_opcua import ua
+from enginir_opcua.server import Server
 
 logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 
 async def main():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from asyncua import Client, Server, ua
+from enginir_opcua import Client, Server, ua
 
 from .conftest import find_free_port
 

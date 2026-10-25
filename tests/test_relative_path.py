@@ -1,7 +1,7 @@
 import pytest
 
-from asyncua.ua.object_ids import ObjectIds
-from asyncua.ua.uatypes import RelativePath
+from enginir_opcua.ua.object_ids import ObjectIds
+from enginir_opcua.ua.uatypes import RelativePath
 
 
 def test_relative_path():

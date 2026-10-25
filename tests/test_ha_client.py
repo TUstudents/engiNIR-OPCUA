@@ -3,19 +3,19 @@ from itertools import chain
 
 import pytest
 
-from asyncua import Client, ua
-from asyncua.client.ha import (
+from enginir_opcua import Client, ua
+from enginir_opcua.client.ha import (
     ConnectionStates,
     HaClient,
     HaMode,
     HaSecurityConfig,
 )
-from asyncua.client.ha.common import ClientNotFound
-from asyncua.client.ua_client import UaClientState, UASocketState
-from asyncua.common.subscription import Subscription
-from asyncua.crypto import security_policies
-from asyncua.crypto.uacrypto import CertProperties
-from asyncua.ua.uaerrors import BadSessionClosed
+from enginir_opcua.client.ha.common import ClientNotFound
+from enginir_opcua.client.ua_client import UaClientState, UASocketState
+from enginir_opcua.common.subscription import Subscription
+from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.uacrypto import CertProperties
+from enginir_opcua.ua.uaerrors import BadSessionClosed
 
 from .conftest import (
     wait_clients_socket,
@@ -26,7 +26,7 @@ from .conftest import (
 )
 from .test_subscriptions import MySubHandler
 
-pytestmark = pytest.mark.slow("asyncua/client", "asyncua/common/subscription.py")
+pytestmark = pytest.mark.slow("enginir_opcua/client", "enginir_opcua/common/subscription.py")
 
 
 class TestHaClient:

@@ -3,8 +3,8 @@ import sys
 sys.path.insert(0, "..")
 import asyncio
 
-from asyncua import Server
-from asyncua.common.instantiate_util import instantiate
+from enginir_opcua import Server
+from enginir_opcua.common.instantiate_util import instantiate
 
 
 async def main():

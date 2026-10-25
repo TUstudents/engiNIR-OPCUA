@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 from pytz import timezone
 
-from asyncua import Client, Node, Server, ua, uamethod
-from asyncua.common.structures104 import new_enum, new_enum_field, new_struct, new_struct_field
-from asyncua.ua import uaerrors
+from enginir_opcua import Client, Node, Server, ua, uamethod
+from enginir_opcua.common.structures104 import new_enum, new_enum_field, new_struct, new_struct_field
+from enginir_opcua.ua import uaerrors
 
 from .conftest import Opc, find_free_port
 
-_logger = logging.getLogger("asyncua.common.xmlimporter")
+_logger = logging.getLogger("enginir_opcua.common.xmlimporter")
 _logger.setLevel(logging.DEBUG)
-_logger = logging.getLogger("asyncua.common.xmlparser")
+_logger = logging.getLogger("enginir_opcua.common.xmlparser")
 _logger.setLevel(logging.DEBUG)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("restore_ua_registry")]

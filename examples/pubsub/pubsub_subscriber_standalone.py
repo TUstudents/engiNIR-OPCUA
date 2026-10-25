@@ -5,8 +5,8 @@ Example creating a standalone publisher that receives an Int32, String, Bool and
 import asyncio
 import logging
 
-from asyncua import pubsub, ua
-from asyncua.pubsub.udp import UdpSettings
+from enginir_opcua import pubsub, ua
+from enginir_opcua.pubsub.udp import UdpSettings
 
 # This Parameter must match the Publisher Settings!
 CFG = {

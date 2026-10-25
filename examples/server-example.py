@@ -5,8 +5,8 @@ import time
 from datetime import UTC, datetime
 from math import sin
 
-from asyncua import Server, ua, uamethod
-from asyncua.common.subscription import DataChangeEvent, OpcEvent
+from enginir_opcua import Server, ua, uamethod
+from enginir_opcua.common.subscription import DataChangeEvent, OpcEvent
 
 _logger = logging.getLogger(__name__)
 

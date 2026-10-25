@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from asyncua import Client
+from enginir_opcua import Client
 
 
 async def main() -> None:

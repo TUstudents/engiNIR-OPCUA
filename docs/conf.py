@@ -11,7 +11,7 @@ project = "opcua-asyncio"
 copyright = "2022, opcua-asyncio contributors"
 author = "opcua-asyncio contributors"
 # release = "0.95.0"
-version = metadata.version('asyncua')
+version = metadata.version('enginir-opcua')
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

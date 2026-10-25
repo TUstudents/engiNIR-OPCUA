@@ -1,11 +1,11 @@
 import asyncio
 import logging
 
-from asyncua import Server, ua
-from asyncua.common.statemachine import State, StateMachine, Transition
+from enginir_opcua import Server, ua
+from enginir_opcua.common.statemachine import State, StateMachine, Transition
 
 logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 if __name__ == "__main__":
 

@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import IO, Any
 
-import asyncua.ua.object_ids as ob_ids
+import enginir_opcua.ua.object_ids as ob_ids
 import generate_model_event as gme
 
 BASE_DIR = Path.cwd().parent
@@ -53,7 +53,7 @@ Publication date:{model_.attrib["PublicationDate"]}"
 
 File creation Date:{datetime.datetime.now(datetime.timezone.utc)}"
 """
-from asyncua import ua
+from enginir_opcua import ua
 from .events import Event
 
 ''')
@@ -159,7 +159,7 @@ class {event.browseName}({parent_event_browse_name[0]}):""")
 
 if __name__ == "__main__":
     xmlPath = BASE_DIR / "schemas" / "UA-Nodeset-master" / "Schema" / "Opc.Ua.NodeSet2.xml"
-    output_path = BASE_DIR / "asyncua" / "common" / "event_objects.py"
+    output_path = BASE_DIR / "enginir_opcua" / "common" / "event_objects.py"
     p = gme.Parser(str(xmlPath))
     model = p.parse()
     with open(output_path, "w") as fp:

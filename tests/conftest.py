@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.client.ha.ha_client import HaClient, HaConfig, HaMode
-from asyncua.client.ua_client import UASocketState
-from asyncua.server.history import HistoryDict
-from asyncua.server.history_sql import HistorySQLite
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode
+from enginir_opcua.client.ua_client import UASocketState
+from enginir_opcua.server.history import HistoryDict
+from enginir_opcua.server.history_sql import HistorySQLite
 
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct

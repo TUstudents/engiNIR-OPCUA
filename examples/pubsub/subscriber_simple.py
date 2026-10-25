@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from asyncua import Node, Server, pubsub, ua
+from enginir_opcua import Node, Server, pubsub, ua
 
 
 # This Parameter must match the Publisher Settings!

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from asyncua import Server, ua, uamethod
+from enginir_opcua import Server, ua, uamethod
 
 
 @uamethod

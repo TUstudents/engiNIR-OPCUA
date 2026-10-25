@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from asyncua import Client, Server
-from asyncua.common.subscription import (
+from enginir_opcua import Client, Server
+from enginir_opcua.common.subscription import (
     DataChangeEvent,
 )
 

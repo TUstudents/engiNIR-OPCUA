@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.common.utils import ServiceError
-from asyncua.crypto.permission_rules import User, UserRole
-from asyncua.server.user_managers import UserManager
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.common.utils import ServiceError
+from enginir_opcua.crypto.permission_rules import User, UserRole
+from enginir_opcua.server.user_managers import UserManager
 
 from .conftest import find_free_port
 

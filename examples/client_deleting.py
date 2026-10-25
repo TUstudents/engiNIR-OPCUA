@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, "..")
 import logging
 
-from asyncua import Client, ua
+from enginir_opcua import Client, ua
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)

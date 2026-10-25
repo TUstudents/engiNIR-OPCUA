@@ -5,12 +5,12 @@ from pathlib import Path
 import anyio
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.crypto import security_policies, uacrypto
-from asyncua.crypto.security_policies import SECURITY_POLICY_TYPE_MAP, Decryptor, Verifier
-from asyncua.crypto.uacrypto import CertProperties
-from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
-from asyncua.server.user_managers import CertificateUserManager
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.crypto import security_policies, uacrypto
+from enginir_opcua.crypto.security_policies import SECURITY_POLICY_TYPE_MAP, Decryptor, Verifier
+from enginir_opcua.crypto.uacrypto import CertProperties
+from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
+from enginir_opcua.server.user_managers import CertificateUserManager
 
 from .conftest import find_free_port
 

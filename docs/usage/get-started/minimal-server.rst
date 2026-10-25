@@ -2,7 +2,7 @@
 A Minimal OPC-UA Server
 =======================
 
-Let's start exploring the :code:`asyncua` package by building a minimal runnable server.
+Let's start exploring the :code:`enginir_opcua` package by building a minimal runnable server.
 Most of the hard work will be hidden behind the scene and we only need to implement the
 application specific code.
 
@@ -53,9 +53,9 @@ Imports, Basic Setup & Configuration
 
 In the first few lines the relevant packages, classes and methods are imported.
 While the :mod:`logging` module is optional (just remove all calls to the logging module),
-:mod:`asyncio` is required to actually run our main function. From the :mod:`asyncua`
-package we need the :class:`~asyncua.server.server.Server`, the :mod:`asyncua.ua`
-module and the :meth:`~asyncua.common.methods.uamethod` decorator.
+:mod:`asyncio` is required to actually run our main function. From the :mod:`enginir_opcua`
+package we need the :class:`~enginir_opcua.server.server.Server`, the :mod:`enginir_opcua.ua`
+module and the :meth:`~enginir_opcua.common.methods.uamethod` decorator.
 
 Ignore the :code:`@uamethod ...` part for the moment and jump straight into the
 :code:`async def main()` function:
@@ -64,12 +64,12 @@ Ignore the :code:`@uamethod ...` part for the moment and jump straight into the
     :caption: server-minimal.py, Line 13 - 22
     :lines: 13-22
 
-.. todo:: The :meth:`~asyncua.server.server.Server.init` and :meth:`~asyncua.server.server.Server.set_endpoint`
+.. todo:: The :meth:`~enginir_opcua.server.server.Server.init` and :meth:`~enginir_opcua.server.server.Server.set_endpoint`
     methods have no docstrings but are referenced in the next section.
 
-Here the server is created and initialized (:meth:`~asyncua.server.server.Server.init`).
-The endpoint is configured (:meth:`~asyncua.server.server.Server.set_endpoint`) and a custom namespace
-is registered (:meth:`~asyncua.server.server.Server.register_namespace`). It's recommended (:emphasis:`required??`)
+Here the server is created and initialized (:meth:`~enginir_opcua.server.server.Server.init`).
+The endpoint is configured (:meth:`~enginir_opcua.server.server.Server.set_endpoint`) and a custom namespace
+is registered (:meth:`~enginir_opcua.server.server.Server.register_namespace`). It's recommended (:emphasis:`required??`)
 that all custom objects, variables and methods live in a separate namespace. We store its index as :code:`idx`.
 We'll need it later to add our custom objects to the namespace.
 
@@ -82,9 +82,9 @@ Creating Objects and Variables
 
 In the next lines, the custom object "MyObject" is created and a variable is added to this object.
 Note that by default all variables are read-only, so we need to be explicit and make it writable.
-The :meth:`~asyncua.common.node.Node.add_object` / :meth:`~asyncua.common.node.Node.add_variable` calls
-are actually just calling :meth:`~asyncua.common.manage_nodes.create_object`, respectively
-:meth:`~asyncua.common.manage_nodes.create_variable` internally. You can find more information on
+The :meth:`~enginir_opcua.common.node.Node.add_object` / :meth:`~enginir_opcua.common.node.Node.add_variable` calls
+are actually just calling :meth:`~enginir_opcua.common.manage_nodes.create_object`, respectively
+:meth:`~enginir_opcua.common.manage_nodes.create_variable` internally. You can find more information on
 how nodes and variables are created in the API docs of these methods.
 
 Adding Methods
@@ -102,7 +102,7 @@ by clients:
     :caption: server-minimal.py, Line 30 - 36
     :lines: 30 - 36
 
-To do this, a function, decorated with the :meth:`~asyncua.common.methods.uamethod` decorator,
+To do this, a function, decorated with the :meth:`~enginir_opcua.common.methods.uamethod` decorator,
 is created and, similar to the objects and variables, registered on the server. It would
 also be possible to register a undecorated function on the server, but in this case the
 conversion from and to UA Variant types would be up to us.

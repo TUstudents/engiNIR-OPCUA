@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, "..")
 
-from asyncua import Server
-from asyncua.common.methods import uamethod
+from enginir_opcua import Server
+from enginir_opcua.common.methods import uamethod
 
 
 @uamethod
@@ -22,7 +22,7 @@ async def main():
     while the endpoint description can be a real IP:port that the Docker host
     machine has (example-endpoint.freeopcua.github.com:32000 in this example)
     """
-    _logger = logging.getLogger("asyncua")
+    _logger = logging.getLogger("enginir_opcua")
     # setup our server
     server = Server()
     await server.init()

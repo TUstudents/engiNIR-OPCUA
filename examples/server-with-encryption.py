@@ -7,11 +7,11 @@ from pathlib import Path
 sys.path.insert(0, "..")
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from asyncua import Server, ua
-from asyncua.crypto.cert_gen import setup_self_signed_certificate
-from asyncua.crypto.truststore import TrustStore
-from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
-from asyncua.server.user_managers import CertificateUserManager
+from enginir_opcua import Server, ua
+from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
+from enginir_opcua.crypto.truststore import TrustStore
+from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
+from enginir_opcua.server.user_managers import CertificateUserManager
 
 logging.basicConfig(level=logging.INFO)
 

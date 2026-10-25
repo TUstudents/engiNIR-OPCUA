@@ -15,15 +15,15 @@ from typing import Any
 
 import pytest
 
-from asyncua import Node, ua, uamethod
-from asyncua.common import ua_utils
-from asyncua.common.copy_node_util import copy_node
-from asyncua.common.instantiate_util import instantiate
-from asyncua.common.methods import call_method_full
-from asyncua.common.sql_injection import SqlInjectionError, validate_table_name
-from asyncua.common.structures104 import new_enum, new_struct, new_struct_field
-from asyncua.ua import Int16, NodeId, NodeIdType, String
-from asyncua.ua.ua_binary import struct_from_binary, struct_to_binary
+from enginir_opcua import Node, ua, uamethod
+from enginir_opcua.common import ua_utils
+from enginir_opcua.common.copy_node_util import copy_node
+from enginir_opcua.common.instantiate_util import instantiate
+from enginir_opcua.common.methods import call_method_full
+from enginir_opcua.common.sql_injection import SqlInjectionError, validate_table_name
+from enginir_opcua.common.structures104 import new_enum, new_struct, new_struct_field
+from enginir_opcua.ua import Int16, NodeId, NodeIdType, String
+from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 
 pytestmark = pytest.mark.asyncio
 

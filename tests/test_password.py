@@ -1,7 +1,7 @@
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.crypto.permission_rules import User, UserRole
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from .conftest import find_free_port
 

@@ -18,7 +18,7 @@ before diving into the details:
 Connecting to the server
 ========================
 
-To connect to the server a new :class:`~asyncua.client.client.Client` instance is created.
+To connect to the server a new :class:`~enginir_opcua.client.client.Client` instance is created.
 The client supports the same async context manager construct as we have already seen in
 the server, which can be used to handle the opening / closing of the connection for us.
 
@@ -26,29 +26,29 @@ Getting the namespace
 =====================
 
 As all our custom objects live in a custom namespace, we need to get the namespace
-index to address our objects. This is done with the :meth:`~asyncua.client.client.Client.get_namespace_index`
-method. You can find out the list of all namespaces available on the server with :meth:`~asyncua.client.client.Client.get_namespace_array`.
+index to address our objects. This is done with the :meth:`~enginir_opcua.client.client.Client.get_namespace_index`
+method. You can find out the list of all namespaces available on the server with :meth:`~enginir_opcua.client.client.Client.get_namespace_array`.
 
 Read / Write Variables
 ======================
 
-To read or write a variable of an object, we first need to get the :class:`~asyncua.common.node.Node`
-of the variable. The :meth:`~asyncua.common.node.Node.get_child` method of the root node
+To read or write a variable of an object, we first need to get the :class:`~enginir_opcua.common.node.Node`
+of the variable. The :meth:`~enginir_opcua.common.node.Node.get_child` method of the root node
 (which is just a regular node) is used to transform the known path to a Node.
 
-.. note:: Using :meth:`~asyncua.common.node.Node.get_child` will perform a server request
+.. note:: Using :meth:`~enginir_opcua.common.node.Node.get_child` will perform a server request
     in the background to resolve the path to a node. Extensive usage of this method can
     create a lot of network traffic which is not strictly required if the node id is known.
-    If you know the node id it's better to use the :meth:`~asyncua.client.client.Client.get_node`
+    If you know the node id it's better to use the :meth:`~enginir_opcua.client.client.Client.get_node`
     method of the client. For example :code:`client.get_node("ns=2;i=2")` or
     :code:`client.get_node(ua.NodeId(2, 2))` could be used in the example.
     Note that the latter call is not :code:`async`!
 
 Once we have our node object, the variable value can be read or written directly using
-the :meth:`~asyncua.common.node.Node.read_value` and :meth:`~asyncua.common.node.Node.write_value`
+the :meth:`~enginir_opcua.common.node.Node.read_value` and :meth:`~enginir_opcua.common.node.Node.write_value`
 methods. The read method automatically transforms the opc-ua type to a python type but the
-:meth:`~asyncua.common.node.Node.read_data_value` method can be used if the original type of
-the variable is of interest. The write interface is built flexible and a :class:`~asyncua.ua.uatypes.Variant`
+:meth:`~enginir_opcua.common.node.Node.read_data_value` method can be used if the original type of
+the variable is of interest. The write interface is built flexible and a :class:`~enginir_opcua.ua.uatypes.Variant`
 is also accepted to specify the exact type to be used.
 
 Calling Methods
@@ -56,5 +56,5 @@ Calling Methods
 
 The method interface is similar to the interface of variables. In the example the special
 node :code:`client.nodes.objects`, which is in fact just a shortcut to the :code:`0:Objects`
-node, is used to call the `2:ServerMethod` on it. The :meth:`~asyncua.common.node.Node.call_method`
+node, is used to call the `2:ServerMethod` on it. The :meth:`~enginir_opcua.common.node.Node.call_method`
 must be called on the parent node of the actual method node.

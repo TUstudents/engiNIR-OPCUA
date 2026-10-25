@@ -3,10 +3,10 @@ from unittest import mock
 
 import pytest
 
-from asyncua import Client, ua
-from asyncua.client.ua_client import UaClient, UaClientState
-from asyncua.common.subscription import Subscription
-from asyncua.observer import NULL_OBSERVER, Observer, SubscriptionEvent
+from enginir_opcua import Client, ua
+from enginir_opcua.client.ua_client import UaClient, UaClientState
+from enginir_opcua.common.subscription import Subscription
+from enginir_opcua.observer import NULL_OBSERVER, Observer, SubscriptionEvent
 
 from .conftest import port_num
 
@@ -53,7 +53,7 @@ async def test_the_null_observer_measures_nothing():
     client = UaClient()
     client.protocol = mock.AsyncMock()
 
-    with mock.patch("asyncua.observer.time.monotonic") as clock:
+    with mock.patch("enginir_opcua.observer.time.monotonic") as clock:
         await client._send_request(ua.ReadRequest())
 
     assert not clock.called

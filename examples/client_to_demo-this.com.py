@@ -6,7 +6,7 @@ import logging
 
 from IPython import embed
 
-from asyncua import Client
+from enginir_opcua import Client
 
 
 async def main():

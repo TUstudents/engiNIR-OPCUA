@@ -20,8 +20,8 @@ except ImportError:
         shell.interact()
 
 
-from asyncua import ua, uamethod
-from asyncua.sync import Server, ThreadLoop
+from enginir_opcua import ua, uamethod
+from enginir_opcua.sync import Server, ThreadLoop
 
 
 def func(parent, variant):

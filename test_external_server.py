@@ -8,7 +8,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 
-from asyncua import Client, ua
+from enginir_opcua import Client, ua
 
 
 class MySubHandler:

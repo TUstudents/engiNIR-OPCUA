@@ -4,10 +4,10 @@ import sys
 import time
 
 sys.path.insert(0, "..")
-from asyncua import Client, ua
+from enginir_opcua import Client, ua
 
 logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 
 async def main():

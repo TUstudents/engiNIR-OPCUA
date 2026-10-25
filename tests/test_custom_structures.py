@@ -2,10 +2,10 @@ import xml.etree.ElementTree as Et
 
 import pytest
 
-import asyncua.common.type_dictionary_builder
-from asyncua import ua
-from asyncua.common.structures import EnumType, Struct, StructGenerator
-from asyncua.common.type_dictionary_builder import (
+import enginir_opcua.common.type_dictionary_builder
+from enginir_opcua import ua
+from enginir_opcua.common.structures import EnumType, Struct, StructGenerator
+from enginir_opcua.common.type_dictionary_builder import (
     DataTypeDictionaryBuilder,
     OPCTypeDictionaryBuilder,
     StructNode,
@@ -22,12 +22,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def to_camel_case(name):
-    func = getattr(asyncua.common.type_dictionary_builder, "_to_camel_case")
+    func = getattr(enginir_opcua.common.type_dictionary_builder, "_to_camel_case")
     return func(name)
 
 
 def reference_generator(source_id, target_id, reference_type, is_forward=True):
-    func = getattr(asyncua.common.type_dictionary_builder, "_reference_generator")
+    func = getattr(enginir_opcua.common.type_dictionary_builder, "_reference_generator")
     return func(source_id, target_id, reference_type, is_forward)
 
 

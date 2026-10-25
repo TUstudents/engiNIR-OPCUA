@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from asyncua.server.address_space import AddressSpace, NodeManagementService
-from asyncua.server.standard_address_space import standard_address_space
+from enginir_opcua.server.address_space import AddressSpace, NodeManagementService
+from enginir_opcua.server.standard_address_space import standard_address_space
 
 
 def find_elem(parent, name, ns=None):

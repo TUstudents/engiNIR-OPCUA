@@ -5,7 +5,7 @@ import logging
 
 from IPython import embed
 
-from asyncua import Client
+from enginir_opcua import Client
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)

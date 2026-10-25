@@ -1,7 +1,7 @@
 import asyncio
 
-from asyncua.client import Client
-from asyncua.client.ua_file import UaFile
+from enginir_opcua.client import Client
+from enginir_opcua.client.ua_file import UaFile
 
 
 async def read_file():

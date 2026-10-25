@@ -5,20 +5,20 @@ NodeId's and Nodes
 The NodeId Class
 ================
 
-:class:`asyncua.ua.uatypes.NodeId` objects are used as unique ids for :class:`~asyncua.common.node.Node`'s
+:class:`enginir_opcua.ua.uatypes.NodeId` objects are used as unique ids for :class:`~enginir_opcua.common.node.Node`'s
 and are therefore used on the server and client side to access specific nodes. The two classes
-:class:`~asyncua.ua.uatypes.NodeId` and :class:`~asyncua.common.node.Node` should not
+:class:`~enginir_opcua.ua.uatypes.NodeId` and :class:`~enginir_opcua.common.node.Node` should not
 be confused: The NodeId is the unique identifier of an actual Node. While the NodeId is used to identify
 a specific node, the Node object can be used to access the underlying data.
 To learn more about the Node class, head over to :ref:`usage/common/node-nodeid:the node class`.
 
 
 A NodeId contains two main pieces of information that allow a unique mapping in the opc-ua address space:
-The :attr:`~asyncua.ua.uatypes.NodeId.Identifier` and the :attr:`~asyncua.ua.uatypes.NodeId.NamespaceIndex`.
-In addition there is the :attr:`~asyncua.ua.uatypes.NodeId.NodeIdType` attribute which is used
-to specify which opc-ua type is used for the Identifier. In addition to the :class:`~asyncua.ua.uatypes.NodeId`
-class, there is also the a :class:`~asyncua.ua.uatypes.ExpandedNodeId` which adds the
-:attr:`~asyncua.ua.uatypes.ExpandedNodeId.NamespaceUri` and :attr:`~asyncua.ua.uatypes.ExpandedNodeId.ServerIndex`
+The :attr:`~enginir_opcua.ua.uatypes.NodeId.Identifier` and the :attr:`~enginir_opcua.ua.uatypes.NodeId.NamespaceIndex`.
+In addition there is the :attr:`~enginir_opcua.ua.uatypes.NodeId.NodeIdType` attribute which is used
+to specify which opc-ua type is used for the Identifier. In addition to the :class:`~enginir_opcua.ua.uatypes.NodeId`
+class, there is also the a :class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` which adds the
+:attr:`~enginir_opcua.ua.uatypes.ExpandedNodeId.NamespaceUri` and :attr:`~enginir_opcua.ua.uatypes.ExpandedNodeId.ServerIndex`
 attributes to make the ID unique across different servers and namespaces.
 
 
@@ -31,7 +31,7 @@ to set the type manually. Creating new NodeIds usually looks like this:
 
 .. code-block:: python
 
-    >>> from asyncua import ua
+    >>> from enginir_opcua import ua
     >>> ua.NodeId(1, 2)  # Integer Identifier
     NodeId(Identifier=1, NamespaceIndex=2, NodeIdType=<NodeIdType.FourByte: 1>)
     >>> ua.NodeId('Test', 2)  # String Identifier
@@ -58,19 +58,19 @@ i, s, g, b
     These keys will map to the Identifier of the NodeId. The character specifies the
     type: Numeric, String, Guid or Bytes.
 srv, nsu:
-    If one of this keys is set, a :class:`~asyncua.ua.uatypes.ExpandedNodeId` will be returned
+    If one of this keys is set, a :class:`~enginir_opcua.ua.uatypes.ExpandedNodeId` will be returned
     and the ServerIndex and NamespaceUri will be set.
 
 
 What else?
 ----------
 
-The :class:`~asyncua.ua.uatypes.NodeId` class is actually just a normal UA data-type like
-other objects as :class:`~asyncua.ua.uatypes.QualifiedName` or :class:`~asyncua.ua.uatypes.Variant`
+The :class:`~enginir_opcua.ua.uatypes.NodeId` class is actually just a normal UA data-type like
+other objects as :class:`~enginir_opcua.ua.uatypes.QualifiedName` or :class:`~enginir_opcua.ua.uatypes.Variant`
 are, with some additional logic to make it easier to work with.
 
 ..
-   The asyncua package models all datatypes as :mod:`dataclasses`.
+   The enginir_opcua package models all datatypes as :mod:`dataclasses`.
 
    The info about dataclasses is an internal detail of a package implementation,
    that may change in future. Maybe users should not know about it to avoid dependency on it.
@@ -79,10 +79,10 @@ are, with some additional logic to make it easier to work with.
 The Node Class
 ==============
 
-The :class:`~asyncua.common.node.Node` class is a central part used on the server and client.
+The :class:`~enginir_opcua.common.node.Node` class is a central part used on the server and client.
 On the server side nodes are created and configured as well as read and written. On the client
 side we can browse through the nodes, access and manipulate their values. Nodes should not
-be confused with :class:`~asyncua.ua.uatypes.NodeId`: Each node has a NodeId an can be accessed
+be confused with :class:`~enginir_opcua.ua.uatypes.NodeId`: Each node has a NodeId an can be accessed
 through it. NodeId uniquely identifies the Node within the server.
 
 The Node class exposes a wide range of the OPC-UA protocol for easy access, however, to fully
@@ -95,7 +95,7 @@ Accessing Nodes
 
 As mentioned above, the Node class provides access to a lot of functionality, on the server
 and client side. Therefore, both, the server and client, provide a :code:`get_node` method:
-:meth:`asyncua.client.client.Client.get_node` & :meth:`asyncua.server.server.Server.get_node`.
+:meth:`enginir_opcua.client.client.Client.get_node` & :meth:`enginir_opcua.server.server.Server.get_node`.
 These functions can be used to get a node by it's NodeId, for example:
 
 .. code-block::
@@ -123,9 +123,9 @@ The node now can be used to read / write / ... data from the server:
     >>> print(f"{name} = {value}")
     MyVariable = 5.0
 
-Writing values using :meth:`~asyncua.common.node.Node.write_value` can be tricky in some cases
+Writing values using :meth:`~enginir_opcua.common.node.Node.write_value` can be tricky in some cases
 as the method converts the python type to a OPC-UA datatype. In the example above we explicitly
-need to pass in a :code:`float` to enforce a conversion to a :attr:`~asyncua.ua.uatypes.VariantType.Double`.
+need to pass in a :code:`float` to enforce a conversion to a :attr:`~enginir_opcua.ua.uatypes.VariantType.Double`.
 If :code:`5` is passed in, the value will be sent as a :attr:`VariantType.Int64`, which would
 result in a error as the sent datatype does not match the expected type on the server side.
 
@@ -150,7 +150,7 @@ as shown in the following short example:
     Node(NodeId(Identifier=2, NamespaceIndex=2, NodeIdType=<NodeIdType.FourByte: 1>))
 
 Note that in the last example we use the browse path of child as argument to
-:meth:`~asyncua.common.node.Node.get_child`. With the same method it's also possible
+:meth:`~enginir_opcua.common.node.Node.get_child`. With the same method it's also possible
 to access a child several levels deeper than the current node:
 
 .. code-block::
@@ -160,6 +160,6 @@ to access a child several levels deeper than the current node:
 
 Here we start at the objects node an traverse via MyObject to MyVariable. Always keep in
 mind that browsing through the nodes will create network traffic and server load. If
-you already know the NodeId using :meth:`~asyncua.client.client.Client.get_node` should
+you already know the NodeId using :meth:`~enginir_opcua.client.client.Client.get_node` should
 be preferred. You might also consider caching NodeIds which you found through browsing
 to reduce the traffic.

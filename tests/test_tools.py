@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from asyncua.tools import uacall, uaclient, uadiscover, uahistoryread, uals, uaread, uawrite
+from enginir_opcua.tools import uacall, uaclient, uadiscover, uahistoryread, uals, uaread, uawrite
 
 ROOT_NODE = "i=85"
 RW_NODE = "i=3078"

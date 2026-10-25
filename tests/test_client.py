@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from asyncua import Client, Node, ua
+from enginir_opcua import Client, Node, ua
 
 _logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.asyncio

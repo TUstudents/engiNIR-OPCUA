@@ -15,18 +15,18 @@ from unittest.mock import Mock
 
 import pytest
 
-import asyncua
-from asyncua import Client, Server, ua, uamethod
-from asyncua.common import ua_utils
-from asyncua.common.connection import TransportLimits
-from asyncua.common.event_objects import (
+import enginir_opcua
+from enginir_opcua import Client, Server, ua, uamethod
+from enginir_opcua.common import ua_utils
+from enginir_opcua.common.connection import TransportLimits
+from enginir_opcua.common.event_objects import (
     AuditChannelEvent,
     AuditEvent,
     AuditOpenSecureChannelEvent,
     AuditSecurityEvent,
     BaseEvent,
 )
-from asyncua.server.uaprocessor import UaProcessor
+from enginir_opcua.server.uaprocessor import UaProcessor
 
 pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
@@ -216,15 +216,15 @@ async def test_get_event_from_type_node_BaseEvent(server):
     This should work for following BaseEvent tests to work
     (maybe to write it a bit differentlly since they are not independent)
     """
-    ev = await asyncua.common.events.get_event_obj_from_type_node(
-        asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
+    ev = await enginir_opcua.common.events.get_event_obj_from_type_node(
+        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
     )
     check_base_event(ev)
 
 
 async def test_get_event_from_type_node_Inhereted_AuditEvent(server):
-    ev = await asyncua.common.events.get_event_obj_from_type_node(
-        asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.AuditEventType))
+    ev = await enginir_opcua.common.events.get_event_obj_from_type_node(
+        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.AuditEventType))
     )
     # we did not receive event
     assert ev is not None
@@ -240,8 +240,8 @@ async def test_get_event_from_type_node_Inhereted_AuditEvent(server):
 
 
 async def test_get_event_from_type_node_MultiInhereted_AuditOpenSecureChannelEvent(server):
-    ev = await asyncua.common.events.get_event_obj_from_type_node(
-        asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.AuditOpenSecureChannelEventType))
+    ev = await enginir_opcua.common.events.get_event_obj_from_type_node(
+        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.AuditOpenSecureChannelEventType))
     )
     assert ev is not None
     assert isinstance(ev, BaseEvent)
@@ -273,7 +273,7 @@ async def test_eventgenerator_BaseEvent_object(server):
 
 async def test_eventgenerator_BaseEvent_Node(server):
     evgen = await server.get_event_generator(
-        asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
+        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
     )
     await check_eventgenerator_base_event(evgen, server)
     await check_eventgenerator_source_server(evgen, server)
@@ -299,7 +299,7 @@ async def test_eventgenerator_BaseEvent_Identifier(server):
 
 async def test_eventgenerator_sourceServer_Node(server):
     evgen = await server.get_event_generator(
-        emitting_node=asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.Server))
+        emitting_node=enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.Server))
     )
     await check_eventgenerator_base_event(evgen, server)
     await check_eventgenerator_source_server(evgen, server)
@@ -333,7 +333,7 @@ async def test_eventgenerator_source_collision(server):
     evgen = await server.get_event_generator(event, ua.ObjectIds.Server)
     await check_eventgenerator_base_event(evgen, server)
     await check_event_generator_object(
-        evgen, o, emitting_node=asyncua.Node(server.iserver.isession, ua.ObjectIds.Server)
+        evgen, o, emitting_node=enginir_opcua.Node(server.iserver.isession, ua.ObjectIds.Server)
     )
     await server.delete_nodes([o])
 
@@ -471,7 +471,7 @@ async def test_create_custom_event_type_node(server):
     etype = await server.create_custom_event_type(
         2,
         "MyEvent1",
-        asyncua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType)),
+        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType)),
         [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
     )
     await check_custom_type(etype, ua.ObjectIds.BaseEventType, server)
@@ -485,7 +485,7 @@ async def test_get_event_from_type_node_custom_event(server):
         ua.ObjectIds.BaseEventType,
         [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
     )
-    ev = await asyncua.common.events.get_event_obj_from_type_node(etype)
+    ev = await enginir_opcua.common.events.get_event_obj_from_type_node(etype)
     check_custom_event(ev, etype)
     assert 0 == ev.PropertyNum
     assert ev.PropertyString is None
@@ -723,7 +723,7 @@ def check_custom_event(ev, etype):
 
 
 async def check_custom_type(ntype, base_type, server: Server, node_class=None):
-    base = asyncua.Node(server.iserver.isession, ua.NodeId(base_type))
+    base = enginir_opcua.Node(server.iserver.isession, ua.NodeId(base_type))
     assert ntype in await base.get_children()
     nodes = await ntype.get_referenced_nodes(
         refs=ua.ObjectIds.HasSubtype, direction=ua.BrowseDirection.Inverse, includesubtypes=True
@@ -930,22 +930,22 @@ async def test_start_server_when_port_is_in_use(server: Server):
     await server2.stop()
 
 
-def test_import_asyncua_does_not_import_generated_standard_address_space_services():
+def test_import_enginir_opcua_does_not_import_generated_standard_address_space_services():
     """
-    Regression test verifying that importing top-level asyncua does not
+    Regression test verifying that importing top-level enginir_opcua does not
     import the server standard address-space.
 
     See https://github.com/FreeOpcUa/opcua-asyncio/issues/1977
     """
     code = """
 import sys
-import asyncua
+import enginir_opcua
 
 loaded = [
     name for name in sys.modules
     if (
-        name.startswith("asyncua.server.standard_address_space.standard_address_space_services")
-        or name == "asyncua.server.standard_address_space.standard_address_space"
+        name.startswith("enginir_opcua.server.standard_address_space.standard_address_space_services")
+        or name == "enginir_opcua.server.standard_address_space.standard_address_space"
     )
 ]
 assert not loaded, loaded
@@ -982,7 +982,7 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
     await n.set_writable(True)
 
     client = Client(server.endpoint.geturl())
-    with caplog.at_level(logging.ERROR, logger="asyncua.server.binary_server_asyncio"):
+    with caplog.at_level(logging.ERROR, logger="enginir_opcua.server.binary_server_asyncio"):
         async with client:
             node = client.get_node(n.nodeid)
             with pytest.raises(ua.uaerrors.BadRequestTooLarge):

@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Server, ua
-from asyncua.common.type_dictionary_builder import DataTypeDictionaryBuilder
+from enginir_opcua import Server, ua
+from enginir_opcua.common.type_dictionary_builder import DataTypeDictionaryBuilder
 
 
 async def main():

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.append(f'{Path(__file__).parent.parent}')
 
-from asyncua.tools import uahistoryread
+from enginir_opcua.tools import uahistoryread
 
 
 if __name__ == "__main__":

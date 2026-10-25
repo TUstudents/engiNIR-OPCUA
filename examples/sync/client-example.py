@@ -4,8 +4,8 @@ import sys
 sys.path.insert(0, "..")
 
 
-from asyncua.common.subscription import DataChangeEvent, OpcEvent
-from asyncua.sync import Client, ThreadLoop
+from enginir_opcua.common.subscription import DataChangeEvent, OpcEvent
+from enginir_opcua.sync import Client, ThreadLoop
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)

@@ -14,17 +14,17 @@ from typing import Any, cast
 
 import pytest
 
-from asyncua import ua
-from asyncua.common import structures
-from asyncua.common.connection import MessageChunk, SecureConnection, TransportLimits
-from asyncua.common.event_objects import BaseEvent
-from asyncua.common.structures import StructGenerator
-from asyncua.common.structures104 import make_structure
-from asyncua.common.ua_utils import string_to_val, val_to_string
-from asyncua.crypto.security_policies import SecurityPolicyNone
-from asyncua.server.monitored_item_service import WhereClauseEvaluator
-from asyncua.ua import flatten, get_shape, ua_binary
-from asyncua.ua.ua_binary import (
+from enginir_opcua import ua
+from enginir_opcua.common import structures
+from enginir_opcua.common.connection import MessageChunk, SecureConnection, TransportLimits
+from enginir_opcua.common.event_objects import BaseEvent
+from enginir_opcua.common.structures import StructGenerator
+from enginir_opcua.common.structures104 import make_structure
+from enginir_opcua.common.ua_utils import string_to_val, val_to_string
+from enginir_opcua.crypto.security_policies import SecurityPolicyNone
+from enginir_opcua.server.monitored_item_service import WhereClauseEvaluator
+from enginir_opcua.ua import flatten, get_shape, ua_binary
+from enginir_opcua.ua.ua_binary import (
     _reshape,
     extensionobject_from_binary,
     extensionobject_to_binary,
@@ -35,7 +35,7 @@ from asyncua.ua.ua_binary import (
     variant_from_binary,
     variant_to_binary,
 )
-from asyncua.ua.uatypes import _MaskEnum
+from enginir_opcua.ua.uatypes import _MaskEnum
 
 EXAMPLE_BSD_PATH = Path(__file__).parent.absolute() / "example.bsd"
 
@@ -694,7 +694,7 @@ def test_to_nodeid_int_ranges():
     Standard reference types such as HasDictionaryEntry (17597) exceed the
     TwoByteNodeId range and previously raised ValueError.
     """
-    from asyncua.common.node import _to_nodeid
+    from enginir_opcua.common.node import _to_nodeid
 
     # Inclusive TwoByte upper bound (0..255)
     for value in (0, 53, 255):
@@ -1242,7 +1242,7 @@ def test_self_recursive_scalar_dataclass_deserializer_builds(restore_ua_registry
 
 
 def test_set_ua_attribute_collision_keeps_first_and_warns(restore_ua_registry, caplog) -> None:
-    from asyncua.ua.uatypes import _set_ua_attribute
+    from enginir_opcua.ua.uatypes import _set_ua_attribute
 
     @dataclass
     class FirstFoo:
@@ -1255,13 +1255,13 @@ def test_set_ua_attribute_collision_keeps_first_and_warns(restore_ua_registry, c
     _set_ua_attribute("CollideFoo", FirstFoo, FirstFoo.data_type)
     assert getattr(ua, "CollideFoo") is FirstFoo
 
-    with caplog.at_level("WARNING", logger="asyncua.ua.uatypes"):
+    with caplog.at_level("WARNING", logger="enginir_opcua.ua.uatypes"):
         _set_ua_attribute("CollideFoo", SecondFoo, SecondFoo.data_type)
     assert getattr(ua, "CollideFoo") is FirstFoo
     assert any("Browsename collision" in r.message for r in caplog.records)
 
     caplog.clear()
-    with caplog.at_level("WARNING", logger="asyncua.ua.uatypes"):
+    with caplog.at_level("WARNING", logger="enginir_opcua.ua.uatypes"):
         _set_ua_attribute("CollideFoo", FirstFoo, FirstFoo.data_type)
     assert getattr(ua, "CollideFoo") is FirstFoo
     assert not any("Browsename collision" in r.message for r in caplog.records)
@@ -1323,8 +1323,8 @@ def test_sort_nodes_progress_check_and_type_class_typedef():
     2. Type-class nodes: a UAObjectType whose typedef points at an instance
        of itself (TwinCAT export pattern) must still sort.
     """
-    from asyncua.common.xmlimporter import XmlImporter
-    from asyncua.common.xmlparser import NodeData
+    from enginir_opcua.common.xmlimporter import XmlImporter
+    from enginir_opcua.common.xmlparser import NodeData
 
     importer = XmlImporter.__new__(XmlImporter)
 
@@ -1378,8 +1378,8 @@ def test_sort_nodes_progress_check_and_type_class_typedef():
 @pytest.mark.parametrize("max_keep_alive_count", [1, 2, 3])
 def test_keep_alive_triggers_at_max_keep_alive_count(max_keep_alive_count):
     """A keep-alive must be sent on the RevisedMaxKeepAliveCount-th idle cycle."""
-    from asyncua.server.address_space import AddressSpace
-    from asyncua.server.internal_subscription import InternalSubscription
+    from enginir_opcua.server.address_space import AddressSpace
+    from enginir_opcua.server.internal_subscription import InternalSubscription
 
     async def _callback(*args, **kwargs):
         pass

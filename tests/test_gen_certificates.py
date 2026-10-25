@@ -9,14 +9,14 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509.extensions import _key_identifier_from_public_key as key_identifier_from_public_key
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from asyncua.crypto.cert_gen import (
+from enginir_opcua.crypto.cert_gen import (
     dump_private_key_as_pem,
     generate_app_certificate_signing_request,
     generate_private_key,
     generate_self_signed_app_certificate,
     sign_certificate_request,
 )
-from asyncua.crypto.uacrypto import check_certificate, load_certificate, load_private_key
+from enginir_opcua.crypto.uacrypto import check_certificate, load_certificate, load_private_key
 
 
 async def test_create_self_signed_app_certificate() -> None:

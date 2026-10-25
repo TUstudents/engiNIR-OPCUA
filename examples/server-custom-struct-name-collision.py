@@ -12,8 +12,8 @@ ua.get_type(node_id) is the reliable lookup when names collide.
 import asyncio
 import logging
 
-from asyncua import Server, ua
-from asyncua.common.structures104 import new_struct, new_struct_field
+from enginir_opcua import Server, ua
+from enginir_opcua.common.structures104 import new_struct, new_struct_field
 
 
 async def main():

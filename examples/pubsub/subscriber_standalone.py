@@ -6,8 +6,8 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from asyncua import pubsub, ua
-from asyncua.pubsub.udp import UdpSettings
+from enginir_opcua import pubsub, ua
+from enginir_opcua.pubsub.udp import UdpSettings
 
 
 # This Parameter must match the Publisher Settings!

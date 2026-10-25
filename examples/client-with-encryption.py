@@ -7,11 +7,11 @@ from pathlib import Path
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 sys.path.insert(0, "..")
-from asyncua import Client, ua
-from asyncua.crypto.cert_gen import setup_self_signed_certificate
-from asyncua.crypto.security_policies import SecurityPolicyBasic256Sha256
-from asyncua.crypto.truststore import TrustStore
-from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
+from enginir_opcua import Client, ua
+from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
+from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
+from enginir_opcua.crypto.truststore import TrustStore
+from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)

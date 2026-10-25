@@ -2,9 +2,9 @@ import asyncio
 from enum import Enum
 from pathlib import Path
 
-from asyncua import Client, ua
-from asyncua.crypto import security_policies
-from asyncua.crypto.uacrypto import CertProperties
+from enginir_opcua import Client, ua
+from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.uacrypto import CertProperties
 
 url = "opc.tcp://localhost:4840/freeopcua/server/"
 namespace = "http://examples.freeopcua.github.io"

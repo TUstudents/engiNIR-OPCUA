@@ -3,8 +3,8 @@ import struct
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.ua.uaerrors import BadMaxConnectionsReached, BadSessionNotActivated
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.ua.uaerrors import BadMaxConnectionsReached, BadSessionNotActivated
 
 from .conftest import find_free_port, port_num
 

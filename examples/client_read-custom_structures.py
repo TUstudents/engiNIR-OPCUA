@@ -6,12 +6,12 @@ import logging
 
 from IPython import embed
 
-from asyncua import Client
+from enginir_opcua import Client
 
 
 async def main():
     logging.basicConfig(level=logging.WARN)
-    # async with Client("opc.tcp://asyncua.demo-this.com:51210/UA/SampleServer") as client:
+    # async with Client("opc.tcp://enginir_opcua.demo-this.com:51210/UA/SampleServer") as client:
     async with Client("opc.tcp://localhost:4840/UA/SampleServer") as client:
         uri = "http://examples.freeopcua.github.io"
         idx = await client.get_namespace_index(uri)

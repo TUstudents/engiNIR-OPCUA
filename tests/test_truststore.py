@@ -12,15 +12,15 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from asyncua.crypto.cert_gen import (
+from enginir_opcua.crypto.cert_gen import (
     dump_private_key_as_pem,
     generate_app_certificate_signing_request,
     generate_private_key,
     generate_self_signed_app_certificate,
     sign_certificate_request,
 )
-from asyncua.crypto.truststore import TrustStore
-from asyncua.crypto.uacrypto import load_certificate
+from enginir_opcua.crypto.truststore import TrustStore
+from enginir_opcua.crypto.uacrypto import load_certificate
 
 # pylint: disable=redefined-outer-name,missing-function-docstring, missing-module-docstring, missing-class-docstring
 

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from asyncua import Server, ua
+from enginir_opcua import Server, ua
 
 pytestmark = pytest.mark.asyncio
 

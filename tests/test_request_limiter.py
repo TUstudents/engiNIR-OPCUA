@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from asyncua import ua
-from asyncua.client.client import Client
-from asyncua.client.ua_client import UaClient
-from asyncua.common.utils import Buffer
+from enginir_opcua import ua
+from enginir_opcua.client.client import Client
+from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.common.utils import Buffer
 
 
 def test_request_limit_has_a_high_default() -> None:

@@ -5,8 +5,8 @@ import logging
 import os.path
 import random
 
-from asyncua import Server, ua
-from asyncua.common.instantiate_util import instantiate
+from enginir_opcua import Server, ua
+from enginir_opcua.common.instantiate_util import instantiate
 
 
 class HelloServer:

@@ -1,7 +1,7 @@
 """
 In the following you will find examples for the use of the
 classes UaFile and UaDirectory and how to handle typical uaerrors.
-see: ./asyncua/client/ua_file_transfer.py.
+see: ./enginir_opcua/client/ua_file_transfer.py.
 
 The two classes are close to OPC UA File Transfer. This means they
 have to be operated "OPC UA typical" and not "Python typical".
@@ -19,11 +19,11 @@ file transfer capabilities.
 import asyncio
 import logging
 
-from asyncua import Client
-from asyncua.client.ua_file_transfer import UaDirectory, UaFile
-from asyncua.ua import OpenFileMode, uaerrors
+from enginir_opcua import Client
+from enginir_opcua.client.ua_file_transfer import UaDirectory, UaFile
+from enginir_opcua.ua import OpenFileMode, uaerrors
 
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 
 async def task():

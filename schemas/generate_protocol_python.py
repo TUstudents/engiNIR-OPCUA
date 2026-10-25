@@ -96,18 +96,18 @@ class CodeGenerator:
         self.write("from enum import IntEnum, IntFlag")
         self.write("from dataclasses import dataclass, field")
         self.write("")
-        self.write("from asyncua.ua.uatypes import SByte, Byte, Bytes, ByteString, Int16, Int32, Int64, UInt16, UInt32")
+        self.write("from enginir_opcua.ua.uatypes import SByte, Byte, Bytes, ByteString, Int16, Int32, Int64, UInt16, UInt32")
         self.write(
-            "from asyncua.ua.uatypes import UInt64, Boolean, Float, Double, Null, String, CharArray, DateTime, Guid"
+            "from enginir_opcua.ua.uatypes import UInt64, Boolean, Float, Double, Null, String, CharArray, DateTime, Guid"
         )
-        self.write("from asyncua.ua.uatypes import AccessLevel, EventNotifier")
-        self.write("from asyncua.ua.uatypes import LocalizedText, Variant, QualifiedName, StatusCode, DataValue")
-        self.write("from asyncua.ua.uatypes import RelativePath, RelativePathElement")
+        self.write("from enginir_opcua.ua.uatypes import AccessLevel, EventNotifier")
+        self.write("from enginir_opcua.ua.uatypes import LocalizedText, Variant, QualifiedName, StatusCode, DataValue")
+        self.write("from enginir_opcua.ua.uatypes import RelativePath, RelativePathElement")
         self.write(
-            "from asyncua.ua.uatypes import NodeId, FourByteNodeId, ExpandedNodeId, ExtensionObject, DiagnosticInfo"
+            "from enginir_opcua.ua.uatypes import NodeId, FourByteNodeId, ExpandedNodeId, ExtensionObject, DiagnosticInfo"
         )
-        self.write("from asyncua.ua.uatypes import typeid_by_extension_objects, extension_objects_by_typeid")
-        self.write("from asyncua.ua.object_ids import ObjectIds")
+        self.write("from enginir_opcua.ua.uatypes import typeid_by_extension_objects, extension_objects_by_typeid")
+        self.write("from enginir_opcua.ua.object_ids import ObjectIds")
 
     def generate_enum_code(self, enum: Enum) -> None:
         """Write IntFlag class definition for an Enum."""
@@ -244,7 +244,7 @@ if __name__ == "__main__":
     import generate_model_from_nodeset as gm
 
     xml_path = BASE_DIR.joinpath("schemas", "UA-Nodeset-master", "Schema", "Opc.Ua.NodeSet2.Services.xml")
-    protocol_path = BASE_DIR.joinpath("asyncua", "ua", "uaprotocol_auto.py")
+    protocol_path = BASE_DIR.joinpath("enginir_opcua", "ua", "uaprotocol_auto.py")
     p = gm.Parser(xml_path)
     model = p.parse()
     gm.nodeid_to_names(model)

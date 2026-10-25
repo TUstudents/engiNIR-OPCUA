@@ -5,7 +5,7 @@ Client Overview
 Creating a client
 =================
 
-There is not much to it: Create a :class:`asyncua.client.client.Client` and your
+There is not much to it: Create a :class:`enginir_opcua.client.client.Client` and your
 ready to go. The url is usually something like ``opc.tcp:\\<server>:4840``, but you
 might check your server documentation to make sure your server runs actually on this port.
 

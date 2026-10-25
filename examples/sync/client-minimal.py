@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, "../..")
 
 
-from asyncua.sync import Client
+from enginir_opcua.sync import Client
 
 if __name__ == "__main__":
     with Client("opc.tcp://localhost:4840/freeopcua/server/") as client:

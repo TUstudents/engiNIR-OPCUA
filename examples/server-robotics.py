@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, "..")
 
-from asyncua import Server
+from enginir_opcua import Server
 
 
 async def main():

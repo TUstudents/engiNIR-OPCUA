@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from asyncua import Server, ua, uamethod
+from enginir_opcua import Server, ua, uamethod
 
 
 # method to be exposed through server
@@ -42,15 +42,15 @@ async def multiply_async(parent, x, y):
 async def main():
     # optional: setup logging
     logging.basicConfig(level=logging.WARN)
-    # logger = logging.getLogger("asyncua.address_space")
+    # logger = logging.getLogger("enginir_opcua.address_space")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.internal_server")
+    # logger = logging.getLogger("enginir_opcua.internal_server")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.binary_server_asyncio")
+    # logger = logging.getLogger("enginir_opcua.binary_server_asyncio")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.uaprocessor")
+    # logger = logging.getLogger("enginir_opcua.uaprocessor")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.subscription_service")
+    # logger = logging.getLogger("enginir_opcua.subscription_service")
     # logger.setLevel(logging.DEBUG)
 
     # now set up our server

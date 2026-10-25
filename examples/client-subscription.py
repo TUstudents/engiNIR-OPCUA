@@ -1,11 +1,11 @@
 import asyncio
 import logging
 
-from asyncua import Client, ua
-from asyncua.common.subscription import DataChangeEvent, StatusChangeEvent
+from enginir_opcua import Client, ua
+from enginir_opcua.common.subscription import DataChangeEvent, StatusChangeEvent
 
 logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 
 async def main() -> None:

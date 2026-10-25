@@ -1,6 +1,6 @@
 import logging
 
-from asyncua.sync import Client
+from enginir_opcua.sync import Client
 
 if __name__ == "__main__":
     from IPython import embed

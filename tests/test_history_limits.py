@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from asyncua import ua
+from enginir_opcua import ua
 
 pytestmark = pytest.mark.asyncio
 NODE_ID = ua.NodeId(123)

@@ -1,7 +1,7 @@
 """
 Generate address space code from xml file specification
 xmlparser.py is a requirement.
-It is in asyncua folder, but to avoid importing all code, developer can link xmlparser.py in current directory
+It is in enginir_opcua folder, but to avoid importing all code, developer can link xmlparser.py in current directory
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ from dataclasses import fields
 from pathlib import Path
 from typing import IO, Any
 
-from asyncua.common import xmlparser
-from asyncua.ua.uatypes import type_string_from_type
+from enginir_opcua.common import xmlparser
+from enginir_opcua.ua.uatypes import type_string_from_type
 
 BASE_DIR = Path.cwd().parent
 
 
 def _to_val(objs: list[str], attr: str, val: str) -> str:
-    from asyncua import ua
+    from enginir_opcua import ua
 
     cls = getattr(ua, objs[0])
     for o in objs[1:]:
@@ -214,9 +214,9 @@ class CodeGenerator:
             f"""import datetime\n"""
             f"""from dateutil.tz import tzutc\n"""
             f""""""
-            f"""from asyncua import ua\n"""
-            f"""from asyncua.ua import NodeId, QualifiedName, NumericNodeId, StringNodeId, GuidNodeId\n"""
-            f"""from asyncua.ua import NodeClass, LocalizedText\n"""
+            f"""from enginir_opcua import ua\n"""
+            f"""from enginir_opcua.ua import NodeId, QualifiedName, NumericNodeId, StringNodeId, GuidNodeId\n"""
+            f"""from enginir_opcua.ua import NodeClass, LocalizedText\n"""
             f"""\n"""
             f"""\n"""
             f'''{imports}\n'''
@@ -414,21 +414,21 @@ class CodeGenerator:
 
 
 def save_aspace_to_disk() -> None:
-    path = BASE_DIR / "asyncua" / "binary_address_space.pickle"
+    path = BASE_DIR / "enginir_opcua" / "binary_address_space.pickle"
     print("Saving standard address space to:", path)
 
-    # standard_address_space_services is already loaded by asyncua/__init__.py
+    # standard_address_space_services is already loaded by enginir_opcua/__init__.py
     # reload and attach it to get the new version
-    import asyncua.server.standard_address_space.standard_address_space_services
+    import enginir_opcua.server.standard_address_space.standard_address_space_services
     import importlib
 
-    importlib.reload(asyncua.server.standard_address_space.standard_address_space_services)
-    asyncua.server.standard_address_space.standard_address_space.create_standard_address_space_Services = (
-        asyncua.server.standard_address_space.standard_address_space_services.create_standard_address_space_Services
+    importlib.reload(enginir_opcua.server.standard_address_space.standard_address_space_services)
+    enginir_opcua.server.standard_address_space.standard_address_space.create_standard_address_space_Services = (
+        enginir_opcua.server.standard_address_space.standard_address_space_services.create_standard_address_space_Services
     )
 
-    from asyncua.server.standard_address_space import standard_address_space
-    from asyncua.server.address_space import NodeManagementService, AddressSpace
+    from enginir_opcua.server.standard_address_space import standard_address_space
+    from enginir_opcua.server.address_space import NodeManagementService, AddressSpace
 
     a_space = AddressSpace()
     standard_address_space.fill_address_space(NodeManagementService(a_space))
@@ -438,7 +438,7 @@ def save_aspace_to_disk() -> None:
 async def main() -> None:
     logging.basicConfig(level=logging.WARN)
     xml_path = BASE_DIR / "schemas" / "UA-Nodeset-master" / "Schema" / f"Opc.Ua.NodeSet2.Services.xml"
-    py_path = BASE_DIR / "asyncua" / "server" / "standard_address_space" / "standard_address_space_services.py"
+    py_path = BASE_DIR / "enginir_opcua" / "server" / "standard_address_space" / "standard_address_space_services.py"
     await CodeGenerator(xml_path, py_path).run()
     save_aspace_to_disk()
 

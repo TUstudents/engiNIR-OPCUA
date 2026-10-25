@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.crypto import security_policies
-from asyncua.crypto.permission_rules import UserRole
-from asyncua.server.user_managers import CertificateUserManager
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.permission_rules import UserRole
+from enginir_opcua.server.user_managers import CertificateUserManager
 
 from .conftest import find_free_port
 

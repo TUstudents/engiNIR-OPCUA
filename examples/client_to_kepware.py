@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, "..")
 
-from asyncua import Client
-from asyncua.common.subscription import DataChangeEvent, OpcEvent
+from enginir_opcua import Client
+from enginir_opcua.common.subscription import DataChangeEvent, OpcEvent
 
 
 async def main() -> None:

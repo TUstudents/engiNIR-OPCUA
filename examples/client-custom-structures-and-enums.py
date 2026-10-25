@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Client, ua
-from asyncua.common.structures104 import load_custom_struct
+from enginir_opcua import Client, ua
+from enginir_opcua.common.structures104 import load_custom_struct
 
 
 async def main():
@@ -29,5 +29,5 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
-    _logger = logging.getLogger("asyncua")
+    _logger = logging.getLogger("enginir_opcua")
     asyncio.run(main())

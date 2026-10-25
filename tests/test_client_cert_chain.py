@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from asyncua import Client, Server, ua
-from asyncua.crypto import security_policies
-from asyncua.crypto.uacrypto import CertProperties
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.uacrypto import CertProperties
 
 from .conftest import find_free_port
 
-_logger = logging.getLogger("asyncua.server.address_space")
+_logger = logging.getLogger("enginir_opcua.server.address_space")
 _logger.setLevel(logging.WARNING)
 pytestmark = pytest.mark.asyncio
 uri_crypto = f"opc.tcp://127.0.0.1:{find_free_port()}"

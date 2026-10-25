@@ -4,8 +4,8 @@ sys.path.insert(0, "..")
 import time
 from datetime import UTC, datetime
 
-from asyncua import Server, ua
-from asyncua.server.history_sql import HistorySQLite
+from enginir_opcua import Server, ua
+from enginir_opcua.server.history_sql import HistorySQLite
 
 if __name__ == "__main__":
     # setup our server

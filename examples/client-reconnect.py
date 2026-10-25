@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Client, ua
-from asyncua.common.subscription import DataChangeEvent, StatusChangeEvent
+from enginir_opcua import Client, ua
+from enginir_opcua.common.subscription import DataChangeEvent, StatusChangeEvent
 
 _logger = logging.getLogger(__name__)
 

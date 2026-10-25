@@ -2,8 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from asyncua import ua
-from asyncua.common.node import Node
+from enginir_opcua import ua
+from enginir_opcua.common.node import Node
 
 pytestmark = pytest.mark.asyncio
 

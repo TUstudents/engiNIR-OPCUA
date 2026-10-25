@@ -6,8 +6,8 @@ import logging
 
 from IPython import embed
 
-from asyncua import Client
-from asyncua.common.structures104 import load_enums
+from enginir_opcua import Client
+from enginir_opcua.common.structures104 import load_enums
 
 
 async def main():

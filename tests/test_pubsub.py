@@ -6,13 +6,13 @@ from typing import ClassVar
 
 import pytest
 
-from asyncua import pubsub
-from asyncua.common.node import Node
-from asyncua.common.utils import Buffer
-from asyncua.pubsub.connection import PubSubConnection
-from asyncua.pubsub.dataset import DataSetMeta, PublishedDataSet
-from asyncua.pubsub.reader import DataSetReader, ReaderGroup
-from asyncua.pubsub.uadp import (
+from enginir_opcua import pubsub
+from enginir_opcua.common.node import Node
+from enginir_opcua.common.utils import Buffer
+from enginir_opcua.pubsub.connection import PubSubConnection
+from enginir_opcua.pubsub.dataset import DataSetMeta, PublishedDataSet
+from enginir_opcua.pubsub.reader import DataSetReader, ReaderGroup
+from enginir_opcua.pubsub.uadp import (
     UadpDataSetDataValue,
     UadpDataSetMessageHeader,
     UadpDataSetRaw,
@@ -21,12 +21,12 @@ from asyncua.pubsub.uadp import (
     UadpHeader,
     UadpNetworkMessage,
 )
-from asyncua.pubsub.udp import UdpSettings
-from asyncua.pubsub.writer import DataSetWriter
-from asyncua.server.server import Server
-from asyncua.ua.object_ids import ObjectIds
-from asyncua.ua.status_codes import StatusCodes
-from asyncua.ua.uatypes import (
+from enginir_opcua.pubsub.udp import UdpSettings
+from enginir_opcua.pubsub.writer import DataSetWriter
+from enginir_opcua.server.server import Server
+from enginir_opcua.ua.object_ids import ObjectIds
+from enginir_opcua.ua.status_codes import StatusCodes
+from enginir_opcua.ua.uatypes import (
     Byte,
     DataValue,
     DateTime,

@@ -3,11 +3,11 @@ import logging
 import sys
 import time
 
-# import asyncua
+# import enginir_opcua
 sys.path.insert(0, "..")
 
-from asyncua import Server, ua
-from asyncua.client.ha.ha_client import HaClient, HaConfig, HaMode
+from enginir_opcua import Server, ua
+from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode
 
 # set up logging
 root = logging.getLogger()
@@ -18,7 +18,7 @@ formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 root.addHandler(handler)
 # diable logging for the servers
-logging.getLogger("asyncua.server").setLevel(logging.WARNING)
+logging.getLogger("enginir_opcua.server").setLevel(logging.WARNING)
 
 
 class SubHandler:

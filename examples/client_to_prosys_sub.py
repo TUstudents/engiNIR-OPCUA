@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Client
-from asyncua.common.subscription import DataChangeEvent, OpcEvent, StatusChangeEvent
+from enginir_opcua import Client
+from enginir_opcua.common.subscription import DataChangeEvent, OpcEvent, StatusChangeEvent
 
 URL = "opc.tcp://localhost:53530/OPCUA/SimulationServer"
 NODE_ID = "ns=3;i=1002"

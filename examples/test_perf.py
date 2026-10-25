@@ -5,7 +5,7 @@ import sys
 import time
 
 sys.path.insert(0, "..")
-from asyncua import Server, ua
+from enginir_opcua import Server, ua
 
 
 async def mymain():

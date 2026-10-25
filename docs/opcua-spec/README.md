@@ -20,7 +20,7 @@ The script downloads the OPC Foundation's official Markdown export of each part 
 
 ## Editions
 
-The online reference serves the current 1.05 edition and **1.04** (published 2017-11-22) for every part. Earlier editions (1.00–1.03) and the intermediate 1.05.x releases aren't available online. The generated code in `asyncua/ua` and `asyncua/server/standard_address_space` is built from the [UA-Nodeset](https://github.com/OPCFoundation/UA-Nodeset) **1.05.02** files in the `nodeset` submodule.
+The online reference serves the current 1.05 edition and **1.04** (published 2017-11-22) for every part. Earlier editions (1.00–1.03) and the intermediate 1.05.x releases aren't available online. The generated code in `enginir_opcua/ua` and `enginir_opcua/server/standard_address_space` is built from the [UA-Nodeset](https://github.com/OPCFoundation/UA-Nodeset) **1.05.02** files in the `nodeset` submodule.
 
 | Part | Title | Current | v1.04 |
 |---|---|---|---|

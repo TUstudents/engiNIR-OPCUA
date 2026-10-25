@@ -6,15 +6,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from asyncua.common.subscription import Subscription
+from enginir_opcua.common.subscription import Subscription
 
 try:
     from unittest.mock import AsyncMock
 except ImportError:
     from asynctest import CoroutineMock as AsyncMock  # type: ignore[no-redef]
-import asyncua
-from asyncua import Client, ua
-from asyncua.ua.ua_binary import nodeid_from_binary, struct_from_binary
+import enginir_opcua
+from enginir_opcua import Client, ua
+from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary
 
 from .conftest import Opc
 
@@ -327,7 +327,7 @@ async def test_set_monitoring_mode(opc, mocker):
     o = opc.opc.nodes.objects
     monitoring_mode = ua.SetMonitoringModeParameters()
     _ = mocker.patch.object(ua, "SetMonitoringModeParameters", return_value=monitoring_mode)
-    _ = mocker.patch("asyncua.client.ua_session.UaSession.set_monitoring_mode", new=AsyncMock())
+    _ = mocker.patch("enginir_opcua.client.ua_session.UaSession.set_monitoring_mode", new=AsyncMock())
     _ = await o.add_variable(3, "SubscriptionVariable2", 123)
     sub = await opc.opc.create_subscription(100, myhandler)
 
@@ -419,7 +419,7 @@ async def test_set_publishing_mode(opc, mocker):
     o = opc.opc.nodes.objects
     publishing_mode = ua.SetPublishingModeParameters()
     _ = mocker.patch.object(ua, "SetPublishingModeParameters", return_value=publishing_mode)
-    _ = mocker.patch("asyncua.client.ua_session.UaSession.set_publishing_mode", new=AsyncMock())
+    _ = mocker.patch("enginir_opcua.client.ua_session.UaSession.set_publishing_mode", new=AsyncMock())
     _ = await o.add_variable(3, "SubscriptionVariable3", 123)
     sub = await opc.opc.create_subscription(100, myhandler)
 
@@ -657,7 +657,7 @@ async def test_subscribe_events_to_wrong_node(opc):
 
 async def test_get_event_attributes_from_type_node_BaseEvent(opc):
     etype = opc.opc.get_node(ua.ObjectIds.BaseEventType)
-    properties = await asyncua.common.events.get_event_properties_from_type_node(etype)
+    properties = await enginir_opcua.common.events.get_event_properties_from_type_node(etype)
     for child in await etype.get_properties():
         assert child in properties
 
@@ -667,14 +667,14 @@ async def test_get_event_attributes_from_type_node_AlarmConditionType(opc):
     ackType = opc.opc.get_node(ua.ObjectIds.AcknowledgeableConditionType)
     condType = opc.opc.get_node(ua.ObjectIds.ConditionType)
     baseType = opc.opc.get_node(ua.ObjectIds.BaseEventType)
-    allProperties = await asyncua.common.events.get_event_properties_from_type_node(alarmType)
+    allProperties = await enginir_opcua.common.events.get_event_properties_from_type_node(alarmType)
     propertiesToCheck = await alarmType.get_properties()
     propertiesToCheck.extend(await ackType.get_properties())
     propertiesToCheck.extend(await condType.get_properties())
     propertiesToCheck.extend(await baseType.get_properties())
     for child in propertiesToCheck:
         assert child in allProperties
-    allVariables = await asyncua.common.events.get_event_variables_from_type_node(alarmType)
+    allVariables = await enginir_opcua.common.events.get_event_variables_from_type_node(alarmType)
     variablesToCheck = await alarmType.get_variables()
     variablesToCheck.extend(await ackType.get_variables())
     variablesToCheck.extend(await condType.get_variables())
@@ -688,7 +688,7 @@ async def test_get_filter(opc):
     baseType = opc.opc.get_node(ua.ObjectIds.BaseEventType)
     properties = await baseType.get_properties()
     properties.extend(await auditType.get_properties())
-    evfilter = await asyncua.common.events.get_filter_from_event_type([auditType])
+    evfilter = await enginir_opcua.common.events.get_filter_from_event_type([auditType])
     # Check number of elements in select clause
     assert len(evfilter.SelectClauses) == len(properties)
 
@@ -703,7 +703,7 @@ async def test_get_filter_from_ConditionType(opc):
     subproperties = []
     for var in variables:
         subproperties.extend(await var.get_properties())
-    evfilter = await asyncua.common.events.get_filter_from_event_type([condType])
+    evfilter = await enginir_opcua.common.events.get_filter_from_event_type([condType])
     # Check number of elements in select clause FIXME: broken since 1.0.5
     # assert len(evfilter.SelectClauses) == (len(properties) + len(variables) + len(subproperties) + 1)
     # Check browse path variable with property
@@ -726,7 +726,7 @@ async def test_get_filter_from_ConditionType(opc):
 async def test_get_event_contains_object(opc):
     """Shelving State is a object this should be in the filter list!"""
     alarm_type = opc.opc.get_node(ua.ObjectIds.AlarmConditionType)
-    evfilter = await asyncua.common.events.get_filter_from_event_type([alarm_type])
+    evfilter = await enginir_opcua.common.events.get_filter_from_event_type([alarm_type])
     browsePathList = [o.BrowsePath for o in evfilter.SelectClauses if o.BrowsePath]
     browsePathId = [ua.QualifiedName("ShelvingState"), ua.QualifiedName("CurrentState"), ua.QualifiedName("Id")]
     assert browsePathId in browsePathList
@@ -735,7 +735,7 @@ async def test_get_event_contains_object(opc):
 async def test_get_filter_typedefinitionid_is_defining_type(opc):
     """Select clauses must use the EventType that introduces each field (Part 4 SimpleAttributeOperand)."""
     alarm_type = opc.opc.get_node(ua.ObjectIds.AlarmConditionType)
-    evfilter = await asyncua.common.events.get_filter_from_event_type([alarm_type])
+    evfilter = await enginir_opcua.common.events.get_filter_from_event_type([alarm_type])
     type_by_path = {
         tuple(bp.Name for bp in op.BrowsePath): op.TypeDefinitionId for op in evfilter.SelectClauses if op.BrowsePath
     }
@@ -767,7 +767,7 @@ async def test_get_event_from_type_node_CustomEvent(opc):
         ua.ObjectIds.AuditEventType,
         [("PropertyNum", ua.VariantType.Float), ("PropertyString", ua.VariantType.String)],
     )
-    properties = await asyncua.common.events.get_event_properties_from_type_node(etype)
+    properties = await enginir_opcua.common.events.get_event_properties_from_type_node(etype)
     for child in await opc.opc.get_node(ua.ObjectIds.BaseEventType).get_properties():
         assert child in properties
     for child in await opc.opc.get_node(ua.ObjectIds.AuditEventType).get_properties():

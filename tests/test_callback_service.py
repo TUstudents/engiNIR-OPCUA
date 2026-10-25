@@ -2,8 +2,8 @@ import logging
 
 import pytest
 
-from asyncua import Client, Server
-from asyncua.common.callback import CallbackType
+from enginir_opcua import Client, Server
+from enginir_opcua.common.callback import CallbackType
 
 from .conftest import find_free_port
 
@@ -41,7 +41,7 @@ class SubscriptionHandler:
 
     def datachange_notification(self, node, val, data):
         """
-        Callback for asyncua Subscription.
+        Callback for enginir_opcua Subscription.
         This method will be called when the Client received a data change message from the Server.
         """
         _logger.info("datachange_notification %r %s", node, val)

@@ -4,9 +4,9 @@
 2) run update_ua_nodeset.py
 3) That's it
 
-Path to the .pickle file: opcua-asyncio/asyncua/binary_address_space.pickle
+Path to the .pickle file: opcua-asyncio/enginir_opcua/binary_address_space.pickle
 Path to the .xml Nodesets: opcua-asyncio/schemas/UA-Nodeset-master/Schema/
-Path to the standard_address_space.py files: opcua-asyncio/asyncua/server/standard_address_space/
+Path to the standard_address_space.py files: opcua-asyncio/enginir_opcua/server/standard_address_space/
 
 
 ##Warnings:

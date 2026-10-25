@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from asyncua import Client, ua
-from asyncua.common.subscription import OpcEvent
+from enginir_opcua import Client, ua
+from enginir_opcua.common.subscription import OpcEvent
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)

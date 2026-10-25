@@ -2,10 +2,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from asyncua import ua
-from asyncua.client.ua_client import UaClient
-from asyncua.client.ua_session import UaSession
-from asyncua.common.node import Node
+from enginir_opcua import ua
+from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.client.ua_session import UaSession
+from enginir_opcua.common.node import Node
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,7 +57,7 @@ async def test_ua_session_history_update_builds_request(monkeypatch):
     response = ua.HistoryUpdateResponse()
     response.Results = [ua.HistoryUpdateResult()]
     session._send_request = AsyncMock(return_value=b"response")
-    monkeypatch.setattr("asyncua.client.ua_session.struct_from_binary", lambda _type, _data: response)
+    monkeypatch.setattr("enginir_opcua.client.ua_session.struct_from_binary", lambda _type, _data: response)
 
     result = await session.history_update(params)
 

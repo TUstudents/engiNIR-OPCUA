@@ -1,10 +1,10 @@
 import asyncio
 import logging
 
-from asyncua import Client, Node, ua
+from enginir_opcua import Client, Node, ua
 
 logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger("asyncua")
+_logger = logging.getLogger("enginir_opcua")
 
 
 async def browse_nodes(node: Node):

@@ -13,8 +13,8 @@ except ImportError:
         shell.interact()
 
 
-from asyncua import Server
-from asyncua.common.callback import CallbackType
+from enginir_opcua import Server
+from enginir_opcua.common.callback import CallbackType
 
 
 def create_monitored_items(event, dispatcher):
@@ -37,15 +37,15 @@ def delete_monitored_items(event, dispatcher):
 async def main():
     # optional: setup logging
     logging.basicConfig(level=logging.WARN)
-    # logger = logging.getLogger("asyncua.address_space")
+    # logger = logging.getLogger("enginir_opcua.address_space")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.internal_server")
+    # logger = logging.getLogger("enginir_opcua.internal_server")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.binary_server_asyncio")
+    # logger = logging.getLogger("enginir_opcua.binary_server_asyncio")
     # logger.setLevel(logging.DEBUG)
-    # logger = logging.getLogger("asyncua.uaprocessor")
+    # logger = logging.getLogger("enginir_opcua.uaprocessor")
     # logger.setLevel(logging.DEBUG)
-    logger = logging.getLogger("asyncua.subscription_service")
+    logger = logging.getLogger("enginir_opcua.subscription_service")
     logger.setLevel(logging.DEBUG)
 
     # now setup our server

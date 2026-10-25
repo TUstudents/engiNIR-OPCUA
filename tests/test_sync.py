@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from asyncua import ua, uamethod
-from asyncua.client import Client as AsyncClient
-from asyncua.client.ua_client import UaClient
-from asyncua.server import Server as AsyncServer
-from asyncua.sync import (
+from enginir_opcua import ua, uamethod
+from enginir_opcua.client import Client as AsyncClient
+from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.server import Server as AsyncServer
+from enginir_opcua.sync import (
     Client,
     Server,
     SyncNode,
