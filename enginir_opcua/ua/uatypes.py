@@ -13,6 +13,7 @@ import re
 import types
 import uuid
 from base64 import b64decode, b64encode
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum
@@ -922,8 +923,8 @@ class VariantTypeCustom:
     def __init__(self, val: int) -> None:
         self.name = "Custom"
         self.value = val
-        if self.value > 0b00111111:
-            raise UaError(f"Cannot create VariantType. VariantType must be {0b111111} > x > {25}, received {val}")
+        if not 25 < self.value <= 0b00111111:
+            raise UaError(f"Cannot create VariantType. VariantType must be in the range 26 to 63, received {val}")
 
     def __str__(self) -> str:
         return f"VariantType.Custom:{self.value}"
@@ -938,6 +939,24 @@ class VariantTypeCustom:
 
 
 _VariantTypeUnion = VariantType | VariantTypeCustom
+
+_NULLABLE_VARIANT_TYPES = frozenset(
+    {
+        VariantType.Null,
+        VariantType.String,
+        VariantType.DateTime,
+        VariantType.Guid,
+        VariantType.ByteString,
+        VariantType.XmlElement,
+        VariantType.NodeId,
+        VariantType.ExpandedNodeId,
+        VariantType.QualifiedName,
+        VariantType.LocalizedText,
+        VariantType.ExtensionObject,
+        VariantType.DataValue,
+        VariantType.Variant,
+    }
+)
 
 
 @dataclass(slots=True)
@@ -965,15 +984,18 @@ class Variant:
     is_array: bool | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.Value, Variant):
+            inner = self.Value
+            object.__setattr__(self, "VariantType", inner.VariantType)
+            object.__setattr__(self, "Value", inner.Value)
+            object.__setattr__(self, "Dimensions", inner.Dimensions)
+            object.__setattr__(self, "is_array", inner.is_array)
+
         if self.is_array is None:
             if isinstance(self.Value, list | tuple) or self.Dimensions:
                 object.__setattr__(self, "is_array", True)
             else:
                 object.__setattr__(self, "is_array", False)
-
-        if isinstance(self.Value, Variant):
-            object.__setattr__(self, "VariantType", self.Value.VariantType)
-            object.__setattr__(self, "Value", self.Value.Value)
 
         if not isinstance(self.VariantType, VariantType | VariantTypeCustom):
             if self.VariantType is None:
@@ -984,18 +1006,15 @@ class Variant:
                 else:
                     raise ValueError("VariantType argument must be an instance of VariantType")
 
+        if self.VariantType == VariantType.DiagnosticInfo:
+            raise UaError("A Variant cannot contain a DiagnosticInfo (Part 6, 5.1.9)")
+
         if self.Value is None and not self.is_array:
-            # only some types of Variants can be NULL when not in an array
-            if self.VariantType == VariantType.NodeId:
-                # why do we rewrite this case and not the others?
-                object.__setattr__(self, "Value", NodeId(0, 0))
-            elif self.VariantType not in (
-                VariantType.Null,
-                VariantType.String,
-                VariantType.DateTime,
-                VariantType.ExtensionObject,
-                VariantType.ByteString,
-            ):
+            if self.VariantType in _NULLABLE_VARIANT_TYPES:
+                null_factory = _NULL_SCALAR_FACTORIES.get(self.VariantType)
+                if null_factory is not None:
+                    object.__setattr__(self, "Value", null_factory())
+            else:
                 raise UaError(f"Non array Variant of type {self.VariantType} cannot have value None")
 
         if self.Dimensions is None and isinstance(self.Value, list | tuple):
@@ -1004,9 +1023,13 @@ class Variant:
                 object.__setattr__(self, "Dimensions", dims)
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, Variant) and self.VariantType == other.VariantType and self.Value == other.Value:
-            return True
-        return False
+        return (
+            isinstance(other, Variant)
+            and self.VariantType == other.VariantType
+            and self.Value == other.Value
+            and bool(self.is_array) == bool(other.is_array)
+            and (self.Dimensions or None) == (other.Dimensions or None)
+        )
 
     def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
@@ -1019,13 +1042,15 @@ class Variant:
             if len(val) == 0:
                 raise UaError(f"could not guess UA type of variable {error_val}")
             val = val[0]
-        # now check if this is one our buildin types
         type_name = type(val).__name__
         if hasattr(VariantType, type_name):
             return VariantType[type_name]
-        # nope so guess the type
         if val is None:
             return VariantType.Null
+        if isinstance(val, ExpandedNodeId):
+            return VariantType.ExpandedNodeId
+        if isinstance(val, NodeId):
+            return VariantType.NodeId
         if isinstance(val, bool):
             return VariantType.Boolean
         if isinstance(val, float):
@@ -1042,11 +1067,8 @@ class Variant:
             return VariantType.DateTime
         if isinstance(val, uuid.UUID):
             return VariantType.Guid
-        if isinstance(val, object):
-            try:
-                return getattr(VariantType, val.__class__.__name__)
-            except AttributeError:
-                return VariantType.ExtensionObject
+        if any(cls in typeid_by_extension_objects for cls in type(val).__mro__):
+            return VariantType.ExtensionObject
         raise UaError(f"Could not guess UA type of {val} with type {type(val)}, specify UA type")
 
 
@@ -1174,9 +1196,21 @@ def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantType
     if not isinstance(int_type, int):
         raise UaError(f"Expected int type for VariantType, got {type(int_type)}")
 
-    if int_type <= 25:
+    if 0 <= int_type <= 25:
         return VariantType(int_type)
     return VariantTypeCustom(int_type)
+
+
+_NULL_SCALAR_FACTORIES: dict[VariantType, Callable[[], Any]] = {
+    VariantType.DateTime: get_win_epoch,
+    VariantType.Guid: lambda: uuid.UUID(int=0),
+    VariantType.NodeId: NodeId,
+    VariantType.ExpandedNodeId: ExpandedNodeId,
+    VariantType.QualifiedName: QualifiedName,
+    VariantType.LocalizedText: LocalizedText,
+    VariantType.DataValue: DataValue,
+    VariantType.Variant: Variant,
+}
 
 
 def get_default_value(vtype: VariantType) -> Any:
@@ -1196,13 +1230,13 @@ def get_default_value(vtype: VariantType) -> Any:
     if vtype in (VariantType.Float, VariantType.Double):
         return 0.0
     if vtype == VariantType.String:
-        return None  # a string can be null
+        return None
     if vtype == VariantType.DateTime:
         return datetime.now(UTC)
     if vtype == VariantType.Guid:
         return uuid.uuid4()
     if vtype == VariantType.XmlElement:
-        return None  # Not sure if this is correct
+        return None
     if vtype == VariantType.NodeId:
         return NodeId()
     if vtype == VariantType.ExpandedNodeId:

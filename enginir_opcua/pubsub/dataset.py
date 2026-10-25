@@ -386,7 +386,7 @@ class PublishedDataSet(PubSubInformationModel):
         )
         pds_obj = instance[0]
         await self._init_node(pds_obj, server)
-        await self.set_node_value("0:DataSetMetaData", self.dataset)
+        await self.set_node_value("0:DataSetMetaData", self.dataset._meta)
         if self._node is not None:
             await self._node.add_variable(
                 NodeId(NamespaceIndex=Int16(1)),
@@ -495,7 +495,7 @@ class PublishedDataItems(PubSubInformationModel):
         )
         pds_obj = instance[0]
         await self._init_node(pds_obj, server)
-        await self.set_node_value("0:DataSetMetaData", self.dataset)
+        await self.set_node_value("0:DataSetMetaData", self.dataset._meta)
         await self.set_node_value("0:ConfigurationVersion", self.dataset._meta.ConfigurationVersion)
         if self._node is not None:
             await self._node.add_variable(
