@@ -17,6 +17,8 @@ from .internal_session import ChannelSecurity, identity_token
 
 _logger = logging.getLogger(__name__)
 
+HELLO_MAX_CHUNK_SIZE = 8192
+
 
 class PublishRequestData:
     def __init__(self, requesthdr=None, seqhdr=None, results: list[ua.StatusCode] | None = None):
@@ -52,6 +54,11 @@ class UaProcessor:
         self._hello_received: bool = False
         self._session_watchdog_task: asyncio.Task | None = None
         self._watchdog_interval: float = 1.0
+
+    def max_receive_chunk_size(self) -> int:
+        if self._hello_received:
+            return self._limits.max_recv_buffer
+        return HELLO_MAX_CHUNK_SIZE
 
     def set_policies(self, policies):
         self._connection.set_policy_factories(policies)

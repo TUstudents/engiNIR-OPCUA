@@ -8,9 +8,10 @@ import asyncio
 import logging
 from typing import Any
 
+from .. import ua
 from ..common.connection import TransportLimits
 from ..common.utils import Buffer, NotEnoughData
-from ..ua.ua_binary import header_from_binary
+from ..ua.ua_binary import header_from_binary, uatcp_to_binary
 from .internal_server import InternalServer
 from .uaprocessor import UaProcessor
 
@@ -127,6 +128,10 @@ class OPCUAProtocol(asyncio.Protocol):
                     if self.transport is not None:
                         self.transport.close()
                     return
+                limit = self.processor.max_receive_chunk_size() if self.processor is not None else None
+                if limit is not None and header.packet_size > limit:
+                    self._reject_oversized_chunk(header.packet_size, limit)
+                    return
                 if len(buf) < header.body_size:
                     _logger.debug(
                         "We did not receive enough data from client. Need %s got %s", header.body_size, len(buf)
@@ -148,6 +153,16 @@ class OPCUAProtocol(asyncio.Protocol):
             except Exception:
                 _logger.exception("Exception raised while parsing message from client")
                 return
+
+    def _reject_oversized_chunk(self, packet_size: int, limit: int) -> None:
+        _logger.warning("Closing connection from %s: chunk of %s bytes exceeds %s", self.peer_name, packet_size, limit)
+        self._buffer = b""
+        if self.transport is not None:
+            error = ua.ErrorMessage(
+                ua.StatusCode(ua.StatusCodes.BadTcpMessageTooLarge), f"Chunk size {packet_size} exceeds {limit}"
+            )
+            self.transport.write(uatcp_to_binary(ua.MessageType.Error, error))
+            self.transport.close()
 
     async def _process_received_message_loop(self) -> None:
         """
