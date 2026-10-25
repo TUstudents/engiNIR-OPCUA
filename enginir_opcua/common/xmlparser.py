@@ -47,6 +47,7 @@ class NodeData:
         self.refs = []
         self.nodeclass = None
         self.eventnotifier = 0
+        self.design_tool_only = False
 
         # variable
         self.datatype = None
@@ -217,6 +218,8 @@ class XMLParser:
             obj.symmetric = _to_bool(val)
         elif key == "Historizing":
             obj.historizing = _to_bool(val)
+        elif key == "DesignToolOnly":
+            obj.design_tool_only = _to_bool(val)
         else:
             self.logger.info("Attribute not implemented: %s:%s", key, val)
 

@@ -27,7 +27,7 @@ from enginir_opcua.ua.uatypes import (
 )
 
 from ..ua.uaerrors import UaError
-from .xmlparser import XMLParser, ua_type_to_python
+from .xmlparser import NodeData, XMLParser, ua_type_to_python
 
 _logger = logging.getLogger(__name__)
 
@@ -178,6 +178,7 @@ class XmlImporter:
         dnodes = self.parser.get_node_datas()
         dnodes = self.make_objects(dnodes)
         self._add_missing_parents(dnodes)
+        dnodes = self._drop_design_tool_only_nodes(dnodes)
         nodes_parsed = self._sort_nodes(dnodes)
         nodes = []
         for nodedata in nodes_parsed:  # self.parser:
@@ -257,6 +258,23 @@ class XmlImporter:
         await self._add_references(reference_fixes)
 
         return dangling_refs_to_missing_nodes
+
+    @staticmethod
+    def _drop_design_tool_only_nodes(dnodes: list[NodeData]) -> list[NodeData]:
+        skipped = {nd.nodeid for nd in dnodes if nd.design_tool_only}
+        if not skipped:
+            return dnodes
+        grown = True
+        while grown:
+            grown = False
+            for nd in dnodes:
+                if nd.nodeid not in skipped and nd.parent in skipped:
+                    skipped.add(nd.nodeid)
+                    grown = True
+        kept = [nd for nd in dnodes if nd.nodeid not in skipped]
+        for nd in kept:
+            nd.refs = [ref for ref in nd.refs if ref.target not in skipped]
+        return kept
 
     def _add_missing_parents(self, dnodes):
         missing = []

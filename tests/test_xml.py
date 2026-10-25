@@ -27,6 +27,7 @@ CUSTOM_NODES_NS_XML_PATH1 = BASE_DIR / "custom_nodesns_2.xml"
 CUSTOM_NODES_NS_XML_PATH2 = BASE_DIR / "custom_nodesns_3.xml"
 CUSTOM_NODES_NS_XML_PATH3 = BASE_DIR / "custom_nodesns_4.xml"
 CUSTOM_NS_META_ADD_XML_PATH = BASE_DIR / "custom_ns_meta_add.xml"
+DESIGN_TOOL_ONLY_XML_PATH = BASE_DIR / "design_tool_only.xml"
 CUSTOM_REQ_XML_PASS_PATH = BASE_DIR / "test_requirement_pass.xml"
 CUSTOM_REQ_XML_FAIL_PATH = BASE_DIR / "test_requirement_fail.xml"
 NODESET_DIR = BASE_DIR.parents[0] / "nodeset"
@@ -880,3 +881,18 @@ async def test_xml_namespace_meta_add(opc):
         await opc.opc.get_namespace_index("http://foobar.org/struct_optional/")
     await opc.opc.import_xml(CUSTOM_NS_META_ADD_XML_PATH)
     assert await opc.opc.get_namespace_index("http://foobar.org/struct_optional/") > 0
+
+
+async def test_xml_import_skips_design_tool_only_nodes_com57(opc):
+    nodes = await opc.opc.import_xml(DESIGN_TOOL_ONLY_XML_PATH)
+    imported = set(nodes)
+    namespace_index = await opc.opc.get_namespace_index("urn:enginir:test:design-tool-only")
+    assert ua.NodeId(5001, namespace_index) in imported
+    assert ua.NodeId(5004, namespace_index) in imported
+    assert ua.NodeId(5002, namespace_index) not in imported
+    assert ua.NodeId(5003, namespace_index) not in imported
+    for identifier in (5002, 5003):
+        with pytest.raises(uaerrors.BadNodeIdUnknown):
+            await opc.opc.get_node(ua.NodeId(identifier, namespace_index)).read_browse_name()
+    kept = opc.opc.get_node(ua.NodeId(5001, namespace_index))
+    assert [child.nodeid for child in await kept.get_children()] == [ua.NodeId(5004, namespace_index)]
