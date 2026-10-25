@@ -132,7 +132,6 @@ class UASocketProtocol(asyncio.Protocol):
 
     def _process_frame(self, header: ua.Header, body: Buffer) -> None:
         msg = self._channel.receive_from_header_and_body(header, body)
-        self._process_received_message(msg)
         if header.MessageType == ua.MessageType.SecureOpen:
             params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
             self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
@@ -141,6 +140,7 @@ class UASocketProtocol(asyncio.Protocol):
             self._channel.check_open_response(response.Parameters, params, self._acknowledged_version)
             self._open_secure_channel_exchange = response
             self._channel.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
+        self._process_received_message(msg)
 
     def _process_received_message(
         self, msg: ua.Message | AbortedMessage | ua.Acknowledge | ua.ErrorMessage | None
