@@ -272,18 +272,24 @@ class InternalServer:
         self.logger.info("starting internal server")
         for edp in self.endpoints:
             self._known_servers[edp.Server.ApplicationUri] = ServerDesc(edp.Server)
+        await self.set_server_state(ua.ServerState.Running)
+        start_time = datetime.now(UTC)
         status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
-        status.State = ua.ServerState.Running
-        status.StartTime = datetime.now(UTC)
+        status.StartTime = start_time
         await self.server_status_node.write_value(status)
-        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_State)).write_value(
-            ua.ServerState.Running, ua.VariantType.Int32
-        )
-        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_StartTime)).write_value(status.StartTime)
+        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_StartTime)).write_value(start_time)
         if not self.disabled_clock:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
         self.session_manager.start()
+
+    async def set_server_state(self, state: ua.ServerState) -> None:
+        status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
+        status.State = state
+        await self.server_status_node.write_value(status)
+        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_State)).write_value(
+            state, ua.VariantType.Int32
+        )
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
@@ -292,13 +298,8 @@ class InternalServer:
             await self.time_task
         self.method_service.stop()
         await self.session_manager.close_all()
-        await self.isession.delete_subscriptions(
-            [
-                sub_id
-                for sub_id, sub in self.subscription_service.subscriptions.items()
-                if sub.session_id == self.isession.session_id
-            ]
-        )
+        for sub_id, sub in list(self.subscription_service.subscriptions.items()):
+            await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
 
     async def _set_current_time_loop(self) -> None:

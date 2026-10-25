@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+MAX_DISCOVERY_PERIOD_SECONDS = 600
+DISCOVERY_UNREGISTER_TIMEOUT_SECONDS = 5.0
+
 
 def _get_node(isession: InternalSession, whatever: Node | ua.NodeId | int) -> Node:
     if isinstance(whatever, Node):
@@ -82,7 +85,6 @@ class Server:
 
     :ivar product_uri:
     :ivar name:
-    :ivar default_timeout: timeout in milliseconds for sessions and secure channel
     :ivar iserver: `InternalServer` instance
     :ivar bserver: binary protocol server `BinaryServer`
     :ivar nodes: shortcuts to common nodes - `Shortcuts` instance
@@ -100,11 +102,11 @@ class Server:
         self.name: str = "engiNIR OPC UA Server"
         self.manufacturer_name: str = "engiNIR"
         self.application_type: ua.ApplicationType = ua.ApplicationType.ClientAndServer
-        self.default_timeout: int = 60 * 60 * 1000
         self.iserver: InternalServer = iserver if iserver else InternalServer(user_manager=user_manager)
         self.bserver: BinaryServer | None = None
         self.socket_address: tuple[str, int] | None = None
         self._discovery_clients: dict[str, Client] = {}
+        self._discovery_configurations: dict[str, ua.DiscoveryConfiguration | None] = {}
         self._discovery_period: int = 60
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
@@ -326,15 +328,18 @@ class Server:
         re-register every period seconds
         if period is 0 registration is not automatically renewed
         """
-        # FIXME: have a period per discovery
-        if url in self._discovery_clients:
-            await self._discovery_clients[url].disconnect_sessionless()
-        self._discovery_clients[url] = Client(url)
-        await self._discovery_clients[url].connect_sessionless()
-        await self._discovery_clients[url].register_server(self, discovery_configuration)
-        await self._discovery_clients[url].disconnect_sessionless()
+        if not 0 <= period <= MAX_DISCOVERY_PERIOD_SECONDS:
+            raise ValueError(f"period must be between 0 and {MAX_DISCOVERY_PERIOD_SECONDS} seconds")
+        client = Client(url)
+        await client.connect_sessionless()
+        try:
+            await client.register_server(self, discovery_configuration)
+        finally:
+            await client.disconnect_sessionless()
+        self._discovery_clients[url] = client
+        self._discovery_configurations[url] = discovery_configuration
         self._discovery_period = period
-        if period:
+        if period and (self._discovery_handle is None or self._discovery_handle.done()):
             self._discovery_handle = asyncio.create_task(self._run_renewal_loop())
 
     async def _run_renewal_loop(self) -> None:
@@ -351,18 +356,39 @@ class Server:
         """
         stop registration thread
         """
-        await self._discovery_clients[url].connect_sessionless()
-        await self._discovery_clients[url].unregister_server(self, discovery_configuration)
-        await self._discovery_clients[url].disconnect_sessionless()
+        client = self._discovery_clients.get(url)
+        if client is None:
+            raise ua.UaError(f"The server is not registered to {url}")
         del self._discovery_clients[url]
-        if not self._discovery_clients and self._discovery_handle:
+        configuration = self._discovery_configurations.pop(url, None)
+        if not self._discovery_clients:
+            self._cancel_discovery_renewal()
+        await client.connect_sessionless()
+        try:
+            await client.unregister_server(self, discovery_configuration or configuration)
+        finally:
+            await client.disconnect_sessionless()
+
+    def _cancel_discovery_renewal(self) -> None:
+        if self._discovery_handle is not None:
             self._discovery_handle.cancel()
+            self._discovery_handle = None
 
     async def _renew_registration(self) -> None:
-        for client in self._discovery_clients.values():
+        for url, client in list(self._discovery_clients.items()):
             await client.connect_sessionless()
-            await client.register_server(self)  # FIXME discovery_configuration?
-            await client.disconnect_sessionless()
+            try:
+                await client.register_server(self, self._discovery_configurations.get(url))
+            finally:
+                await client.disconnect_sessionless()
+
+    async def _withdraw_discovery_registrations(self) -> None:
+        self._cancel_discovery_renewal()
+        for url in list(self._discovery_clients):
+            try:
+                await asyncio.wait_for(self.unregister_from_discovery(url), DISCOVERY_UNREGISTER_TIMEOUT_SECONDS)
+            except Exception as e:
+                _logger.warning("Could not withdraw the registration from %s: %s", url, e)
 
     def allow_remote_admin(self, allow: bool) -> None:
         """
@@ -429,7 +455,8 @@ class Server:
         self.iserver.supported_tokens = tuple(tokens)
 
     async def _setup_server_nodes(self) -> None:
-        # to be called just before starting server since it needs all parameters to be setup
+        self.iserver.endpoints = []
+        self._policies = []
         no_cert = False
         for policy_type in self._security_policy:
             policy, mode, level = security_policies.SECURITY_POLICY_TYPE_MAP[policy_type]
@@ -562,12 +589,11 @@ class Server:
         """
         Stop server
         """
-        if self._discovery_handle:
-            self._discovery_handle.cancel()
-            self._discovery_handle = None
-
-        if self._discovery_clients:
-            await asyncio.gather(*[client.disconnect() for client in self._discovery_clients.values()])
+        try:
+            await self.iserver.set_server_state(ua.ServerState.Shutdown)
+        except Exception:
+            _logger.warning("Could not set the server state to Shutdown", exc_info=True)
+        await self._withdraw_discovery_registrations()
         if self.bserver is not None:
             await self.bserver.stop()
         await self.iserver.stop()
