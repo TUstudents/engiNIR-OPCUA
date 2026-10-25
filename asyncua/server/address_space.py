@@ -376,6 +376,7 @@ class NodeManagementService:
                 break  # ref already exists
         else:
             nodedata.references.append(desc)
+            self._aspace.reference_added(nodedata.nodeid, desc.NodeId)
         return ua.StatusCode()
 
     def _add_ref_from_parent(self, nodedata: NodeData, item: ua.AddNodesItem, parentdata: NodeData) -> None:
@@ -427,10 +428,12 @@ class NodeManagementService:
             return ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)
 
         if item.DeleteTargetReferences:
-            for elem in self._aspace.keys():
-                for rdesc in self._aspace[elem].references[:]:
-                    if rdesc.NodeId == item.NodeId:
-                        self._aspace[elem].references.remove(rdesc)
+            for source in self._aspace.referencing_nodes(item.NodeId):
+                sourcedata = self._aspace.get(source)
+                if sourcedata is None:
+                    continue
+                sourcedata.references[:] = [ref for ref in sourcedata.references if ref.NodeId != item.NodeId]
+                self._aspace.reference_removed(source, item.NodeId)
 
         self._delete_node_callbacks(self._aspace[item.NodeId])
 
@@ -517,6 +520,7 @@ class NodeManagementService:
             if rdesc.NodeId == target and rdesc.ReferenceTypeId == item.ReferenceTypeId:
                 if rdesc.IsForward == forward:
                     self._aspace[source].references.remove(rdesc)
+                    self._aspace.reference_removed(source, target)
                     return ua.StatusCode()
         return ua.StatusCode(ua.StatusCodes.BadNotFound)
 
@@ -661,6 +665,7 @@ class AddressSpace:
         self._handle_to_attribute_map: dict[int, tuple[ua.NodeId, ua.AttributeIds]] = {}
         self._default_idx = 2
         self._nodeid_counter = {0: 20000, 1: 2000}
+        self._referenced_by: dict[ua.NodeId, set[ua.NodeId]] | None = None
 
     def __getitem__(self, nodeid: ua.NodeId) -> NodeData:
         return self._nodes.__getitem__(nodeid)
@@ -671,13 +676,60 @@ class AddressSpace:
         )  # Fixme This is another behaviour than __getitem__ where an KeyError exception is thrown, right?
 
     def __setitem__(self, nodeid: ua.NodeId, value: NodeData) -> None:
+        if self._referenced_by is not None:
+            previous = self._nodes.get(nodeid)
+            if previous is not None:
+                self._unindex_references(self._referenced_by, nodeid, previous)
+            for ref in value.references:
+                self._referenced_by.setdefault(ref.NodeId, set()).add(nodeid)
         return self._nodes.__setitem__(nodeid, value)
 
     def __contains__(self, nodeid: ua.NodeId) -> bool:
         return self._nodes.__contains__(nodeid)
 
     def __delitem__(self, nodeid: ua.NodeId) -> None:
+        if self._referenced_by is not None:
+            self._unindex_references(self._referenced_by, nodeid, self._nodes[nodeid])
+            self._referenced_by.pop(nodeid, None)
         self._nodes.__delitem__(nodeid)
+
+    def referencing_nodes(self, nodeid: ua.NodeId) -> set[ua.NodeId]:
+        """
+        Return the ids of the nodes holding a reference that targets nodeid
+        """
+        if self._referenced_by is None:
+            self._referenced_by = {}
+            for source, nodedata in self._nodes.items():
+                for ref in nodedata.references:
+                    self._referenced_by.setdefault(ref.NodeId, set()).add(source)
+        candidates = set(self._referenced_by.get(nodeid, ()))
+        nodedata = self._nodes.get(nodeid)
+        if nodedata is not None:
+            candidates.update(ref.NodeId for ref in nodedata.references)
+        return candidates
+
+    def reference_added(self, source: ua.NodeId, target: ua.NodeId) -> None:
+        if self._referenced_by is not None:
+            self._referenced_by.setdefault(target, set()).add(source)
+
+    def reference_removed(self, source: ua.NodeId, target: ua.NodeId) -> None:
+        if self._referenced_by is None:
+            return
+        sourcedata = self._nodes.get(source)
+        if sourcedata is not None and any(ref.NodeId == target for ref in sourcedata.references):
+            return
+        sources = self._referenced_by.get(target)
+        if sources is not None:
+            sources.discard(source)
+
+    @staticmethod
+    def _unindex_references(
+        referenced_by: dict[ua.NodeId, set[ua.NodeId]], nodeid: ua.NodeId, nodedata: NodeData
+    ) -> None:
+        for ref in nodedata.references:
+            sources = referenced_by.get(ref.NodeId)
+            if sources is not None:
+                sources.discard(nodeid)
 
     def generate_nodeid(self, idx: int | None = None) -> ua.NodeId:
         if idx is None:
@@ -711,6 +763,7 @@ class AddressSpace:
     def clear(self) -> None:
         """Delete all nodes in address space"""
         self._nodes.clear()
+        self._referenced_by = None
 
     def dump(self, path: str | Path) -> None:
         """
@@ -738,6 +791,7 @@ class AddressSpace:
         """
         with open(path, "rb") as f:
             self._nodes = pickle.load(f)
+        self._referenced_by = None
 
     def make_aspace_shelf(self, path: Path) -> None:
         """
@@ -794,6 +848,7 @@ class AddressSpace:
                 return len(self.cache)
 
         self._nodes = LazyLoadingDict(shelve.open(str(path), "r"))
+        self._referenced_by = None
 
     def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds) -> ua.DataValue:
         node = self._nodes.get(nodeid)

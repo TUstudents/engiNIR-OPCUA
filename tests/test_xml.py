@@ -87,13 +87,20 @@ async def disposable_opc(request):
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
-    await opc.opc.import_xml(NODESET_DI)
-    await opc.opc.import_xml(NODESET_SCALES)
+    nodes = await opc.opc.import_xml(NODESET_DI)
+    nodes += await opc.opc.import_xml(NODESET_SCALES)
     if opc.opc == opc.server:
-        await opc.opc.import_xml(NODESET_PACK)
-        await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
-        await opc.opc.import_xml(NODESET_IA)
-        await opc.opc.import_xml(NODESET_VISION)
+        nodes += await opc.opc.import_xml(NODESET_PACK)
+        nodes += await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
+        nodes += await opc.opc.import_xml(NODESET_IA)
+        nodes += await opc.opc.import_xml(NODESET_VISION)
+    for nodeid in nodes:
+        await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
+    aspace = opc.server.iserver.aspace
+    remaining = set(aspace.keys())
+    assert remaining.isdisjoint(nodes)
+    dangling = [(nodeid, ref.NodeId) for nodeid in remaining for ref in aspace[nodeid].references]
+    assert [ref for ref in dangling if ref[1] not in remaining] == []
 
 
 async def test_xml_import_additional_ns(opc):
