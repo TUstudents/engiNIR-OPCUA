@@ -352,6 +352,10 @@ class WriteMask(_MaskEnum):
     ValueRank = 19
     WriteMask = 20
     ValueForVariableType = 21
+    DataTypeDefinition = 22
+    RolePermissions = 23
+    AccessRestrictions = 24
+    AccessLevelEx = 25
 
 
 class EventNotifier(_MaskEnum):

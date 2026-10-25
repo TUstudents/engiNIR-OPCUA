@@ -1496,3 +1496,12 @@ def test_client_sends_what_the_server_receives_and_receives_what_it_sends(initia
     limits.update_client_limits(ack)
 
     assert (limits.max_recv_buffer, limits.max_send_buffer) == (65535, 8192)
+
+
+def test_ua9_write_mask_bits_22_to_25() -> None:
+    """Part 3, 8.60: bits 22 to 25 of the AttributeWriteMask."""
+    assert ua.WriteMask.DataTypeDefinition.value == 22
+    assert ua.WriteMask.RolePermissions.value == 23
+    assert ua.WriteMask.AccessRestrictions.value == 24
+    assert ua.WriteMask.AccessLevelEx.value == 25
+    assert ua.WriteMask.parse_bitfield(1 << 25) == {ua.WriteMask.AccessLevelEx}
