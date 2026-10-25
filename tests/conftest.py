@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from multiprocessing import Condition, Event, Process
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,10 +27,10 @@ SLEEP = 0.4
 PORTS_USED = set()
 Opc = namedtuple("Opc", ["opc", "server"])
 
-UA_REGISTRIES = (
+UA_REGISTRIES: tuple[dict[Any, Any], ...] = (
     ua.extension_objects_by_datatype,
     ua.extension_objects_by_typeid,
-    ua.extension_object_typeids,
+    ua.typeid_by_extension_objects,
     ua.datatype_by_extension_object,
     ua.enums_by_datatype,
     ua.enums_datatypes,
@@ -169,34 +170,6 @@ class ServerProcess(Process):
     def run(self):
         loop = asyncio.new_event_loop()
         loop.run_until_complete(self.run_server(self.url))
-
-
-@pytest.fixture
-def restore_ua_registry():
-    """Snapshot and restore ua module attributes and registration dicts around a test."""
-    from asyncua import ua
-
-    attrs_before = set(vars(ua).keys())
-    dicts = {
-        name: dict(getattr(ua, name))
-        for name in (
-            "extension_objects_by_datatype",
-            "extension_objects_by_typeid",
-            "datatype_by_extension_object",
-            "typeid_by_extension_objects",
-            "enums_by_datatype",
-            "enums_datatypes",
-            "basetype_by_datatype",
-            "basetype_datatypes",
-        )
-    }
-    yield
-    for added in set(vars(ua).keys()) - attrs_before:
-        delattr(ua, added)
-    for name, snapshot in dicts.items():
-        current = getattr(ua, name)
-        current.clear()
-        current.update(snapshot)
 
 
 @pytest.fixture(scope="module")
