@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from enginir_opcua import Server, ua
-from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.client.ua_client import UaClient, UASocketProtocol
 from enginir_opcua.common.connection import TransportLimits
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
@@ -231,5 +231,62 @@ async def test_com36_client_rejects_invalid_acknowledge(raw_server: RawServer, a
     await peer.receive_hello()
     await peer.send_acknowledge(acknowledge)
     with pytest.raises(ua.UaStatusCodeError):
+        await hello_task
+    assert await peer.is_closed_by_peer()
+
+
+async def connect_client(raw_server: RawServer) -> tuple[UaClient, RawPeer]:
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    await peer.receive_hello()
+    await peer.send_acknowledge(ua.Acknowledge(ReceiveBufferSize=65535, SendBufferSize=65535))
+    await hello_task
+    return uaclient, peer
+
+
+async def test_cli18_client_rejects_oversized_header_before_buffering(raw_server: RawServer) -> None:
+    """Part 6, 7.1.2.2 and 7.1.5: a size above the receive buffer ends the connection before the body is read."""
+    uaclient, peer = await connect_client(raw_server)
+    await peer.send(b"MSGF" + struct.pack("<I", 2**31) + struct.pack("<I", 1))
+    await peer.send(bytes(10**6))
+    await asyncio.sleep(0.3)
+    assert uaclient.protocol is not None
+    assert uaclient.protocol.is_closed
+    assert len(uaclient.protocol._reader.buffer) == 0
+
+
+async def test_cli18_client_buffer_is_extended_in_place() -> None:
+    """Part 6, 7.1.2.2: a partial chunk is kept in one buffer that data_received only appends to."""
+    protocol = UASocketProtocol()
+    protocol.data_received(b"MSGF" + struct.pack("<I", 40000))
+    buffer = protocol._reader.buffer
+    for _ in range(10):
+        protocol.data_received(bytes(100))
+    assert protocol._reader.buffer is buffer
+    assert len(buffer) == 1008
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        (b"RHEF" + struct.pack("<I", 8), ua.uaerrors.BadTcpMessageTypeInvalid),
+        (b"MSGF" + struct.pack("<I", 4), ua.uaerrors.BadTcpMessageTypeInvalid),
+        (b"MSGF" + struct.pack("<I", 2**31) + struct.pack("<I", 1), ua.uaerrors.BadTcpMessageTooLarge),
+    ],
+    ids=["reverse-hello", "size-below-header", "size-above-buffer"],
+)
+async def test_cli18_client_fails_pending_requests_on_a_bad_frame(
+    raw_server: RawServer, data: bytes, error: type[ua.UaStatusCodeError]
+) -> None:
+    """Part 6, 7.1.2.2 and 7.1.5: an unusable message from the server fails the waiting requests and closes."""
+    uaclient = UaClient(timeout=1)
+    await uaclient.connect_socket(raw_server.host, raw_server.port)
+    hello_task = asyncio.create_task(uaclient.send_hello(raw_server.url))
+    peer = await raw_server.accept()
+    await peer.receive_hello()
+    await peer.send(data)
+    with pytest.raises(error):
         await hello_task
     assert await peer.is_closed_by_peer()

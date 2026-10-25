@@ -21,11 +21,11 @@ from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
-from ..common.connection import SecureConnection, TransportError, TransportLimits
+from ..common.connection import FrameReader, SecureConnection, TransportError, TransportLimits
 from ..common.utils import wait_for
 from ..crypto import security_policies
 from ..observer import NULL_OBSERVER, Observer
-from ..ua.ua_binary import header_from_binary, nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
+from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
 from .ua_session import SessionState, UaSession
 
@@ -64,8 +64,6 @@ class UASocketProtocol(asyncio.Protocol):
         """
         self.logger = logging.getLogger(f"{__name__}.UASocketProtocol")
         self.transport: asyncio.Transport | None = None
-        self.receive_buffer: bytes | None = None
-        self.is_receiving = False
         self.timeout = timeout
         self.authentication_token = ua.NodeId()
         self._request_id = 0
@@ -76,6 +74,7 @@ class UASocketProtocol(asyncio.Protocol):
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
         self._connection = SecureConnection(security_policy, limits)
+        self._reader = FrameReader(lambda: self._connection.limits.max_recv_buffer)
 
         self.state: UASocketState = UASocketState.INITIALIZED
         # needed to pass params from asynchronous request to synchronous data receive callback, as well as
@@ -104,59 +103,31 @@ class UASocketProtocol(asyncio.Protocol):
                 self.logger.exception("on_connection_lost callback raised")
 
     def data_received(self, data: bytes) -> None:
-        if self.receive_buffer:
-            data = self.receive_buffer + data
-            self.receive_buffer = None
-        self._process_received_data(data)
+        self._reader.feed(data)
+        try:
+            for header, body in self._reader.frames():
+                self._process_frame(header, body)
+        except TransportError as e:
+            self.logger.error("Closing connection to server: %s (%s)", e.reason, ua.StatusCode(e.status))
+            self._fail_all_pending(ua.UaStatusCodeError(e.status))
+            self.disconnect_socket()
+        except ua.UaStatusCodeError as e:
+            self.logger.error("Got error status from server: %s", e)
+            self._fail_all_pending(e)
+            self.disconnect_socket()
+        except Exception:
+            self.logger.exception("Exception raised while parsing message from server")
+            self.disconnect_socket()
 
-    def _process_received_data(self, data: bytes) -> None:
-        """
-        Try to parse received data as enginir_opcua message. Data may be chunked but will be in correct order.
-        See: https://docs.python.org/3/library/asyncio-protocol.html#asyncio.Protocol.data_received
-        Reassembly is done by filling up a buffer until it verifies as a valid message (or a MessageChunk).
-        """
-        buf = ua.utils.Buffer(data)
-        while buf:
-            # Shadow copy of the position at iteration start; lets us stash the
-            # original unparsed bytes on partial-receive without an eager copy.
-            unparsed = buf.copy()
-            try:
-                try:
-                    header = header_from_binary(buf)
-                except ua.utils.NotEnoughData:
-                    self.logger.debug("Not enough data while parsing header from server, waiting for more")
-                    self.receive_buffer = bytes(unparsed)
-                    return
-                if len(buf) < header.body_size:
-                    self.logger.debug(
-                        "We did not receive enough data from server. Need %s got %s", header.body_size, len(buf)
-                    )
-                    self.receive_buffer = bytes(unparsed)
-                    return
-                msg = self._connection.receive_from_header_and_body(header, buf)
-                self._process_received_message(msg)
-                if header.MessageType == ua.MessageType.SecureOpen:
-                    params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
-                    response: ua.OpenSecureChannelResponse = struct_from_binary(
-                        ua.OpenSecureChannelResponse, msg.body()
-                    )
-                    response.ResponseHeader.ServiceResult.check()
-                    self._open_secure_channel_exchange = response
-                    self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
-            except TransportError as e:
-                self.logger.error("Closing connection to server: %s (%s)", e.reason, ua.StatusCode(e.status))
-                self._fail_all_pending(ua.UaStatusCodeError(e.status))
-                self.disconnect_socket()
-                return
-            except ua.UaStatusCodeError as e:
-                self.logger.error("Got error status from server: %s", e)
-                self._fail_all_pending(e)
-                self.disconnect_socket()
-                return
-            except Exception:
-                self.logger.exception("Exception raised while parsing message from server")
-                self.disconnect_socket()
-                return
+    def _process_frame(self, header: ua.Header, body: Buffer) -> None:
+        msg = self._connection.receive_from_header_and_body(header, body)
+        self._process_received_message(msg)
+        if header.MessageType == ua.MessageType.SecureOpen:
+            params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+            response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
+            response.ResponseHeader.ServiceResult.check()
+            self._open_secure_channel_exchange = response
+            self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
 
     def _process_received_message(self, msg: ua.Message | ua.Acknowledge | ua.ErrorMessage | None) -> None:
         if msg is None:
