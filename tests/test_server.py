@@ -26,7 +26,9 @@ from enginir_opcua.common.event_objects import (
     AuditSecurityEvent,
     BaseEvent,
 )
+from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
+from enginir_opcua.ua.ua_binary import uatcp_to_binary
 
 pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
@@ -1008,20 +1010,24 @@ async def test_process_reports_the_connection_should_close_on_a_limit_error():
     assert keep_open is False
 
 
-async def test_process_rejects_a_repeated_hello_and_closes_the_connection() -> None:
+async def test_protocol_rejects_a_repeated_hello_and_closes_the_connection() -> None:
     transport = Mock()
-    processor = UaProcessor(Mock(), transport, TransportLimits())
-    connection = Mock()
-    connection.receive_from_header_and_body.return_value = ua.Hello()
-    processor._connection = connection
+    iserver = Mock()
+    iserver.max_pending_messages_per_connection = 500
+    protocol = OPCUAProtocol(iserver, [], [], [], TransportLimits())
+    protocol.transport = transport
+    protocol.processor = UaProcessor(Mock(), transport, TransportLimits())
+    hello = uatcp_to_binary(ua.MessageType.Hello, ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
 
-    assert await processor.process(Mock(), Mock()) is True
+    protocol.data_received(hello)
+
     assert transport.write.call_args.args[0].startswith(b"ACKF")
+    assert not transport.close.called
 
-    keep_open = await processor.process(Mock(), Mock())
+    protocol.data_received(hello)
 
     assert transport.write.call_args.args[0].startswith(b"ERRF")
-    assert keep_open is False
+    assert transport.close.called
 
 
 async def test_default_application_identity_is_enginir() -> None:

@@ -9,9 +9,15 @@ import logging
 from typing import Any
 
 from .. import ua
-from ..common.connection import TransportLimits
-from ..common.utils import Buffer, NotEnoughData
-from ..ua.ua_binary import header_from_binary, uatcp_to_binary
+from ..common.connection import (
+    HELLO_MAX_CHUNK_SIZE,
+    FrameReader,
+    TransportError,
+    TransportLimits,
+    error_message_to_binary,
+)
+from ..common.utils import Buffer
+from ..ua.uaprotocol_hand import SECURE_MESSAGE_TYPES
 from .internal_server import InternalServer
 from .uaprocessor import UaProcessor
 
@@ -34,7 +40,8 @@ class OPCUAProtocol(asyncio.Protocol):
         self.peer_name: Any = None
         self.transport: asyncio.Transport | None = None
         self.processor: UaProcessor | None = None
-        self._buffer = b""
+        self._reader = FrameReader(self._max_frame_size)
+        self._closed = False
         self.iserver: InternalServer = iserver
         self.policies = policies
         self.clients = clients
@@ -59,6 +66,7 @@ class OPCUAProtocol(asyncio.Protocol):
                 self.peer_name,
                 self.iserver.max_connections,
             )
+            self._closed = True
             transport.close()
             return
         _logger.info("New connection from %s", self.peer_name)
@@ -111,62 +119,62 @@ class OPCUAProtocol(asyncio.Protocol):
             _logger.exception("activation watchdog crashed")
 
     def data_received(self, data: bytes) -> None:
-        self._buffer += data
-        # try to parse the incoming data
-        while self._buffer:
-            try:
-                buf = Buffer(self._buffer)
-                try:
-                    header = header_from_binary(buf)
-                except NotEnoughData:
-                    # we jsut wait for more data, that happens.
-                    # worst case recv will go in timeout or it hangs and it should be fine too
+        if self._closed:
+            return
+        self._reader.feed(data)
+        try:
+            for header, body in self._reader.frames():
+                if not self._dispatch(header, body):
                     return
-                except ua.UaStatusCodeError as e:
-                    self._fail(e.code, "Malformed message header")
-                    return
-                if header.header_size + header.body_size <= header.header_size:
-                    # malformed header prevent invalid access of your buffer
-                    _logger.error("Got malformed header %s", header)
-                    if self.transport is not None:
-                        self.transport.close()
-                    return
-                limit = self.processor.max_receive_chunk_size() if self.processor is not None else None
-                if limit is not None and header.packet_size > limit:
-                    self._reject_oversized_chunk(header.packet_size, limit)
-                    return
-                if len(buf) < header.body_size:
-                    _logger.debug(
-                        "We did not receive enough data from client. Need %s got %s", header.body_size, len(buf)
-                    )
-                    return
-                # we have a complete message
-                try:
-                    self.messages.put_nowait((header, buf))
-                except asyncio.QueueFull:
-                    _logger.warning(
-                        "Inbound queue full for %s (max=%s); closing connection",
-                        self.peer_name,
-                        self.messages.maxsize,
-                    )
-                    if self.transport is not None:
-                        self.transport.close()
-                    return
-                self._buffer = self._buffer[(header.header_size + header.body_size) :]
-            except Exception:
-                _logger.exception("Exception raised while parsing message from client")
-                return
+        except TransportError as e:
+            _logger.warning("Closing connection from %s: %s (%s)", self.peer_name, e.reason, ua.StatusCode(e.status))
+            self._fail(e.status, e.reason)
+        except Exception:
+            _logger.exception("Exception raised while parsing message from client")
+            self._fail(ua.StatusCodes.BadTcpInternalError)
 
-    def _reject_oversized_chunk(self, packet_size: int, limit: int) -> None:
-        _logger.warning("Closing connection from %s: chunk of %s bytes exceeds %s", self.peer_name, packet_size, limit)
-        self._fail(ua.StatusCodes.BadTcpMessageTooLarge, f"Chunk size {packet_size} exceeds {limit}")
+    def _max_frame_size(self) -> int:
+        if self.processor is None:
+            return HELLO_MAX_CHUNK_SIZE
+        return self.processor.max_receive_chunk_size()
+
+    def _dispatch(self, header: ua.Header, body: Buffer) -> bool:
+        assert self.processor is not None and self.transport is not None
+        if not self.processor.hello_received:
+            if header.MessageType != ua.MessageType.Hello:
+                raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Hello expected first")
+            self.transport.write(self.processor.accept_hello(body))
+            return True
+        if header.MessageType == ua.MessageType.Hello:
+            raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Hello was already received")
+        if header.MessageType == ua.MessageType.Error:
+            _logger.warning("Received an Error message from %s, closing", self.peer_name)
+            self._close()
+            return False
+        if header.MessageType not in SECURE_MESSAGE_TYPES:
+            raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Unexpected message type")
+        try:
+            self.messages.put_nowait((header, body))
+        except asyncio.QueueFull:
+            _logger.warning(
+                "Inbound queue full for %s (max=%s); closing connection", self.peer_name, self.messages.maxsize
+            )
+            self._close()
+            return False
+        return True
+
+    def _close(self) -> None:
+        self._closed = True
+        self._reader.buffer.clear()
+        if self.transport is not None:
+            self.transport.close()
 
     def _fail(self, status: int, reason: str = "") -> None:
-        self._buffer = b""
+        if self._closed:
+            return
         if self.transport is not None:
-            error = ua.ErrorMessage(ua.StatusCode(status), reason)
-            self.transport.write(uatcp_to_binary(ua.MessageType.Error, error))
-            self.transport.close()
+            self.transport.write(error_message_to_binary(status, reason))
+        self._close()
 
     async def _process_received_message_loop(self) -> None:
         """

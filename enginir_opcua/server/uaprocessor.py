@@ -7,8 +7,8 @@ from typing import Literal
 
 from enginir_opcua import ua
 
-from ..common.connection import SecureConnection, TransportLimits
-from ..common.utils import ServiceError
+from ..common.connection import HELLO_MAX_CHUNK_SIZE, SecureConnection, TransportError, TransportLimits
+from ..common.utils import Buffer, ServiceError
 from ..crypto import uacrypto
 from ..crypto.security_policies import SecurityPolicyNone
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
@@ -16,8 +16,6 @@ from .internal_server import InternalServer, InternalSession
 from .internal_session import ChannelSecurity, identity_token
 
 _logger = logging.getLogger(__name__)
-
-HELLO_MAX_CHUNK_SIZE = 8192
 
 
 class PublishRequestData:
@@ -54,6 +52,19 @@ class UaProcessor:
         self._hello_received: bool = False
         self._session_watchdog_task: asyncio.Task | None = None
         self._watchdog_interval: float = 1.0
+
+    @property
+    def hello_received(self) -> bool:
+        return self._hello_received
+
+    def accept_hello(self, body: Buffer) -> bytes:
+        try:
+            hello = struct_from_binary(ua.Hello, body)
+        except ua.UaError as e:
+            raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Malformed Hello") from e
+        ack = self._limits.create_acknowledge_and_set_limits(hello)
+        self._hello_received = True
+        return uatcp_to_binary(ua.MessageType.Acknowledge, ack)
 
     def max_receive_chunk_size(self) -> int:
         if self._hello_received:
@@ -162,18 +173,6 @@ class UaProcessor:
                 return False
             elif header.MessageType == ua.MessageType.SecureMessage:
                 return await self.process_message(msg.sequence_header(), msg.body())
-        elif isinstance(msg, ua.Hello):
-            if self._hello_received:
-                _logger.warning("Received a repeated Hello message from %s", self.name)
-                err = ua.ErrorMessage(
-                    ua.StatusCode(ua.StatusCodes.BadTcpMessageTypeInvalid), "Hello was already received"
-                )
-                self._transport.write(uatcp_to_binary(ua.MessageType.Error, err))
-                return False
-            self._hello_received = True
-            ack = self._limits.create_acknowledge_and_set_limits(msg)
-            data = uatcp_to_binary(ua.MessageType.Acknowledge, ack)
-            self._transport.write(data)
         elif isinstance(msg, ua.ErrorMessage):
             _logger.warning("Received an error message type")
         elif msg is None:

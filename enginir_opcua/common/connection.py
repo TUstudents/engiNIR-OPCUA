@@ -3,21 +3,93 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
-from enginir_opcua.ua.uaerrors import UaInvalidParameterError
+from enginir_opcua.ua.uaerrors import UaError, UaInvalidParameterError, UaStatusCodeError
 
 from ..crypto.uacrypto import InvalidSignature
-from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary
+from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
+from .utils import Buffer, NotEnoughData
 
 if TYPE_CHECKING:
     from ..crypto.security_policies import CryptographyNone, SecurityPolicy
-    from .utils import Buffer
 
 _logger = logging.getLogger("enginir_opcua.uaprotocol")
+
+HELLO_MAX_CHUNK_SIZE = 8192
+MAX_ERROR_REASON_BYTES = 4096
+KNOWN_MESSAGE_TYPES = frozenset(
+    {
+        ua.MessageType.Hello,
+        ua.MessageType.Acknowledge,
+        ua.MessageType.Error,
+        ua.MessageType.SecureOpen,
+        ua.MessageType.SecureMessage,
+        ua.MessageType.SecureClose,
+    }
+)
+
+
+class TransportError(UaError):
+    """A failure that ends the connection and is reported to the peer as an Error message."""
+
+    def __init__(self, status: int, reason: str = "") -> None:
+        super().__init__(status, reason)
+        self.status = status
+        self.reason = reason
+
+
+def error_message_to_binary(status: int, reason: str = "") -> bytes:
+    reason = reason.encode()[:MAX_ERROR_REASON_BYTES].decode(errors="ignore")
+    return uatcp_to_binary(ua.MessageType.Error, ua.ErrorMessage(ua.StatusCode(status), reason))
+
+
+class FrameReader:
+    """
+    Cuts the byte stream of a UA-TCP connection into whole messages (Part 6, 7.1.2.2).
+    The size of a message is checked against the limit before any of its body is waited for.
+    """
+
+    def __init__(self, max_frame_size: Callable[[], int]) -> None:
+        self.buffer = bytearray()
+        self._max_frame_size = max_frame_size
+
+    def feed(self, data: bytes) -> None:
+        self.buffer += data
+
+    def frames(self) -> Iterator[tuple[ua.Header, Buffer]]:
+        pos = 0
+        try:
+            while True:
+                if len(self.buffer) - pos < 3:
+                    return
+                if bytes(self.buffer[pos : pos + 3]) not in KNOWN_MESSAGE_TYPES:
+                    raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Unknown message type")
+                try:
+                    header = header_from_binary(Buffer(bytes(self.buffer[pos : pos + ua.Header.max_size()])))
+                except NotEnoughData:
+                    return
+                except UaStatusCodeError as e:
+                    raise TransportError(e.code, "Malformed message header") from e
+                limit = self._max_frame_size()
+                if header.packet_size > limit:
+                    raise TransportError(
+                        ua.StatusCodes.BadTcpMessageTooLarge, f"Message size {header.packet_size} exceeds {limit}"
+                    )
+                end = pos + header.packet_size
+                if len(self.buffer) < end:
+                    return
+                yield header, Buffer(bytes(self.buffer[pos + header.header_size : end]))
+                pos = end
+        except TransportError:
+            pos = len(self.buffer)
+            raise
+        finally:
+            del self.buffer[:pos]
 
 
 @dataclass
