@@ -5,7 +5,6 @@ implement ua datatypes
 from __future__ import annotations
 
 import ast
-import binascii
 import functools
 import itertools
 import logging
@@ -452,6 +451,34 @@ class NodeIdType(IntEnum):
     ByteString = 5
 
 
+_OPC_UA_NAMESPACE_URI = "http://opcfoundation.org/UA/"
+_GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_DIGITS_PATTERN = re.compile(r"[0-9]+")
+_INDEX_PREFIX_PATTERN = re.compile(r"([0-9]+):")
+_NODEID_FAMILY = {
+    NodeIdType.TwoByte: 0,
+    NodeIdType.FourByte: 0,
+    NodeIdType.Numeric: 0,
+    NodeIdType.String: 1,
+    NodeIdType.Guid: 2,
+    NodeIdType.ByteString: 3,
+}
+
+
+def _encode_uri(uri: str) -> str:
+    return uri.replace("%", "%25").replace(";", "%3B")
+
+
+def _decode_uri(uri: str) -> str:
+    return unquote(uri, errors="strict")
+
+
+def _parse_digits(value: str, what: str) -> int:
+    if not _DIGITS_PATTERN.fullmatch(value):
+        raise ValueError(f"{what} must be a sequence of digits, got {value!r}")
+    return int(value)
+
+
 @dataclass(eq=False, order=False, slots=True)
 class NodeId:
     """
@@ -459,23 +486,22 @@ class NodeId:
 
     Args:
         identifier: The identifier might be an int, a string, bytes or a Guid
-        namespaceidx(int): The index of the namespace
-        nodeidtype(NodeIdType): The type of the nodeid if it cannot be guessed, or you want something
+        namespace_index(int): The index of the namespace
+        node_id_type(NodeIdType): The type of the nodeid if it cannot be guessed, or you want something
         special like twobyte nodeid or fourbytenodeid
 
+    The string form is the one of Part 6, 5.1.12, for example ``ns=2;s=Name``.
 
-    :ivar Identifier:
-    :vartype Identifier: NodeId
+    :ivar Identifier: int, str, bytes or uuid.UUID
+    :vartype Identifier: UInt32, String, Guid or ByteString
     :ivar NamespaceIndex:
-    :vartype NamespaceIndex: Int
-    :ivar NamespaceUri:
-    :vartype NamespaceUri: String
-    :ivar ServerIndex:
-    :vartype ServerIndex: Int
+    :vartype NamespaceIndex: UInt16
+    :ivar NodeIdType: the wire format, not part of the identity
+    :vartype NodeIdType: NodeIdType
     """
 
-    Identifier: "ua.Int32 | ua.String | ua.Guid | ua.ByteString" = 0
-    NamespaceIndex: "ua.Int16" = 0
+    Identifier: "ua.UInt32 | ua.String | ua.Guid | ua.ByteString" = 0
+    NamespaceIndex: "ua.UInt16" = 0
     NodeIdType: "ua.NodeIdType" = None
 
     def __post_init__(self) -> None:
@@ -504,8 +530,8 @@ class NodeId:
         """
         valid_type_combinations = [
             (int, [NodeIdType.Numeric, NodeIdType.TwoByte, NodeIdType.FourByte]),
-            (str, [NodeIdType.String, NodeIdType.ByteString]),
-            (bytes, [NodeIdType.ByteString, NodeIdType.TwoByte, NodeIdType.FourByte]),
+            (str, [NodeIdType.String]),
+            (bytes, [NodeIdType.ByteString]),
             (uuid.UUID, [NodeIdType.Guid]),
         ]
         for identifier, valid_node_types in valid_type_combinations:
@@ -516,6 +542,8 @@ class NodeId:
         )
 
     def __eq__(self, node: object) -> bool:
+        if isinstance(node, ExpandedNodeId) and not isinstance(self, ExpandedNodeId):
+            return node.__eq__(self)
         return (
             isinstance(node, NodeId)
             and self.NamespaceIndex == node.NamespaceIndex
@@ -528,14 +556,28 @@ class NodeId:
     def __hash__(self) -> int:
         return hash((self.NamespaceIndex, self.Identifier))
 
+    def _sort_key(self) -> tuple[Any, ...]:
+        return (_NODEID_FAMILY[self.NodeIdType], self.NamespaceIndex, self.Identifier, "", 0)
+
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, NodeId):
-            raise AttributeError("Can only compare to NodeId")
-        return (self.NodeIdType, self.NamespaceIndex, self.Identifier) < (
-            other.NodeIdType,
-            other.NamespaceIndex,
-            other.Identifier,
-        )
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
+
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() <= other._sort_key()
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() > other._sort_key()
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, NodeId):
+            return NotImplemented
+        return self._sort_key() >= other._sort_key()
 
     def is_null(self) -> bool:
         if self.NamespaceIndex != 0:
@@ -559,77 +601,78 @@ class NodeId:
             raise UaStringParsingError(f"Error parsing string {string}", ex) from ex
 
     @staticmethod
+    def _parse_identifier(component: str) -> tuple["ua.NodeIdType", Any]:
+        key, separator, value = component.partition("=")
+        if not separator:
+            raise ValueError(f"Unknown component {component!r}")
+        if key == "i":
+            return NodeIdType.Numeric, _parse_digits(value, "Numeric identifier")
+        if key == "s":
+            return NodeIdType.String, String(value)
+        if key == "g":
+            if not _GUID_PATTERN.fullmatch(value):
+                raise ValueError(f"Malformed Guid {value!r}")
+            return NodeIdType.Guid, uuid.UUID(value)
+        if key == "b":
+            return NodeIdType.ByteString, b64decode(value.encode("ascii"), validate=True)
+        raise ValueError(f"Unknown key {key!r}")
+
+    @staticmethod
     def _from_string(string: str) -> NodeId:
-        elements = string.split(";")
-        identifier = None
-        namespace = 0
-        ntype = None
-        srv = None
-        nsu = None
-        while elements:
-            el = elements.pop(0)  # consume exactly one part of the node name, left-to-right
-            if not el:
-                continue
-            k, v = el.split("=", 1)
-            k = k.strip()
-            if k == "ns":
-                namespace = int(v.strip())
-            elif k == "i":
-                ntype = NodeIdType.Numeric
-                identifier = int(v.strip())
-            elif k == "s":
-                ntype = NodeIdType.String
-                # As per https://reference.opcfoundation.org/Core/Part3/v105/docs/8.2.4 and https://reference.opcfoundation.org/Core/Part3/v104/docs/8.2.4,
-                # strings may contain arbitrary non-control unicode characters, even semicolons and equals.
-                # We must now consume the whole rest of the identifier.
-                identifier = String(";".join((v, *elements)))
-                elements = []  # consume everything immediately
-            elif k == "g":
-                ntype = NodeIdType.Guid
-                identifier = uuid.UUID(f"urn:uuid:{v}")
-            elif k == "b":
-                ntype = NodeIdType.ByteString
-                if v[0:2] == "0x":
-                    # our custom handling, normaly all bytestring nodes are base64
-                    identifier = bytes.fromhex(v[2:])
+        remaining = string
+        server_index = 0
+        namespace_index = 0
+        namespace_uri: str | None = None
+        has_server = False
+        stage = 0
+        while True:
+            key, separator, value = remaining.partition("=")
+            if separator and key in ("svr", "srv", "svu", "ns", "nsu"):
+                text, semicolon, rest = value.partition(";")
+                if not semicolon:
+                    raise ValueError("The identifier must come last")
+                if key == "svu":
+                    raise ValueError("Server URIs are not supported")
+                if key in ("svr", "srv"):
+                    if stage > 0:
+                        raise ValueError("svr must come first")
+                    server_index = _parse_digits(text, "svr")
+                    has_server = True
+                    stage = 1
                 else:
-                    try:
-                        # this should be the default case base64
-                        identifier = b64decode(v.encode("ascii"))
-                    except (binascii.Error, ValueError):
-                        # fallback for backwards compatiblity just use the bytestring
-                        identifier = v.encode("ascii")
-            elif k == "srv":
-                srv = int(v.strip())
-            elif k == "nsu":
-                nsu = v
-        if identifier is None:
-            raise UaStringParsingError(f"Could not find identifier in string: {string}")
-        if nsu is not None or srv is not None:
-            return ExpandedNodeId(identifier, namespace, ntype, NamespaceUri=nsu, ServerIndex=srv)
-        return NodeId(identifier, namespace, ntype)
+                    if stage > 1:
+                        raise ValueError("Only one of ns and nsu is allowed")
+                    if key == "ns":
+                        namespace_index = _parse_digits(text, "ns")
+                    else:
+                        namespace_uri = _decode_uri(text)
+                    stage = 2
+                remaining = rest
+                continue
+            break
+        if remaining.endswith(";") and not remaining.startswith("s="):
+            remaining = remaining[:-1]
+        node_id_type, identifier = NodeId._parse_identifier(remaining)
+        if namespace_uri is not None or has_server:
+            return ExpandedNodeId(
+                identifier, namespace_index, node_id_type, NamespaceUri=namespace_uri, ServerIndex=server_index
+            )
+        return NodeId(identifier, namespace_index, node_id_type)
+
+    def _identifier_string(self) -> str:
+        identifier = self.Identifier
+        if self.NodeIdType == NodeIdType.Guid:
+            return f"g={identifier!s}"
+        if self.NodeIdType == NodeIdType.ByteString:
+            return f"b={b64encode(identifier).decode('ascii')}"
+        if self.NodeIdType == NodeIdType.String:
+            return f"s={identifier!s}"
+        return f"i={identifier!s}"
 
     def to_string(self) -> str:
-        string = []
         if self.NamespaceIndex != 0:
-            string.append(f"ns={self.NamespaceIndex}")
-        identifier = self.Identifier
-        ntype = None
-        if self.NodeIdType == NodeIdType.Numeric:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.String:
-            ntype = "s"
-        elif self.NodeIdType == NodeIdType.TwoByte:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.FourByte:
-            ntype = "i"
-        elif self.NodeIdType == NodeIdType.Guid:
-            ntype = "g"
-        elif self.NodeIdType == NodeIdType.ByteString:
-            ntype = "b"
-            identifier = b64encode(identifier).decode("ascii")
-        string.append(f"{ntype}={identifier!s}")
-        return ";".join(string)
+            return f"ns={self.NamespaceIndex};{self._identifier_string()}"
+        return self._identifier_string()
 
     def to_binary(self) -> bytes | bytearray:
         import enginir_opcua
@@ -646,7 +689,7 @@ class TwoByteNodeId(NodeId):
         if self.Identifier > 255:
             raise ValueError(f"{self.__class__.__name__} cannot have identifier > 255")
         if self.NamespaceIndex != 0:
-            raise ValueError(f"{self.__class__.__name__}  cannot have NamespaceIndex != 0")
+            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex != 0")
 
 
 @dataclass(eq=False, order=False, slots=True)
@@ -658,7 +701,7 @@ class FourByteNodeId(NodeId):
         if self.Identifier > 65535:
             raise ValueError(f"{self.__class__.__name__} cannot have identifier > 65535")
         if self.NamespaceIndex > 255:
-            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex != 0")
+            raise ValueError(f"{self.__class__.__name__} cannot have NamespaceIndex > 255")
 
 
 @dataclass(eq=False, order=False, slots=True)
@@ -696,23 +739,47 @@ class StringNodeId(NodeId):
 @dataclass(eq=False, order=False, slots=True)
 class ExpandedNodeId(NodeId):
     NamespaceUri: String | None = field(default=None, compare=True)
-    ServerIndex: Int32 = field(default=0, compare=True)
+    ServerIndex: UInt32 = field(default=0, compare=True)
+
+    def __eq__(self, node: object) -> bool:
+        if not isinstance(node, NodeId):
+            return False
+        if self.Identifier != node.Identifier:
+            return False
+        other_uri = node.NamespaceUri if isinstance(node, ExpandedNodeId) else None
+        other_server = node.ServerIndex if isinstance(node, ExpandedNodeId) else 0
+        if (self.NamespaceUri or None) != (other_uri or None) or self.ServerIndex != other_server:
+            return False
+        return bool(self.NamespaceUri) or self.NamespaceIndex == node.NamespaceIndex
+
+    def __hash__(self) -> int:
+        if self.NamespaceUri:
+            return hash((self.NamespaceUri, self.ServerIndex, self.Identifier))
+        if self.ServerIndex:
+            return hash((self.NamespaceIndex, self.Identifier, self.ServerIndex))
+        return hash((self.NamespaceIndex, self.Identifier))
+
+    def _sort_key(self) -> tuple[Any, ...]:
+        namespace_index = 0 if self.NamespaceUri else self.NamespaceIndex
+        return (
+            _NODEID_FAMILY[self.NodeIdType],
+            namespace_index,
+            self.Identifier,
+            self.NamespaceUri or "",
+            self.ServerIndex,
+        )
 
     def to_string(self) -> str:
-        nid_string = NodeId.to_string(self)
-        string = [nid_string]
+        parts = []
         if self.ServerIndex:
-            string.append(f"srv={self.ServerIndex}")
+            parts.append(f"svr={self.ServerIndex}")
         if self.NamespaceUri:
-            string.append(f"nsu={self.NamespaceUri}")
-        return ";".join(string)
-
-
-_INDEX_PREFIX_PATTERN = re.compile(r"([0-9]+):")
-
-
-def _decode_uri(uri: str) -> str:
-    return unquote(uri, errors="strict")
+            if self.NamespaceUri != _OPC_UA_NAMESPACE_URI:
+                parts.append(f"nsu={_encode_uri(self.NamespaceUri)}")
+        elif self.NamespaceIndex != 0:
+            parts.append(f"ns={self.NamespaceIndex}")
+        parts.append(self._identifier_string())
+        return ";".join(parts)
 
 
 @dataclass(init=False, order=True, slots=True)

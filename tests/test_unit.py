@@ -245,8 +245,7 @@ def test_nodeid_ordering():
 
     mylist = [a, b, c, d, e, f, g, h, i, j]
     mylist.sort()
-    expected = [h, c, a, b, e, d, f, g, i, j]
-    expected = [c, h, a, b, e, d, f, g, i, j]  # FIXME: make sure this does not break some client/server
+    expected = [c, h, a, b, e, d, f, g, i, j]
     assert mylist == expected
 
 
@@ -482,8 +481,8 @@ def test_nodeid_bytestring():
     s2 = n2.to_string()
     assert n == n2
     assert s == s2
-    n = ua.NodeId.from_string("b=0xaabbccdd")
-    assert n.Identifier == b"\xaa\xbb\xcc\xdd"
+    with pytest.raises(ua.UaStringParsingError):
+        ua.NodeId.from_string("b=0xaabbccdd")
 
 
 def test__nodeid():
@@ -524,13 +523,12 @@ def test_nodeid_string():
     assert nid0 == ua.NodeId.from_string("i=45")
     assert nid0 == ua.NodeId.from_string("ns=0;i=45")
     nid = ua.NodeId(45, 10)
-    assert nid == ua.NodeId.from_string("i=45; ns=10")
-    assert nid != ua.NodeId.from_string("i=45; ns=11")
-    assert nid != ua.NodeId.from_string("i=5; ns=10")
-    # not sure the next one is correct...
-    assert nid == ua.NodeId.from_string("i=45; ns=10; srv=3")
+    assert nid == ua.NodeId.from_string("ns=10;i=45")
+    assert nid != ua.NodeId.from_string("ns=11;i=45")
+    assert nid != ua.NodeId.from_string("ns=10;i=5")
+    assert nid != ua.NodeId.from_string("svr=3;ns=10;i=45")
     nid1 = ua.NodeId("myid.mynodeid", 7)
-    assert nid1 == ua.NodeId.from_string("ns=7; s=myid.mynodeid")
+    assert nid1 == ua.NodeId.from_string("ns=7;s=myid.mynodeid")
     # with pytest.raises(ua.UaError):
     # nid1 = ua.NodeId(7, "myid.mynodeid")
     # with pytest.raises(ua.UaError):

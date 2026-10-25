@@ -441,7 +441,13 @@ class XmlExporter:
         if dtype == ua.NodeId(ua.ObjectIds.NodeId) or dtype == ua.NodeId(ua.ObjectIds.ExpandedNodeId):
             id_el = Et.SubElement(el, "uax:Identifier")
             if val.NamespaceIndex in self._addr_idx_to_xml_idx:
-                val = ua.NodeId(val.Identifier, NamespaceIndex=self._addr_idx_to_xml_idx[val.NamespaceIndex])
+                xml_idx = self._addr_idx_to_xml_idx[val.NamespaceIndex]
+                if isinstance(val, ua.ExpandedNodeId):
+                    val = ua.ExpandedNodeId(
+                        val.Identifier, xml_idx, NamespaceUri=val.NamespaceUri, ServerIndex=val.ServerIndex
+                    )
+                else:
+                    val = ua.NodeId(val.Identifier, NamespaceIndex=xml_idx)
             id_el.text = val.to_string()
         elif dtype == ua.NodeId(ua.ObjectIds.Guid):
             id_el = Et.SubElement(el, "uax:String")
