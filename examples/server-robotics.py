@@ -12,8 +12,8 @@ async def main():
     server = Server()
     await server.init()
     # import some nodes from xml
-    nodes1 = await server.import_xml("../schemas/UA-Nodeset-master/DI/Opc.Ua.Di.NodeSet2.xml")
-    nodes2 = await server.import_xml("../schemas/UA-Nodeset-master/Robotics/Opc.Ua.Robotics.NodeSet2.xml")
+    nodes1 = await server.import_xml("../nodeset/DI/Opc.Ua.Di.NodeSet2.xml")
+    nodes2 = await server.import_xml("../nodeset/Robotics/Opc.Ua.Robotics.NodeSet2.xml")
     nodes1 = [server.get_node(node) for node in nodes1]
     nodes2 = [server.get_node(node) for node in nodes2]
     await server.export_xml(nodes1, "di.xml")

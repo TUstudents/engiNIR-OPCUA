@@ -1,7 +1,7 @@
 from __future__ import annotations
 """
 Autogenerate code from xml spec
-Date:2026-05-16 06:47:19.383822+00:00
+UA-Nodeset tag UA-1.05.07-2026-05-01, core model 1.05.07 published 2026-05-01T00:00:00Z
 """
 
 from datetime import datetime, timezone

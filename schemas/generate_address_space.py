@@ -7,7 +7,6 @@ It is in enginir_opcua folder, but to avoid importing all code, developer can li
 from __future__ import annotations
 
 import asyncio
-import datetime
 import glob
 import logging
 import os
@@ -16,10 +15,11 @@ from dataclasses import fields
 from pathlib import Path
 from typing import IO, Any
 
+import nodeset_source
 from enginir_opcua.common import xmlparser
 from enginir_opcua.ua.uatypes import type_string_from_type
 
-BASE_DIR = Path.cwd().parent
+BASE_DIR = nodeset_source.BASE_DIR
 
 
 def _to_val(objs: list[str], attr: str, val: str) -> str:
@@ -209,7 +209,7 @@ class CodeGenerator:
             f"""Version:{model.attrib["Version"]}\n"""
             f"""Publication date:{model.attrib["PublicationDate"]}\n"""
             f"""\n"""
-            f"""File creation Date:{datetime.datetime.now(datetime.timezone.utc)}\n"""
+            f"""UA-Nodeset tag:{nodeset_source.nodeset_tag()}\n"""
             f'''"""\n'''
             f"""import datetime\n"""
             f"""from dateutil.tz import tzutc\n"""
@@ -413,34 +413,11 @@ class CodeGenerator:
         self.writecode(indent, "server.add_references(refs)")
 
 
-def save_aspace_to_disk() -> None:
-    path = BASE_DIR / "enginir_opcua" / "binary_address_space.pickle"
-    print("Saving standard address space to:", path)
-
-    # standard_address_space_services is already loaded by enginir_opcua/__init__.py
-    # reload and attach it to get the new version
-    import enginir_opcua.server.standard_address_space.standard_address_space_services
-    import importlib
-
-    importlib.reload(enginir_opcua.server.standard_address_space.standard_address_space_services)
-    enginir_opcua.server.standard_address_space.standard_address_space.create_standard_address_space_Services = (
-        enginir_opcua.server.standard_address_space.standard_address_space_services.create_standard_address_space_Services
-    )
-
-    from enginir_opcua.server.standard_address_space import standard_address_space
-    from enginir_opcua.server.address_space import NodeManagementService, AddressSpace
-
-    a_space = AddressSpace()
-    standard_address_space.fill_address_space(NodeManagementService(a_space))
-    a_space.dump(path)
-
-
 async def main() -> None:
     logging.basicConfig(level=logging.WARN)
-    xml_path = BASE_DIR / "schemas" / "UA-Nodeset-master" / "Schema" / f"Opc.Ua.NodeSet2.Services.xml"
+    xml_path = nodeset_source.SERVICES_NODESET
     py_path = BASE_DIR / "enginir_opcua" / "server" / "standard_address_space" / "standard_address_space_services.py"
     await CodeGenerator(xml_path, py_path).run()
-    save_aspace_to_disk()
 
 
 if __name__ == "__main__":
