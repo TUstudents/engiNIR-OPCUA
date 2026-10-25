@@ -8,12 +8,13 @@ import asyncio
 import itertools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
+from enginir_opcua.common import utils
 
 from .address_space import AddressSpace
 from .monitored_item_service import MonitoredItemService
@@ -261,7 +262,7 @@ class InternalSubscription:
             if has_request:
                 self._not_acknowledged_results[message.SequenceNumber] = result
                 while len(self._not_acknowledged_results) > self._no_acks_limit:
-                    self._not_acknowledged_results.pop(next(iter(self._not_acknowledged_results)))
+                    self.drop_oldest_unacknowledged()
         else:
             message.SequenceNumber = self._sequence
             self._keep_alive_counter = self.data.RevisedMaxKeepAliveCount
@@ -307,23 +308,28 @@ class InternalSubscription:
         notif.Status = self._triggered_statuschanges.pop(0)
         result.NotificationMessage.NotificationData.append(notif)
 
-    def publish(self, acks: Iterable[int]) -> None:
-        """
-        Reset publish cycle count, acknowledge PublishResults.
-        :param acks: Sequence number of the PublishResults to acknowledge
-        """
-        # self.logger.info("publish request with acks %s", acks)
-        for nb in acks:
-            self._not_acknowledged_results.pop(nb, None)
+    def acknowledge(self, sequence_number: int) -> bool:
+        return self._not_acknowledged_results.pop(sequence_number, None) is not None
 
-    def republish(self, nb: int) -> ua.NotificationMessage:
-        # self.logger.info("re-publish request for ack %s in subscription %s", nb, self)
-        result = self._not_acknowledged_results.pop(nb, None)
-        if result:
-            self.logger.info("re-publishing ack %s in subscription %s", nb, self)
-            return result.NotificationMessage
-        self.logger.info("Error request to re-published non existing ack %s in subscription %s", nb, self)
-        return ua.NotificationMessage()
+    def available_sequence_numbers(self) -> list[int]:
+        return list(self._not_acknowledged_results)
+
+    @property
+    def unacknowledged_count(self) -> int:
+        return len(self._not_acknowledged_results)
+
+    def drop_oldest_unacknowledged(self) -> bool:
+        if not self._not_acknowledged_results:
+            return False
+        del self._not_acknowledged_results[next(iter(self._not_acknowledged_results))]
+        return True
+
+    def republish(self, sequence_number: int) -> ua.NotificationMessage:
+        result = self._not_acknowledged_results.get(sequence_number)
+        if result is None:
+            self.logger.info("republish of unavailable message %s in subscription %s", sequence_number, self)
+            raise utils.ServiceError(ua.StatusCodes.BadMessageNotAvailable)
+        return result.NotificationMessage
 
     async def enqueue_datachange_event(self, mid: int, eventdata: ua.MonitoredItemNotification, maxsize: int) -> None:
         """

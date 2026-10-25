@@ -200,8 +200,9 @@ class SubscriptionService:
             if sub is None:
                 results.append(ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid))
             else:
-                sub.publish([ack.SequenceNumber])
-                results.append(ua.StatusCode())
+                known = sub.acknowledge(ack.SequenceNumber)
+                code = ua.StatusCodes.Good if known else ua.StatusCodes.BadSequenceNumberUnknown
+                results.append(ua.StatusCode(code))
         return len(owned), results
 
     async def create_monitored_items(
@@ -267,7 +268,7 @@ class SubscriptionService:
                 continue
             sub.session_id = session_id
             sub.pub_result_callback = callback
-            result.AvailableSequenceNumbers = sorted(sub._not_acknowledged_results.keys())
+            result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
             results.append(result)
         return results
 
