@@ -144,7 +144,7 @@ class MessageChunk:
             security_header = struct_from_binary(ua.AsymmetricAlgorithmHeader, data)
             crypto = security_policy.asymmetric_cryptography
         else:
-            raise ua.UaError(f"Unsupported message type: {header.MessageType}")
+            raise ua.UaError(f"Unsupported message type: {header.MessageType!r}")
         crypto.use_prev_key = use_prev_key  # type: ignore[attr-defined]
         obj = MessageChunk(crypto)
         obj.MessageHeader = header
@@ -488,7 +488,7 @@ class SecureConnection:
             msg = struct_from_binary(ua.ErrorMessage, body)
             _logger.warning("Received an error: %s", msg)
             return msg
-        raise ua.UaError(f"Unsupported message type {header.MessageType}")
+        raise ua.UaError(f"Unsupported message type {header.MessageType!r}")
 
     def _drop_incoming_parts(self) -> None:
         self._incoming_parts = []

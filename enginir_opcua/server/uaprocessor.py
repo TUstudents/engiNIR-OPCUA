@@ -156,12 +156,12 @@ class UaProcessor:
             return False
         if isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
-                self.open_secure_channel(msg.SecurityHeader(), msg.SequenceHeader(), msg.body())
+                self.open_secure_channel(msg.security_header(), msg.sequence_header(), msg.body())
             elif header.MessageType == ua.MessageType.SecureClose:
                 self._connection.close()
                 return False
             elif header.MessageType == ua.MessageType.SecureMessage:
-                return await self.process_message(msg.SequenceHeader(), msg.body())
+                return await self.process_message(msg.sequence_header(), msg.body())
         elif isinstance(msg, ua.Hello):
             if self._hello_received:
                 _logger.warning("Received a repeated Hello message from %s", self.name)
