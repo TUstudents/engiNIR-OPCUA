@@ -20,7 +20,7 @@ from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 
-from .harness import EXAMPLES, TWO_SESSION_USERS, RawPeer, ResponseTampering, TwoSessions, TwoUserManager
+from .harness import EXAMPLES, TWO_SESSION_USERS, RawPeer, RawServer, ResponseTampering, TwoSessions, TwoUserManager
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -537,6 +537,13 @@ async def raw_peer(server: Server) -> AsyncIterator[RawPeer]:
     peer = await RawPeer.connect(server.endpoint.hostname, server.endpoint.port)
     yield peer
     await peer.close()
+
+
+@pytest.fixture
+async def raw_server() -> AsyncIterator[RawServer]:
+    raw = await RawServer.start()
+    yield raw
+    await raw.close()
 
 
 @pytest.fixture

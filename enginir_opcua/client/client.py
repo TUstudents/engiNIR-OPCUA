@@ -136,8 +136,8 @@ class Client:
         self._server_nonce = None
         self._session_counter = 1
         self.nodes: Shortcuts = Shortcuts(self.uaclient.session)
-        self.max_messagesize = 0  # No limits
-        self.max_chunkcount = 0  # No limits
+        self.max_messagesize = 0
+        self.max_chunkcount = 0
         self._renew_channel_task: asyncio.Task[None] | None = None
         self._supervisor_task: asyncio.Task[None] | None = None
         self._stale_watchdog_task: asyncio.Task[None] | None = None
@@ -244,7 +244,7 @@ class Client:
 
     async def set_security_string(self, string: str) -> None:
         """
-        Set SecureConnection mode.
+        Set SecureChannel mode.
         :param string: Mode format ``Policy,Mode,certificate,private_key[,server_certificate]``
         where:
         - ``Policy`` is ``Basic256Sha256``, ``Aes128Sha256RsaOaep`` or ``Aes256Sha256RsaPss``
@@ -282,7 +282,7 @@ class Client:
         certificate_chain: Sequence[str | uacrypto.CertProperties | bytes | Path] | None = None,
     ) -> None:
         """
-        Set SecureConnection mode.
+        Set SecureChannel mode.
         Call this before connect()
         """
         if server_certificate is None:
@@ -1089,14 +1089,10 @@ class Client:
         but it does not cost much.
         """
         try:
-            # Part4 5.5.2.1:
-            # Clients should request a new SecurityToken after 75 % of its lifetime has elapsed
-            duration = self.secure_channel_timeout * 0.75 / 1000
             while not self.uaclient.is_disconnect_requested:
-                await asyncio.sleep(duration)
+                await asyncio.sleep(max(1.0, self.secure_channel_timeout * 0.75 / 1000))
                 _logger.debug("renewing channel")
                 await self.open_secure_channel(renew=True)
-                self.uaclient.revolve_security_token()
         except ConnectionError as e:
             _logger.info("connection error  in watchdog loop %s", e, exc_info=True)
             raise
@@ -1210,7 +1206,10 @@ class Client:
         params.UserIdentityToken.PolicyId = policy.PolicyId
 
     def _encrypt_password(self, password: str, policy_uri: str) -> tuple[bytes, str]:
-        pubkey = uacrypto.x509_from_der(self.security_policy.peer_certificate).public_key()
+        server_certificate = uacrypto.x509_from_der(self.security_policy.peer_certificate)
+        if server_certificate is None:
+            raise ua.UaError("The server certificate is needed to encrypt the password")
+        pubkey = server_certificate.public_key()
         # see specs part 4, 7.36.3: if the token is encrypted, password
         # shall be converted to UTF-8 and serialized with server nonce
         passwd = password.encode("utf8")

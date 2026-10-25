@@ -3,11 +3,13 @@ from __future__ import annotations
 import hmac
 import logging
 import struct
-import time
-from abc import ABCMeta, abstractmethod
-from typing import TYPE_CHECKING
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
-from ..ua import MessageSecurityMode, SecurityPolicyType, UaError
+from ..ua import MessageSecurityMode, UaError
+from ..ua.uaerrors import SignatureError
+from .security_policy_type import SecurityPolicyType
 
 if TYPE_CHECKING:
     from ..crypto.permission_rules import PermissionRuleset
@@ -17,12 +19,10 @@ from ..crypto import uacrypto
 _logger = logging.getLogger(__name__)
 
 
-class Signer:
+class Signer(ABC):
     """
     Abstract base class for cryptographic signature algorithm
     """
-
-    __metaclass__ = ABCMeta
 
     @abstractmethod
     def signature_size(self):
@@ -33,12 +33,10 @@ class Signer:
         pass
 
 
-class Verifier:
+class Verifier(ABC):
     """
     Abstract base class for cryptographic signature verification
     """
-
-    __metaclass__ = ABCMeta
 
     @abstractmethod
     def signature_size(self):
@@ -54,12 +52,10 @@ class Verifier:
             attrs[k] = None
 
 
-class Encryptor:
+class Encryptor(ABC):
     """
     Abstract base class for encryption algorithm
     """
-
-    __metaclass__ = ABCMeta
 
     @abstractmethod
     def plain_block_size(self):
@@ -74,12 +70,10 @@ class Encryptor:
         pass
 
 
-class Decryptor:
+class Decryptor(ABC):
     """
     Abstract base class for decryption algorithm
     """
-
-    __metaclass__ = ABCMeta
 
     @abstractmethod
     def plain_block_size(self):
@@ -162,14 +156,8 @@ class Cryptography(CryptographyNone):
     def __init__(self, mode=MessageSecurityMode.Sign):
         self.Signer = None
         self.Verifier = None
-        self.Prev_Verifier = None
         self.Encryptor = None
         self.Decryptor = None
-        self.Prev_Decryptor = None
-        # we turn this flag on to fallback on previous key
-        self._use_prev_key = False
-        self.key_expiration = 0.0
-        self.prev_key_expiration = 0.0
         if mode not in (MessageSecurityMode.Sign, MessageSecurityMode.SignAndEncrypt):
             raise ValueError(f"unknown security mode {mode}")
         self.is_encrypted = mode == MessageSecurityMode.SignAndEncrypt
@@ -223,11 +211,7 @@ class Cryptography(CryptographyNone):
         return self.Verifier.signature_size()
 
     def verify(self, data, sig):
-        if not self.use_prev_key:
-            self.Verifier.verify(data, sig)
-        else:
-            _logger.debug("Message verification fallback: trying with previous secure channel key")
-            self.Prev_Verifier.verify(data, sig)
+        self.Verifier.verify(data, sig)
 
     def encrypt(self, data):
         if self.is_encrypted:
@@ -238,39 +222,11 @@ class Cryptography(CryptographyNone):
 
     def decrypt(self, data):
         if self.is_encrypted:
-            self.revolved_expired_key()
-            if self.use_prev_key:
-                return self.Prev_Decryptor.decrypt(data)
             return self.Decryptor.decrypt(data)
         return data
 
-    def revolved_expired_key(self):
-        """
-        Remove expired keys as soon as possible
-        """
-        now = time.monotonic()
-        if now > self.prev_key_expiration:
-            if self.Prev_Decryptor and self.Prev_Verifier:
-                self.Prev_Decryptor.reset()
-                self.Prev_Decryptor = None
-                self.Prev_Verifier.reset()
-                self.Prev_Verifier = None
-                _logger.debug("Expired secure_channel keys removed")
-
-    @property
-    def use_prev_key(self):
-        if self._use_prev_key:
-            if self.Prev_Decryptor and self.Prev_Verifier:
-                return True
-            raise uacrypto.InvalidSignature
-        return False
-
-    @use_prev_key.setter
-    def use_prev_key(self, value: bool):
-        self._use_prev_key = value
-
     def remove_padding(self, data):
-        decryptor = self.Decryptor if not self.use_prev_key else self.Prev_Decryptor
+        decryptor = self.Decryptor
         if self.is_encrypted:
             if decryptor.encrypted_block_size() > 256:
                 pad_size = struct.unpack("<h", data[-2:])[0] + 2
@@ -367,7 +323,7 @@ class VerifierAesCbc(Verifier):
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha1(self.key, data)
         if not hmac.compare_digest(signature, expected):
-            raise uacrypto.InvalidSignature
+            raise SignatureError("signature does not match the data")
 
 
 class EncryptorAesCbc(Encryptor):
@@ -375,10 +331,10 @@ class EncryptorAesCbc(Encryptor):
         self.cipher = uacrypto.cipher_aes_cbc(key, init_vec)
 
     def plain_block_size(self):
-        return self.cipher.algorithm.key_size // 8
+        return self.cipher.algorithm.block_size // 8
 
     def encrypted_block_size(self):
-        return self.cipher.algorithm.key_size // 8
+        return self.cipher.algorithm.block_size // 8
 
     def encrypt(self, data):
         return uacrypto.cipher_encrypt(self.cipher, data)
@@ -389,10 +345,10 @@ class DecryptorAesCbc(Decryptor):
         self.cipher = uacrypto.cipher_aes_cbc(key, init_vec)
 
     def plain_block_size(self):
-        return self.cipher.algorithm.key_size // 8
+        return self.cipher.algorithm.block_size // 8
 
     def encrypted_block_size(self):
-        return self.cipher.algorithm.key_size // 8
+        return self.cipher.algorithm.block_size // 8
 
     def decrypt(self, data):
         return uacrypto.cipher_decrypt(self.cipher, data)
@@ -443,7 +399,7 @@ class VerifierHMac256(Verifier):
     def verify(self, data, signature):
         expected = uacrypto.hmac_sha256(self.key, data)
         if not hmac.compare_digest(signature, expected):
-            raise uacrypto.InvalidSignature
+            raise SignatureError("signature does not match the data")
 
 
 class SignerPssSha256(Signer):
@@ -470,12 +426,10 @@ class VerifierPssSha256(Verifier):
         uacrypto.verify_pss_sha256(self.peer_cert, data, signature)
 
 
-class SecurityPolicy:
+class SecurityPolicy(ABC):
     """
     Abstract base class for security policy
     """
-
-    __metaclass__ = ABCMeta
 
     URI: str
     AsymmetricEncryptionURI: str
@@ -491,6 +445,18 @@ class SecurityPolicy:
 
     @abstractmethod
     def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
+        pass
+
+    @staticmethod
+    def encrypt_asymmetric(pubkey, data):
+        raise UaError("The security policy has no asymmetric encryption")
+
+    @staticmethod
+    def sign_asymmetric(privkey, data):
+        raise UaError("The security policy has no asymmetric signature")
+
+    @abstractmethod
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
         pass
 
     @abstractmethod
@@ -528,6 +494,9 @@ class SecurityPolicyNone(SecurityPolicy):
         self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
         self.permissions = permission_ruleset
 
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+        return self.symmetric_cryptography
+
     def make_local_symmetric_key(self, secret, seed):
         return None
 
@@ -535,7 +504,66 @@ class SecurityPolicyNone(SecurityPolicy):
         return None
 
 
-class SecurityPolicyAes128Sha256RsaOaep(SecurityPolicy):
+class RsaSecurityPolicy(SecurityPolicy):
+    signature_key_size: int
+    symmetric_key_size: int
+    deprecated: bool = False
+    asymmetric_padding_size: int
+    asymmetric_signer: type[Signer]
+    asymmetric_verifier: type[Verifier]
+    symmetric_signer: type[Signer]
+    symmetric_verifier: type[Verifier]
+    encrypt_function: Callable[[Any, bytes], bytes]
+    decrypt_function: Callable[[Any, bytes], bytes]
+    p_hash: Callable[[bytes, bytes, tuple[int, ...]], tuple[bytes, ...]]
+
+    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
+        if self.deprecated:
+            _logger.warning("DEPRECATED! Do not use %s anymore!", type(self).__name__)
+        if isinstance(peer_cert, bytes):
+            peer_cert = uacrypto.x509_from_der(peer_cert)
+        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
+        self.asymmetric_cryptography.Signer = self.asymmetric_signer(host_privkey)
+        self.asymmetric_cryptography.Verifier = self.asymmetric_verifier(peer_cert)
+        self.asymmetric_cryptography.Encryptor = EncryptorRsa(
+            peer_cert, self.encrypt_function, self.asymmetric_padding_size
+        )
+        self.asymmetric_cryptography.Decryptor = DecryptorRsa(
+            host_privkey, self.decrypt_function, self.asymmetric_padding_size
+        )
+        self.symmetric_cryptography = Cryptography(mode)
+        self.Mode = mode
+        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
+        self.host_certificate = uacrypto.der_from_x509(host_cert)
+        host_cert_chain = host_cert_chain or []
+        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
+        self.permissions = permission_ruleset
+
+    def _derive_keys(self, secret, seed):
+        return self.p_hash(secret, seed, (self.signature_key_size, self.symmetric_key_size, 16))
+
+    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+        cryptography = Cryptography(self.Mode)
+        (sigkey, key, init_vec) = self._derive_keys(remote_nonce, local_nonce)
+        cryptography.Signer = self.symmetric_signer(sigkey)
+        cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
+        (sigkey, key, init_vec) = self._derive_keys(local_nonce, remote_nonce)
+        cryptography.Verifier = self.symmetric_verifier(sigkey)
+        cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+        return cryptography
+
+    def make_local_symmetric_key(self, secret, seed):
+        (sigkey, key, init_vec) = self._derive_keys(secret, seed)
+        self.symmetric_cryptography.Signer = self.symmetric_signer(sigkey)
+        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
+
+    def make_remote_symmetric_key(self, secret, seed, lifetime):
+        (sigkey, key, init_vec) = self._derive_keys(secret, seed)
+        self.symmetric_cryptography.Verifier = self.symmetric_verifier(sigkey)
+        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+
+
+class SecurityPolicyAes128Sha256RsaOaep(RsaSecurityPolicy):
     """
     Security Aes128 Sha256 RsaOaep
     A suite of algorithms that uses Sha256 as Key-Wrap-algorithm
@@ -544,7 +572,7 @@ class SecurityPolicyAes128Sha256RsaOaep(SecurityPolicy):
     - SymmetricSignatureAlgorithm_HMAC-SHA2-256
       https://tools.ietf.org/html/rfc4634
     - SymmetricEncryptionAlgorithm_AES128-CBC
-      http://www.w3.org/2001/04/xmlenc#aes256-cbc
+      http://www.w3.org/2001/04/xmlenc#aes128-cbc
     - AsymmetricSignatureAlgorithm_RSA-PKCS15-SHA2-256
       http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
     - AsymmetricEncryptionAlgorithm_RSA-OAEP-SHA1
@@ -567,58 +595,19 @@ class SecurityPolicyAes128Sha256RsaOaep(SecurityPolicy):
 
     signature_key_size = 32
     symmetric_key_size = 16
-
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
-        return uacrypto.encrypt_rsa_oaep(pubkey, data)
-
-    @staticmethod
-    def sign_asymmetric(privkey, data):
-        return uacrypto.sign_sha256(privkey, data)
-
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
-        if isinstance(peer_cert, bytes):
-            peer_cert = uacrypto.x509_from_der(peer_cert)
-        # even in Sign mode we need to asymmetrically encrypt secrets
-        # transmitted in OpenSecureChannel. So SignAndEncrypt here
-        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
-        self.asymmetric_cryptography.Signer = SignerSha256(host_privkey)
-        self.asymmetric_cryptography.Verifier = VerifierSha256(peer_cert)
-        self.asymmetric_cryptography.Encryptor = EncryptorRsa(peer_cert, uacrypto.encrypt_rsa_oaep, 42)
-        self.asymmetric_cryptography.Decryptor = DecryptorRsa(host_privkey, uacrypto.decrypt_rsa_oaep, 42)
-        self.symmetric_cryptography = Cryptography(mode)
-        self.Mode = mode
-        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
-        self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
-        self.permissions = permission_ruleset
-
-    def make_local_symmetric_key(self, secret, seed):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        self.symmetric_cryptography.Signer = SignerHMac256(sigkey)
-        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
-
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        # lifetime is in ms
-        self.symmetric_cryptography.key_expiration = time.monotonic() + (lifetime * 0.001)
-        self.symmetric_cryptography.Verifier = VerifierHMac256(sigkey)
-        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+    asymmetric_padding_size = 42
+    asymmetric_signer = SignerSha256
+    asymmetric_verifier = VerifierSha256
+    symmetric_signer = SignerHMac256
+    symmetric_verifier = VerifierHMac256
+    encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
+    decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
+    p_hash = staticmethod(uacrypto.p_sha256)
+    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
+    sign_asymmetric = staticmethod(uacrypto.sign_sha256)
 
 
-class SecurityPolicyAes256Sha256RsaPss(SecurityPolicy):
+class SecurityPolicyAes256Sha256RsaPss(RsaSecurityPolicy):
     """Security policy Aes256_Sha256_RsaPss implementation
 
     - SymmetricSignatureAlgorithm_HMAC-SHA2-256
@@ -647,58 +636,19 @@ class SecurityPolicyAes256Sha256RsaPss(SecurityPolicy):
 
     signature_key_size = 32
     symmetric_key_size = 32
-
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
-        return uacrypto.encrypt_rsa_oaep_sha256(pubkey, data)
-
-    @staticmethod
-    def sign_asymmetric(privkey, data):
-        return uacrypto.sign_pss_sha256(privkey, data)
-
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
-        if isinstance(peer_cert, bytes):
-            peer_cert = uacrypto.x509_from_der(peer_cert)
-        # even in Sign mode we need to asymmetrically encrypt secrets
-        # transmitted in OpenSecureChannel. So SignAndEncrypt here
-        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
-        self.asymmetric_cryptography.Signer = SignerPssSha256(host_privkey)
-        self.asymmetric_cryptography.Verifier = VerifierPssSha256(peer_cert)
-        self.asymmetric_cryptography.Encryptor = EncryptorRsa(peer_cert, uacrypto.encrypt_rsa_oaep_sha256, 66)
-        self.asymmetric_cryptography.Decryptor = DecryptorRsa(host_privkey, uacrypto.decrypt_rsa_oaep_sha256, 66)
-        self.symmetric_cryptography = Cryptography(mode)
-        self.Mode = mode
-        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
-        self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
-        self.permissions = permission_ruleset
-
-    def make_local_symmetric_key(self, secret, seed):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        self.symmetric_cryptography.Signer = SignerHMac256(sigkey)
-        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
-
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        # lifetime is in ms
-        self.symmetric_cryptography.key_expiration = time.monotonic() + (lifetime * 0.001)
-        self.symmetric_cryptography.Verifier = VerifierHMac256(sigkey)
-        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+    asymmetric_padding_size = 66
+    asymmetric_signer = SignerPssSha256
+    asymmetric_verifier = VerifierPssSha256
+    symmetric_signer = SignerHMac256
+    symmetric_verifier = VerifierHMac256
+    encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep_sha256)
+    decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep_sha256)
+    p_hash = staticmethod(uacrypto.p_sha256)
+    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep_sha256)
+    sign_asymmetric = staticmethod(uacrypto.sign_pss_sha256)
 
 
-class SecurityPolicyBasic128Rsa15(SecurityPolicy):
+class SecurityPolicyBasic128Rsa15(RsaSecurityPolicy):
     """
     DEPRECATED, do not use anymore!
 
@@ -733,58 +683,20 @@ class SecurityPolicyBasic128Rsa15(SecurityPolicy):
 
     signature_key_size = 16
     symmetric_key_size = 16
-
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
-        return uacrypto.encrypt_rsa15(pubkey, data)
-
-    @staticmethod
-    def sign_asymmetric(privkey, data):
-        return uacrypto.sign_sha1(privkey, data)
-
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
-        _logger.warning("DEPRECATED! Do not use SecurityPolicyBasic128Rsa15 anymore!")
-
-        if isinstance(peer_cert, bytes):
-            peer_cert = uacrypto.x509_from_der(peer_cert)
-        # even in Sign mode we need to asymmetrically encrypt secrets
-        # transmitted in OpenSecureChannel. So SignAndEncrypt here
-        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
-        self.asymmetric_cryptography.Signer = SignerRsa(host_privkey)
-        self.asymmetric_cryptography.Verifier = VerifierRsa(peer_cert)
-        self.asymmetric_cryptography.Encryptor = EncryptorRsa(peer_cert, uacrypto.encrypt_rsa15, 11)
-        self.asymmetric_cryptography.Decryptor = DecryptorRsa(host_privkey, uacrypto.decrypt_rsa15, 11)
-        self.symmetric_cryptography = Cryptography(mode)
-        self.Mode = mode
-        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
-        self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
-        self.permissions = permission_ruleset
-
-    def make_local_symmetric_key(self, secret, seed):
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha1(secret, seed, key_sizes)
-        self.symmetric_cryptography.Signer = SignerAesCbc(sigkey)
-        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
-
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha1(secret, seed, key_sizes)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        # lifetime is in ms
-        self.symmetric_cryptography.key_expiration = time.monotonic() + (lifetime * 0.001)
-        self.symmetric_cryptography.Verifier = VerifierAesCbc(sigkey)
-        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+    deprecated = True
+    asymmetric_padding_size = 11
+    asymmetric_signer = SignerRsa
+    asymmetric_verifier = VerifierRsa
+    symmetric_signer = SignerAesCbc
+    symmetric_verifier = VerifierAesCbc
+    encrypt_function = staticmethod(uacrypto.encrypt_rsa15)
+    decrypt_function = staticmethod(uacrypto.decrypt_rsa15)
+    p_hash = staticmethod(uacrypto.p_sha1)
+    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa15)
+    sign_asymmetric = staticmethod(uacrypto.sign_sha1)
 
 
-class SecurityPolicyBasic256(SecurityPolicy):
+class SecurityPolicyBasic256(RsaSecurityPolicy):
     """
     DEPRECATED, do not use anymore!
 
@@ -819,61 +731,20 @@ class SecurityPolicyBasic256(SecurityPolicy):
 
     signature_key_size = 24
     symmetric_key_size = 32
-
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
-        return uacrypto.encrypt_rsa_oaep(pubkey, data)
-
-    @staticmethod
-    def sign_asymmetric(privkey, data):
-        return uacrypto.sign_sha1(privkey, data)
-
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
-        _logger.warning("DEPRECATED! Do not use SecurityPolicyBasic256 anymore!")
-
-        if isinstance(peer_cert, bytes):
-            peer_cert = uacrypto.x509_from_der(peer_cert)
-        # even in Sign mode we need to asymmetrically encrypt secrets
-        # transmitted in OpenSecureChannel. So SignAndEncrypt here
-        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
-        self.asymmetric_cryptography.Signer = SignerRsa(host_privkey)
-        self.asymmetric_cryptography.Verifier = VerifierRsa(peer_cert)
-        self.asymmetric_cryptography.Encryptor = EncryptorRsa(peer_cert, uacrypto.encrypt_rsa_oaep, 42)
-        self.asymmetric_cryptography.Decryptor = DecryptorRsa(host_privkey, uacrypto.decrypt_rsa_oaep, 42)
-        self.symmetric_cryptography = Cryptography(mode)
-        self.Mode = mode
-        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
-        self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
-        self.permissions = permission_ruleset
-
-    def make_local_symmetric_key(self, secret, seed):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha1(secret, seed, key_sizes)
-        self.symmetric_cryptography.Signer = SignerAesCbc(sigkey)
-        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
-
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha1(secret, seed, key_sizes)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        # convert lifetime to seconds and add the 25% extra-margin (Part4/5.5.2)
-        lifetime *= 1.25 * 0.001
-        self.symmetric_cryptography.key_expiration = time.monotonic() + lifetime
-        self.symmetric_cryptography.Verifier = VerifierAesCbc(sigkey)
-        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+    deprecated = True
+    asymmetric_padding_size = 42
+    asymmetric_signer = SignerRsa
+    asymmetric_verifier = VerifierRsa
+    symmetric_signer = SignerAesCbc
+    symmetric_verifier = VerifierAesCbc
+    encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
+    decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
+    p_hash = staticmethod(uacrypto.p_sha1)
+    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
+    sign_asymmetric = staticmethod(uacrypto.sign_sha1)
 
 
-class SecurityPolicyBasic256Sha256(SecurityPolicy):
+class SecurityPolicyBasic256Sha256(RsaSecurityPolicy):
     """
     Security Basic 256Sha256
     A suite of algorithms that uses Sha256 as Key-Wrap-algorithm
@@ -905,55 +776,16 @@ class SecurityPolicyBasic256Sha256(SecurityPolicy):
 
     signature_key_size = 32
     symmetric_key_size = 32
-
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
-        return uacrypto.encrypt_rsa_oaep(pubkey, data)
-
-    @staticmethod
-    def sign_asymmetric(privkey, data):
-        return uacrypto.sign_sha256(privkey, data)
-
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
-        if isinstance(peer_cert, bytes):
-            peer_cert = uacrypto.x509_from_der(peer_cert)
-        # even in Sign mode we need to asymmetrically encrypt secrets
-        # transmitted in OpenSecureChannel. So SignAndEncrypt here
-        self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
-        self.asymmetric_cryptography.Signer = SignerSha256(host_privkey)
-        self.asymmetric_cryptography.Verifier = VerifierSha256(peer_cert)
-        self.asymmetric_cryptography.Encryptor = EncryptorRsa(peer_cert, uacrypto.encrypt_rsa_oaep, 42)
-        self.asymmetric_cryptography.Decryptor = DecryptorRsa(host_privkey, uacrypto.decrypt_rsa_oaep, 42)
-        self.symmetric_cryptography = Cryptography(mode)
-        self.Mode = mode
-        self.peer_certificate = uacrypto.der_from_x509(peer_cert)
-        self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
-        self.permissions = permission_ruleset
-
-    def make_local_symmetric_key(self, secret, seed):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        self.symmetric_cryptography.Signer = SignerHMac256(sigkey)
-        self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
-
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
-        # specs part 6, 6.7.5
-        key_sizes = (self.signature_key_size, self.symmetric_key_size, 16)
-
-        (sigkey, key, init_vec) = uacrypto.p_sha256(secret, seed, key_sizes)
-        if self.symmetric_cryptography.Verifier or self.symmetric_cryptography.Decryptor:
-            self.symmetric_cryptography.Prev_Verifier = self.symmetric_cryptography.Verifier
-            self.symmetric_cryptography.Prev_Decryptor = self.symmetric_cryptography.Decryptor
-            self.symmetric_cryptography.prev_key_expiration = self.symmetric_cryptography.key_expiration
-
-        # lifetime is in ms
-        self.symmetric_cryptography.key_expiration = time.monotonic() + (lifetime * 0.001)
-        self.symmetric_cryptography.Verifier = VerifierHMac256(sigkey)
-        self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
+    asymmetric_padding_size = 42
+    asymmetric_signer = SignerSha256
+    asymmetric_verifier = VerifierSha256
+    symmetric_signer = SignerHMac256
+    symmetric_verifier = VerifierHMac256
+    encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
+    decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
+    p_hash = staticmethod(uacrypto.p_sha256)
+    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
+    sign_asymmetric = staticmethod(uacrypto.sign_sha256)
 
 
 def encrypt_asymmetric(pubkey, data, policy_uri):
@@ -1005,7 +837,7 @@ class SecurityPolicyFactory:
         )
 
 
-def sign_asymmetric(privkey, data, policy_uri):
+def sign_asymmetric(privkey, data, policy_uri: str | None):
     """
     Sign data with privkey using an asymmetric algorithm.
     The algorithm is selected by policy_uri.
@@ -1021,7 +853,7 @@ def sign_asymmetric(privkey, data, policy_uri):
         if policy_uri == cls.URI:
             return (cls.sign_asymmetric(privkey, data), cls.AsymmetricSignatureURI)
     if not policy_uri or policy_uri == SecurityPolicyNone.URI:
-        return data, ""
+        raise UaError("Cannot sign without a security policy that has a signature algorithm")
     raise UaError(f"Unsupported security policy `{policy_uri}`")
 
 

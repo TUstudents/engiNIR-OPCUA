@@ -80,6 +80,46 @@ Messages and paths:
   namespace 0 are accepted by name, so `<Server>` and `<2:HasComponent>` raise. A forward or inverse step without a
   reference name raises when written.
 
+Transport (OPC 10000-6, 7.1):
+- `TransportLimits` keeps the peer's limits apart (`send_max_message_size`, `send_max_chunk_count`).
+  `max_message_size` and `max_chunk_count` are this side's receive limits, and a configured 0 means the default
+  (100 MiB, 1601 chunks), not unlimited. The same holds for `Client.max_messagesize` and `max_chunkcount`.
+- The client's Hello carries its real limits; the `ua.Hello` defaults are 65535, 65535, 100 MiB and 1601.
+- A Hello or Acknowledge with buffers below 8192 bytes is rejected with `Bad_InvalidArgument`, so a server
+  configured below 8192 can't be reached. An EndpointUrl above 4096 bytes gets `Bad_TcpEndpointUrlInvalid`.
+- A connection without a Hello is closed after `InternalServer.hello_timeout_seconds` (30 s). At the connection limit
+  the server closes its oldest connection without a session instead of refusing the new one.
+- A request above the server's limits fails locally with `Bad_RequestTooLarge`; a response above the client's limits
+  becomes a ServiceFault `Bad_ResponseTooLarge`. An Abort chunk fails its request at once.
+- Channel failures send an Error message and close the connection, so clients see `Bad_SecurityChecksFailed`,
+  `Bad_TcpSecureChannelUnknown` or `Bad_SecureChannelTokenUnknown` instead of a timeout.
+- Hello is handled by `OPCUAProtocol` (`UaProcessor.accept_hello`). Removed: `UASocketProtocol.receive_buffer`,
+  `is_receiving` and `_process_received_data`.
+
+SecureChannel (OPC 10000-6, 6.7; OPC 10000-4, 5.6.2):
+- `SecureConnection` is `SecureChannel`, with no alias. Removed: `next_security_token`, `prev_security_token`,
+  `revolve_tokens`, `UaClient.revolve_security_token` and the previous-key members of the crypto classes. New:
+  `SecurityPolicy.make_symmetric_cryptography()`.
+- The server clamps RevisedLifetime to `InternalServer.channel_settings` (10 s to 1 h; a request for 0 gets 1 h).
+  TokenIds are random. Keys are chosen by TokenId, every token is accepted until 125 % of its lifetime, and a channel
+  without a valid token is closed.
+- Issue on an open channel and Renew on an unopened one fail with `Bad_RequestTypeInvalid`. Nonces, the receiver
+  thumbprint, certificate, policy, mode and protocol version are checked on both sides.
+- The client renews after 75 % of each revised lifetime, at least every second.
+
+Crypto:
+- Verifiers raise `ua.uaerrors.SignatureError` and decryption failures `ua.uaerrors.DecryptionError` (both
+  `UaError`); `uacrypto.InvalidSignature` is gone.
+- A bad ActivateSession client signature is answered with `Bad_ApplicationSignatureInvalid`, a bad or missing X509
+  user-token signature with `Bad_UserSignatureInvalid`.
+- `sign_asymmetric` raises without a signing policy instead of returning the data, so an X509 user token on an
+  endpoint without security fails on the client.
+- `check_certificate()` returns a list of problems (empty when fine) instead of `True` for "has problems".
+  `x509_from_der()` raises `UaError` on malformed input; `split_certificate_chain()` returns the whole chain.
+- `SecurityPolicyType` lives in `crypto/security_policy_type.py` (still `ua.SecurityPolicyType`).
+  `revolved_expired_key` was renamed and then removed with the previous-key handling.
+- AES-256 policies pad to 16-byte blocks (wire-compatible).
+
 XML import:
 - Nodes marked `DesignToolOnly`, their children and references to them are skipped (OPC 10000-6, F.7).
 

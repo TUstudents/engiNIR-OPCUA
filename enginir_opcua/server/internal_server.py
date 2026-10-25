@@ -20,6 +20,7 @@ from enginir_opcua import ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from ..common.callback import CallbackService
+from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
 from ..crypto import security_policies, uacrypto
@@ -82,6 +83,9 @@ class InternalServer:
         # Refused at connection_made() to prevent FD exhaustion via parked sockets
         # that never call ActivateSession.
         self.max_connections: int = 1_000
+        self.channel_settings: ChannelSettings = ChannelSettings()
+        # A connection that has not sent its Hello this many seconds after connecting is closed.
+        self.hello_timeout_seconds: float = 30.0
         # Connections that haven't activated a session this many seconds after
         # connecting are closed by the binary server. 0 disables the watchdog.
         self.max_pending_activation_seconds: float = 30.0
@@ -543,16 +547,19 @@ class InternalServer:
             challenge += isession.nonce
 
         if not (alg and sig):
-            raise ValueError("No signature")
+            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid)
 
-        if alg == "http://www.w3.org/2000/09/xmldsig#rsa-sha1":
-            uacrypto.verify_sha1(cert, challenge, sig)
-        elif alg == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256":
-            uacrypto.verify_sha256(cert, challenge, sig)
-        elif alg == "http://opcfoundation.org/UA/security/rsa-pss-sha2-256":
-            uacrypto.verify_pss_sha256(cert, challenge, sig)
-        else:
-            self.logger.warning("Unknown certificate signature algorithm %s", alg)
-            raise ValueError("Unknown algorithm")
+        try:
+            if alg == "http://www.w3.org/2000/09/xmldsig#rsa-sha1":
+                uacrypto.verify_sha1(cert, challenge, sig)
+            elif alg == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256":
+                uacrypto.verify_sha256(cert, challenge, sig)
+            elif alg == "http://opcfoundation.org/UA/security/rsa-pss-sha2-256":
+                uacrypto.verify_pss_sha256(cert, challenge, sig)
+            else:
+                self.logger.warning("Unknown certificate signature algorithm %s", alg)
+                raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
+        except ua.uaerrors.SignatureError:
+            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid) from None
 
         return token.CertificateData

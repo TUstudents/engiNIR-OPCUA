@@ -22,7 +22,7 @@ from typing import IO, Any, get_args, get_origin
 from enginir_opcua import ua
 
 from ..common.utils import Buffer, NotEnoughData
-from .uaerrors import UaError
+from .uaerrors import BadTcpMessageTypeInvalid, UaError
 from .uatypes import (
     type_allow_subclass,
     type_from_list,
@@ -1044,9 +1044,10 @@ def header_to_binary(hdr: ua.Header) -> bytes:
 def header_from_binary(data: Buffer | IO) -> ua.Header:
     hdr = ua.Header()
     hdr.MessageType, hdr.ChunkType, hdr.packet_size = struct.unpack("<3scI", _read(data, 8))
-    hdr.body_size = hdr.packet_size - 8
-    if hdr.MessageType in (ua.MessageType.SecureOpen, ua.MessageType.SecureClose, ua.MessageType.SecureMessage):
-        hdr.body_size -= 4
+    if hdr.packet_size < hdr.header_size:
+        raise BadTcpMessageTypeInvalid()
+    hdr.body_size = hdr.packet_size - hdr.header_size
+    if hdr.header_size == 12:
         hdr.ChannelId = Primitives.UInt32.unpack(data)
     return hdr
 
