@@ -43,6 +43,7 @@ class OPCUAProtocol(asyncio.Protocol):
         self._reader = FrameReader(self._max_frame_size)
         self._closed = False
         self._hello_timer: asyncio.TimerHandle | None = None
+        self._expiry_timer: asyncio.TimerHandle | None = None
         self.iserver: InternalServer = iserver
         self.policies = policies
         self.clients = clients
@@ -76,6 +77,7 @@ class OPCUAProtocol(asyncio.Protocol):
         self.transport = transport  # type: ignore[assignment]
         self.processor = UaProcessor(self.iserver, self.transport, self.limits)
         self.processor.set_policies(self.policies)
+        self.processor.on_token_window = self._schedule_channel_expiry
         self.iserver.asyncio_transports.append(transport)
         self.clients.append(self)
         self._task = asyncio.create_task(self._process_received_message_loop())
@@ -85,6 +87,18 @@ class OPCUAProtocol(asyncio.Protocol):
         if self.iserver.max_pending_activation_seconds > 0:
             self._activation_watchdog_task = asyncio.create_task(self._activation_watchdog())
 
+    def _schedule_channel_expiry(self, seconds: float) -> None:
+        if self._expiry_timer is not None:
+            self._expiry_timer.cancel()
+        self._expiry_timer = asyncio.get_running_loop().call_later(seconds + 0.05, self._channel_expired)
+
+    def _channel_expired(self) -> None:
+        if self.processor is not None and self.processor.channel_expires_in() > 0:
+            self._schedule_channel_expiry(self.processor.channel_expires_in())
+            return
+        _logger.warning("Closing connection from %s: no valid security token", self.peer_name)
+        self._close()
+
     def _hello_deadline_expired(self) -> None:
         if self.processor is not None and not self.processor.hello_received:
             _logger.warning("Closing connection from %s: no Hello received", self.peer_name)
@@ -93,6 +107,8 @@ class OPCUAProtocol(asyncio.Protocol):
     def connection_lost(self, ex: BaseException | None) -> None:
         if self._hello_timer is not None:
             self._hello_timer.cancel()
+        if self._expiry_timer is not None:
+            self._expiry_timer.cancel()
         _logger.info("Lost connection from %s, %s", self.peer_name, ex)
         if self.transport is not None:
             self.transport.close()

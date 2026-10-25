@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import logging
+import secrets
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
-from enginir_opcua.ua.uaerrors import UaError, UaInvalidParameterError, UaStatusCodeError
+from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from .utils import Buffer, NotEnoughData
@@ -251,14 +251,14 @@ class MessageChunk:
     @staticmethod
     def from_binary(security_policy: SecurityPolicy, data: Buffer) -> MessageChunk:
         h = header_from_binary(data)
-        try:
-            return MessageChunk.from_header_and_body(security_policy, h, data)
-        except ua.uaerrors.SignatureError:
-            return MessageChunk.from_header_and_body(security_policy, h, data, use_prev_key=True)
+        return MessageChunk.from_header_and_body(security_policy, h, data)
 
     @staticmethod
     def from_header_and_body(
-        security_policy: SecurityPolicy, header: ua.Header, buf: Buffer, use_prev_key: bool = False
+        security_policy: SecurityPolicy,
+        header: ua.Header,
+        buf: Buffer,
+        symmetric_cryptography: CryptographyNone | None = None,
     ) -> MessageChunk:
         if not len(buf) >= header.body_size:
             raise ValueError("Full body expected here")
@@ -266,13 +266,12 @@ class MessageChunk:
         buf.skip(header.body_size)
         if header.MessageType in (ua.MessageType.SecureMessage, ua.MessageType.SecureClose):
             security_header = struct_from_binary(ua.SymmetricAlgorithmHeader, data)
-            crypto = security_policy.symmetric_cryptography
+            crypto = symmetric_cryptography or security_policy.symmetric_cryptography
         elif header.MessageType == ua.MessageType.SecureOpen:
             security_header = struct_from_binary(ua.AsymmetricAlgorithmHeader, data)
             crypto = security_policy.asymmetric_cryptography
         else:
             raise ua.UaError(f"Unsupported message type: {header.MessageType!r}")
-        crypto.use_prev_key = use_prev_key  # type: ignore[attr-defined]
         obj = MessageChunk(crypto)
         obj.MessageHeader = header
         obj.SecurityHeader = security_header
@@ -373,6 +372,29 @@ class MessageChunk:
     __repr__ = __str__
 
 
+@dataclass
+class ChannelSettings:
+    min_lifetime: int = 10_000
+    max_lifetime: int = 3_600_000
+    default_lifetime: int = 3_600_000
+
+    def revise(self, requested: int) -> int:
+        if requested == 0:
+            return self.default_lifetime
+        return min(max(requested, self.min_lifetime), self.max_lifetime)
+
+
+@dataclass
+class TokenSlot:
+    token: ua.ChannelSecurityToken
+    cryptography: CryptographyNone
+    issued_at: float
+
+    @property
+    def window_end(self) -> float:
+        return self.issued_at + self.token.RevisedLifetime * 5 / 4000
+
+
 class SecureChannel:
     """
     Common logic for client and server
@@ -387,13 +409,14 @@ class SecureChannel:
         self._policies: list[Any] = []
         self._open = False
         self.security_token = ua.ChannelSecurityToken()
-        self.next_security_token = ua.ChannelSecurityToken()
-        self.prev_security_token = ua.ChannelSecurityToken()
+        self._current: TokenSlot | None = None
+        self._next: TokenSlot | None = None
+        self._previous: TokenSlot | None = None
         self.local_nonce: int | bytes = 0
         self.remote_nonce: int | bytes = 0
-        self._allow_prev_token = False
         self._limits = limits
         self.last_used = time.monotonic()
+        self._clock: Callable[[], float] = time.monotonic
 
     @property
     def channel_id(self) -> int:
@@ -419,61 +442,92 @@ class SecureChannel:
     def limits(self) -> TransportLimits:
         return self._limits
 
+    def _new_token_id(self) -> int:
+        used = {slot.token.TokenId for slot in (self._current, self._next, self._previous) if slot is not None}
+        while True:
+            token_id = secrets.randbelow(0xFFFFFFFF) + 1
+            if token_id not in used:
+                return token_id
+
+    def _slot(self, token: ua.ChannelSecurityToken, local_nonce: bytes, remote_nonce: bytes) -> TokenSlot:
+        cryptography = self.security_policy.make_symmetric_cryptography(local_nonce, remote_nonce)
+        return TokenSlot(token, cryptography, self._clock())
+
+    def _make_current(self, slot: TokenSlot) -> None:
+        self._current = slot
+        self.security_token = slot.token
+        self.security_policy.symmetric_cryptography = slot.cryptography
+
+    def _purge_expired(self) -> None:
+        now = self._clock()
+        if self._previous is not None and now > self._previous.window_end:
+            self._previous = None
+        if self._next is not None and now > self._next.window_end:
+            self._next = None
+        if self._current is not None and now > self._current.window_end:
+            self._current = None
+
+    def expires_in(self) -> float:
+        windows = [slot.window_end for slot in (self._current, self._next, self._previous) if slot is not None]
+        if not windows:
+            return 0.0
+        return max(0.0, max(windows) - self._clock())
+
+    def _select_slot(self, token_id: int) -> TokenSlot:
+        self._purge_expired()
+        for slot in (self._current, self._next, self._previous):
+            if slot is not None and slot.token.TokenId == token_id:
+                return slot
+        raise TransportError(ua.StatusCodes.BadSecureChannelTokenUnknown, f"Unknown token id {token_id}")
+
     def set_channel(self, params: Any, request_type: ua.SecurityTokenRequestType, client_nonce: bytes) -> None:
         """
         Called on client side when getting secure channel data from server.
         """
-        if request_type == ua.SecurityTokenRequestType.Issue:
-            self.security_token = params.SecurityToken
-            self.local_nonce = client_nonce
-            self.remote_nonce = params.ServerNonce
-            self.security_policy.make_local_symmetric_key(self.remote_nonce, self.local_nonce)
-            self.security_policy.make_remote_symmetric_key(
-                self.local_nonce, self.remote_nonce, self.security_token.RevisedLifetime
-            )
-            self._open = True
-        else:
-            self.next_security_token = params.SecurityToken
-            self.local_nonce = client_nonce
-            self.remote_nonce = params.ServerNonce
+        self.local_nonce = client_nonce
+        self.remote_nonce = params.ServerNonce
+        slot = self._slot(params.SecurityToken, client_nonce, params.ServerNonce)
+        if request_type == ua.SecurityTokenRequestType.Renew and self._current is not None:
+            self._previous = self._current
+        self._make_current(slot)
+        self._open = True
 
-        self._allow_prev_token = True
-
-    def open(self, params: Any, server: Any) -> ua.OpenSecureChannelResult:
+    def open(self, params: Any, server: Any, settings: ChannelSettings | None = None) -> ua.OpenSecureChannelResult:
         """
         Called on server side to open secure channel.
         """
-
-        self.local_nonce = ua.utils.create_nonce(self.security_policy.secure_channel_nonce_length)
-        self.remote_nonce = params.ClientNonce
+        settings = settings or ChannelSettings()
+        local_nonce = ua.utils.create_nonce(self.security_policy.secure_channel_nonce_length)
         response = ua.OpenSecureChannelResult()
-        response.ServerNonce = self.local_nonce
-
-        if not self._open or params.RequestType == ua.SecurityTokenRequestType.Issue:
+        response.ServerNonce = local_nonce
+        token = ua.ChannelSecurityToken()
+        token.TokenId = self._new_token_id()
+        token.RevisedLifetime = settings.revise(params.RequestedLifetime)
+        token.CreatedAt = datetime.now(UTC)
+        issue = not self._open or params.RequestType == ua.SecurityTokenRequestType.Issue
+        token.ChannelId = server.get_new_channel_id() if issue else self.security_token.ChannelId
+        slot = self._slot(token, local_nonce, params.ClientNonce)
+        self.local_nonce = local_nonce
+        self.remote_nonce = params.ClientNonce
+        if issue:
             self._open = True
-            self.security_token.TokenId = 13  # random value
-            self.security_token.ChannelId = server.get_new_channel_id()
-            self.security_token.RevisedLifetime = params.RequestedLifetime
-            self.security_token.CreatedAt = datetime.now(UTC)
-
-            response.SecurityToken = self.security_token
-
-            self.security_policy.make_local_symmetric_key(self.remote_nonce, self.local_nonce)
-            self.security_policy.make_remote_symmetric_key(
-                self.local_nonce, self.remote_nonce, self.security_token.RevisedLifetime
-            )
+            self._next = None
+            self._previous = None
+            self._make_current(slot)
         else:
-            self.next_security_token = copy.deepcopy(self.security_token)
-            self.next_security_token.TokenId += 1
-            self.next_security_token.RevisedLifetime = params.RequestedLifetime
-            self.next_security_token.CreatedAt = datetime.now(UTC)
-
-            response.SecurityToken = self.next_security_token
-
+            self._next = slot
+        response.SecurityToken = token
         return response
+
+    def _rotate(self) -> None:
+        assert self._next is not None
+        self._previous = self._current
+        self._make_current(self._next)
+        self._next = None
 
     def close(self) -> None:
         self._open = False
+        self._current = self._next = self._previous = None
 
     def is_open(self) -> bool:
         return self._open
@@ -498,20 +552,6 @@ class SecureChannel:
                 return
         if self.security_policy.URI != uri or (mode is not None and self.security_policy.Mode != mode):
             raise ua.UaError(f"No matching policy: {uri}, {mode}")
-
-    def revolve_tokens(self) -> None:
-        """
-        Revolve security tokens of the security channel. Start using the
-        next security token negotiated during the renewal of the channel and
-        remember the previous token until the other communication party
-        """
-        self.prev_security_token = self.security_token
-        self.security_token = self.next_security_token
-        self.next_security_token = ua.ChannelSecurityToken()
-        self.security_policy.make_local_symmetric_key(self.remote_nonce, self.local_nonce)
-        self.security_policy.make_remote_symmetric_key(
-            self.local_nonce, self.remote_nonce, self.security_token.RevisedLifetime
-        )
 
     def message_to_binary(
         self, message: bytes, message_type: ua.MessageType = ua.MessageType.SecureMessage, request_id: int = 0
@@ -575,40 +615,6 @@ class SecureChannel:
         abort.SequenceHeader.SequenceNumber = self._next_sequence_number()
         return abort.to_binary()
 
-    def _check_sym_header(self, security_hdr: ua.SymmetricAlgorithmHeader) -> None:
-        """
-        Validates the symmetric header of the message chunk and revolves the
-        security token if needed.
-        """
-        if not isinstance(security_hdr, ua.SymmetricAlgorithmHeader):
-            raise UaInvalidParameterError(f"Expected SymAlgHeader, got: {type(security_hdr)}")
-
-        if security_hdr.TokenId == self.security_token.TokenId:
-            return
-
-        if security_hdr.TokenId == self.next_security_token.TokenId:
-            self.revolve_tokens()
-            return
-
-        if self._allow_prev_token and security_hdr.TokenId == self.prev_security_token.TokenId:
-            # From spec, part 4, section 5.5.2.1: Clients should accept Messages secured by an
-            # expired SecurityToken for up to 25 % of the token lifetime. This should ensure that
-            # Messages sent by the Server before the token expired are not rejected because of
-            # network delays.
-            timeout = self.prev_security_token.CreatedAt + timedelta(
-                milliseconds=self.prev_security_token.RevisedLifetime * 1.25
-            )
-            if timeout < datetime.now(UTC):
-                raise ua.UaError(
-                    f"Security token id {security_hdr.TokenId} has timed out ({timeout} < {datetime.now(UTC)})"
-                )
-            return
-
-        expected_tokens = [self.security_token.TokenId, self.next_security_token.TokenId]
-        if self._allow_prev_token:
-            expected_tokens.insert(0, self.prev_security_token.TokenId)
-        raise ua.UaError(f"Invalid security token id {security_hdr.TokenId}, expected one of: {expected_tokens}")
-
     def _check_incoming_chunk(self, chunk: MessageChunk) -> None:
         if not isinstance(chunk, MessageChunk):
             raise ValueError(f"Expected chunk, got: {chunk}")
@@ -656,19 +662,22 @@ class SecureChannel:
                 # it will break the Secure channel renewal.
                 self.select_policy(security_header.SecurityPolicyURI, security_header.SenderCertificate)
 
-        elif header.MessageType in (ua.MessageType.SecureMessage, ua.MessageType.SecureClose):
+        slot: TokenSlot | None = None
+        if header.MessageType in (ua.MessageType.SecureMessage, ua.MessageType.SecureClose):
+            if not self.is_open() or header.ChannelId != self.channel_id:
+                raise TransportError(ua.StatusCodes.BadTcpSecureChannelUnknown, "Unknown channel id")
             data = body.copy(header.body_size)
-            security_header = struct_from_binary(ua.SymmetricAlgorithmHeader, data)
-            self._check_sym_header(security_header)
+            symmetric_header = struct_from_binary(ua.SymmetricAlgorithmHeader, data)
+            slot = self._select_slot(symmetric_header.TokenId)
 
         if header.MessageType in (ua.MessageType.SecureMessage, ua.MessageType.SecureOpen, ua.MessageType.SecureClose):
-            try:
-                pos = body.cur_pos
-                chunk = MessageChunk.from_header_and_body(self.security_policy, header, body, use_prev_key=False)
-            except ua.uaerrors.SignatureError:
-                body.rewind(cur_pos=pos)
-                chunk = MessageChunk.from_header_and_body(self.security_policy, header, body, use_prev_key=True)
-            return self._receive(chunk)
+            chunk = MessageChunk.from_header_and_body(
+                self.security_policy, header, body, slot.cryptography if slot is not None else None
+            )
+            msg = self._receive(chunk)
+            if slot is not None and slot is self._next:
+                self._rotate()
+            return msg
         if header.MessageType == ua.MessageType.Hello:
             msg = struct_from_binary(ua.Hello, body)
             return msg

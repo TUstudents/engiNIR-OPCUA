@@ -181,7 +181,6 @@ class UASocketProtocol(asyncio.Protocol):
         next_request_id = self._request_id + 1
         try:
             binreq = struct_to_binary(request)
-            self.revolve_security_token()
             msg = self._channel.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
         except MessageTooLarge as e:
             self._request_handle -= 1
@@ -274,11 +273,6 @@ class UASocketProtocol(asyncio.Protocol):
         self._request_handle += 1
         hdr.RequestHandle = self._request_handle
         hdr.TimeoutHint = int(timeout * 1000)
-
-    def revolve_security_token(self) -> None:
-        """Switch to the renewed symmetric security token once one is pending."""
-        if self._channel.next_security_token.TokenId != 0:
-            self._channel.revolve_tokens()
 
     @property
     def is_closed(self) -> bool:
@@ -507,15 +501,6 @@ class UaClient:
     def mark_disconnected(self) -> None:
         """Mark the client as disconnected; the supervisor calls this when it gives up."""
         self._set_state(UaClientState.DISCONNECTED)
-
-    def revolve_security_token(self) -> None:
-        """Apply a renewed secure-channel token immediately instead of lazily.
-
-        The transport otherwise revolves on the next request; an idle channel that
-        was just renewed uses this so the new keys take effect at once.
-        """
-        if self.protocol is not None:
-            self.protocol.revolve_security_token()
 
     @property
     def has_transport(self) -> bool:

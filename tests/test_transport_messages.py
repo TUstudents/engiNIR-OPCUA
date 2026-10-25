@@ -16,7 +16,15 @@ from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto.security_policies import SecurityPolicyNone
 from enginir_opcua.ua.ua_binary import header_from_binary, struct_from_binary, struct_to_binary
 
-from .harness import RawPeer, RawServer, connect_client, secure_chunk, signing_client
+from .harness import (
+    RawPeer,
+    RawServer,
+    connect_client,
+    open_channel_as_client,
+    open_channel_as_server,
+    secure_chunk,
+    signing_client,
+)
 
 
 def big_request(size: int) -> ua.WriteRequest:
@@ -174,6 +182,17 @@ def test_com60_message_above_the_receive_limit_is_tcp_message_too_large() -> Non
     assert error.value.status == ua.StatusCodes.BadTcpMessageTooLarge
 
 
+def abort_chunk(server: SecureChannel, request_id: int, body: bytes) -> bytes:
+    return secure_chunk(
+        b"A",
+        request_id,
+        server._sequence_number + 1,
+        body,
+        channel_id=server.channel_id,
+        token_id=server.security_token.TokenId,
+    )
+
+
 @pytest.fixture
 def five_chunks_per_message(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
     assert server.bserver is not None
@@ -184,10 +203,9 @@ async def test_com60_server_answers_too_many_chunks_with_tcp_message_too_large(
     five_chunks_per_message: None, raw_peer: RawPeer
 ) -> None:
     """Part 6, 7.1.2.3 and 7.1.5: the Error for a Message with more chunks than announced."""
-    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
-    acknowledge = await raw_peer.receive_acknowledge()
-    assert acknowledge.MaxChunkCount == 5
-    await raw_peer.send(b"".join(secure_chunk(b"C", 1, seq, b"x") for seq in range(1, 7)))
+    channel = await open_channel_as_client(raw_peer)
+    channel.limits.max_send_buffer = 8192
+    await raw_peer.send(channel.message_to_binary(bytes(6 * 8192), request_id=2))
     error = await raw_peer.receive_error()
     assert error.Error.value == ua.StatusCodes.BadTcpMessageTooLarge
     assert await raw_peer.is_closed_by_peer()
@@ -197,10 +215,13 @@ async def test_com60_client_fails_pending_requests_on_too_many_chunks(raw_server
     """Part 6, 7.1.2.3: a response with more chunks than the client announced fails the request."""
     uaclient, peer = await connect_client(raw_server)
     assert uaclient.protocol is not None
+    server = await open_channel_as_server(uaclient, peer)
+    server.limits.max_send_buffer = 8192
     uaclient.protocol._channel.limits.max_chunk_count = 2
     request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
-    await peer.receive()
-    await peer.send(b"".join(secure_chunk(b"C", 1, seq, b"x") for seq in range(1, 4)))
+    _, body = await peer.receive()
+    request_id = struct.unpack("<I", body[12:16])[0]
+    await peer.send(server.message_to_binary(bytes(3 * 8192), request_id=request_id))
     with pytest.raises(ua.uaerrors.BadResponseTooLarge):
         await request
     assert await peer.is_closed_by_peer()
@@ -210,11 +231,12 @@ async def test_cli19_abort_fails_the_request_at_once(raw_server: RawServer) -> N
     """Part 6, 6.7.3: an Abort chunk fails the request it names with the Error StatusCode."""
     uaclient, peer = await connect_client(raw_server)
     assert uaclient.protocol is not None
+    server = await open_channel_as_server(uaclient, peer)
     request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
     _, body = await peer.receive()
     request_id = struct.unpack("<I", body[12:16])[0]
     error = ua.ErrorMessage(ua.StatusCode(ua.StatusCodes.BadEncodingLimitsExceeded), "no")
-    await peer.send(secure_chunk(b"A", request_id, 1, struct_to_binary(error)))
+    await peer.send(abort_chunk(server, request_id, struct_to_binary(error)))
     with pytest.raises(ua.uaerrors.BadEncodingLimitsExceeded):
         await asyncio.wait_for(request, 1)
     assert not uaclient.protocol.is_closed
@@ -224,10 +246,11 @@ async def test_cli19_abort_with_unreadable_body_fails_with_unexpected_error(raw_
     """Part 6, 6.7.3: an Abort whose body cannot be read still discards the Message."""
     uaclient, peer = await connect_client(raw_server)
     assert uaclient.protocol is not None
+    server = await open_channel_as_server(uaclient, peer)
     request = asyncio.create_task(uaclient.protocol.send_request(ua.ReadRequest(), timeout=2))
     _, body = await peer.receive()
     request_id = struct.unpack("<I", body[12:16])[0]
-    await peer.send(secure_chunk(b"A", request_id, 1, b"\x01"))
+    await peer.send(abort_chunk(server, request_id, b"\x01"))
     with pytest.raises(ua.uaerrors.BadUnexpectedError):
         await asyncio.wait_for(request, 1)
 
@@ -248,10 +271,10 @@ async def test_srv25_open_with_intermediate_chunk_gets_security_checks_failed(
 
 async def test_srv25_wrong_sequence_number_gets_security_checks_failed_and_closes(raw_peer: RawPeer) -> None:
     """Part 6, 6.7.2.4 and 6.7.7: a sequence number out of order closes the channel, and the peer is told."""
-    await raw_peer.send_hello(ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
-    await raw_peer.receive_acknowledge()
-    await raw_peer.send(secure_chunk(b"C", 1, 1, b"x"))
-    await raw_peer.send(secure_chunk(b"C", 1, 9, b"x"))
+    channel = await open_channel_as_client(raw_peer)
+    await raw_peer.send(channel.message_to_binary(b"x", request_id=2))
+    channel._sequence_number += 5
+    await raw_peer.send(channel.message_to_binary(b"x", request_id=3))
     error = await raw_peer.receive_error()
     assert error.Error.value == ua.StatusCodes.BadSecurityChecksFailed
     assert await raw_peer.is_closed_by_peer()
@@ -270,3 +293,46 @@ async def test_srv25_bad_signature_sends_security_checks_failed_and_closes(
         with pytest.raises(ua.uaerrors.BadSecurityChecksFailed):
             await client.get_node(ua.ObjectIds.Server_ServerStatus_State).read_value()
         monkeypatch.undo()
+
+
+async def test_srv25_message_before_open_gets_channel_unknown(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.7 and 7.1.5: a MSG on a connection without a channel is refused."""
+    await raw_peer.send_hello(ua.Hello())
+    await raw_peer.receive_acknowledge()
+    await raw_peer.send(secure_chunk(b"F", 1, 1, b"x"))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadTcpSecureChannelUnknown
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_srv25_unknown_channel_id_gets_channel_unknown(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.7 and 7.1.5: a chunk for another channel id is refused."""
+    channel = await open_channel_as_client(raw_peer)
+    channel.security_token.ChannelId += 1
+    await raw_peer.send(channel.message_to_binary(b"x", request_id=2))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadTcpSecureChannelUnknown
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_srv25_unknown_token_id_gets_token_unknown(raw_peer: RawPeer) -> None:
+    """Part 6, 6.7.7 and 7.1.5: a chunk with a token id nobody issued is refused."""
+    channel = await open_channel_as_client(raw_peer)
+    channel.security_token.TokenId += 1
+    await raw_peer.send(channel.message_to_binary(b"x", request_id=2))
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadSecureChannelTokenUnknown
+    assert await raw_peer.is_closed_by_peer()
+
+
+@pytest.fixture
+def short_channel_lifetimes(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server.iserver.channel_settings, "min_lifetime", 100)
+
+
+async def test_com62_server_closes_a_channel_without_a_valid_token(
+    short_channel_lifetimes: None, raw_peer: RawPeer
+) -> None:
+    """Part 4, 5.6.2.1: when no token is inside its window the server closes the connection."""
+    await open_channel_as_client(raw_peer, lifetime=100)
+    assert await raw_peer.is_closed_by_peer(timeout=2)

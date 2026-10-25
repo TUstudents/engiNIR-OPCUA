@@ -1096,7 +1096,6 @@ class Client:
                 await asyncio.sleep(duration)
                 _logger.debug("renewing channel")
                 await self.open_secure_channel(renew=True)
-                self.uaclient.revolve_security_token()
         except ConnectionError as e:
             _logger.info("connection error  in watchdog loop %s", e, exc_info=True)
             raise

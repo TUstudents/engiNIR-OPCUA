@@ -3,6 +3,7 @@ import copy
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Literal
 
 from enginir_opcua import ua
@@ -61,6 +62,10 @@ class UaProcessor:
         self._hello_received: bool = False
         self._session_watchdog_task: asyncio.Task | None = None
         self._watchdog_interval: float = 1.0
+        self.on_token_window: Callable[[float], None] | None = None
+
+    def channel_expires_in(self) -> float:
+        return self._channel.expires_in()
 
     @property
     def hello_received(self) -> bool:
@@ -114,11 +119,13 @@ class UaProcessor:
                 algohdr.SecurityPolicyURI, algohdr.SenderCertificate, request.Parameters.SecurityMode
             )
 
-        channel = self._channel.open(request.Parameters, self.iserver)
+        channel = self._channel.open(request.Parameters, self.iserver, self.iserver.channel_settings)
         # send response
         response = ua.OpenSecureChannelResponse()
         response.Parameters = channel
         self.send_response(request.RequestHeader.RequestHandle, seqhdr, response, ua.MessageType.SecureOpen)
+        if self.on_token_window is not None:
+            self.on_token_window(self._channel.expires_in())
 
     def get_publish_request(self, subscription_id: ua.IntegerId):
         now = time.monotonic()

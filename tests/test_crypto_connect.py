@@ -7,7 +7,7 @@ import pytest
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto import security_policies, uacrypto
-from enginir_opcua.crypto.security_policies import SECURITY_POLICY_TYPE_MAP, Decryptor, Verifier
+from enginir_opcua.crypto.security_policies import SECURITY_POLICY_TYPE_MAP
 from enginir_opcua.crypto.uacrypto import CertProperties
 from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 from enginir_opcua.server.user_managers import CertificateUserManager
@@ -367,9 +367,10 @@ async def test_certificate_handling_mismatched_creds(srv_crypto_one_cert):
             assert await clt.get_objects_node().get_children()
 
 
-async def test_secure_channel_key_expiration(srv_crypto_one_cert, mocker):
+async def test_secure_channel_key_expiration(srv_crypto_one_cert, monkeypatch):
     timeout = 1
-    _, cert = srv_crypto_one_cert
+    srv, cert = srv_crypto_one_cert
+    monkeypatch.setattr(srv.iserver.channel_settings, "min_lifetime", 500)
     clt = Client(uri_crypto_cert)
     clt.secure_channel_timeout = timeout * 1000
     user_cert = uacrypto.CertProperties(peer_creds["certificate"], "DER")
@@ -386,32 +387,17 @@ async def test_secure_channel_key_expiration(srv_crypto_one_cert, mocker):
         mode=ua.MessageSecurityMode.SignAndEncrypt,
     )
     async with clt:
-        assert clt.uaclient.security_policy.symmetric_cryptography.Prev_Verifier is None
-        assert clt.uaclient.security_policy.symmetric_cryptography.Prev_Decryptor is None
+        channel = clt.uaclient.protocol._channel
+        assert channel._previous is None
 
         await asyncio.sleep(timeout)
-        sym_crypto = clt.uaclient.security_policy.symmetric_cryptography
-        prev_verifier = sym_crypto.Prev_Verifier
-        prev_decryptor = sym_crypto.Prev_Decryptor
-        assert isinstance(prev_verifier, Verifier)
-        assert isinstance(prev_decryptor, Decryptor)
-
-        mock_decry_reset = mocker.patch.object(prev_verifier, "reset", wraps=prev_verifier.reset)
-        mock_verif_reset = mocker.patch.object(prev_decryptor, "reset", wraps=prev_decryptor.reset)
-        assert mock_decry_reset.call_count == 0
-        assert mock_verif_reset.call_count == 0
+        previous = channel._previous
+        assert previous is not None
+        assert previous.token.TokenId != channel.security_token.TokenId
 
         await asyncio.sleep(timeout * 0.3)
         assert await clt.get_objects_node().get_children()
-
-        assert sym_crypto.key_expiration > 0
-        assert sym_crypto.prev_key_expiration > 0
-        assert sym_crypto.key_expiration > sym_crypto.prev_key_expiration
-
-        assert mock_decry_reset.call_count == 1
-        assert mock_verif_reset.call_count == 1
-        assert clt.uaclient.security_policy.symmetric_cryptography.Prev_Verifier is None
-        assert clt.uaclient.security_policy.symmetric_cryptography.Prev_Decryptor is None
+        assert channel._previous is not previous
 
 
 async def test_always_catch_new_cert_on_set_security():
