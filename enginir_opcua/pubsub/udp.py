@@ -27,7 +27,7 @@ from ..ua.uatypes import (
     VariantType,
 )
 from .connection import PubSubReceiver
-from .uadp import UadpNetworkMessage
+from .uadp import UadpNetworkMessage, has_security_header
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,11 @@ class OpcUdp(asyncio.DatagramProtocol):
         self.transport: asyncio.transports.DatagramTransport = transport
 
     def datagram_received(self, data: bytes, source: tuple[str, int]) -> None:
+        if has_security_header(data):
+            logger.debug(
+                "Dropping UADP message with a SecurityHeader from %s: PubSub security is not supported", source
+            )
+            return
         try:
             logger.debug("Received Datagram from %s - %s", source, data)
             buffer = Buffer(data)

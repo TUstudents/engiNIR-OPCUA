@@ -16,6 +16,7 @@ from ..ua import (
     Byte,
     Int32,
     LocalizedText,
+    MessageSecurityMode,
     NodeId,
     ObjectIds,
     PubSubConnectionDataType,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+SECURED_MODES = (MessageSecurityMode.Sign, MessageSecurityMode.SignAndEncrypt)
 UDP_UADP_PROFILE = String("http://opcfoundation.org/UA-Profile/Transport/pubsub-udp-uadp")
 
 
@@ -190,6 +192,9 @@ class PubSubConnection(PubSubInformationModel):
         and sends messages from writers
         """
         logging.info("Starting Connection %s", await self.get_name())
+        secured = self._groups_with_message_security()
+        if secured:
+            raise UaError(f"PubSub message security is not supported, refusing to start {', '.join(secured)}")
         loop = asyncio.get_event_loop()
         sock, _, _ = self._network_settings.create_socket()
         self._transport, self._protocol = await loop.create_datagram_endpoint(
@@ -204,6 +209,17 @@ class PubSubConnection(PubSubInformationModel):
         else:
             logger.warning("Protocol is None — cannot set receiver")
         await self._set_state(PubSubState.Operational)
+
+    def _groups_with_message_security(self) -> list[str]:
+        secured = [str(group._cfg.Name) for group in self._writer_groups if group._cfg.SecurityMode in SECURED_MODES]
+        secured += [str(group.Name) for group in self._cfg.ReaderGroups if group.SecurityMode in SECURED_MODES]
+        secured += [
+            str(reader._cfg.Name)
+            for group in self._reader_groups
+            for reader in group._reader
+            if reader._cfg.SecurityMode in SECURED_MODES
+        ]
+        return secured
 
     async def stop(self) -> None:
         """Stops alle activity of a connection"""

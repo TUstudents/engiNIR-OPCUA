@@ -188,6 +188,12 @@ class UadpHeader:
         return flags, header
 
 
+def has_security_header(data: bytes) -> bool:
+    if len(data) < 2 or not data[0] & MessageHeaderFlags.EXTENDED_FLAGS_1:
+        return False
+    return bool(data[1] << 8 & MessageHeaderFlags.SECURITY_MODE)
+
+
 @dataclass
 class UadpChunk:
     MessageSequenceNo: UInt16 = field(default_factory=lambda: UInt16(0))
