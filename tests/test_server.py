@@ -18,7 +18,7 @@ import pytest
 import enginir_opcua
 from enginir_opcua import Client, Server, ua, uamethod
 from enginir_opcua.common import ua_utils
-from enginir_opcua.common.connection import TransportLimits
+from enginir_opcua.common.connection import TransportError, TransportLimits
 from enginir_opcua.common.event_objects import (
     AuditChannelEvent,
     AuditEvent,
@@ -26,7 +26,9 @@ from enginir_opcua.common.event_objects import (
     AuditSecurityEvent,
     BaseEvent,
 )
+from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
+from enginir_opcua.ua.ua_binary import uatcp_to_binary
 
 pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
@@ -815,15 +817,17 @@ def restore_transport_limits_server(server: Server):
     assert server.bserver is not None
     max_recv = server.bserver.limits.max_recv_buffer
     max_chunk_count = server.bserver.limits.max_chunk_count
+    max_send = server.bserver.limits.max_send_buffer
     yield server
     server.bserver.limits.max_recv_buffer = max_recv
+    server.bserver.limits.max_send_buffer = max_send
     server.bserver.limits.max_chunk_count = max_chunk_count
 
 
 async def test_message_limits_fail_write(restore_transport_limits_server: Server):
     server = restore_transport_limits_server
     assert server.bserver is not None
-    server.bserver.limits.max_recv_buffer = 1024
+    server.bserver.limits.max_recv_buffer = 8192
     server.bserver.limits.max_send_buffer = 10240000
     server.bserver.limits.max_chunk_count = 10
     test_string = b"a" * 100 * 1024
@@ -842,17 +846,17 @@ async def test_message_limits_fail_read(restore_transport_limits_server: Server)
     server = restore_transport_limits_server
     assert server.bserver is not None
     server.bserver.limits.max_recv_buffer = 10240000
-    server.bserver.limits.max_send_buffer = 1024
-    server.bserver.limits.max_chunk_count = 10
+    server.bserver.limits.max_send_buffer = 8192
     test_string = b"a" * 100 * 1024
     n = await server.nodes.objects.add_variable(1, "MyLimitVariable", test_string)
     await n.set_writable(True)
     client = Client(server.endpoint.geturl())
+    client.max_chunkcount = 10
     # This should trigger a UA error because the message is too large
     async with client:
         n = client.get_node(n.nodeid)
         await n.write_value(test_string, ua.VariantType.ByteString)
-        with pytest.raises(ua.uaerrors.BadRequestTooLarge):
+        with pytest.raises(ua.uaerrors.BadResponseTooLarge):
             await n.read_value()
 
 
@@ -860,7 +864,7 @@ async def test_message_limits_works(restore_transport_limits_server: Server):
     server = restore_transport_limits_server
     # server.bserver.limits.max_recv_buffer = 1024
     assert server.bserver is not None
-    server.bserver.limits.max_send_buffer = 1024
+    server.bserver.limits.max_send_buffer = 8192
     server.bserver.limits.max_chunk_count = 10
     n = await server.nodes.objects.add_variable(1, "MyLimitVariable2", "t")
     await n.set_writable(True)
@@ -868,7 +872,7 @@ async def test_message_limits_works(restore_transport_limits_server: Server):
     # Test that chunks are working correct
     async with client:
         n = client.get_node(n.nodeid)
-        test_string = "a" * (1024 * 5)
+        test_string = "a" * (1024 * 30)
         await n.write_value(test_string, ua.VariantType.String)
         await n.read_value()
 
@@ -974,7 +978,7 @@ async def test_set_application_uri_updates_server_array(server):
 async def test_transport_limit_error_closes_the_connection(restore_transport_limits_server: Server, caplog):
     server = restore_transport_limits_server
     assert server.bserver is not None
-    server.bserver.limits.max_recv_buffer = 1024
+    server.bserver.limits.max_recv_buffer = 8192
     server.bserver.limits.max_send_buffer = 10240000
     server.bserver.limits.max_chunk_count = 10
     test_string = b"a" * 100 * 1024
@@ -997,9 +1001,10 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
 
 async def test_process_reports_the_connection_should_close_on_a_limit_error():
     processor = UaProcessor.__new__(UaProcessor)
+    processor.name = "peer"
     processor._transport = Mock()
     connection = Mock()
-    connection.receive_from_header_and_body.side_effect = ua.uaerrors.BadRequestTooLarge()
+    connection.receive_from_header_and_body.side_effect = TransportError(ua.StatusCodes.BadTcpMessageTooLarge)
     processor._connection = connection
 
     keep_open = await processor.process(Mock(), Mock())
@@ -1008,20 +1013,24 @@ async def test_process_reports_the_connection_should_close_on_a_limit_error():
     assert keep_open is False
 
 
-async def test_process_rejects_a_repeated_hello_and_closes_the_connection() -> None:
+async def test_protocol_rejects_a_repeated_hello_and_closes_the_connection() -> None:
     transport = Mock()
-    processor = UaProcessor(Mock(), transport, TransportLimits())
-    connection = Mock()
-    connection.receive_from_header_and_body.return_value = ua.Hello()
-    processor._connection = connection
+    iserver = Mock()
+    iserver.max_pending_messages_per_connection = 500
+    protocol = OPCUAProtocol(iserver, [], [], [], TransportLimits())
+    protocol.transport = transport
+    protocol.processor = UaProcessor(Mock(), transport, TransportLimits())
+    hello = uatcp_to_binary(ua.MessageType.Hello, ua.Hello(ReceiveBufferSize=65535, SendBufferSize=65535))
 
-    assert await processor.process(Mock(), Mock()) is True
+    protocol.data_received(hello)
+
     assert transport.write.call_args.args[0].startswith(b"ACKF")
+    assert not transport.close.called
 
-    keep_open = await processor.process(Mock(), Mock())
+    protocol.data_received(hello)
 
     assert transport.write.call_args.args[0].startswith(b"ERRF")
-    assert keep_open is False
+    assert transport.close.called
 
 
 async def test_default_application_identity_is_enginir() -> None:

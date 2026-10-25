@@ -7,8 +7,17 @@ from typing import Literal
 
 from enginir_opcua import ua
 
-from ..common.connection import SecureConnection, TransportLimits
-from ..common.utils import ServiceError
+from ..common.connection import (
+    HELLO_MAX_CHUNK_SIZE,
+    AbortedMessage,
+    MessageAborted,
+    MessageTooLarge,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+    error_message_to_binary,
+)
+from ..common.utils import Buffer, ServiceError
 from ..crypto import uacrypto
 from ..crypto.security_policies import SecurityPolicyNone
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
@@ -16,8 +25,6 @@ from .internal_server import InternalServer, InternalSession
 from .internal_session import ChannelSecurity, identity_token
 
 _logger = logging.getLogger(__name__)
-
-HELLO_MAX_CHUNK_SIZE = 8192
 
 
 class PublishRequestData:
@@ -55,6 +62,19 @@ class UaProcessor:
         self._session_watchdog_task: asyncio.Task | None = None
         self._watchdog_interval: float = 1.0
 
+    @property
+    def hello_received(self) -> bool:
+        return self._hello_received
+
+    def accept_hello(self, body: Buffer) -> bytes:
+        try:
+            hello = struct_from_binary(ua.Hello, body)
+        except ua.UaError as e:
+            raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Malformed Hello") from e
+        ack = self._limits.create_acknowledge_and_set_limits(hello)
+        self._hello_received = True
+        return uatcp_to_binary(ua.MessageType.Acknowledge, ack)
+
     def max_receive_chunk_size(self) -> int:
         if self._hello_received:
             return self._limits.max_recv_buffer
@@ -65,9 +85,23 @@ class UaProcessor:
 
     def send_response(self, requesthandle, seqhdr, response, msgtype=ua.MessageType.SecureMessage):
         response.ResponseHeader.RequestHandle = requesthandle
-        data = self._connection.message_to_binary(
-            struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
-        )
+        try:
+            data = self._connection.message_to_binary(
+                struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
+            )
+        except MessageTooLarge:
+            _logger.warning(
+                "Response %s to request %s is above the limits of the client", type(response), requesthandle
+            )
+            fault = ua.ServiceFault()
+            fault.ResponseHeader.RequestHandle = requesthandle
+            fault.ResponseHeader.ServiceResult = ua.StatusCode(ua.StatusCodes.BadResponseTooLarge)
+            data = self._connection.message_to_binary(
+                struct_to_binary(fault), message_type=msgtype, request_id=seqhdr.RequestId
+            )
+        except MessageAborted as e:
+            _logger.warning("Response to request %s was aborted", requesthandle)
+            data = e.written
         self._transport.write(data)
 
     def open_secure_channel(self, algohdr, seqhdr, body):
@@ -142,17 +176,23 @@ class UaProcessor:
         result.Results = requestdata.results
         self.send_response(requestdata.requesthdr.RequestHandle, requestdata.seqhdr, response)
 
+    def _send_error(self, status: int) -> None:
+        self._transport.write(error_message_to_binary(status))
+
     async def process(self, header, body):
         try:
             msg = self._connection.receive_from_header_and_body(header, body)
-        except ua.uaerrors.BadRequestTooLarge as e:
-            _logger.warning("Received request that exceed the transport limits")
-            err = ua.ErrorMessage(ua.StatusCode(e.code), str(e))
-            data = uatcp_to_binary(ua.MessageType.Error, err)
-            self._transport.write(data)
-            return False
         except ua.uaerrors.BadUserAccessDenied:
             _logger.warning("Unauthenticated user attempted to connect")
+            return False
+        except TransportError as e:
+            _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self._send_error(e.status)
+            return False
+        except Exception as e:
+            _logger.warning("Closing connection from %s: channel failure", self.name, exc_info=True)
+            status = e.code if isinstance(e, ua.UaStatusCodeError) else ua.StatusCodes.BadSecurityChecksFailed
+            self._send_error(status)
             return False
         if isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
@@ -162,18 +202,8 @@ class UaProcessor:
                 return False
             elif header.MessageType == ua.MessageType.SecureMessage:
                 return await self.process_message(msg.sequence_header(), msg.body())
-        elif isinstance(msg, ua.Hello):
-            if self._hello_received:
-                _logger.warning("Received a repeated Hello message from %s", self.name)
-                err = ua.ErrorMessage(
-                    ua.StatusCode(ua.StatusCodes.BadTcpMessageTypeInvalid), "Hello was already received"
-                )
-                self._transport.write(uatcp_to_binary(ua.MessageType.Error, err))
-                return False
-            self._hello_received = True
-            ack = self._limits.create_acknowledge_and_set_limits(msg)
-            data = uatcp_to_binary(ua.MessageType.Acknowledge, ack)
-            self._transport.write(data)
+        elif isinstance(msg, AbortedMessage):
+            _logger.warning("Request %s was aborted by the client", msg.request_id)
         elif isinstance(msg, ua.ErrorMessage):
             _logger.warning("Received an error message type")
         elif msg is None:

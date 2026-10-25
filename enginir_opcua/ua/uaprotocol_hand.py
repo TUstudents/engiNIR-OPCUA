@@ -16,14 +16,10 @@ OPC_TCP_SCHEME = "opc.tcp"
 @dataclass(slots=True)
 class Hello:
     ProtocolVersion: uatypes.UInt32 = 0
-    # the following values could be set to 0 (meaning no limits)
-    # unfortunately many servers do not support it
-    # even newer version of prosys is broken,
-    # so we set then to a high value known to work most places
-    ReceiveBufferSize: uatypes.UInt32 = 2**31 - 1
-    SendBufferSize: uatypes.UInt32 = 2**31 - 1
-    MaxMessageSize: uatypes.UInt32 = 2**31 - 1
-    MaxChunkCount: uatypes.UInt32 = 2**31 - 1
+    ReceiveBufferSize: uatypes.UInt32 = 65535
+    SendBufferSize: uatypes.UInt32 = 65535
+    MaxMessageSize: uatypes.UInt32 = 100 * 1024 * 1024
+    MaxChunkCount: uatypes.UInt32 = 1601
     EndpointUrl: uatypes.String = ""
 
 

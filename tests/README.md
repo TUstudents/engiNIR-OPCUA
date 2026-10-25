@@ -13,6 +13,7 @@ Tests that reproduce a review finding carry its ID in the name, for example `tes
 | Fixture | Use it for |
 |---|---|
 | `raw_peer` | Sending hand-made UA-TCP bytes to the module's `server` and reading the raw replies: Hello and buffer limits, malformed chunks, connection handling |
+| `raw_server` | Acting as a hostile server for a client under test: `peer = await raw_server.accept()` hands over the client's connection as a `RawPeer` |
 | `tampered_responses` | Acting as a hostile server: `tampered_responses.on(ua.CreateSessionResponse, change)` modifies every response of that type before it's encoded |
 | `two_sessions` | Ownership and isolation checks: a fresh server with users `alice` and `bob`, each connected with their own client |
 

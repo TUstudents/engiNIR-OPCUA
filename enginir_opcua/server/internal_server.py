@@ -82,6 +82,8 @@ class InternalServer:
         # Refused at connection_made() to prevent FD exhaustion via parked sockets
         # that never call ActivateSession.
         self.max_connections: int = 1_000
+        # A connection that has not sent its Hello this many seconds after connecting is closed.
+        self.hello_timeout_seconds: float = 30.0
         # Connections that haven't activated a session this many seconds after
         # connecting are closed by the binary server. 0 disables the watchdog.
         self.max_pending_activation_seconds: float = 30.0

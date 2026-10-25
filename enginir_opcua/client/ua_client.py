@@ -21,11 +21,20 @@ from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
-from ..common.connection import SecureConnection, TransportLimits
+from ..common.connection import (
+    AbortedMessage,
+    FrameReader,
+    MessageAborted,
+    MessageSizeExceeded,
+    MessageTooLarge,
+    SecureConnection,
+    TransportError,
+    TransportLimits,
+)
 from ..common.utils import wait_for
 from ..crypto import security_policies
 from ..observer import NULL_OBSERVER, Observer
-from ..ua.ua_binary import header_from_binary, nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
+from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
 from .ua_session import SessionState, UaSession
 
@@ -64,18 +73,17 @@ class UASocketProtocol(asyncio.Protocol):
         """
         self.logger = logging.getLogger(f"{__name__}.UASocketProtocol")
         self.transport: asyncio.Transport | None = None
-        self.receive_buffer: bytes | None = None
-        self.is_receiving = False
         self.timeout = timeout
         self.authentication_token = ua.NodeId()
         self._request_id = 0
         self._request_handle = 0
         self._callbackmap: dict[int, asyncio.Future[Any]] = {}
         if limits is None:
-            limits = TransportLimits(65535, 65535, 0, 0)
+            limits = TransportLimits()
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
         self._connection = SecureConnection(security_policy, limits)
+        self._reader = FrameReader(lambda: self._connection.limits.max_recv_buffer)
 
         self.state: UASocketState = UASocketState.INITIALIZED
         # needed to pass params from asynchronous request to synchronous data receive callback, as well as
@@ -104,60 +112,42 @@ class UASocketProtocol(asyncio.Protocol):
                 self.logger.exception("on_connection_lost callback raised")
 
     def data_received(self, data: bytes) -> None:
-        if self.receive_buffer:
-            data = self.receive_buffer + data
-            self.receive_buffer = None
-        self._process_received_data(data)
+        self._reader.feed(data)
+        try:
+            for header, body in self._reader.frames():
+                self._process_frame(header, body)
+        except TransportError as e:
+            self.logger.error("Closing connection to server: %s (%s)", e.reason, ua.StatusCode(e.status))
+            status = ua.StatusCodes.BadResponseTooLarge if isinstance(e, MessageSizeExceeded) else e.status
+            self._fail_all_pending(ua.UaStatusCodeError(status))
+            self.disconnect_socket()
+        except ua.UaStatusCodeError as e:
+            self.logger.error("Got error status from server: %s", e)
+            self._fail_all_pending(e)
+            self.disconnect_socket()
+        except Exception:
+            self.logger.exception("Exception raised while parsing message from server")
+            self.disconnect_socket()
 
-    def _process_received_data(self, data: bytes) -> None:
-        """
-        Try to parse received data as enginir_opcua message. Data may be chunked but will be in correct order.
-        See: https://docs.python.org/3/library/asyncio-protocol.html#asyncio.Protocol.data_received
-        Reassembly is done by filling up a buffer until it verifies as a valid message (or a MessageChunk).
-        """
-        buf = ua.utils.Buffer(data)
-        while buf:
-            # Shadow copy of the position at iteration start; lets us stash the
-            # original unparsed bytes on partial-receive without an eager copy.
-            unparsed = buf.copy()
-            try:
-                try:
-                    header = header_from_binary(buf)
-                except ua.utils.NotEnoughData:
-                    self.logger.debug("Not enough data while parsing header from server, waiting for more")
-                    self.receive_buffer = bytes(unparsed)
-                    return
-                if len(buf) < header.body_size:
-                    self.logger.debug(
-                        "We did not receive enough data from server. Need %s got %s", header.body_size, len(buf)
-                    )
-                    self.receive_buffer = bytes(unparsed)
-                    return
-                msg = self._connection.receive_from_header_and_body(header, buf)
-                self._process_received_message(msg)
-                if header.MessageType == ua.MessageType.SecureOpen:
-                    params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
-                    response: ua.OpenSecureChannelResponse = struct_from_binary(
-                        ua.OpenSecureChannelResponse, msg.body()
-                    )
-                    response.ResponseHeader.ServiceResult.check()
-                    self._open_secure_channel_exchange = response
-                    self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
-            except ua.UaStatusCodeError as e:
-                self.logger.error("Got error status from server: %s", e)
-                self._fail_all_pending(e)
-                self.disconnect_socket()
-                return
-            except Exception:
-                self.logger.exception("Exception raised while parsing message from server")
-                self.disconnect_socket()
-                return
+    def _process_frame(self, header: ua.Header, body: Buffer) -> None:
+        msg = self._connection.receive_from_header_and_body(header, body)
+        self._process_received_message(msg)
+        if header.MessageType == ua.MessageType.SecureOpen:
+            params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+            response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
+            response.ResponseHeader.ServiceResult.check()
+            self._open_secure_channel_exchange = response
+            self._connection.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
 
-    def _process_received_message(self, msg: ua.Message | ua.Acknowledge | ua.ErrorMessage | None) -> None:
+    def _process_received_message(
+        self, msg: ua.Message | AbortedMessage | ua.Acknowledge | ua.ErrorMessage | None
+    ) -> None:
         if msg is None:
             pass
         elif isinstance(msg, ua.Message):
             self._call_callback(msg.request_id(), msg.body())
+        elif isinstance(msg, AbortedMessage):
+            self._fail_request(msg)
         elif isinstance(msg, ua.Acknowledge):
             self._call_callback(0, msg)
         elif isinstance(msg, ua.ErrorMessage):
@@ -167,6 +157,11 @@ class UASocketProtocol(asyncio.Protocol):
                 msg.Error.check()
         else:
             raise ua.UaError(f"Unsupported message type: {msg}")
+
+    def _fail_request(self, aborted: AbortedMessage) -> None:
+        future = self._callbackmap.pop(aborted.request_id, None)
+        if future is not None and not future.done():
+            future.set_exception(ua.UaStatusCodeError(aborted.error.Error.value))
 
     def _send_request(
         self, request: Any, timeout: float = 1, message_type: ua.MessageType = ua.MessageType.SecureMessage
@@ -188,6 +183,14 @@ class UASocketProtocol(asyncio.Protocol):
             binreq = struct_to_binary(request)
             self.revolve_security_token()
             msg = self._connection.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
+        except MessageTooLarge as e:
+            self._request_handle -= 1
+            raise ua.uaerrors.BadRequestTooLarge() from e
+        except MessageAborted as e:
+            self._request_handle -= 1
+            if self.transport is not None:
+                self.transport.write(e.written)
+            raise
         except Exception:
             # reset request handle if any error
             # see self._setup_request_header
@@ -289,10 +292,12 @@ class UASocketProtocol(asyncio.Protocol):
             self.logger.warning("disconnect_socket was called but transport is None")
 
     async def send_hello(self, url: str, max_messagesize: int = 0, max_chunkcount: int = 0) -> ua.Acknowledge:
-        hello = ua.Hello()
-        hello.EndpointUrl = url
-        hello.MaxMessageSize = max_messagesize
-        hello.MaxChunkCount = max_chunkcount
+        limits = self._connection.limits
+        if max_messagesize:
+            limits.max_message_size = max_messagesize
+        if max_chunkcount:
+            limits.max_chunk_count = max_chunkcount
+        hello = limits.create_hello_limits(ua.Hello(EndpointUrl=url))
         ack: asyncio.Future[ua.Acknowledge] = asyncio.Future()
         self._callbackmap[0] = ack
         if self.transport is not None:
