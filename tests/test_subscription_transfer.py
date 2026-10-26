@@ -10,7 +10,7 @@ import pytest
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.server.internal_session import Session
-from enginir_opcua.server.internal_subscription import InternalSubscription
+from enginir_opcua.server.internal_subscription import InternalSubscription, SubscriptionState
 from enginir_opcua.server.subscription_service import same_owner
 
 from .conftest import find_free_port
@@ -198,3 +198,22 @@ def test_srv4_anonymous_owner_needs_the_same_certificate() -> None:
     alice = User(role=UserRole.User, name="alice")
     assert same_owner(alice, None, alice, None) is True
     assert same_owner(alice, None, User(role=UserRole.User, name="bob"), None) is False
+
+
+async def test_srv11_expired_last_subscription_answers_the_queued_publish_requests(two_sessions: TwoSessions) -> None:
+    """Part 4, 5.14.1.1, 5.14.8.1: the notice goes out with a queued request, the others get Bad_NoSubscription."""
+    handler = Recorder()
+    sub = await two_sessions.alice.create_subscription(3_600_000, handler)
+    assert sub.subscription_id is not None
+    session = server_session(two_sessions, two_sessions.alice)
+    await asyncio.sleep(0.3)
+    assert session.publish_queue
+    isub = internal(two_sessions, sub.subscription_id)
+    isub.state = SubscriptionState.KEEPALIVE
+    isub._keep_alive_counter = 1000
+    isub._lifetime_counter = 1
+    await isub.timer_expired()
+    await asyncio.wait_for(handler.status_event.wait(), 3)
+    assert handler.statuses[0].Status.value == ua.StatusCodes.BadTimeout
+    assert sub.subscription_id not in two_sessions.server.iserver.subscription_service.subscriptions
+    assert not session.publish_queue

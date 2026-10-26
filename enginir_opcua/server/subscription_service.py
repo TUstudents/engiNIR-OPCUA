@@ -44,6 +44,7 @@ class SubscriptionService:
         self._sub_id_counter = 77
         self.standard_events: dict[int, Any] = {}
         self._conditions: dict[ua.NodeId, Any] = {}
+        self._background: set[asyncio.Task[None]] = set()
         self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
 
     async def create_subscription(
@@ -152,6 +153,11 @@ class SubscriptionService:
     def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
         self.subscriptions.pop(sub.data.SubscriptionId, None)
         self._hold_notice(sub.session_id, notice, sub.pub_result_callback)
+        session = self._session(sub.session_id)
+        if session is not None:
+            task = asyncio.get_running_loop().create_task(session.settle_publish_queue())
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
 
     def pending_notice(self, session_id: ua.NodeId) -> tuple[ua.PublishResult, Callable[..., Any]] | None:
         pending = self._pending_notices.get(session_id)
