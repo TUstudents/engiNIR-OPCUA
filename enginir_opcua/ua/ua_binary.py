@@ -917,8 +917,12 @@ def create_enum_deserializer(uatype: type[IntFlag] | type[Enum]) -> Callable[[An
         unpack = getattr(Primitives, typename).unpack
         return lambda val: uatype(unpack(val))
 
+    is_abstract = not uatype.__members__
+
     def decode_enum(data: Buffer | IO) -> Any:
         value = Primitives.Int32.unpack(data)
+        if is_abstract:
+            return value
         try:
             return uatype(value)
         except ValueError as ex:

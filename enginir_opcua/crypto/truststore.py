@@ -73,7 +73,7 @@ class TrustStore:
         certs: list[x509.Certificate] = []
         for location in self._trust_locations:
             certs.extend(await self._load_trust_location(location))
-        self._trust_store = x509.verification.Store(certs)
+        self._trust_store = x509.verification.Store(certs) if certs else None
 
     async def load_crl(self) -> None:
         """(Re)load the certificate revocation lists."""

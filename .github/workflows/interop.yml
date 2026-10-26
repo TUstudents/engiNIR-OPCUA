@@ -1,0 +1,58 @@
+name: Interoperability
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  reference-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the pinned reference stack tag
+        id: pin
+        run: echo "tag=$(cat tools/interop/reference-stack-tag.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore the reference stack build
+        id: build-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/interop-build
+          key: interop-build-${{ steps.pin.outputs.tag }}-${{ hashFiles('tools/interop/build.sh') }}
+
+      - name: Check out the reference stack
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: OPCFoundation/UA-.NETStandard
+          ref: ${{ steps.pin.outputs.tag }}
+          fetch-depth: 0
+          path: interop-src/UA-.NETStandard
+
+      - name: Build the reference stack
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: tools/interop/build.sh interop-src/UA-.NETStandard "$RUNNER_TEMP/interop-build"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Run the interoperability tests
+        run: tools/interop/run.sh "$RUNNER_TEMP/interop-build" -v
