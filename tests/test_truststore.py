@@ -221,3 +221,11 @@ async def test_cert_in_crl(cert_files, trust_store) -> None:
     assert trust_store.is_revoked(cert_server)
 
     assert not trust_store.validate(cert_server)
+
+
+async def test_cry_empty_trust_location_loads_and_trusts_nothing(cert_files: Path, tmp_path: Path) -> None:
+    """Part 4, 6.1.3: with an empty list of trusted certificates, no certificate is trusted."""
+    trust_store = TrustStore([tmp_path], [])
+    await trust_store.load()
+    cert_self_signed: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_SELF_SIGNED_FILE)
+    assert trust_store.is_trusted(cert_self_signed) is False

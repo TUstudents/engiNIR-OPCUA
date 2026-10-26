@@ -108,6 +108,7 @@ asyncio_default_test_loop_scope = "module"
 asyncio_default_fixture_loop_scope = "module"
 markers = [
   "slow(*paths): slow test; with --changed-since REF it only runs when one of the given source paths, its test file or tests/conftest.py changed",
+  "interop: runs against the OPC Foundation reference stack; only selected with -m interop and needs ENGINIR_INTEROP_SERVER_URL or ENGINIR_INTEROP_CLIENT_DLL (see tools/interop/run.sh)",
 ]
 
 [tool.ruff]

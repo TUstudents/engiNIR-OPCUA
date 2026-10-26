@@ -35,3 +35,24 @@ def test_ua24_diagnostic_info_locale_uses_mask_bit_0x08() -> None:
 ```
 
 Today the encoder writes `04 02000000`, which is the bug.
+
+## Interoperability tests
+
+`tests/interop/` runs our client against the OPC Foundation reference server and the reference console client against our server. Both come from the .NET Standard stack (`OPCFoundation/UA-.NETStandard`), pinned to the tag in `tools/interop/reference-stack-tag.txt`; moving the tag is a deliberate change. The tests carry the `interop` marker and are only selected by `-m interop`: a plain `uv run pytest` and `-m "not slow"` deselect them. Without `ENGINIR_INTEROP_SERVER_URL` (our client tests) or `ENGINIR_INTEROP_CLIENT_DLL` (our server tests) they skip with a reason.
+
+| Module | Scenarios | Matrix |
+|---|---|---|
+| `test_client_vs_reference.py` | GetEndpoints, FindServers, connect, browse, read, write, a 20,000 element array (many chunks), method call, data change and event subscriptions, channel token renewal, reconnect, TransferSubscriptions with Republish, HistoryRead (skips: the reference server has no history), `load_data_type_definitions` | None; Basic256Sha256 Sign and SignAndEncrypt; Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss SignAndEncrypt; each with Anonymous, UserName (`user1`) and X509 user token (None only with Anonymous) |
+| `test_reference_client_vs_server.py` | The console client connects and browses (`--browseall`), then reads, writes, calls a method and subscribes against nodes our server publishes under the reference server's node ids | The same policies; Anonymous and UserName |
+
+The client picks the most secure endpoint, so the tests start our server with one policy at a time. The client accepts our server's certificate (`--autoaccept`, the only choice its command line offers); our server only accepts the client's certificate after the test copied it into an explicit trust directory, and a test checks that an untrusted certificate is refused.
+
+To run them locally you need the .NET 8 SDK (Microsoft's `dotnet-install.sh` can install it into any directory with `--install-dir`):
+
+```bash
+git clone --branch "$(cat tools/interop/reference-stack-tag.txt)" https://github.com/OPCFoundation/UA-.NETStandard /tmp/interop-src/UA-.NETStandard
+tools/interop/build.sh /tmp/interop-src/UA-.NETStandard /tmp/interop-build
+tools/interop/run.sh /tmp/interop-build
+```
+
+The clone needs its full history (no `--depth`), because the build computes its version from it. `run.sh` starts the reference server on port 62541 with its own certificate store in a temporary directory, waits until it answers, runs `pytest -m interop tests/interop` with any extra arguments you pass, and stops the server. Set `ENGINIR_INTEROP_KEEP_LOGS=1` to keep the reference server's log. `.github/workflows/interop.yml` does the same on pushes to `master`, weekly and on manual dispatch; it is not a required check.
