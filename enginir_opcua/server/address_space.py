@@ -596,10 +596,12 @@ class MethodService:
     def __init__(self, aspace: AddressSpace) -> None:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
-        self._pool = ThreadPoolExecutor()
+        self._pool: ThreadPoolExecutor | None = None
 
     def stop(self) -> None:
-        self._pool.shutdown()
+        if self._pool is not None:
+            self._pool.shutdown()
+            self._pool = None
 
     async def call(self, methods: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         results = []
@@ -640,6 +642,8 @@ class MethodService:
     async def _run_method(self, func: "Callable[..., Any]", parent: ua.NodeId, *args: Any) -> Any:
         if inspect.iscoroutinefunction(func):
             return await func(parent, *args)
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor()
         p = partial(func, parent, *args)
         res = await asyncio.get_event_loop().run_in_executor(self._pool, p)
         return res
