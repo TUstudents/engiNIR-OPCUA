@@ -6,9 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from enginir_opcua import Client
+from enginir_opcua import Client, ua
 
-from .support import MATRIX, ClientIdentity, ReferenceStack, SecurityCase, connect, make_identity
+from .support import (
+    MATRIX,
+    NONE_POLICY_URI,
+    USER_TOKEN_TYPES,
+    ClientIdentity,
+    ReferenceStack,
+    SecurityCase,
+    connect,
+    make_identity,
+)
 
 SERVER_URL_ENV = "ENGINIR_INTEROP_SERVER_URL"
 CLIENT_DLL_ENV = "ENGINIR_INTEROP_CLIENT_DLL"
@@ -71,9 +80,28 @@ def trusted_user_identity(identity: ClientIdentity) -> ClientIdentity:
     return identity
 
 
+@pytest.fixture(scope="module")
+async def offered_user_tokens(
+    reference_server_url: str,
+) -> dict[tuple[str, ua.MessageSecurityMode], set[ua.UserTokenType]]:
+    endpoints = await Client(reference_server_url).connect_and_get_server_endpoints()
+    return {
+        (endpoint.SecurityPolicyUri, endpoint.SecurityMode): {token.TokenType for token in endpoint.UserIdentityTokens}
+        for endpoint in endpoints
+        if endpoint.EndpointUrl.startswith("opc.tcp://")
+    }
+
+
 @pytest.fixture(params=MATRIX, ids=[f"{case.name}-{user}" for case, user in MATRIX])
-def matrix_case(request: pytest.FixtureRequest) -> tuple[SecurityCase, str]:
+def matrix_case(
+    request: pytest.FixtureRequest,
+    offered_user_tokens: dict[tuple[str, ua.MessageSecurityMode], set[ua.UserTokenType]],
+) -> tuple[SecurityCase, str]:
     case, user = request.param
+    policy_uri = case.policy.URI if case.policy is not None else NONE_POLICY_URI
+    token_type = USER_TOKEN_TYPES[user]
+    if token_type not in offered_user_tokens.get((policy_uri, case.mode), set()):
+        pytest.skip(f"the reference server does not offer {user} tokens on {case.name} (its UserTokenPolicy override)")
     if user == "certificate":
         request.getfixturevalue("trusted_user_identity")
     return case, user

@@ -52,6 +52,14 @@ SECURITY_CASES = (
     ),
 )
 
+NONE_POLICY_URI = "http://opcfoundation.org/UA/SecurityPolicy#None"
+
+USER_TOKEN_TYPES = {
+    "anonymous": ua.UserTokenType.Anonymous,
+    "username": ua.UserTokenType.UserName,
+    "certificate": ua.UserTokenType.Certificate,
+}
+
 USERS = ("anonymous", "username", "certificate")
 
 MATRIX = tuple(

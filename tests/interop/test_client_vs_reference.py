@@ -7,7 +7,15 @@ import pytest
 from enginir_opcua import Client, ua
 from enginir_opcua.client.client import UaClientState
 
-from .support import SECURITY_CASES, ClientIdentity, SecurityCase, connect, protocol_of, reference_nodeid
+from .support import (
+    NONE_POLICY_URI,
+    SECURITY_CASES,
+    ClientIdentity,
+    SecurityCase,
+    connect,
+    protocol_of,
+    reference_nodeid,
+)
 
 pytestmark = pytest.mark.interop
 
@@ -41,7 +49,7 @@ async def test_get_endpoints_lists_every_policy_of_the_matrix(reference_server_u
     endpoints = await client.connect_and_get_server_endpoints()
     offered = {(endpoint.SecurityPolicyUri, endpoint.SecurityMode) for endpoint in endpoints}
     for case in SECURITY_CASES:
-        uri = case.policy.URI if case.policy is not None else "http://opcfoundation.org/UA/SecurityPolicy#None"
+        uri = case.policy.URI if case.policy is not None else NONE_POLICY_URI
         assert (uri, case.mode) in offered
 
 
