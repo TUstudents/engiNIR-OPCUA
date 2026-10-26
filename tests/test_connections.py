@@ -4,7 +4,7 @@ import struct
 import pytest
 
 from enginir_opcua import Client, Server, ua
-from enginir_opcua.ua.uaerrors import BadMaxConnectionsReached, BadSessionNotActivated
+from enginir_opcua.ua.uaerrors import BadSessionIdInvalid, BadTooManySessions
 
 from .conftest import find_free_port, port_num
 
@@ -12,19 +12,19 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_max_connections_1(opc):
-    opc.server.iserver.isession.__class__.max_connections = 1
+    opc.server.iserver.session_manager.max_sessions = 1
     port = opc.server.endpoint.port
     if port == port_num:
         # if client we already have one connection
-        with pytest.raises(BadMaxConnectionsReached):
+        with pytest.raises(BadTooManySessions):
             async with Client(f"opc.tcp://127.0.0.1:{port}"):
                 pass
     else:
         async with Client(f"opc.tcp://127.0.0.1:{port}"):
-            with pytest.raises(BadMaxConnectionsReached):
+            with pytest.raises(BadTooManySessions):
                 async with Client(f"opc.tcp://127.0.0.1:{port}"):
                     pass
-    opc.server.iserver.isession.__class__.max_connections = 1000
+    opc.server.iserver.session_manager.max_sessions = 100
 
 
 async def test_dos_server(opc):
@@ -123,7 +123,7 @@ async def test_session_watchdog():
     if client._supervisor_task is not None:
         client._supervisor_task.cancel()
     await asyncio.sleep(3)  # Wait for the watchdog to terminate the session due to inactivity
-    with pytest.raises(BadSessionNotActivated):
+    with pytest.raises(BadSessionIdInvalid):
         server_time_node = client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         await server_time_node.read_value()
     await client.disconnect()

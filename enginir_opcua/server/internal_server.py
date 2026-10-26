@@ -10,6 +10,7 @@ import hmac
 import logging
 from collections.abc import Callable
 from copy import copy
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from struct import unpack_from
@@ -17,7 +18,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from enginir_opcua import ua
-from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from ..common.callback import CallbackService
 from ..common.connection import ChannelSettings
@@ -28,7 +28,9 @@ from ..crypto.validator import CertificateValidatorMethod
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
-from .internal_session import InternalSession
+from .internal_session import InternalSession, SessionManager
+from .service_dispatch import Dispatcher
+from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
 from .user_managers import PermissiveUserManager, UserManager
 
@@ -43,6 +45,46 @@ USER_TOKEN_SECURITY_POLICIES: tuple[type[security_policies.SecurityPolicy], ...]
     security_policies.SecurityPolicyAes128Sha256RsaOaep,
     security_policies.SecurityPolicyAes256Sha256RsaPss,
 )
+
+
+@dataclass
+class OperationLimits:
+    max_nodes_per_read: int = 10_000
+    max_nodes_per_history_read_data: int = 10_000
+    max_nodes_per_history_read_events: int = 10_000
+    max_nodes_per_write: int = 10_000
+    max_nodes_per_history_update_data: int = 10_000
+    max_nodes_per_history_update_events: int = 10_000
+    max_nodes_per_method_call: int = 10_000
+    max_nodes_per_browse: int = 10_000
+    max_nodes_per_register_nodes: int = 10_000
+    max_nodes_per_translate_browse_paths: int = 10_000
+    max_nodes_per_node_management: int = 10_000
+    max_monitored_items_per_call: int = 10_000
+
+
+OPERATION_LIMIT_NODES: dict[str, int] = {
+    "max_nodes_per_read": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRead,
+    "max_nodes_per_history_read_data": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadData,
+    "max_nodes_per_history_read_events": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadEvents
+    ),
+    "max_nodes_per_write": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerWrite,
+    "max_nodes_per_history_update_data": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateData
+    ),
+    "max_nodes_per_history_update_events": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateEvents
+    ),
+    "max_nodes_per_method_call": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerMethodCall,
+    "max_nodes_per_browse": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerBrowse,
+    "max_nodes_per_register_nodes": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRegisterNodes,
+    "max_nodes_per_translate_browse_paths": (
+        ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerTranslateBrowsePathsToNodeIds
+    ),
+    "max_nodes_per_node_management": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerNodeManagement,
+    "max_monitored_items_per_call": ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxMonitoredItemsPerCall,
+}
 
 
 class ServerDesc:
@@ -66,9 +108,6 @@ class InternalServer:
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
-        # auth_token -> InternalSession: lets a fresh UaProcessor reattach to an existing
-        # session on ActivateSession (spec Part 4 §6.7 reconnect path).
-        self._external_sessions: dict[ua.NodeId, "InternalSession"] = {}
         # Server-side limits — clamp client-requested values to avoid resource exhaustion
         # when clients abandon long-lived sessions. Tighten on a per-deployment basis.
         self.max_session_timeout_ms: float = 600_000
@@ -119,10 +158,10 @@ class InternalServer:
         self.user_manager = user_manager
         self.certificate_validator: CertificateValidatorMethod | None = None
         """hook to validate a certificate, raises a ServiceError when not valid"""
-        # create a session to use on server side
-        self.isession = InternalSession(
-            self, self.aspace, self.subscription_service, "Internal", user=User(role=UserRole.Admin)
-        )
+        self.operation_limits = OperationLimits()
+        self.session_manager = SessionManager(self)
+        self.dispatcher = Dispatcher(self, build_service_table())
+        self.isession: InternalSession = self.session_manager.new_in_process_session()
         self.current_time_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         self.server_status_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus))
         self.time_task: asyncio.Task[None] | None = None
@@ -164,25 +203,13 @@ class InternalServer:
         await ns_node.write_value(uries)
 
         params = ua.WriteParameters()
-        for nodeid in (
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRead,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadData,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryReadEvents,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerWrite,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateData,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerHistoryUpdateEvents,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerMethodCall,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerBrowse,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerRegisterNodes,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerTranslateBrowsePathsToNodeIds,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxNodesPerNodeManagement,
-            ua.ObjectIds.Server_ServerCapabilities_OperationLimits_MaxMonitoredItemsPerCall,
-        ):
+        for limit in fields(self.operation_limits):
+            nodeid = OPERATION_LIMIT_NODES[limit.name]
             attr = ua.WriteValue()
             attr.NodeId = ua.NodeId(nodeid)
             attr.AttributeId = ua.AttributeIds.Value
             attr.Value = ua.DataValue(
-                ua.Variant(10000, ua.VariantType.UInt32),
+                ua.Variant(getattr(self.operation_limits, limit.name), ua.VariantType.UInt32),
                 StatusCode=ua.StatusCode(ua.StatusCodes.Good),
                 SourceTimestamp=datetime.now(UTC),
             )
@@ -245,17 +272,24 @@ class InternalServer:
         self.logger.info("starting internal server")
         for edp in self.endpoints:
             self._known_servers[edp.Server.ApplicationUri] = ServerDesc(edp.Server)
+        await self.set_server_state(ua.ServerState.Running)
+        start_time = datetime.now(UTC)
         status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
-        status.State = ua.ServerState.Running
-        status.StartTime = datetime.now(UTC)
+        status.StartTime = start_time
         await self.server_status_node.write_value(status)
-        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_State)).write_value(
-            ua.ServerState.Running, ua.VariantType.Int32
-        )
-        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_StartTime)).write_value(status.StartTime)
+        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_StartTime)).write_value(start_time)
         if not self.disabled_clock:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
+        self.session_manager.start()
+
+    async def set_server_state(self, state: ua.ServerState) -> None:
+        status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
+        status.State = state
+        await self.server_status_node.write_value(status)
+        await Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerStatus_State)).write_value(
+            state, ua.VariantType.Int32
+        )
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
@@ -263,7 +297,9 @@ class InternalServer:
             self._time_task_stop.set()
             await self.time_task
         self.method_service.stop()
-        await self.isession.close_session()
+        await self.session_manager.close_all()
+        for sub_id, sub in list(self.subscription_service.subscriptions.items()):
+            await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
 
     async def _set_current_time_loop(self) -> None:
@@ -355,20 +391,6 @@ class InternalServer:
 
     def register_server2(self, params: ua.RegisterServer2Parameters) -> None:
         return self.register_server(params.Server, params.DiscoveryConfiguration)
-
-    def create_session(
-        self, name: str, user: User = User(role=UserRole.Anonymous), external: bool = False
-    ) -> InternalSession:
-        return InternalSession(self, self.aspace, self.subscription_service, name, user=user, external=external)
-
-    def lookup_external_session(self, auth_token: ua.NodeId) -> "InternalSession | None":
-        return self._external_sessions.get(auth_token)
-
-    def register_external_session(self, session: "InternalSession") -> None:
-        self._external_sessions[session.auth_token] = session
-
-    def unregister_external_session(self, session: "InternalSession") -> None:
-        self._external_sessions.pop(session.auth_token, None)
 
     async def enable_history_data_change(
         self, node: Node, period: timedelta | None = timedelta(days=7), count: int = 0

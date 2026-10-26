@@ -31,6 +31,7 @@ USER_TYPES = [
     ua.ObjectIds.DeleteMonitoredItemsRequest_Encoding_DefaultBinary,
     ua.ObjectIds.HistoryReadRequest_Encoding_DefaultBinary,
     ua.ObjectIds.PublishRequest_Encoding_DefaultBinary,
+    ua.ObjectIds.CancelRequest_Encoding_DefaultBinary,
     ua.ObjectIds.RepublishRequest_Encoding_DefaultBinary,
     ua.ObjectIds.CloseSecureChannelRequest_Encoding_DefaultBinary,
     ua.ObjectIds.CallRequest_Encoding_DefaultBinary,
@@ -82,6 +83,4 @@ class SimpleRoleRuleset(PermissionRuleset):
         }
 
     def check_validity(self, user, action_type_id, body):
-        if action_type_id in self._permission_dict[user.role]:
-            return True
-        return False
+        return action_type_id in self._permission_dict.get(user.role, ())
