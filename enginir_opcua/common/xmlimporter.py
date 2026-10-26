@@ -326,6 +326,8 @@ class XmlImporter:
         return self.session.uaclient
 
     async def _add_references(self, refs):
+        if not refs:
+            return
         res = await self._get_server().add_references(refs)
 
         for sc, ref in zip(res, refs):
