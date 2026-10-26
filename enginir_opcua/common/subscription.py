@@ -451,7 +451,9 @@ class Subscription:
             await self.recreate()
             return
         result = results[0] if results else None
-        if result is None or not result.StatusCode.is_good():
+        if result is not None and result.StatusCode.value == ua.StatusCodes.BadNothingToDo:
+            result.AvailableSequenceNumbers = []
+        elif result is None or not result.StatusCode.is_good():
             self.logger.info(
                 "transfer_subscriptions returned %s; falling back to recreate",
                 result.StatusCode if result else "no result",
