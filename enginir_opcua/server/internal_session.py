@@ -148,6 +148,7 @@ class Session:
             session_id=session_id,
         )
         self.services.publish_callback = self.forward_publish_response
+        self.services.publish_request_callback = self.get_publish_request
 
     def __str__(self) -> str:
         return f"Session(name:{self.name}, id:{self.id}, user:{self.user}, state:{self.state.name})"
@@ -285,6 +286,16 @@ class Session:
                 return
         if self.publish_queue:
             self.publish_queue.popleft().answer(ua.StatusCodes.BadTooManyPublishRequests)
+
+    async def settle_publish_queue(self) -> None:
+        service = self.iserver.subscription_service
+        while self.publish_queue and service.has_pending_notice(self.id):
+            requestdata = self.get_publish_request(0)
+            if requestdata is None:
+                break
+            await service.on_publish_request(self.id, requestdata)
+        if not self.subscription_ids() and not service.has_pending_notice(self.id):
+            self.flush_publish_queue(ua.StatusCodes.BadNoSubscription)
 
     async def close(self, delete_subscriptions: bool) -> None:
         if self.state == SessionState.Closed:
@@ -537,6 +548,7 @@ class InternalSession(AbstractSession):
             session_id if session_id is not None else internal_server.session_manager.next_session_id()
         )
         self.publish_callback: Callable[..., Any] | None = None
+        self.publish_request_callback: Callable[..., Any] | None = None
 
     def __str__(self) -> str:
         return f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id})"
@@ -681,4 +693,6 @@ class InternalSession(AbstractSession):
     async def transfer_subscriptions(self, params: ua.TransferSubscriptionsParameters) -> list[ua.TransferResult]:
         if self.publish_callback is None:
             raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
-        return await self.subscription_service.transfer_subscriptions(params, self.session_id, self.publish_callback)
+        return await self.subscription_service.transfer_subscriptions(
+            params, self.session_id, self.publish_callback, self.publish_request_callback
+        )

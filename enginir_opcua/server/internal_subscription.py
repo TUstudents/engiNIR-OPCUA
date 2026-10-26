@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
 from enginir_opcua.common import utils
+from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
 from .monitored_item_service import MonitoredItemService
@@ -88,6 +89,8 @@ class InternalSubscription:
         self.max_queue_size = max_queue_size
         self.max_notifications_per_publish: int = max_notifications_per_publish
         self.priority: int = priority
+        self.owner_user: User | None = None
+        self.owner_certificate: bytes | None = None
         self._not_acknowledged_results: dict[int, ua.PublishResult] = {}
         self._publishing_enabled = publishing_enabled
         self.state: SubscriptionState = SubscriptionState.NORMAL
@@ -121,6 +124,12 @@ class InternalSubscription:
         self.priority = priority
         self.reset_lifetime()
         self._keep_alive_counter = min(self._keep_alive_counter, keep_alive_count)
+
+    def next_sequence_number(self) -> int:
+        return self._sequence
+
+    def has_queued_datachange(self, mid: int) -> bool:
+        return bool(self._triggered_datachanges.get(mid))
 
     def reset_lifetime(self) -> None:
         self._lifetime_counter = self.data.RevisedLifetimeCount
