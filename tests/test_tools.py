@@ -51,7 +51,12 @@ def test_cli_tools_which_require_sigint(running_server):
     tools = (["tools/uaserver"], ["tools/uasubscribe", "-u", url, "-n", RW_NODE])
     for tool in tools:
         proc = subprocess.Popen(tool, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        with pytest.raises(subprocess.TimeoutExpired):
-            # we consider there's no error if the process is still alive
-            proc.communicate(timeout=2)
-        proc.send_signal(signal.SIGINT)
+        try:
+            with pytest.raises(subprocess.TimeoutExpired):
+                proc.communicate(timeout=2)
+            proc.send_signal(signal.SIGINT)
+            proc.communicate(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
