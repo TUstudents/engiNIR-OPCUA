@@ -161,6 +161,10 @@ _NUMERIC_TYPES = frozenset(
 )
 
 
+def _first_member_or_zero(enum_type: type[Enum]) -> Any:
+    return next(iter(enum_type.__members__.values()), 0)
+
+
 def _default_value_for(uatype: str, optional: bool = False) -> Any:
     """
     Return the actual default object for a UA scalar field, without going through eval().
@@ -184,7 +188,7 @@ def _default_value_for(uatype: str, optional: bool = False) -> Any:
     if uatype in _NUMERIC_TYPES:
         return getattr(ua, uatype)(0)
     if isinstance(cls, type) and issubclass(cls, Enum):
-        return next(iter(cls.__members__.values()))
+        return _first_member_or_zero(cls)
     if cls is not None:
         return field(default_factory=cls)
     return field(default_factory=list)
@@ -338,7 +342,7 @@ def make_structure(
             default_val = field(default_factory=list)
         elif dep_cls is not None and not sfield.IsOptional:
             if isinstance(dep_cls, type) and issubclass(dep_cls, Enum):
-                default_val = next(iter(dep_cls.__members__.values()))
+                default_val = _first_member_or_zero(dep_cls)
             else:
                 default_val = field(default_factory=dep_cls)
         else:

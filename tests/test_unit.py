@@ -1063,6 +1063,24 @@ def test_struct104_optional_field_respects_encoding_mask() -> None:
     assert decoded.Description is None
 
 
+def test_cli_struct104_field_of_the_abstract_enumeration_type_has_a_default() -> None:
+    """Part 3, 8.40: Enumeration is an abstract DataType without members; it encodes as an Int32."""
+    sdef = ua.StructureDefinition()
+    sdef.StructureType = ua.StructureType.Structure
+    kind = ua.StructureField()
+    kind.Name = "Kind"
+    kind.DataType = ua.NodeId(ua.ObjectIds.Enumeration)
+    kind.ValueRank = ua.ValueRank.Scalar
+    kind.IsOptional = False
+    sdef.Fields = [kind]
+
+    cls = make_structure(ua.NodeId(65002, 2), "_AbstractEnumerationStruct", sdef)["_AbstractEnumerationStruct"]
+
+    data = struct_to_binary(cls())
+    assert data == ua_binary.Primitives.Int32.pack(0)
+    assert struct_from_binary(cls, ua.utils.Buffer(data)) == cls()
+
+
 def test_typeid_by_extension_objects_distinguishes_same_named_classes(restore_ua_registry) -> None:
     @dataclass
     class CollideA:
