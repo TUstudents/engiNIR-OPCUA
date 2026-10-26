@@ -142,6 +142,7 @@ class InternalServer:
         # Total subscription count cap across the whole server. Past this,
         # CreateSubscription returns BadTooManySubscriptions.
         self.max_subscriptions: int = 1_000
+        self.max_subscriptions_per_session: int = 100
         self.certificate: Any = None
         self.private_key: Any = None
         self.aspace = AddressSpace()

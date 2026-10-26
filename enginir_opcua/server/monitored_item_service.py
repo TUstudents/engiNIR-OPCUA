@@ -79,6 +79,19 @@ class MonitoredItemService:
             results.append(result)
         return results
 
+    async def resend_initial_values(self) -> None:
+        for mid, mdata in list(self._monitored_items.items()):
+            read_value_id = mdata.read_value_id
+            if mdata.mode != ua.MonitoringMode.Reporting or read_value_id is None or mdata.callback_handle is None:
+                continue
+            if read_value_id.AttributeId == ua.AttributeIds.EventNotifier or self.isub.has_queued_datachange(mid):
+                continue
+            value = mdata.mvalue.get_current_datavalue()
+            if value is None:
+                value = self.aspace.read_attribute_value(read_value_id.NodeId, read_value_id.AttributeId)
+            notification = ua.MonitoredItemNotification(ClientHandle=mdata.client_handle, Value=value)
+            await self.isub.enqueue_datachange_event(mid, notification, mdata.queue_size)
+
     def modify_monitored_items(self, params: ua.ModifyMonitoredItemsParameters) -> list[ua.MonitoredItemModifyResult]:
         results: list[ua.MonitoredItemModifyResult] = []
         for item in params.ItemsToModify:

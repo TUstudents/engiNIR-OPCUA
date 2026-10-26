@@ -113,3 +113,31 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
     assert server.iserver.subscription_service.subscriptions == {}
     assert _renewal_tasks() == []
     client.disconnect_socket()
+
+
+async def test_srv10_sync_method_callbacks_work_after_a_restart() -> None:
+    """Part 4, 5.11.2: a synchronous method callback is still run after the server was stopped and started."""
+    server = Server()
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    idx = await server.register_namespace("urn:enginir:opcua:restart-method")
+
+    def double(parent: ua.NodeId, value: ua.Variant) -> list[ua.Variant]:
+        return [ua.Variant(int(value.Value) * 2, ua.VariantType.Int64)]
+
+    method = await server.nodes.objects.add_method(
+        ua.NodeId(1000, idx),
+        ua.QualifiedName("double", idx),
+        double,
+        [ua.VariantType.Int64],
+        [ua.VariantType.Int64],
+    )
+    await server.start()
+    await server.stop()
+    await server.start()
+    try:
+        client = Client(server.endpoint.geturl())
+        async with client:
+            assert await client.nodes.objects.call_method(method.nodeid, 21) == 42
+    finally:
+        await server.stop()

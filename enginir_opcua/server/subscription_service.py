@@ -11,15 +11,23 @@ from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
 from enginir_opcua.common import uamethod, utils
+from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
 from .internal_subscription import InternalSubscription, SubscriptionState
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
+    from .internal_session import Session
     from .uaprocessor import PublishRequestData
 
-MAX_PENDING_NOTICES_PER_SESSION = 100
+
+def same_owner(owner_user: User | None, owner_certificate: bytes | None, user: User, certificate: bytes | None) -> bool:
+    if owner_user is None:
+        return False
+    if owner_user.name is not None:
+        return user.name == owner_user.name
+    return user.name is None and owner_certificate is not None and certificate == owner_certificate
 
 
 class SubscriptionService:
@@ -36,6 +44,7 @@ class SubscriptionService:
         self._sub_id_counter = 77
         self.standard_events: dict[int, Any] = {}
         self._conditions: dict[ua.NodeId, Any] = {}
+        self._background: set[asyncio.Task[None]] = set()
         self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
 
     async def create_subscription(
@@ -50,6 +59,7 @@ class SubscriptionService:
         if len(self.subscriptions) >= max_subs:
             self.logger.warning("Refusing subscription: at max_subscriptions=%s", max_subs)
             raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
+        self._check_session_limit(session_id)
         result = ua.CreateSubscriptionResult()
         (
             result.RevisedPublishingInterval,
@@ -77,8 +87,24 @@ class SubscriptionService:
             priority=params.Priority,
         )
         await internal_sub.start()
+        owner = self._session(session_id)
+        if owner is not None:
+            internal_sub.owner_user, internal_sub.owner_certificate = owner.user, owner.client_certificate
         self.subscriptions[result.SubscriptionId] = internal_sub
         return result
+
+    def _owned_count(self, session_id: ua.NodeId) -> int:
+        return sum(1 for sub in self.subscriptions.values() if sub.session_id == session_id)
+
+    def _at_session_limit(self, session_id: ua.NodeId) -> bool:
+        if self.iserver is None or self.iserver.session_manager.session_by_id(session_id) is None:
+            return False
+        return self._owned_count(session_id) >= self.iserver.max_subscriptions_per_session
+
+    def _check_session_limit(self, session_id: ua.NodeId) -> None:
+        if self._at_session_limit(session_id):
+            self.logger.warning("Refusing subscription: session at max_subscriptions_per_session")
+            raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
 
     def _setting(self, name: str, default: float) -> float:
         return getattr(self.iserver, name, default) if self.iserver else default
@@ -115,12 +141,23 @@ class SubscriptionService:
         sub.reset_lifetime()
         return sub
 
+    def _hold_notice(self, session_id: ua.NodeId, notice: ua.PublishResult, callback: Callable[..., Any]) -> None:
+        pending = self._pending_notices.setdefault(session_id, [])
+        if len(pending) >= int(self._setting("max_subscriptions_per_session", 100)):
+            pending.pop(0)
+        pending.append((notice, callback))
+
+    def has_pending_notice(self, session_id: ua.NodeId) -> bool:
+        return bool(self._pending_notices.get(session_id))
+
     def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
         self.subscriptions.pop(sub.data.SubscriptionId, None)
-        pending = self._pending_notices.setdefault(sub.session_id, [])
-        if len(pending) >= MAX_PENDING_NOTICES_PER_SESSION:
-            pending.pop(0)
-        pending.append((notice, sub.pub_result_callback))
+        self._hold_notice(sub.session_id, notice, sub.pub_result_callback)
+        session = self._session(sub.session_id)
+        if session is not None:
+            task = asyncio.get_running_loop().create_task(session.settle_publish_queue())
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
 
     def pending_notice(self, session_id: ua.NodeId) -> tuple[ua.PublishResult, Callable[..., Any]] | None:
         pending = self._pending_notices.get(session_id)
@@ -192,7 +229,7 @@ class SubscriptionService:
     ) -> tuple[int, list[ua.StatusCode]]:
         self.logger.info("publish request with acks %s", acks)
         owned = [sub for sub in self.subscriptions.values() if sub.session_id == session_id]
-        if not owned:
+        if not owned and not self.has_pending_notice(session_id):
             raise utils.ServiceError(ua.StatusCodes.BadNoSubscription)
         results: list[ua.StatusCode] = []
         for ack in acks:
@@ -256,21 +293,74 @@ class SubscriptionService:
         params: ua.TransferSubscriptionsParameters,
         session_id: ua.NodeId,
         callback: Callable[..., Any],
+        request_callback: Callable[..., Any] | None = None,
     ) -> list[ua.TransferResult]:
         self.logger.info("transfer_subscriptions: %s", params.SubscriptionIds)
         results: list[ua.TransferResult] = []
+        previous_owners: list[ua.NodeId] = []
         for sub_id in params.SubscriptionIds:
-            sub = self.subscriptions.get(int(sub_id))
             result = ua.TransferResult()
+            sub = self.subscriptions.get(int(sub_id))
             if sub is None:
                 result.StatusCode = ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid)
-                results.append(result)
-                continue
-            sub.session_id = session_id
-            sub.pub_result_callback = callback
-            result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
+            elif sub.session_id == session_id:
+                result.StatusCode = ua.StatusCode(ua.StatusCodes.BadNothingToDo)
+            elif not self._may_take_over(sub, session_id):
+                result.StatusCode = ua.StatusCode(ua.StatusCodes.BadUserAccessDenied)
+            elif self._at_session_limit(session_id):
+                result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManySubscriptions)
+            else:
+                previous_owners.append(sub.session_id)
+                await self._move(sub, session_id, callback, request_callback, params.SendInitialValues)
+                result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
             results.append(result)
+        for owner_id in dict.fromkeys(previous_owners):
+            old = self._session(owner_id)
+            if old is not None:
+                await old.settle_publish_queue()
         return results
+
+    def _session(self, session_id: ua.NodeId) -> "Session | None":
+        return self.iserver.session_manager.session_by_id(session_id) if self.iserver else None
+
+    def _may_take_over(self, sub: InternalSubscription, session_id: ua.NodeId) -> bool:
+        caller = self._session(session_id)
+        if caller is None:
+            return False
+        return same_owner(sub.owner_user, sub.owner_certificate, caller.user, caller.client_certificate)
+
+    async def _move(
+        self,
+        sub: InternalSubscription,
+        session_id: ua.NodeId,
+        callback: Callable[..., Any],
+        request_callback: Callable[..., Any] | None,
+        send_initial_values: bool,
+    ) -> None:
+        previous_id, previous_callback = sub.session_id, sub.pub_result_callback
+        caller = self._session(session_id)
+        sub.session_id = session_id
+        sub.pub_result_callback = callback
+        sub.pub_request_callback = request_callback
+        if caller is not None:
+            sub.owner_user, sub.owner_certificate = caller.user, caller.client_certificate
+        sub.reset_lifetime()
+        if sub.state is SubscriptionState.LATE:
+            sub.state = SubscriptionState.NORMAL
+        if self._session(previous_id) is not None:
+            self._hold_notice(previous_id, self._transferred_notice(sub), previous_callback)
+        if send_initial_values:
+            await sub.monitored_item_srv.resend_initial_values()
+
+    @staticmethod
+    def _transferred_notice(sub: InternalSubscription) -> ua.PublishResult:
+        notice = ua.PublishResult()
+        notice.SubscriptionId = sub.data.SubscriptionId
+        notification = ua.StatusChangeNotification()
+        notification.Status = ua.StatusCode(ua.StatusCodes.GoodSubscriptionTransferred)
+        notice.NotificationMessage.NotificationData.append(notification)
+        notice.NotificationMessage.SequenceNumber = sub.next_sequence_number()
+        return notice
 
     async def trigger_event(self, event: Any, subscription_id: int | None = None) -> None:
         if hasattr(event, "Retain") and hasattr(event, "NodeId"):
