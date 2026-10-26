@@ -107,6 +107,45 @@ SecureChannel (OPC 10000-6, 6.7; OPC 10000-4, 5.6.2):
   thumbprint, certificate, policy, mode and protocol version are checked on both sides.
 - The client renews after 75 % of each revised lifetime, at least every second.
 
+Server sessions (OPC 10000-4, 5.7):
+- `Session` and `SessionManager` (`iserver.session_manager`) replace the session state of `InternalSession`. A channel
+  can carry several sessions; every request is matched to its session by AuthenticationToken and has to arrive on
+  that session's channel. Removed: `InternalServer.create_session`, `lookup_external_session`,
+  `register_external_session`, `unregister_external_session` and `InternalSession.max_connections`;
+  `InternalSession.transfer_subscriptions(params)` takes no callback.
+- At most `session_manager.max_sessions` (100) sessions; at the limit the oldest session that was never activated is
+  closed, otherwise CreateSession gets `Bad_TooManySessions` (was `Bad_MaxConnectionsReached`). A ClientNonce shorter
+  than 32 bytes is rejected.
+- Requests on an unknown, closed or timed-out session get `Bad_SessionIdInvalid`, on a created but not activated one
+  `Bad_SessionNotActivated`. CloseSession of an unknown session is no longer Good.
+- A session the server ends (timeout, lost channel) keeps its subscriptions until their own lifetime ends, so a client
+  can transfer them; only CloseSession with deleteSubscriptions deletes them. An activated session survives the loss
+  of its channel until its timeout.
+- Empty operation arrays return `Bad_NothingToDo`, arrays above `iserver.operation_limits` `Bad_TooManyOperations`;
+  an undecodable request body `Bad_DecodingError`. Requests of a session may run concurrently.
+- `CloseSecureChannelRequest` is honoured only as a CLO message.
+- `Server.default_timeout` is removed. `start()` after `stop()` gives the same endpoints as the first start;
+  `stop()` sets ServerState to Shutdown, withdraws discovery registrations and closes sessions and subscriptions.
+  `register_to_discovery()` refuses a period above 600 s; `unregister_from_discovery()` of an unknown URL raises
+  `UaError`.
+
+Subscriptions (OPC 10000-4, 5.13 and 5.14):
+- The publishing interval is revised to between 50 ms and 1 h (0 or less gets 50 ms), also for in-process
+  subscriptions; keep-alive 0 becomes 1; the lifetime count is at least 3 × keep-alive and interval × lifetime is at
+  most 24 h. ModifySubscription applies and returns the revised values. The first message goes out after the first
+  cycle.
+- Subscriptions follow the Part 4 state machine; an expired subscription sends `Bad_Timeout` and the owner's queued
+  Publish requests are answered. Sequence numbers roll over to 1; MaxNotificationsPerPublish and MoreNotifications
+  are honoured; Priority decides between waiting subscriptions.
+- Republish keeps the message; an unknown sequence number gives `Bad_MessageNotAvailable`. Acknowledging an unknown
+  sequence number gives `Bad_SequenceNumberUnknown` for that entry. The retransmission queue holds 2 × the Publish
+  limit per session.
+- At most 10 Publish requests per session (`max_publish_requests_per_session`); one more answers the oldest with
+  `Bad_TooManyPublishRequests`. At most 100 subscriptions per session (`max_subscriptions_per_session`).
+- TransferSubscriptions requires the same user (anonymous only with the same client certificate), moves the queue
+  and both Publish bindings, tells the previous owner `Good_SubscriptionTransferred` and honours SendInitialValues.
+- `InternalSubscription.publish()`, `has_published_results()` and `_trigger_publish` are removed.
+
 Crypto:
 - Verifiers raise `ua.uaerrors.SignatureError` and decryption failures `ua.uaerrors.DecryptionError` (both
   `UaError`); `uacrypto.InvalidSignature` is gone.
