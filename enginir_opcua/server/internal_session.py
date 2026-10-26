@@ -324,6 +324,9 @@ class SessionManager:
             session_id=self.next_session_id(),
         )
 
+    def session_by_id(self, session_id: ua.NodeId) -> Session | None:
+        return next((session for session in self.sessions.values() if session.id == session_id), None)
+
     def forget(self, session: Session) -> None:
         self.sessions.pop(session.token, None)
 

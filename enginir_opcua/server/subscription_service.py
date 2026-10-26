@@ -19,8 +19,6 @@ if TYPE_CHECKING:
     from .internal_server import InternalServer
     from .uaprocessor import PublishRequestData
 
-MAX_PENDING_NOTICES_PER_SESSION = 100
-
 
 class SubscriptionService:
     """
@@ -50,6 +48,7 @@ class SubscriptionService:
         if len(self.subscriptions) >= max_subs:
             self.logger.warning("Refusing subscription: at max_subscriptions=%s", max_subs)
             raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
+        self._check_session_limit(session_id)
         result = ua.CreateSubscriptionResult()
         (
             result.RevisedPublishingInterval,
@@ -79,6 +78,19 @@ class SubscriptionService:
         await internal_sub.start()
         self.subscriptions[result.SubscriptionId] = internal_sub
         return result
+
+    def _owned_count(self, session_id: ua.NodeId) -> int:
+        return sum(1 for sub in self.subscriptions.values() if sub.session_id == session_id)
+
+    def _at_session_limit(self, session_id: ua.NodeId) -> bool:
+        if self.iserver is None or self.iserver.session_manager.session_by_id(session_id) is None:
+            return False
+        return self._owned_count(session_id) >= self.iserver.max_subscriptions_per_session
+
+    def _check_session_limit(self, session_id: ua.NodeId) -> None:
+        if self._at_session_limit(session_id):
+            self.logger.warning("Refusing subscription: session at max_subscriptions_per_session")
+            raise utils.ServiceError(ua.StatusCodes.BadTooManySubscriptions)
 
     def _setting(self, name: str, default: float) -> float:
         return getattr(self.iserver, name, default) if self.iserver else default
@@ -118,7 +130,7 @@ class SubscriptionService:
     def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
         self.subscriptions.pop(sub.data.SubscriptionId, None)
         pending = self._pending_notices.setdefault(sub.session_id, [])
-        if len(pending) >= MAX_PENDING_NOTICES_PER_SESSION:
+        if len(pending) >= int(self._setting("max_subscriptions_per_session", 100)):
             pending.pop(0)
         pending.append((notice, sub.pub_result_callback))
 
