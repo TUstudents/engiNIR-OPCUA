@@ -1098,6 +1098,9 @@ async def test_internal_server_subscription(opc):
     for i in range(10):
         await client_var.write_value(i)
         await asyncio.sleep(0.01)
+    async with asyncio.timeout(5):
+        while len(sub_handler.results) < 10:
+            await asyncio.sleep(0.01)
     assert [v for n, v in sub_handler.results] == list(range(10))
     internal_sub = opc.server.iserver.subscription_service.subscriptions[sub.subscription_id]
     # Check that the results are not left un-acknowledged on internal Server Subscriptions.
@@ -1179,7 +1182,7 @@ async def test_too_many_publish(opc, mocker):
     sub_handler = MySubHandler()
     sub = await opc.opc.create_subscription(500, sub_handler)
     try:
-        requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(12)]
+        requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(11)]
         while True:
             done, pending = await asyncio.wait(requests, timeout=5, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

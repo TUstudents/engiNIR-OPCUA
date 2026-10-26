@@ -873,7 +873,8 @@ class Node:
         """
         # remove all existing modelling rule
         rules = await self.get_references(ua.ObjectIds.HasModellingRule)
-        await self.session.delete_references(list(map(self._fill_delete_reference_item, rules)))
+        if rules:
+            await self.session.delete_references(list(map(self._fill_delete_reference_item, rules)))
         # add new modelling rule as requested
         if mandatory is not None:
             rule = ua.ObjectIds.ModellingRule_Mandatory if mandatory else ua.ObjectIds.ModellingRule_Optional

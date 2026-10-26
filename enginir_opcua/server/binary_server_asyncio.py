@@ -56,7 +56,7 @@ class OPCUAProtocol(asyncio.Protocol):
         self._activation_watchdog_task: asyncio.Task[Any] | None = None
 
     def __str__(self) -> str:
-        return f"OPCUAProtocol({self.peer_name}, {self.processor.session})"  # type: ignore[union-attr]
+        return f"OPCUAProtocol({self.peer_name})"
 
     __repr__ = __str__
 
@@ -88,7 +88,8 @@ class OPCUAProtocol(asyncio.Protocol):
             self._activation_watchdog_task = asyncio.create_task(self._activation_watchdog())
 
     def _close_oldest_channel_without_session(self) -> bool:
-        idle = [c for c in self.clients if c.processor is not None and c.processor.session is None]
+        sessions = self.iserver.session_manager
+        idle = [c for c in self.clients if c.processor is not None and not sessions.has_session(c.processor.channel_id)]
         if not idle:
             return False
         oldest = min(idle, key=lambda c: c.processor.last_used if c.processor is not None else 0.0)
@@ -141,8 +142,8 @@ class OPCUAProtocol(asyncio.Protocol):
         """Close the transport if the client never activates a session within the grace window."""
         try:
             await asyncio.sleep(self.iserver.max_pending_activation_seconds)
-            if self.processor is not None and (
-                self.processor.session is None or not self.processor.session.is_activated()
+            if self.processor is not None and not self.iserver.session_manager.has_activated_session(
+                self.processor.channel_id
             ):
                 _logger.warning(
                     "Closing idle connection from %s: no ActivateSession within %.1fs",

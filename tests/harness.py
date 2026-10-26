@@ -279,6 +279,95 @@ class TwoUserManager:
         return None
 
 
+class SessionProbe:
+    """A client with an open None-policy channel that creates, activates, uses and closes sessions by token."""
+
+    def __init__(self, url: str) -> None:
+        self.client = Client(url)
+
+    @classmethod
+    async def open(cls, url: str) -> SessionProbe:
+        probe = cls(url)
+        await probe.client.connect_socket()
+        await probe.client.send_hello()
+        await probe.client.open_secure_channel()
+        return probe
+
+    def use(self, token: ua.NodeId) -> None:
+        self.client.uaclient.session.restore_authentication_token(token)
+
+    async def create_session(
+        self, client_nonce: bytes | None = None, timeout_ms: float = 60_000, use_new_token: bool = True
+    ) -> ua.CreateSessionResult:
+        params = ua.CreateSessionParameters()
+        params.ClientDescription = ua.ApplicationDescription(
+            ApplicationUri=self.client.application_uri, ApplicationType=ua.ApplicationType.Client
+        )
+        params.EndpointUrl = self.client.server_url.geturl()
+        params.SessionName = "probe"
+        params.ClientNonce = bytes(32) if client_nonce is None else client_nonce
+        params.RequestedSessionTimeout = timeout_ms
+        previous = self.client.uaclient.session.authentication_token
+        result = await self.client.uaclient.create_session(params)
+        if not use_new_token:
+            self.use(previous)
+        return result
+
+    async def activate(self, token: ua.NodeId) -> ua.ActivateSessionResult:
+        self.use(token)
+        params = ua.ActivateSessionParameters()
+        params.UserIdentityToken = ua.AnonymousIdentityToken(PolicyId="anonymous")
+        params.ClientSignature = ua.SignatureData()
+        return await self.client.uaclient.activate_session(params)
+
+    async def read_server_state(self, token: ua.NodeId) -> int:
+        self.use(token)
+        params = ua.ReadParameters()
+        params.NodesToRead = [
+            ua.ReadValueId(NodeId=ua.NodeId(ua.ObjectIds.Server_ServerStatus_State), AttributeId=ua.AttributeIds.Value)
+        ]
+        variant = (await self.client.uaclient.read(params))[0].Value
+        assert variant is not None
+        return int(variant.Value)
+
+    async def send(self, token: ua.NodeId, request: Any, response_type: type) -> Any:
+        self.use(token)
+        data = await self.client.uaclient._send_request(request)
+        response = struct_from_binary(response_type, data)
+        response.ResponseHeader.ServiceResult.check()
+        return response
+
+    async def send_edited(
+        self, token: ua.NodeId, request: Any, response_type: type, edit: Callable[[bytes], bytes]
+    ) -> Any:
+        """Sends the encoded request after `edit` changed its bytes, for malformed bodies."""
+        self.use(token)
+        protocol = self.client.uaclient.protocol
+        assert protocol is not None
+        protocol._setup_request_header(request.RequestHeader, 1)
+        message = protocol._channel.message_to_binary(
+            edit(struct_to_binary(request)),
+            message_type=ua.MessageType.SecureMessage,
+            request_id=protocol._request_id + 1,
+        )
+        protocol._request_id += 1
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        protocol._callbackmap[protocol._request_id] = future
+        assert protocol.transport is not None
+        protocol.transport.write(message)
+        protocol.check_answer(await asyncio.wait_for(future, 5), "")
+        response = struct_from_binary(response_type, await future)
+        response.ResponseHeader.ServiceResult.check()
+        return response
+
+    async def close_session(self, token: ua.NodeId, delete_subscriptions: bool = True) -> None:
+        request = ua.CloseSessionRequest(DeleteSubscriptions=delete_subscriptions)
+        await self.send(token, request, ua.CloseSessionResponse)
+
+    def close(self) -> None:
+        self.client.disconnect_socket()
+
+
 @dataclass
 class TwoSessions:
     server: Server
