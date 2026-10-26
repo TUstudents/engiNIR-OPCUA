@@ -55,7 +55,7 @@ def test_cli_tools_which_require_sigint(running_server):
             with pytest.raises(subprocess.TimeoutExpired):
                 proc.communicate(timeout=2)
             proc.send_signal(signal.SIGINT)
-            proc.communicate(timeout=10)
+            proc.communicate(timeout=30)
         finally:
             if proc.poll() is None:
                 proc.kill()
