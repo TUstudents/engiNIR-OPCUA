@@ -237,14 +237,11 @@ async def test_subscription_data_change(opc):
     node, val, _data = await myhandler.result()
     assert v1 == node
     assert [5] == val
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(999)  # non existing handle
+    await sub.unsubscribe(999)  # non existing handle is skipped
     await sub.unsubscribe(handle1)
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(handle1)  # second try should fail
+    await sub.unsubscribe(handle1)  # a second try is skipped as well
     await sub.delete()
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(handle1)  # sub does not exist anymore
+    await sub.unsubscribe(handle1)  # sub does not exist anymore, nothing is sent
     await opc.opc.delete_nodes([v1])
 
 
@@ -324,8 +321,9 @@ async def test_set_monitoring_mode(opc, mocker):
     monitoring_mode = ua.SetMonitoringModeParameters()
     _ = mocker.patch.object(ua, "SetMonitoringModeParameters", return_value=monitoring_mode)
     _ = mocker.patch("enginir_opcua.client.ua_session.UaSession.set_monitoring_mode", new=AsyncMock())
-    _ = await o.add_variable(3, "SubscriptionVariable2", 123)
+    var = await o.add_variable(3, "SubscriptionVariable2", 123)
     sub = await opc.opc.create_subscription(100, myhandler)
+    await sub.subscribe_data_change(var)
 
     await sub.set_monitoring_mode(ua.MonitoringMode.Disabled)
     assert monitoring_mode.MonitoringMode == ua.MonitoringMode.Disabled

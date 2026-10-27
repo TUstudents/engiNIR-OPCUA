@@ -11,7 +11,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, overload
+from typing import TYPE_CHECKING, Any, Protocol, cast, overload
 
 from enginir_opcua import ua
 from enginir_opcua.client.ua_session import UaSession
@@ -173,7 +173,7 @@ class Subscription:
     The object represent a subscription to an opc-ua server.
     This is a high level class, especially `subscribe_data_change` and `subscribe_events methods`.
     If more control is necessary look at code and/or use `create_monitored_items method`.
-    :param server: `InternalSession` or `UaSession`
+    :param server: the session the Subscription lives in: `UaSession` or `InternalSession`
     """
 
     def __init__(
@@ -217,6 +217,15 @@ class Subscription:
         self._replaying: bool = False
 
     @property
+    def _remote(self) -> bool:
+        return hasattr(self.server, "update_subscription")
+
+    def _remote_session(self, operation: str) -> UaSession:
+        if not self._remote:
+            raise ua.uaerrors.UaError(f"{operation}() is not supported in {self.server}.")
+        return cast("UaSession", self.server)
+
+    @property
     def is_deleted(self) -> bool:
         """True once the user has called delete() (or it failed past a recoverable point)."""
         return self._deleted
@@ -238,9 +247,7 @@ class Subscription:
         return response
 
     async def update(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
-        if not isinstance(self.server, UaSession):
-            raise ua.uaerrors.UaError(f"update() is not supported in {self.server}.")
-        response = await self.server.update_subscription(params)
+        response = await self._remote_session("update").update_subscription(params)
         self.logger.info("Subscription updated %s", params.SubscriptionId)
         # update the self.parameters attr with the updated values
         copy_dataclass_attr(params, self.parameters)
@@ -589,7 +596,7 @@ class Subscription:
         attr: ua.AttributeIds = ua.AttributeIds.Value,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> int: ...
 
     @overload
@@ -599,7 +606,7 @@ class Subscription:
         attr: ua.AttributeIds = ua.AttributeIds.Value,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> list[int | ua.StatusCode]: ...
 
     async def subscribe_data_change(
@@ -608,7 +615,7 @@ class Subscription:
         attr: ua.AttributeIds = ua.AttributeIds.Value,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 50.0,
+        sampling_interval: ua.Duration = -1,
     ) -> int | list[int | ua.StatusCode]:
         """
         Subscribe to data change events of one or multiple nodes.
@@ -624,7 +631,7 @@ class Subscription:
         :param nodes: One Node or an Iterable of Nodes
         :param attr: The Node attribute you want to subscribe to
         :param queuesize: 0 or 1 for default queue size (shall be 1 - no queuing), n for FIFO queue
-        :param sampling_interval: ua.Duration
+        :param sampling_interval: ua.Duration in milliseconds, -1 for the publishing interval of the Subscription
         :return: Handle for changing/cancelling of the subscription
         """
         return await self._subscribe(
@@ -709,7 +716,7 @@ class Subscription:
         mfilter: ua.MonitoringFilter | None = None,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> int: ...
 
     @overload
@@ -720,7 +727,7 @@ class Subscription:
         mfilter: ua.MonitoringFilter | None = None,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> list[int | ua.StatusCode]: ...
 
     async def _subscribe(
@@ -730,7 +737,7 @@ class Subscription:
         mfilter: ua.MonitoringFilter | None = None,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: ua.Duration = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> int | list[int | ua.StatusCode]:
         """
         Private low level method for subscribing.
@@ -861,21 +868,36 @@ class Subscription:
         If you delete the subscription, you do not need to unsubscribe.
         :param handle: The handle that was returned when subscribing to the node/nodes
         """
-        handles: Iterable[int] = [handle] if isinstance(handle, int) else handle
+        requested: list[int] = [handle] if isinstance(handle, int) else list(handle)
+        by_server_handle = {i.server_handle: i for i in self._monitored_items.values() if i.server_handle is not None}
+        handles: list[int] = []
+        for h in requested:
+            if h in by_server_handle:
+                handles.append(h)
+            else:
+                self.logger.warning("unsubscribe: handle %s is not an item of subscription %s", h, self.subscription_id)
         if not handles:
             return
         params = ua.DeleteMonitoredItemsParameters()
         params.SubscriptionId = self.subscription_id
-        params.MonitoredItemIds = list(handles)
+        params.MonitoredItemIds = handles
         try:
             results = await self.server.delete_monitored_items(params)
         except ServiceError as e:
             raise ua.UaStatusCodeError(e.code)
-        results[0].check()
-        handle_map = {v.server_handle: k for k, v in self._monitored_items.items()}
-        for handle in handles:
-            if handle in handle_map:
-                del self._monitored_items[handle_map[handle]]
+        failed: list[tuple[int, ua.StatusCode]] = []
+        for h, status in zip(handles, results):
+            if status.is_good() or status.value == ua.StatusCodes.BadMonitoredItemIdInvalid:
+                item = by_server_handle[h]
+                if item.client_handle is not None:
+                    self._monitored_items.pop(item.client_handle, None)
+            else:
+                failed.append((h, status))
+        if failed:
+            detail = ", ".join(f"{h}: {status}" for h, status in failed)
+            error = ua.UaStatusCodeError(failed[0][1].value)
+            error.detail = f"unsubscribe failed for handles {detail}"
+            raise error
 
     async def modify_monitored_item(
         self,
@@ -981,7 +1003,7 @@ class Subscription:
         :param var: Variable to which you want to subscribe
         :param deadband_val: Absolute float value
         :param deadbandtype: Default value is 1 (absolute), change to 2 for percentage deadband
-        :param queuesize: Wanted queue size, default is 1
+        :param queuesize: Wanted queue size, 0 or 1 for the server default (1 for data items)
         :param attr: Attribute ID
         """
         deadband_filter = ua.DataChangeFilter()
@@ -992,26 +1014,36 @@ class Subscription:
         deadband_filter.DeadbandValue = deadband_val
         return await self._subscribe(var, attr, deadband_filter, queuesize)
 
-    async def set_monitoring_mode(self, monitoring: ua.MonitoringMode) -> list[ua.uatypes.StatusCode]:
+    async def set_monitoring_mode(
+        self, monitoring: ua.MonitoringMode, handles: int | Iterable[int] | None = None
+    ) -> list[ua.uatypes.StatusCode]:
         """
         The monitoring mode parameter is used
         to enable/disable the sampling of MonitoredItems
         (Samples don't queue on the server side)
 
         :param monitoring: The monitoring mode to apply
+        :param handles: Handles of the items to change, default all items
         :return: Return a Set Monitoring Mode Result
         """
-        if not isinstance(self.server, UaSession):
-            raise ua.uaerrors.UaError(f"set_monitoring_mode() is not supported in {self.server}.")
-        node_handles = []
-        for mi in self._monitored_items.values():
-            node_handles.append(mi.server_handle)
-
+        session = self._remote_session("set_monitoring_mode")
+        wanted = None if handles is None else {handles} if isinstance(handles, int) else set(handles)
+        items = [
+            i
+            for i in self._monitored_items.values()
+            if i.server_handle is not None and (wanted is None or i.server_handle in wanted)
+        ]
+        if not items:
+            return []
         params = ua.SetMonitoringModeParameters()
         params.SubscriptionId = self.subscription_id
-        params.MonitoredItemIds = node_handles
+        params.MonitoredItemIds = [i.server_handle for i in items if i.server_handle is not None]
         params.MonitoringMode = monitoring
-        return await self.server.set_monitoring_mode(params)
+        results = await session.set_monitoring_mode(params)
+        for item, status in zip(items, results):
+            if status.is_good():
+                item.monitoring_mode = monitoring
+        return results
 
     async def set_publishing_mode(self, publishing: bool) -> list[ua.uatypes.StatusCode]:
         """
@@ -1023,14 +1055,13 @@ class Subscription:
         :return: Return a Set Publishing Mode Result
         """
         self.logger.info("set_publishing_mode")
-        if not isinstance(self.server, UaSession):
-            raise ua.uaerrors.UaError(f"set_publishing_mode() is not supported in {self.server}.")
+        session = self._remote_session("set_publishing_mode")
         if self.subscription_id is None:
             raise ua.uaerrors.UaError("set_publishing_mode() called before subscription was created on the server.")
         params = ua.SetPublishingModeParameters()
         params.SubscriptionIds = [self.subscription_id]
         params.PublishingEnabled = publishing
-        result = await self.server.set_publishing_mode(params)
+        result = await session.set_publishing_mode(params)
         if result[0].is_good():
             self.parameters.PublishingEnabled = publishing
         return result
