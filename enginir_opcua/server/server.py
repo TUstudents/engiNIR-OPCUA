@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, urlparse
 
+import anyio
 from cryptography import x509
 
 from enginir_opcua import ua
@@ -31,7 +32,7 @@ from ..common.subscription import Subscription
 from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
-from ..crypto import security_policies, uacrypto, validator
+from ..crypto import pki, security_policies, uacrypto, validator
 from ..crypto.permission_rules import SimpleRoleRuleset
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import CertificateValidator
@@ -1050,6 +1051,44 @@ class Server:
         validated against. Without a trust store no client certificate is trusted.
         """
         self.iserver.trust_store = trust_store
+
+    async def set_pki_directory(
+        self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
+    ) -> None:
+        """
+        Use one PKI directory for the certificate, the key and the trust of this server: own/certs and own/private
+        hold the application certificate (with the intermediate CA certificates of its chain) and its key,
+        trusted/certs and trusted/crl the trusted certificates and their revocation lists, issuer/certs and
+        issuer/crl the CA certificates for chains and their lists, and rejected/certs receives the certificates
+        of clients that failed validation. An administrator trusts one by moving its file to trusted/certs and
+        calling reload_trust_store (or restarting).
+
+        With create the folders are created, and when own/certs holds no certificate a self-signed one is generated
+        there with the application URI and the host names of the endpoint (set the application URI and the
+        endpoint first). An existing certificate is never replaced. Explicit paths (load_certificate,
+        set_trust_store, ...) keep working and replace what this call set.
+        """
+        base = Path(root)
+        if create:
+            await anyio.to_thread.run_sync(lambda: pki.create_directories(base))
+        credentials = await pki.load_own_credentials(
+            base,
+            application_uri=self._application_uri,
+            host_names=pki.default_host_names(self.endpoint.hostname),
+            usage=pki.SERVER_USAGE,
+            password=private_key_password,
+            create=create,
+        )
+        self.iserver.certificate = credentials.certificate
+        self.iserver.certificate_chain = credentials.chain
+        self.iserver.private_key = credentials.private_key
+        self.iserver.trust_store = TrustStore.from_pki_directory(base)
+
+    async def reload_trust_store(self) -> None:
+        """Load the trust store and the user trust store again, to pick up files moved into their folders."""
+        for store in (self.iserver.trust_store, self.iserver.user_trust_store):
+            if store is not None:
+                await store.load()
 
     def set_user_trust_store(self, trust_store: TrustStore) -> None:
         """

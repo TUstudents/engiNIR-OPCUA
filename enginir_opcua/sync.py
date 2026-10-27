@@ -360,6 +360,11 @@ class Client:
         self.aio_obj.set_trust_store(trust_store)
 
     @syncmethod
+    def set_pki_directory(
+        self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
+    ) -> None: ...
+
+    @syncmethod
     def set_security(self) -> None: ...
 
     @syncmethod
@@ -643,6 +648,14 @@ class Server:
 
     def set_trust_store(self, trust_store: TrustStore) -> None:
         return self.aio_obj.set_trust_store(trust_store)
+
+    @syncmethod
+    def set_pki_directory(
+        self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
+    ) -> None: ...
+
+    @syncmethod
+    def reload_trust_store(self) -> None: ...
 
     def set_identity_tokens(self, tokens: list[type]) -> None:
         return self.aio_obj.set_identity_tokens(tokens)

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 from urllib.parse import ParseResult, unquote, urlparse
 
+import anyio
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.x509.oid import ExtendedKeyUsageOID
@@ -28,7 +29,7 @@ from ..common.ua_utils import copy_dataclass_attr, value_to_datavalue
 from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
-from ..crypto import cert_gen, security_policies, uacrypto
+from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from ..ua.uaerrors import (
@@ -151,6 +152,7 @@ class Client:
         self.application_hook: ApplicationHook | None = None
         self._default_validator: CertificateValidator | None = None
         self._pinned_server_certificate: x509.Certificate | None = None
+        self._own_credentials: pki.OwnCredentials | None = None
         """extra check after the certificate validator accepted the server certificate, raises a ServiceError"""
         # Set before connect() to let a fresh client process resume the existing
         # server-side session via ActivateSession instead of creating a new one
@@ -250,6 +252,32 @@ class Client:
         self.trust_store = trust_store
         self._default_validator = None
 
+    async def set_pki_directory(
+        self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
+    ) -> None:
+        """
+        Use one PKI directory for the certificate, the key and the trust of this client, with the layout described
+        at Server.set_pki_directory. The server certificate is validated against trusted/certs and trusted/crl and
+        issuer/certs and issuer/crl, and the certificate of a server that fails validation is kept in rejected/certs.
+        The trust store is loaded again at every connect, so a file moved to trusted/certs is trusted at the next one.
+
+        With create the folders are created, and when own/certs holds no certificate a self-signed one is generated
+        there with the application_uri of this client (set it first). An existing certificate is never replaced.
+        Call set_security without certificate and key afterwards to use the certificate of the directory.
+        """
+        base = Path(root)
+        if create:
+            await anyio.to_thread.run_sync(lambda: pki.create_directories(base))
+        self._own_credentials = await pki.load_own_credentials(
+            base,
+            application_uri=self.application_uri,
+            host_names=pki.default_host_names(),
+            usage=pki.CLIENT_USAGE,
+            password=private_key_password,
+            create=create,
+        )
+        self.set_trust_store(TrustStore.from_pki_directory(base))
+
     async def set_security_string(self, string: str) -> None:
         """
         Set SecureChannel mode.
@@ -282,8 +310,8 @@ class Client:
     async def set_security(
         self,
         policy: type[security_policies.SecurityPolicy],
-        certificate: str | uacrypto.CertProperties | bytes | Path,
-        private_key: str | uacrypto.CertProperties | bytes | Path,
+        certificate: str | uacrypto.CertProperties | bytes | Path | None = None,
+        private_key: str | uacrypto.CertProperties | bytes | Path | None = None,
         private_key_password: str | bytes | None = None,
         server_certificate: str | uacrypto.CertProperties | bytes | None = None,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
@@ -291,8 +319,18 @@ class Client:
     ) -> None:
         """
         Set SecureChannel mode.
+        Without certificate and private_key the ones of the PKI directory (set_pki_directory) are used.
         Call this before connect()
         """
+        if certificate is None or private_key is None:
+            if self._own_credentials is None or certificate is not None or private_key is not None:
+                raise ConfigurationError(
+                    "set_security needs a certificate and a private key, or a PKI directory (set_pki_directory)"
+                )
+            certificate = uacrypto.der_from_x509(self._own_credentials.certificate)
+            private_key = uacrypto.CertProperties(uacrypto.pem_from_key(self._own_credentials.private_key), "pem")
+            private_key_password = None
+            certificate_chain = [uacrypto.der_from_x509(c) for c in self._own_credentials.chain]
         if getattr(policy, "deprecated", False) and not self.allow_deprecated_policies:
             raise ConfigurationError(
                 f"{policy.__name__} is deprecated and is only available with Client(allow_deprecated_policies=True)"
