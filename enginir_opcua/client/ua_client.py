@@ -39,6 +39,8 @@ from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_bin
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
 from .ua_session import SessionState, UaSession
 
+MAX_ABANDONED_REQUESTS = 10000
+
 
 class UaClientState(Enum):
     DISCONNECTED = "disconnected"
@@ -79,6 +81,7 @@ class UASocketProtocol(asyncio.Protocol):
         self._request_id = 0
         self._request_handle = 0
         self._callbackmap: dict[int, asyncio.Future[Any]] = {}
+        self._abandoned_requests: dict[int, None] = {}
         if limits is None:
             limits = TransportLimits()
         else:
@@ -185,19 +188,24 @@ class UASocketProtocol(asyncio.Protocol):
             future.set_exception(ua.UaStatusCodeError(aborted.error.Error.value))
 
     def _send_request(
-        self, request: Any, timeout: float = 1, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float = 1,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        timeout_hint: float | None = None,
     ) -> asyncio.Future[Any]:
         """
         Send request to server, lower-level method.
-        Timeout is the timeout written in ua header.
+        Timeout is the timeout written in ua header, unless timeout_hint is given.
         :param request: Request
         :param timeout: Timeout in seconds
         :param message_type: UA Message Type (optional)
+        :param timeout_hint: Timeout in seconds written in the ua header instead of the timeout
         :return: Future that resolves with the Response
         """
         if self.transport is None:
             raise ConnectionError("Connection is not open")
-        self._setup_request_header(request.RequestHeader, timeout)
+        self._setup_request_header(request.RequestHeader, timeout if timeout_hint is None else timeout_hint)
         self.logger.debug("Sending: %s", request)
         next_request_id = self._request_id + 1
         try:
@@ -223,11 +231,15 @@ class UASocketProtocol(asyncio.Protocol):
         return future
 
     async def send_request(
-        self, request: Any, timeout: float | None = None, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float | None = None,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        timeout_hint: float | None = None,
     ) -> Buffer:
         """
         Send a request to the server.
-        Timeout is the timeout written in ua header.
+        Timeout is the time to wait for the answer and the timeout written in ua header, unless timeout_hint is given.
         Returns response object if no callback is provided.
         """
         timeout = self.timeout if timeout is None else timeout
@@ -236,7 +248,8 @@ class UASocketProtocol(asyncio.Protocol):
             # time out then.
             await self.pre_request_hook()
         try:
-            data = await wait_for(self._send_request(request, timeout, message_type), timeout if timeout else None)
+            pending = self._send_request(request, timeout, message_type, timeout_hint)
+            data = await self._wait_for_response(pending, self._request_id, timeout if timeout else None)
         except UaError:
             raise
         except TimeoutError:
@@ -248,6 +261,21 @@ class UASocketProtocol(asyncio.Protocol):
             raise
         self.check_answer(data, f" in response to {request.__class__.__name__}")
         return data
+
+    async def _wait_for_response(self, pending: asyncio.Future[Any], request_id: int, timeout: float | None) -> Any:
+        try:
+            return await wait_for(pending, timeout)
+        except BaseException:
+            self._abandon_request(request_id, pending)
+            raise
+
+    def _abandon_request(self, request_id: int, pending: asyncio.Future[Any]) -> None:
+        if self._callbackmap.get(request_id) is not pending:
+            return
+        del self._callbackmap[request_id]
+        self._abandoned_requests[request_id] = None
+        while len(self._abandoned_requests) > MAX_ABANDONED_REQUESTS:
+            del self._abandoned_requests[next(iter(self._abandoned_requests))]
 
     def check_answer(self, data: Buffer, context: str) -> bool:
         data = data.copy()
@@ -269,14 +297,19 @@ class UASocketProtocol(asyncio.Protocol):
             if not fut.done():
                 fut.set_exception(exc)
         self._callbackmap.clear()
+        self._abandoned_requests.clear()
 
     def _call_callback(self, request_id: int, body: Buffer | ua.Acknowledge) -> None:
-        try:
-            future = self._callbackmap.pop(request_id)
-        except KeyError as ex:
-            raise ua.UaError(
-                f"No request found for request id: {request_id}, pending are {self._callbackmap.keys()}, body was {body}"
-            ) from ex
+        future = self._callbackmap.pop(request_id, None)
+        if future is None:
+            if request_id in self._abandoned_requests:
+                del self._abandoned_requests[request_id]
+                self.logger.debug("Dropped the late response to abandoned request id %s", request_id)
+                return
+            raise ua.UaStatusCodeError(
+                ua.StatusCodes.BadSecurityChecksFailed,
+                f"Response for request id {request_id}, which was never sent; pending are {list(self._callbackmap)}",
+            )
         try:
             future.set_result(body)
         except asyncio.InvalidStateError:
