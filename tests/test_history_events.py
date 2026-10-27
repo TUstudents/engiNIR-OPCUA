@@ -91,3 +91,9 @@ async def test_history_ev_read_all_filter_order_reversed(history_server):
     assert 20 == len(res)
     assert res[-1].Severity == history_server.ev_values[-1]
     assert res[0].Severity == history_server.ev_values[0]
+
+
+async def test_com15_read_event_history_without_arguments_reads_everything_until_now(history_server):
+    """Part 11, 6.5.2: a read needs two of start, end and count; the client fills in a valid range."""
+    res = await history_server.srv_node.read_event_history()
+    assert [ev.Severity for ev in res] == history_server.ev_values

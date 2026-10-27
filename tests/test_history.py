@@ -39,8 +39,15 @@ async def test_srv20_fewer_than_two_of_start_end_count_is_invalid_argument(histo
     """Part 11, 6.5.3.1: two of startTime, endTime and numValuesPerNode shall be specified."""
     old = datetime.now(UTC) - timedelta(days=6)
     for start, end, count in ((None, None, 0), (None, None, 5), (old, None, 0), (None, future(), 0)):
+        details = ua.ReadRawModifiedDetails(
+            IsReadModified=False,
+            StartTime=start or ua.get_win_epoch(),
+            EndTime=end or ua.get_win_epoch(),
+            NumValuesPerNode=count,
+            ReturnBounds=False,
+        )
         with pytest.raises(ua.uaerrors.BadInvalidArgument):
-            await history_server.var.read_raw_history(start, end, count)
+            (await history_server.var.history_read(details)).StatusCode.check()
 
 
 async def test_history_var_read_2_with_end(history_server):
@@ -144,3 +151,15 @@ async def test_srv54_history_keeps_every_value_written_within_one_publish_cycle(
     page = await srv.iserver.history_manager.storage.read_node_history(var.nodeid, TimeDomain(None, None, 1000))
     assert len(page.entries) == 101
     await srv.stop()
+
+
+async def test_com15_read_raw_history_without_arguments_reads_everything_until_now(history_server):
+    """Part 11, 6.5.3: a read needs two of start, end and count; the client fills in a valid range."""
+    res = await history_server.var.read_raw_history()
+    assert [dv.Value.Value for dv in res] == history_server.values
+
+
+async def test_com15_read_raw_history_with_only_a_count_reads_the_newest(history_server):
+    """Part 11, 6.5.3: a count alone becomes the newest values up to now."""
+    res = await history_server.var.read_raw_history(numvalues=3)
+    assert [dv.Value.Value for dv in res] == history_server.values[:-4:-1]
