@@ -284,7 +284,7 @@ class UASocketProtocol(asyncio.Protocol):
         typeid = nodeid_from_binary(data)
         if typeid == ua.FourByteNodeId(ua.ObjectIds.ServiceFault_Encoding_DefaultBinary):
             hdr = struct_from_binary(ua.ResponseHeader, data)
-            self.logger.warning(
+            self.logger.debug(
                 "ServiceFault (%s, diagnostics: %s) from server received %s",
                 hdr.ServiceResult.name,
                 hdr.ServiceDiagnostics,
@@ -658,13 +658,26 @@ class UaClient:
             self._set_state(UaClientState.SOCKET_OPEN)
 
     async def _send_request(
-        self, request: Any, timeout: float | None = None, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float | None = None,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        *,
+        timeout_hint: float | None = None,
+        limited: bool = True,
     ) -> Buffer:
         with self.observer.observe_request(request):
+            if not limited:
+                return await self._send_unlimited(request, timeout, message_type, timeout_hint)
             async with self._request_semaphore:
-                if self.protocol is None:
-                    raise ConnectionError("Connection is not open")
-                return await self.protocol.send_request(request, timeout, message_type)
+                return await self._send_unlimited(request, timeout, message_type, timeout_hint)
+
+    async def _send_unlimited(
+        self, request: Any, timeout: float | None, message_type: ua.MessageType, timeout_hint: float | None
+    ) -> Buffer:
+        if self.protocol is None:
+            raise ConnectionError("Connection is not open")
+        return await self.protocol.send_request(request, timeout, message_type, timeout_hint)
 
     # --- back-compat: properties that previously lived on UaClient ---
 
