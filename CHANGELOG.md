@@ -18,7 +18,55 @@ Package and identity:
 
 Security:
 - RegisterServer and RegisterServer2 answer `Bad_ServiceUnsupported` unless the server calls
-  `Server.accept_server_registrations()`.
+  `Server.accept_server_registrations()`. When enabled, a registration needs a secure channel whose certificate
+  carries the ServerUri; empty ServerNames give `Bad_ServerNameMissing`, `IsOnline = false` removes the entry, the
+  registry holds at most 100 servers and entries expire after 10 minutes.
+
+Secure defaults and certificate trust (OPC 10000-4, 6.1.3):
+- One `CertificateValidator(trust_store, suppress=..., check_revocation=..., accept_ca_application_certificates=...)`
+  runs the validation steps in the spec's order (chain, signature, security policy, trust, validity, host name, URI,
+  usage, revocation). It replaces the flag-based `CertificateValidator`/`CertificateValidatorOptions`.
+- It runs at every OpenSecureChannel and renewal, on both server and client. Both sides trust nothing until
+  `Server.set_trust_store()` / `Client.set_trust_store()` is called. A server certificate passed to
+  `Client.set_security()` is pinned; one fetched over an unsecured GetEndpoints isn't trusted.
+- The server tells a peer only `Bad_SecurityChecksFailed` and logs the detail; the client raises the detailed code.
+- Certificates are checked for expiry, key usage, key length and signature hash per security policy, the host name
+  (client side) and the ApplicationUri. A ClientDescription ApplicationUri that isn't in the client certificate gives
+  `Bad_CertificateUriInvalid`. The certificates committed under `examples/` fail these checks; the examples now
+  generate their own.
+- `Server.set_certificate_validator(hook)` and `Client.certificate_validator` are now `set_application_hook()` /
+  `application_hook`; `set_certificate_validator()` takes a whole validator.
+- The NoSecurity endpoint is offered only with `Server(allow_no_security=True)` or `NoSecurity` in
+  `set_security_policy()`. `Basic128Rsa15` and `Basic256` need `allow_deprecated_policies=True` on both sides. A server
+  without any endpoint refuses to start with `ConfigurationError`.
+- Generated application certificates have `cA = FALSE` (self-signed ones keep keyCertSign); keys are written atomically
+  with mode 0600. `setup_self_signed_certificate()` only replaces certificates it generated itself.
+- New: `Server.load_certificate_chain()` to send an intermediate chain, `UaStatusCodeError(code, detail)`.
+
+Users and permissions:
+- The default user manager accepts Anonymous as read-only (read, browse, subscribe, history read; no write, call or
+  node management) and rejects UserName and X509 tokens with `Bad_IdentityTokenRejected`. `admin` with any password
+  is gone, and so is `Server.allow_remote_admin`. `PermissiveUserManager` remains as an explicit, insecure opt-in.
+- Identity tokens are matched to the endpoint's UserTokenPolicy (PolicyId, token type, security policy); an Anonymous
+  token with an empty or wrong PolicyId gives `Bad_IdentityTokenInvalid`. A wrong password gives
+  `Bad_UserAccessDenied`. No UserName policy is advertised on an unsecured endpoint unless an encrypting policy exists
+  or `allow_plaintext_password` is set.
+- X509 user tokens are validated against a separate user trust list (`Server.set_user_trust_store()`); without one
+  they are refused, except for the certificates registered with a `CertificateUserManager`. The user manager receives
+  the leaf certificate only. A session whose X509 user certificate expires drops to Anonymous (or is closed when the
+  endpoint offers no Anonymous policy).
+- After 5 failed logins from one peer, further ActivateSession requests are delayed from 1 s up to 30 s.
+- `SimpleRoleRuleset` takes a map from request type to role; `Permission` has an `Anonymous` level;
+  `SessionManager.activate_session` is async.
+
+Client:
+- A client that took its security from GetEndpoints compares that list with CreateSession's ServerEndpoints and fails
+  with `Bad_SecurityChecksFailed` when they differ. Endpoints are no longer re-fetched on reconnect.
+- `HaSecurityConfig` needs a `server_certificate` or a `trust_store` when security is on.
+
+Tools:
+- `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. `uaserver` is a demo without security and
+  says so; `--accept-all-logins` opts into permissive logins. The sync `Server` takes `user_manager`.
 
 Status codes:
 - Status codes are matched by their top 16 bits, so `except ua.uaerrors.BadNodeIdUnknown` also catches a code with info
