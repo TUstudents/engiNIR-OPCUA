@@ -1,9 +1,11 @@
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from enginir_opcua import Client, Server, ua
+from enginir_opcua.common.methods import uamethod
 
 
 @pytest.fixture(scope="module")
@@ -85,3 +87,21 @@ async def test_cli23_bytes_for_a_byte_array_are_sent_as_a_byte_string(server: Se
     client = Client(server.endpoint.geturl())
     async with client:
         assert await client.get_objects_node().call_method(node.nodeid, b"\x01\x02") == "ByteString"
+
+
+async def test_cli33_call_method_accepts_a_timeout(server: Server) -> None:
+    """Part 4, 7.33: a long call needs a longer deadline than the client's normal request timeout."""
+
+    @uamethod
+    async def slow(parent: Any) -> int:
+        await asyncio.sleep(1.0)
+        return 7
+
+    node = await server.nodes.objects.add_method(
+        ua.NodeId("SlowMethod", 2), ua.QualifiedName("SlowMethod", 2), slow, [], [ua.VariantType.Int64]
+    )
+    async with Client(server.endpoint.geturl(), timeout=0.3) as client:
+        objects = client.get_objects_node()
+        with pytest.raises(TimeoutError):
+            await objects.call_method(node.nodeid)
+        assert await objects.call_method(node.nodeid, timeout=5) == 7

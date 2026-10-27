@@ -268,98 +268,108 @@ class UaSession(AbstractSession):
 
     # --- View Service Set ---
 
-    async def browse(self, parameters: ua.BrowseParameters) -> list[ua.BrowseResult]:
+    async def browse(self, parameters: ua.BrowseParameters, timeout: float | None = None) -> list[ua.BrowseResult]:
         self.logger.info("browse")
         request = ua.BrowseRequest()
         request.Parameters = parameters
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.BrowseResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def browse_next(self, parameters: ua.BrowseNextParameters) -> list[ua.BrowseResult]:
+    async def browse_next(
+        self, parameters: ua.BrowseNextParameters, timeout: float | None = None
+    ) -> list[ua.BrowseResult]:
         self.logger.debug("browse next")
         request = ua.BrowseNextRequest()
         request.Parameters = parameters
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.BrowseNextResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Parameters.Results
 
-    async def translate_browsepaths_to_nodeids(self, browse_paths: list[ua.BrowsePath]) -> list[ua.BrowsePathResult]:
+    async def translate_browsepaths_to_nodeids(
+        self, browse_paths: list[ua.BrowsePath], timeout: float | None = None
+    ) -> list[ua.BrowsePathResult]:
         self.logger.debug("translate_browsepath_to_nodeid")
         request = ua.TranslateBrowsePathsToNodeIdsRequest()
         request.Parameters.BrowsePaths = browse_paths
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.TranslateBrowsePathsToNodeIdsResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def register_nodes(self, nodes: list[ua.NodeId]) -> list[ua.NodeId]:
+    async def register_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> list[ua.NodeId]:
         self.logger.info("register_nodes")
         request = ua.RegisterNodesRequest()
         request.Parameters.NodesToRegister = nodes
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.RegisterNodesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Parameters.RegisteredNodeIds
 
-    async def unregister_nodes(self, nodes: list[ua.NodeId]) -> None:
+    async def unregister_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> None:
         self.logger.info("unregister_nodes")
         request = ua.UnregisterNodesRequest()
         request.Parameters.NodesToUnregister = nodes
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.UnregisterNodesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
 
     # --- Attribute Service Set ---
 
-    async def read(self, parameters: ua.ReadParameters) -> list[ua.DataValue]:
+    async def read(self, parameters: ua.ReadParameters, timeout: float | None = None) -> list[ua.DataValue]:
         self.logger.debug("read")
         request = ua.ReadRequest()
         request.Parameters = parameters
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.ReadResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def write(self, params: ua.WriteParameters) -> list[ua.StatusCode]:
+    async def write(self, params: ua.WriteParameters, timeout: float | None = None) -> list[ua.StatusCode]:
         self.logger.debug("write")
         request = ua.WriteRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.WriteResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def history_read(self, params: ua.HistoryReadParameters) -> list[ua.HistoryReadResult]:
+    async def history_read(
+        self, params: ua.HistoryReadParameters, timeout: float | None = None
+    ) -> list[ua.HistoryReadResult]:
         self.logger.info("history_read")
         request = ua.HistoryReadRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.HistoryReadResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def history_update(self, params: ua.HistoryUpdateParameters) -> list[ua.HistoryUpdateResult]:
+    async def history_update(
+        self, params: ua.HistoryUpdateParameters, timeout: float | None = None
+    ) -> list[ua.HistoryUpdateResult]:
         self.logger.info("history_update")
         request = ua.HistoryUpdateRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.HistoryUpdateResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def read_attributes(self, nodeids: list[ua.NodeId], attr: ua.AttributeIds) -> list[ua.DataValue]:
+    async def read_attributes(
+        self, nodeids: list[ua.NodeId], attr: ua.AttributeIds, timeout: float | None = None
+    ) -> list[ua.DataValue]:
         self.logger.info("read_attributes of several nodes")
         request = ua.ReadRequest()
         for nodeid in nodeids:
@@ -367,7 +377,7 @@ class UaSession(AbstractSession):
             rv.NodeId = nodeid
             rv.AttributeId = attr
             request.Parameters.NodesToRead.append(rv)
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.ReadResponse, data)
         response.ResponseHeader.ServiceResult.check()
         check_result_count(len(request.Parameters.NodesToRead), len(response.Results))
@@ -378,6 +388,7 @@ class UaSession(AbstractSession):
         nodeids: list[ua.NodeId],
         datavalues: list[ua.DataValue],
         attributeid: ua.AttributeIds = ua.AttributeIds.Value,
+        timeout: float | None = None,
     ) -> list[ua.StatusCode]:
         self.logger.info("write_attributes of several nodes")
         request = ua.WriteRequest()
@@ -391,7 +402,7 @@ class UaSession(AbstractSession):
             attr.AttributeId = attributeid
             attr.Value = datavalue
             request.Parameters.NodesToWrite.append(attr)
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.WriteResponse, data)
         response.ResponseHeader.ServiceResult.check()
         check_result_count(len(nodeids), len(response.Results))
@@ -399,41 +410,47 @@ class UaSession(AbstractSession):
 
     # --- NodeManagement Service Set ---
 
-    async def add_nodes(self, nodestoadd: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
+    async def add_nodes(
+        self, nodestoadd: list[ua.AddNodesItem], timeout: float | None = None
+    ) -> list[ua.AddNodesResult]:
         self.logger.info("add_nodes")
         request = ua.AddNodesRequest()
         request.Parameters.NodesToAdd = nodestoadd
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.AddNodesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def add_references(self, refs: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
+    async def add_references(
+        self, refs: list[ua.AddReferencesItem], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
         self.logger.info("add_references")
         request = ua.AddReferencesRequest()
         request.Parameters.ReferencesToAdd = refs
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.AddReferencesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def delete_references(self, refs: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
+    async def delete_references(
+        self, refs: list[ua.DeleteReferencesItem], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
         self.logger.info("delete")
         request = ua.DeleteReferencesRequest()
         request.Parameters.ReferencesToDelete = refs
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.DeleteReferencesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Parameters.Results
 
-    async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
+    async def delete_nodes(self, params: ua.DeleteNodesParameters, timeout: float | None = None) -> list[ua.StatusCode]:
         self.logger.info("delete_nodes")
         request = ua.DeleteNodesRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.DeleteNodesResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
@@ -441,10 +458,12 @@ class UaSession(AbstractSession):
 
     # --- Method Service Set ---
 
-    async def call(self, methodstocall: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
+    async def call(
+        self, methodstocall: list[ua.CallMethodRequest], timeout: float | None = None
+    ) -> list[ua.CallMethodResult]:
         request = ua.CallRequest()
         request.Parameters.MethodsToCall = methodstocall
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.CallResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
@@ -456,11 +475,12 @@ class UaSession(AbstractSession):
         self,
         params: ua.CreateSubscriptionParameters,
         callback: Sink | Callable[..., Any],
+        timeout: float | None = None,
     ) -> ua.CreateSubscriptionResult:
         self.logger.debug("create_subscription")
         request = ua.CreateSubscriptionRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.CreateSubscriptionResponse, data)
         response.ResponseHeader.ServiceResult.check()
         result = response.Parameters
@@ -483,10 +503,12 @@ class UaSession(AbstractSession):
         self._keep_alive_times[subscription_id] = publishing_interval * keep_alive_count
         self._publish_wake.set()
 
-    async def update_subscription(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
+    async def update_subscription(
+        self, params: ua.ModifySubscriptionParameters, timeout: float | None = None
+    ) -> ua.ModifySubscriptionResult:
         request = ua.ModifySubscriptionRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.ModifySubscriptionResponse, data)
         response.ResponseHeader.ServiceResult.check()
         result = response.Parameters
@@ -498,12 +520,14 @@ class UaSession(AbstractSession):
 
     modify_subscription = update_subscription  # legacy support
 
-    async def delete_subscriptions(self, subscription_ids: list[int]) -> list[ua.StatusCode]:
+    async def delete_subscriptions(
+        self, subscription_ids: list[int], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
         self.logger.debug("delete_subscriptions %r", subscription_ids)
         ids = [int(sid) for sid in subscription_ids]
         request = ua.DeleteSubscriptionsRequest()
         request.Parameters.SubscriptionIds = ids
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.DeleteSubscriptionsResponse, data)
         response.ResponseHeader.ServiceResult.check()
         if len(response.Results) != len(ids):
@@ -515,21 +539,25 @@ class UaSession(AbstractSession):
                 self.logger.warning("delete_subscriptions failed for %s: %s", sid, status)
         return response.Results
 
-    async def transfer_subscriptions(self, params: ua.TransferSubscriptionsParameters) -> list[ua.TransferResult]:
+    async def transfer_subscriptions(
+        self, params: ua.TransferSubscriptionsParameters, timeout: float | None = None
+    ) -> list[ua.TransferResult]:
         self.logger.info("transfer_subscriptions %s", list(params.SubscriptionIds))
         request = ua.TransferSubscriptionsRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.TransferSubscriptionsResponse, data)
         response.ResponseHeader.ServiceResult.check()
         return response.Parameters.Results
 
-    async def republish(self, subscription_id: int, retransmit_sequence_number: int) -> ua.NotificationMessage:
+    async def republish(
+        self, subscription_id: int, retransmit_sequence_number: int, timeout: float | None = None
+    ) -> ua.NotificationMessage:
         self.logger.debug("republish sub=%s seq=%s", subscription_id, retransmit_sequence_number)
         request = ua.RepublishRequest()
         request.Parameters.SubscriptionId = subscription_id
         request.Parameters.RetransmitSequenceNumber = retransmit_sequence_number
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.RepublishResponse, data)
         response.ResponseHeader.ServiceResult.check()
         return response.NotificationMessage
@@ -812,54 +840,64 @@ class UaSession(AbstractSession):
     # --- MonitoredItem Service Set ---
 
     async def create_monitored_items(
-        self, params: ua.CreateMonitoredItemsParameters
+        self,
+        params: ua.CreateMonitoredItemsParameters,
+        timeout: float | None = None,
     ) -> list[ua.MonitoredItemCreateResult]:
         self.logger.info("create_monitored_items")
         request = ua.CreateMonitoredItemsRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.CreateMonitoredItemsResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def delete_monitored_items(self, params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
+    async def delete_monitored_items(
+        self, params: ua.DeleteMonitoredItemsParameters, timeout: float | None = None
+    ) -> list[ua.StatusCode]:
         self.logger.info("delete_monitored_items")
         request = ua.DeleteMonitoredItemsRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.DeleteMonitoredItemsResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
     async def modify_monitored_items(
-        self, params: ua.ModifyMonitoredItemsParameters
+        self,
+        params: ua.ModifyMonitoredItemsParameters,
+        timeout: float | None = None,
     ) -> list[ua.MonitoredItemModifyResult]:
         self.logger.info("modify_monitored_items")
         request = ua.ModifyMonitoredItemsRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.ModifyMonitoredItemsResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Results
 
-    async def set_monitoring_mode(self, params: ua.SetMonitoringModeParameters) -> list[ua.uatypes.StatusCode]:
+    async def set_monitoring_mode(
+        self, params: ua.SetMonitoringModeParameters, timeout: float | None = None
+    ) -> list[ua.uatypes.StatusCode]:
         self.logger.info("set_monitoring_mode")
         request = ua.SetMonitoringModeRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.SetMonitoringModeResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()
         return response.Parameters.Results
 
-    async def set_publishing_mode(self, params: ua.SetPublishingModeParameters) -> list[ua.uatypes.StatusCode]:
+    async def set_publishing_mode(
+        self, params: ua.SetPublishingModeParameters, timeout: float | None = None
+    ) -> list[ua.uatypes.StatusCode]:
         self.logger.info("set_publishing_mode")
         request = ua.SetPublishingModeRequest()
         request.Parameters = params
-        data = await self._send_request(request)
+        data = await self._send_request(request, timeout)
         response = struct_from_binary(ua.SetPublishingModeResponse, data)
         self.logger.debug(response)
         response.ResponseHeader.ServiceResult.check()

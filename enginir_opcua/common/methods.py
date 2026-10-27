@@ -32,7 +32,12 @@ _INTEGER_RANGES = {
 _FLOATS = (ua.VariantType.Float, ua.VariantType.Double)
 
 
-async def call_method(parent: enginir_opcua.Node, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any) -> Any:
+async def call_method(
+    parent: enginir_opcua.Node,
+    methodid: ua.NodeId | ua.QualifiedName | str,
+    *args: Any,
+    timeout: float | None = None,
+) -> Any:
     """
     Call an OPC-UA method. methodid is browse name of child method or the
     nodeid of method as a NodeId object
@@ -41,7 +46,7 @@ async def call_method(parent: enginir_opcua.Node, methodid: ua.NodeId | ua.Quali
     returns a list of values or a single value depending on the output of the method
     : param: parent `Node`
     """
-    result = await call_method_full(parent, methodid, *args)
+    result = await call_method_full(parent, methodid, *args, timeout=timeout)
 
     if len(result.OutputArguments) == 0:
         return None
@@ -51,7 +56,10 @@ async def call_method(parent: enginir_opcua.Node, methodid: ua.NodeId | ua.Quali
 
 
 async def call_method_full(
-    parent: enginir_opcua.Node, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any
+    parent: enginir_opcua.Node,
+    methodid: ua.NodeId | ua.QualifiedName | str,
+    *args: Any,
+    timeout: float | None = None,
 ) -> ua.CallMethodResult:
     """
     Call an OPC-UA method. methodid is browse name of child method or the
@@ -67,7 +75,7 @@ async def call_method_full(
         methodid = methodid.nodeid
 
     arguments = await convert_arguments(parent.session, methodid, args)
-    result = await _call_method(parent.session, parent.nodeid, methodid, arguments)
+    result = await _call_method(parent.session, parent.nodeid, methodid, arguments, timeout)
     if result.OutputArguments is None:
         result.OutputArguments = []
     result.OutputArguments = [var.Value for var in result.OutputArguments]
@@ -79,6 +87,7 @@ async def _call_method(
     parentnodeid: ua.NodeId,
     methodid: ua.NodeId,
     arguments: list[ua.Variant],
+    timeout: float | None = None,
 ) -> ua.CallMethodResult:
     """
     :param server: `UaClient` or `InternalSession`
@@ -92,7 +101,7 @@ async def _call_method(
     request.MethodId = methodid
     request.InputArguments = arguments
     methodstocall = [request]
-    results = await session.call(methodstocall)
+    results = await (session.call(methodstocall) if timeout is None else session.call(methodstocall, timeout=timeout))  # type: ignore[call-arg]
     res = results[0]
     if not res.StatusCode.is_good():
         error = ua.UaStatusCodeError(res.StatusCode.value)
