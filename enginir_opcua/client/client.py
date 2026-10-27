@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import os
+import secrets
 import socket
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
@@ -31,7 +32,7 @@ from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
-from ..crypto.validator import ApplicationHook, CertificateValidator
+from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
@@ -53,6 +54,7 @@ _logger = logging.getLogger(__name__)
 
 SESSION_NONCE_MIN_LENGTH = 32
 SESSION_NONCE_MAX_LENGTH = 128
+TCP_BINARY_PROFILE = "http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary"
 LOSS_STATUS_ERRORS = (
     BadSecureChannelClosed,
     BadSecureChannelIdInvalid,
@@ -216,20 +218,29 @@ class Client:
 
     @staticmethod
     def find_endpoint(
-        endpoints: Iterable[ua.EndpointDescription], security_mode: ua.MessageSecurityMode, policy_uri: str
+        endpoints: Iterable[ua.EndpointDescription],
+        security_mode: ua.MessageSecurityMode,
+        policy_uri: str,
+        url: str | None = None,
     ) -> ua.EndpointDescription:
         """
-        Find endpoint with required security mode and policy URI
+        Find the opc.tcp binary endpoint with the required security mode and policy URI.
+        Among several matches the one with the url of the caller wins, then the highest SecurityLevel.
         """
+        endpoints = list(endpoints)
         _logger.info("find_endpoint %r %r %r", endpoints, security_mode, policy_uri)
-        for ep in endpoints:
-            if (
-                ep.EndpointUrl.startswith(ua.OPC_TCP_SCHEME)
-                and ep.SecurityMode == security_mode
-                and ep.SecurityPolicyUri == policy_uri
-            ):
-                return ep
-        raise ua.UaError(f"No matching endpoints: {security_mode}, {policy_uri}")
+        matches = [
+            ep
+            for ep in endpoints
+            if ep.EndpointUrl.startswith(ua.OPC_TCP_SCHEME)
+            and ep.TransportProfileUri in (TCP_BINARY_PROFILE, "", None)
+            and ep.SecurityMode == security_mode
+            and ep.SecurityPolicyUri == policy_uri
+        ]
+        if not matches:
+            offered = sorted({(ep.SecurityMode.name, ep.SecurityPolicyUri) for ep in endpoints})
+            raise ua.UaError(f"No matching endpoints: {security_mode.name}, {policy_uri}; the server offers {offered}")
+        return max(matches, key=lambda ep: (url is not None and ep.EndpointUrl == url, ep.SecurityLevel or 0))
 
     def set_user(self, username: str) -> None:
         """
@@ -319,8 +330,18 @@ class Client:
         else:
             client_key_password = None
 
-        policy_class = getattr(security_policies, f"SecurityPolicy{parts[0]}")
-        mode = getattr(ua.MessageSecurityMode, parts[1])
+        policies = {
+            name.removeprefix("SecurityPolicy"): value
+            for name, value in vars(security_policies).items()
+            if name.startswith("SecurityPolicy") and isinstance(value, type) and hasattr(value, "URI")
+        }
+        policy_class = policies.get(parts[0])
+        if policy_class is None or parts[0] in ("", "None"):
+            raise ConfigurationError(f"Unknown security policy {parts[0]!r}; use one of {sorted(policies)}")
+        modes = {"Sign": ua.MessageSecurityMode.Sign, "SignAndEncrypt": ua.MessageSecurityMode.SignAndEncrypt}
+        if parts[1] not in modes:
+            raise ConfigurationError(f"Unknown security mode {parts[1]!r}; use one of {sorted(modes)}")
+        mode = modes[parts[1]]
         return await self.set_security(
             policy_class, parts[2], parts[3], client_key_password, parts[4] if len(parts) >= 5 else None, mode
         )
@@ -361,7 +382,7 @@ class Client:
             self.uaclient.security_policy = new_policy
             endpoints = await self.connect_and_get_server_endpoints()
             self._discovered_endpoints = endpoints
-            endpoint = Client.find_endpoint(endpoints, mode, policy.URI)
+            endpoint = Client.find_endpoint(endpoints, mode, policy.URI, self.server_url.geturl())
             server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
             server_certificate = uacrypto.CertProperties(server_certificate)
@@ -594,7 +615,7 @@ class Client:
             if not self._policy_ids:
                 endpoints = await self.get_endpoints()
                 self._policy_ids = Client.find_endpoint(
-                    endpoints, self.security_policy.Mode, self.security_policy.URI
+                    endpoints, self.security_policy.Mode, self.security_policy.URI, self.server_url.geturl()
                 ).UserIdentityTokens
             await self._activate_with_credentials()
         except Exception as exc:
@@ -873,19 +894,15 @@ class Client:
         desc.ApplicationName = ua.LocalizedText(self.name)
         desc.ApplicationType = ua.ApplicationType.Client
         params = ua.CreateSessionParameters()
-        params.ServerUri = self.server_uri
+        params.ServerUri = None
         # at least 32 random bytes for server to prove possession of private key (specs part 4, 5.6.2.2)
         nonce = create_nonce(32)
         params.ClientNonce = nonce
-        if self.security_policy.host_certificate:
-            params.ClientCertificate = self.security_policy.host_certificate
-        elif self.user_certificate:
-            params.ClientCertificate = uacrypto.der_from_x509(self.user_certificate)
-        else:
-            params.ClientCertificate = None
+        params.ClientCertificate = self.security_policy.host_certificate or None
         params.ClientDescription = desc
         params.EndpointUrl = self.server_url.geturl()
-        params.SessionName = f"{self.description} Session{self._session_counter}"
+        self._session_counter += 1
+        params.SessionName = f"{self.description} Session{self._session_counter} {secrets.token_hex(4)}"
         params.RequestedSessionTimeout = self.session_timeout
         params.MaxResponseMessageSize = 0  # means no max size
         response = await self.uaclient.create_session(params)
@@ -904,7 +921,10 @@ class Client:
         elif self.security_policy.peer_certificate != server_certificate:
             raise ua.UaError("Server certificate mismatch")
         self._check_discovered_endpoints(response.ServerEndpoints)
-        ep = Client.find_endpoint(response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI)
+        ep = Client.find_endpoint(
+            response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI, self.server_url.geturl()
+        )
+        self._check_server_certificate_uri(server_certificate, ep)
 
         if self.application_hook and server_certificate:
             try:
@@ -928,8 +948,10 @@ class Client:
     def _endpoint_summary(endpoints: Iterable[ua.EndpointDescription]) -> set[tuple[Any, ...]]:
         return {
             (
+                endpoint.Server.ApplicationUri,
                 endpoint.SecurityMode,
                 endpoint.SecurityPolicyUri,
+                endpoint.SecurityLevel,
                 uacrypto.split_certificate_chain(endpoint.ServerCertificate)[0] if endpoint.ServerCertificate else b"",
                 frozenset(
                     (policy.PolicyId or "", policy.TokenType, policy.SecurityPolicyUri or "")
@@ -937,7 +959,18 @@ class Client:
                 ),
             )
             for endpoint in endpoints
+            if endpoint.TransportProfileUri in (TCP_BINARY_PROFILE, "", None)
         }
+
+    def _check_server_certificate_uri(self, server_certificate: bytes | None, endpoint: ua.EndpointDescription) -> None:
+        if not server_certificate or self.security_policy.Mode == ua.MessageSecurityMode.None_:
+            return
+        outcome = check_application_uri(
+            x509.load_der_x509_certificate(server_certificate), endpoint.Server.ApplicationUri
+        )
+        if not outcome.accepted:
+            _logger.error("The server certificate does not carry the ApplicationUri %r", endpoint.Server.ApplicationUri)
+            raise ua.UaStatusCodeError(outcome.status)
 
     def _check_discovered_endpoints(self, endpoints: Iterable[ua.EndpointDescription]) -> None:
         if self._discovered_endpoints is None:
@@ -1261,7 +1294,7 @@ class Client:
                     return policy
                 # empty URI means "use this endpoint's policy URI"
                 return dataclasses.replace(policy, SecurityPolicyUri=self.security_policy.URI)
-        return ua.UserTokenPolicy(TokenType=token_type, SecurityPolicyUri=self.security_policy.URI)
+        raise ConfigurationError(f"The endpoint does not offer the user token type {token_type.name}")
 
     async def activate_session(
         self,
@@ -1285,12 +1318,12 @@ class Client:
             params.ClientSignature.Algorithm = security_policies.SecurityPolicyBasic256Sha256.AsymmetricSignatureURI
         params.ClientSignature.Signature = self.security_policy.asymmetric_cryptography.signature(challenge)
         params.LocaleIds = self._locale
-        if not username and not (user_certificate and self.user_private_key):
-            self._add_anonymous_auth(params)
-        elif user_certificate:
+        if user_certificate and self.user_private_key:
             self._add_certificate_auth(params, user_certificate, challenge, self.user_certificate_chain)
-        else:
+        elif username:
             self._add_user_auth(params, username, password)
+        else:
+            self._add_anonymous_auth(params)
         res = await self.uaclient.activate_session(params)
         self._check_session_nonce(res.ServerNonce)
         self._server_nonce = res.ServerNonce
