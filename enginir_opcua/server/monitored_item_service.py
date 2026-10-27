@@ -10,14 +10,15 @@ import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
 from enginir_opcua.common import utils
 
 from .address_space import AddressSpace
+from .content_filter import MAX_FILTER_ELEMENTS, EventFilterChecker, WhereClauseEvaluator
 from .data_change import data_change_passes
+from .index_range import select_index_range
 from .node_walk import is_subtype
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ class MonitoredItemData:
         self.last_sample: ua.DataValue | None = None
         self.last_reported: ua.DataValue | None = None
         self.where_clause_evaluator: WhereClauseEvaluator | None = None
+        self.usable_selects: list[bool] = []
         self.queue_size: int = 0
         self.sampling_interval: float = 0.0
         self.discard_oldest: bool = True
@@ -145,6 +147,13 @@ class MonitoredItemService:
         status = self._check_filter(mdata.read_value_id, new_filter)
         if not status.is_good():
             return ua.MonitoredItemModifyResult(StatusCode=status)
+        filter_result = None
+        if is_event:
+            status, filter_result = self._check_event_filter(new_filter)
+            if not status.is_good():
+                return ua.MonitoredItemModifyResult(StatusCode=status, FilterResult=filter_result)
+            mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, new_filter.WhereClause)
+            mdata.usable_selects = [code.is_good() for code in filter_result.SelectClauseResults]
         mdata.filter = new_filter
         mdata.sampling_interval = self._revise_sampling_interval(requested.SamplingInterval, node_id, is_event)
         mdata.queue_size = self._revise_queue_size(requested.QueueSize, is_event)
@@ -153,7 +162,9 @@ class MonitoredItemService:
         mdata.timestamps = timestamps
         self._trim(mdata)
         return ua.MonitoredItemModifyResult(
-            RevisedSamplingInterval=mdata.sampling_interval, RevisedQueueSize=mdata.queue_size
+            RevisedSamplingInterval=mdata.sampling_interval,
+            RevisedQueueSize=mdata.queue_size,
+            FilterResult=filter_result,
         )
 
     @staticmethod
@@ -246,6 +257,8 @@ class MonitoredItemService:
             return result
         mdata.filter = self._normalise_filter(mdata.filter)
         status = self._check_filter(params.ItemToMonitor, mdata.filter)
+        if status.is_good():
+            status, result.FilterResult = self._check_event_filter(mdata.filter)
         if not status.is_good():
             result.StatusCode = status
             return result
@@ -253,6 +266,7 @@ class MonitoredItemService:
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
             return result
         mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, mdata.filter.WhereClause)
+        mdata.usable_selects = [code.is_good() for code in result.FilterResult.SelectClauseResults]
         self._commit_monitored_item(result, mdata)
         if params.ItemToMonitor.NodeId not in self._monitored_events:
             self._monitored_events[params.ItemToMonitor.NodeId] = []
@@ -464,6 +478,14 @@ class MonitoredItemService:
             return None
         return flt
 
+    def _check_event_filter(self, flt: ua.EventFilter) -> tuple[ua.StatusCode, ua.EventFilterResult]:
+        ok, filter_result = EventFilterChecker(self.aspace).check(flt)
+        if len(flt.WhereClause.Elements) > MAX_FILTER_ELEMENTS:
+            return ua.StatusCode(ua.StatusCodes.BadContentFilterInvalid), filter_result
+        if not ok:
+            return ua.StatusCode(ua.StatusCodes.BadMonitoredItemFilterInvalid), filter_result
+        return ua.StatusCode(), filter_result
+
     def _check_filter(self, item: ua.ReadValueId | None, flt: Any) -> ua.StatusCode:
         code = self._filter_status(item, flt)
         return ua.StatusCode(code)
@@ -544,87 +566,15 @@ class MonitoredItemService:
             return
         fieldlist = ua.EventFieldList()
         fieldlist.ClientHandle = mdata.client_handle
-        fieldlist.EventFields = event.to_event_fields(mdata.filter.SelectClauses)
+        clauses = mdata.filter.SelectClauses
+        fields = event.to_event_fields(clauses, self._is_subtype, select_index_range)
+        fieldlist.EventFields = [
+            field if usable else ua.Variant(None) for field, usable in zip(fields, mdata.usable_selects)
+        ]
         self._push(mdata, fieldlist)
+
+    def _is_subtype(self, candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:
+        return is_subtype(self.aspace, candidate, ancestor)
 
     async def trigger_statuschange(self, code: ua.StatusCode) -> None:
         await self.isub.enqueue_statuschange(code)
-
-
-class WhereClauseEvaluator:
-    def __init__(self, logger: Logger, aspace: AddressSpace, whereclause: ua.ContentFilter) -> None:
-        self.logger = logger
-        self.elements = whereclause.Elements
-        self._aspace = aspace
-
-    def eval(self, event: Any) -> bool:
-        if not self.elements:
-            return True
-        try:
-            res = self._eval_el(0, event)
-        except Exception as ex:
-            self.logger.exception(
-                "Exception while evaluating WhereClause %s for event %s: %s", self.elements, event, ex
-            )
-            return False
-        return bool(res)
-
-    def _eval_el(self, index: int, event: Any) -> Any:
-        el = self.elements[index]
-        ops = el.FilterOperands
-        if el.FilterOperator == ua.FilterOperator.Equals:
-            return self._eval_op(ops[0], event) == self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.IsNull:
-            return self._eval_op(ops[0], event) is None
-        if el.FilterOperator == ua.FilterOperator.GreaterThan:
-            return self._eval_op(ops[0], event) > self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.LessThan:
-            return self._eval_op(ops[0], event) < self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.GreaterThanOrEqual:
-            return self._eval_op(ops[0], event) >= self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.LessThanOrEqual:
-            return self._eval_op(ops[0], event) <= self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.Like:
-            return self._like_operator(self._eval_op(ops[0], event), self._eval_op(ops[1], event))
-        if el.FilterOperator == ua.FilterOperator.Not:
-            return not self._eval_op(ops[0], event)
-        if el.FilterOperator == ua.FilterOperator.Between:
-            return self._eval_op(ops[2], event) >= self._eval_op(ops[0], event) >= self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.InList:
-            return self._eval_op(ops[0], event) in [self._eval_op(op, event) for op in ops[1:]]
-        if el.FilterOperator == ua.FilterOperator.And:
-            return self._eval_op(ops[0], event) and self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.Or:
-            return self._eval_op(ops[0], event) or self._eval_op(ops[1], event)
-        if el.FilterOperator == ua.FilterOperator.Cast:
-            self.logger.warning("Cast operand not implemented, assuming True")
-            return True
-        if el.FilterOperator == ua.FilterOperator.OfType:
-            return event.EventType == self._eval_op(ops[0], event)
-        self.logger.warning("WhereClause not implemented for element: %s", el)
-        raise NotImplementedError
-
-    def _like_operator(self, string: str, pattern: str) -> bool:
-        raise NotImplementedError
-
-    def _eval_op(self, op: Any, event: Any) -> Any:
-        if isinstance(op, ua.ElementOperand):
-            return self._eval_el(op.Index, event)
-        if isinstance(op, ua.AttributeOperand):
-            if op.BrowsePath:
-                return getattr(event, op.BrowsePath.Elements[0].TargetName.Name)
-            return self._read_attribute_value(event.EventType, op.AttributeId)
-        if isinstance(op, ua.SimpleAttributeOperand):
-            if op.BrowsePath:
-                return getattr(event, op.BrowsePath[0].Name)
-            return self._read_attribute_value(event.EventType, op.AttributeId)
-        if isinstance(op, ua.LiteralOperand):
-            return op.Value.Value if op.Value is not None else None
-        self.logger.warning("Where clause element % is not of a known type", op)
-        raise NotImplementedError
-
-    def _read_attribute_value(self, node_id: ua.NodeId, attr_id: ua.AttributeIds) -> Any:
-        dv = self._aspace.read_attribute_value(node_id, attr_id)
-        if dv.Value is None:
-            return None
-        return dv.Value.Value
