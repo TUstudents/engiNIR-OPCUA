@@ -206,7 +206,7 @@ def signed_header(channel: SecureChannel, certificate: bytes | None = None) -> u
     return ua.AsymmetricAlgorithmHeader(
         SecurityPolicyURI=policy.URI,
         SenderCertificate=certificate if certificate is not None else policy.peer_certificate,
-        ReceiverCertificateThumbPrint=hashlib.sha1(policy.host_certificate or b"").digest(),
+        ReceiverCertificateThumbPrint=hashlib.sha1(policy.host_certificate or b"", usedforsecurity=False).digest(),
     )
 
 

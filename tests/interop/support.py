@@ -106,7 +106,7 @@ async def connect(
 
 def free_port() -> int:
     with socket.socket() as probe:
-        probe.bind(("", 0))
+        probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
 
 

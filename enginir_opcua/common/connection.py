@@ -347,7 +347,7 @@ class MessageChunk:
                     chunk.SecurityHeader.SenderCertificate += cert
             if security_policy.peer_certificate:
                 chunk.SecurityHeader.ReceiverCertificateThumbPrint = hashlib.sha1(
-                    security_policy.peer_certificate
+                    security_policy.peer_certificate, usedforsecurity=False
                 ).digest()
             chunk.MessageHeader.ChannelId = channel_id
             chunk.SequenceHeader.RequestId = request_id
@@ -582,7 +582,7 @@ class SecureChannel:
         if policy.URI != SecurityPolicyNone.URI:
             if not security_header.SenderCertificate or not security_header.ReceiverCertificateThumbPrint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Certificate or thumbprint is missing")
-            thumbprint = hashlib.sha1(policy.host_certificate or b"").digest()
+            thumbprint = hashlib.sha1(policy.host_certificate or b"", usedforsecurity=False).digest()
             if security_header.ReceiverCertificateThumbPrint != thumbprint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
         if params.ClientProtocolVersion != protocol_version:
