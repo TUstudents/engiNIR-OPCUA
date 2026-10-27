@@ -22,7 +22,7 @@ class UserManager:
         raise NotImplementedError
 
 
-class PermissiveUserManager:
+class PermissiveUserManager(UserManager):
     def get_user(
         self,
         iserver: "InternalServer",
@@ -38,7 +38,7 @@ class PermissiveUserManager:
         return User(role=UserRole.User)
 
 
-class CertificateUserManager:
+class CertificateUserManager(UserManager):
     """
     Certificate user manager, takes a certificate handler with its associated users and provides those users.
     """

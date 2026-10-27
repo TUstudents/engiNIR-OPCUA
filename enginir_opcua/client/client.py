@@ -513,6 +513,11 @@ class Client:
         if not self._try_load_persisted_session():
             return False
         try:
+            if not self._policy_ids:
+                endpoints = await self.get_endpoints()
+                self._policy_ids = Client.find_endpoint(
+                    endpoints, self.security_policy.Mode, self.security_policy.URI
+                ).UserIdentityTokens
             await self._activate_with_credentials()
         except Exception as exc:
             if isinstance(exc, BadSessionIdInvalid):

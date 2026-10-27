@@ -147,6 +147,7 @@ class ServerProcess(Process):
 
     async def run_server(self, url):
         srv = Server()
+        srv.allow_plaintext_password = True
         srv.set_endpoint(url)
         await srv.init()
         await add_server_methods(srv)
@@ -192,6 +193,7 @@ async def running_server(request):
 async def server():
     # start our own server
     srv = Server()
+    srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
     await add_server_methods(srv)
@@ -244,6 +246,7 @@ async def opc(request):
     """
     if request.param == "client":
         srv = Server()
+        srv.allow_plaintext_password = True
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
         await add_server_methods(srv)

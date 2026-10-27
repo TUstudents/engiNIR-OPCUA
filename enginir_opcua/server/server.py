@@ -390,6 +390,14 @@ class Server:
             except Exception as e:
                 _logger.warning("Could not withdraw the registration from %s: %s", url, e)
 
+    @property
+    def allow_plaintext_password(self) -> bool:
+        return self.iserver.allow_plaintext_password
+
+    @allow_plaintext_password.setter
+    def allow_plaintext_password(self, allow: bool) -> None:
+        self.iserver.allow_plaintext_password = allow
+
     def allow_remote_admin(self, allow: bool) -> None:
         """
         Enable or disable the builtin Admin user from network clients
@@ -479,6 +487,24 @@ class Server:
         if no_cert:
             _logger.warning("Endpoints other than open requested but private key and certificate are not set.")
 
+    def _password_policy_uri(
+        self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode
+    ) -> str | None:
+        if mode == ua.MessageSecurityMode.SignAndEncrypt:
+            return security_policies.SecurityPolicyNone.URI
+        if mode == ua.MessageSecurityMode.Sign:
+            return policy.URI
+        if self.iserver.certificate and self.iserver.private_key:
+            for token_policy_type in self._security_policy:
+                token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
+                if token_mode == ua.MessageSecurityMode.SignAndEncrypt:
+                    return token_policy.URI  # type: ignore[attr-defined,no-any-return]
+        if self.allow_plaintext_password:
+            _logger.warning("No encrypting policy available, the password is advertised for transfer in plaintext")
+            return security_policies.SecurityPolicyNone.URI
+        _logger.info("No UserName token policy on an unsecured endpoint without an encrypting policy")
+        return None
+
     def _set_endpoints(
         self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode, level: int
     ) -> None:
@@ -512,30 +538,13 @@ class Server:
                 idtokens.append(idtoken)
 
         if ua.UserNameIdentityToken in tokens:
-            idtoken = ua.UserTokenPolicy()
-            idtoken.PolicyId = "username"
-            idtoken.TokenType = ua.UserTokenType.UserName
-            if mode == ua.MessageSecurityMode.SignAndEncrypt:
-                # channel is encrypted, no need to encrypt password again
-                idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            elif mode == ua.MessageSecurityMode.Sign:
-                # use same policy for encryption
-                idtoken.SecurityPolicyUri = policy.URI
-            # try to avoid plaintext password, find first policy with encryption
-            elif self.iserver.certificate and self.iserver.private_key:
-                for token_policy_type in self._security_policy:
-                    token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
-                    if token_mode != ua.MessageSecurityMode.SignAndEncrypt:
-                        continue
-                    idtoken.SecurityPolicyUri = token_policy.URI  # type: ignore[attr-defined]
-                    break
-                else:
-                    _logger.warning("No encrypting policy available, password may get transferred in plaintext")
-                    idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            else:
-                _logger.warning("No encrypting policy available, password may get transferred in plaintext")
-                idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            idtokens.append(idtoken)
+            password_policy_uri = self._password_policy_uri(policy, mode)
+            if password_policy_uri is not None:
+                idtoken = ua.UserTokenPolicy()
+                idtoken.PolicyId = "username"
+                idtoken.TokenType = ua.UserTokenType.UserName
+                idtoken.SecurityPolicyUri = password_policy_uri
+                idtokens.append(idtoken)
 
         appdesc = ua.ApplicationDescription()
         appdesc.ApplicationName = ua.LocalizedText(self.name)

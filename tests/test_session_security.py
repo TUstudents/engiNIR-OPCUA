@@ -48,6 +48,7 @@ async def _start_server(secure: bool) -> tuple[Server, str]:
         await srv.load_private_key(SERVER_KEY)
     else:
         srv.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+        srv.allow_plaintext_password = True
     await srv.start()
     return srv, url
 

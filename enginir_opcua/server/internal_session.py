@@ -20,6 +20,7 @@ from ..common.utils import ServiceError, create_nonce
 from ..crypto import uacrypto
 from ..crypto.uacrypto import x509
 from .address_space import AddressSpace
+from .identity import match_token_policy, user_name_credentials
 from .subscription_service import SubscriptionService
 
 if TYPE_CHECKING:
@@ -76,6 +77,11 @@ class SessionChannel(Protocol):
     def send_response(
         self, requesthandle: int, seqhdr: Any, response: Any, msgtype: Any = ua.MessageType.SecureMessage
     ) -> None: ...
+
+
+def is_empty_identity_token(params: ua.ActivateSessionParameters) -> bool:
+    token = params.UserIdentityToken
+    return isinstance(token, ua.ExtensionObject) and token.TypeId == ua.NodeId(ua.ObjectIds.Null)
 
 
 def identity_token(params: ua.ActivateSessionParameters) -> Any:
@@ -226,27 +232,25 @@ class Session:
             if sub.session_id == self.id
         ]
 
-    def validate_identity(self, params: ua.ActivateSessionParameters, peer_certificate: bytes | None) -> User:
+    def validate_identity(self, params: ua.ActivateSessionParameters, security: ChannelSecurity) -> User:
         id_token = identity_token(params)
-        if not isinstance(id_token, self.iserver.supported_tokens):
-            _logger.error("Rejected active session UserIdentityToken not supported")
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
-        if self.iserver.user_manager is None:
-            return self.user
+        matched = match_token_policy(self.iserver.endpoints, security, id_token, is_empty_identity_token(params))
+        username: str | None = None
+        password: str | None = None
+        certificate: bytes | None = security.certificate
         try:
             if isinstance(id_token, ua.UserNameIdentityToken):
-                username, password = self.iserver.decrypt_user_token(self, id_token)
+                username, password = user_name_credentials(
+                    matched, security, id_token, self.iserver.private_key, self.nonce
+                )
             elif isinstance(id_token, ua.X509IdentityToken):
-                peer_certificate = self.iserver.verify_x509_token(self, id_token, params.UserTokenSignature)
-                username, password = None, None
-            else:
-                username, password = None, None
+                certificate = self.iserver.verify_x509_token(self, id_token, params.UserTokenSignature)
         except (ServiceError, ua.uaerrors.UaStatusCodeError):
             raise
         except Exception:
             raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid) from None
         user = self.iserver.user_manager.get_user(
-            self.iserver, username=username, password=password, certificate=peer_certificate
+            self.iserver, username=username, password=password, certificate=certificate
         )
         if user is None:
             raise ServiceError(ua.StatusCodes.BadUserAccessDenied)
@@ -452,7 +456,7 @@ class SessionManager:
             channel.verify(challenge, params.ClientSignature.Signature)
         except ua.uaerrors.SignatureError:
             raise ServiceError(ua.StatusCodes.BadApplicationSignatureInvalid) from None
-        user = session.validate_identity(params, security.certificate)
+        user = session.validate_identity(params, security)
         if moving and user != session.user:
             _logger.warning("Rejected moving session %s to a new channel with a different user", session.name)
             raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)

@@ -43,6 +43,7 @@ def tloop():
 @pytest.fixture(scope="module")
 def server(tloop):
     s = Server(tloop=tloop)
+    s.aio_obj.allow_plaintext_password = True
     s.disable_clock(True)
     s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/enginir-opcua/server/")
     uri = "http://examples.freeopcua.github.io"

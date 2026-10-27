@@ -6,14 +6,12 @@ Can be used on server side or to implement binary/https opc-ua servers
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from struct import unpack_from
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,7 +21,7 @@ from ..common.callback import CallbackService
 from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
-from ..crypto import security_policies, uacrypto
+from ..crypto import uacrypto
 from ..crypto.validator import CertificateValidatorMethod
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
@@ -35,16 +33,6 @@ from .subscription_service import SubscriptionService
 from .user_managers import PermissiveUserManager, UserManager
 
 _logger = logging.getLogger(__name__)
-
-
-USER_TOKEN_SECURITY_POLICIES: tuple[type[security_policies.SecurityPolicy], ...] = (
-    security_policies.SecurityPolicyNone,
-    security_policies.SecurityPolicyBasic128Rsa15,
-    security_policies.SecurityPolicyBasic256,
-    security_policies.SecurityPolicyBasic256Sha256,
-    security_policies.SecurityPolicyAes128Sha256RsaOaep,
-    security_policies.SecurityPolicyAes256Sha256RsaPss,
-)
 
 
 @dataclass
@@ -104,6 +92,7 @@ class InternalServer:
         self.endpoints: list[ua.EndpointDescription] = []
         self._channel_id_counter = 5
         self.allow_remote_admin = True
+        self.allow_plaintext_password = False
         self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
@@ -156,7 +145,7 @@ class InternalServer:
         if user_manager is None:
             _logger.info("No user manager specified. Using default permissive manager instead.")
             user_manager = PermissiveUserManager()
-        self.user_manager = user_manager
+        self.user_manager: UserManager = user_manager
         self.certificate_validator: CertificateValidatorMethod | None = None
         """hook to validate a certificate, raises a ServiceError when not valid"""
         self.operation_limits = OperationLimits()
@@ -493,69 +482,6 @@ class InternalServer:
         and password as parameters and returns True of user is allowed access, False otherwise.
         """
         self.user_manager = user_manager
-
-    def _username_token_policy(
-        self, isession: Any, token: ua.UserNameIdentityToken
-    ) -> tuple[ua.UserTokenPolicy, ua.EndpointDescription]:
-        channel = isession.channel_security
-        for endpoint in self.endpoints:
-            if channel is not None and (
-                endpoint.SecurityPolicyUri != channel.policy_uri or endpoint.SecurityMode != channel.mode
-            ):
-                continue
-            for policy in endpoint.UserIdentityTokens:
-                if policy.TokenType == ua.UserTokenType.UserName and policy.PolicyId == token.PolicyId:
-                    return policy, endpoint
-        self.logger.warning("Rejected user token with unknown PolicyId %s", token.PolicyId)
-        raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-
-    @staticmethod
-    def _token_encryption_algorithm(policy: ua.UserTokenPolicy, endpoint: ua.EndpointDescription) -> str:
-        policy_uri = policy.SecurityPolicyUri or endpoint.SecurityPolicyUri
-        for policy_class in USER_TOKEN_SECURITY_POLICIES:
-            if policy_class.URI == policy_uri:
-                return policy_class.AsymmetricEncryptionURI
-        raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-
-    def decrypt_user_token(self, isession: Any, token: ua.UserNameIdentityToken) -> tuple[str, str]:
-        """
-        unpack the username and password for the benefit of the user defined user manager
-        """
-        policy, endpoint = self._username_token_policy(isession, token)
-        if not token.Password and not token.EncryptionAlgorithm:
-            return token.UserName, token.Password
-        expected_algorithm = self._token_encryption_algorithm(policy, endpoint)
-        if (token.EncryptionAlgorithm or "") != expected_algorithm:
-            self.logger.warning(
-                "Rejected user token encrypted with %r, policy %s requires %r",
-                token.EncryptionAlgorithm,
-                policy.PolicyId,
-                expected_algorithm,
-            )
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-        password = token.Password
-        if expected_algorithm:
-            password = self._decrypt_password_secret(isession.nonce, expected_algorithm, password)
-        elif isinstance(password, bytes):
-            password = password.decode("utf-8")
-        return token.UserName, password
-
-    def _decrypt_password_secret(self, nonce: bytes, algorithm: str, secret: bytes) -> str:
-        if algorithm == "http://www.w3.org/2001/04/xmlenc#rsa-1_5":
-            raw = uacrypto.decrypt_rsa15(self.private_key, secret)
-        elif algorithm == "http://www.w3.org/2001/04/xmlenc#rsa-oaep":
-            raw = uacrypto.decrypt_rsa_oaep(self.private_key, secret)
-        elif algorithm == "http://opcfoundation.org/UA/security/rsa-oaep-sha2-256":
-            raw = uacrypto.decrypt_rsa_oaep_sha256(self.private_key, secret)
-        else:
-            raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-        length = unpack_from("<I", raw)[0]
-        plain = raw[4 : 4 + length]
-        password, token_nonce = plain[: len(plain) - len(nonce)], plain[len(plain) - len(nonce) :]
-        if len(plain) < len(nonce) or not hmac.compare_digest(token_nonce, nonce):
-            self.logger.warning("Rejected user token that is not bound to the current server nonce")
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-        return password.decode("utf-8")
 
     def verify_x509_token(self, isession: Any, token: ua.X509IdentityToken, signature: ua.SignatureData) -> bytes:
         """
