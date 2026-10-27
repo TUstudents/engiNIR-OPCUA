@@ -238,7 +238,7 @@ def sign_certificate_request(
     return certificate
 
 
-def _write_atomic(path: Path, data: bytes, mode: int) -> None:
+def write_atomic(path: Path, data: bytes, mode: int) -> None:
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
@@ -255,12 +255,12 @@ def _write_atomic(path: Path, data: bytes, mode: int) -> None:
 
 async def write_private_key(path: Path, private_key: rsa.RSAPrivateKey) -> None:
     """Write a private key as unencrypted PKCS8 PEM that only its owner can read, with a rename at the end."""
-    await anyio.to_thread.run_sync(_write_atomic, path, dump_private_key_as_pem(private_key), 0o600)
+    await anyio.to_thread.run_sync(write_atomic, path, dump_private_key_as_pem(private_key), 0o600)
 
 
 async def write_certificate(path: Path, certificate: x509.Certificate) -> None:
     """Write a certificate as DER with a rename at the end."""
-    await anyio.to_thread.run_sync(_write_atomic, path, certificate.public_bytes(Encoding.DER), 0o644)
+    await anyio.to_thread.run_sync(write_atomic, path, certificate.public_bytes(Encoding.DER), 0o644)
 
 
 def _generated_by_setup(certificate: x509.Certificate, app_uri: str) -> bool:

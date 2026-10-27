@@ -17,13 +17,15 @@ import anyio
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from enginir_opcua.crypto.uacrypto import get_content
+from enginir_opcua.crypto.cert_gen import write_atomic
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint, get_content
 from enginir_opcua.ua.uaerrors import ConfigurationError
 
 _logger = logging.getLogger(__name__)
 
 CERTIFICATE_EXTENSIONS = frozenset({".der", ".cer", ".crt", ".pem"})
 CRL_EXTENSIONS = frozenset({".crl", ".der", ".pem"})
+DEFAULT_MAX_REJECTED = 100
 
 
 def _der(certificate: x509.Certificate) -> bytes:
@@ -67,6 +69,8 @@ class TrustStore:
         *,
         trusted_crl_locations: Sequence[Path] = (),
         issuer_crl_locations: Sequence[Path] = (),
+        rejected_location: Path | None = None,
+        max_rejected: int = DEFAULT_MAX_REJECTED,
     ) -> None:
         """
         Args:
@@ -75,12 +79,17 @@ class TrustStore:
             issuer_locations: directories with CA certificates needed for chains, which are not anchors.
             trusted_crl_locations: directories with revocation lists that only apply to trusted CA certificates.
             issuer_crl_locations: directories with revocation lists that only apply to issuer CA certificates.
+            rejected_location: directory that receives the certificates of peers that failed validation, never read
+                for validation.
+            max_rejected: the most files kept in rejected_location, the oldest are removed first.
         """
         self._trust_locations: list[Path] = [Path(location) for location in trust_locations]
         self._crl_locations: list[Path] = [Path(location) for location in crl_locations]
         self._issuer_locations: list[Path] = [Path(location) for location in issuer_locations]
         self._trusted_crl_locations: list[Path] = [Path(location) for location in trusted_crl_locations]
         self._issuer_crl_locations: list[Path] = [Path(location) for location in issuer_crl_locations]
+        self._rejected_location: Path | None = Path(rejected_location) if rejected_location else None
+        self._max_rejected = max_rejected
         self._snapshot = StoreSnapshot()
         self._pinned: tuple[x509.Certificate, ...] = ()
 
@@ -105,6 +114,14 @@ class TrustStore:
         return self._issuer_crl_locations
 
     @property
+    def rejected_location(self) -> Path | None:
+        return self._rejected_location
+
+    @property
+    def max_rejected(self) -> int:
+        return self._max_rejected
+
+    @property
     def has_crl_locations(self) -> bool:
         return bool(self._crl_locations or self._trusted_crl_locations or self._issuer_crl_locations)
 
@@ -114,16 +131,18 @@ class TrustStore:
         return bool(self._crl_locations) or self._snapshot.has_revocation_lists
 
     @classmethod
-    def from_pki_directory(cls, root: str | Path) -> "TrustStore":
+    def from_pki_directory(cls, root: str | Path, *, max_rejected: int = DEFAULT_MAX_REJECTED) -> "TrustStore":
         """
-        A store over the folders of a PKI directory: trusted/certs and trusted/crl, issuer/certs and issuer/crl.
-        trusted/certs has to exist. The other folders are used when they exist.
+        A store over the folders of a PKI directory: trusted/certs and trusted/crl, issuer/certs and issuer/crl,
+        and rejected/certs for the certificates that failed validation. trusted/certs has to exist. The other
+        folders are used when they exist.
         """
         base = Path(root)
-        issuer_certs, trusted_crl, issuer_crl = (
+        issuer_certs, trusted_crl, issuer_crl, rejected = (
             base / "issuer" / "certs",
             base / "trusted" / "crl",
             base / "issuer" / "crl",
+            base / "rejected" / "certs",
         )
         return cls(
             [base / "trusted" / "certs"],
@@ -131,6 +150,8 @@ class TrustStore:
             [issuer_certs] if issuer_certs.is_dir() else [],
             trusted_crl_locations=[trusted_crl] if trusted_crl.is_dir() else [],
             issuer_crl_locations=[issuer_crl] if issuer_crl.is_dir() else [],
+            rejected_location=rejected if rejected.is_dir() else None,
+            max_rejected=max_rejected,
         )
 
     def copy(self) -> "TrustStore":
@@ -141,7 +162,36 @@ class TrustStore:
             self._issuer_locations,
             trusted_crl_locations=self._trusted_crl_locations,
             issuer_crl_locations=self._issuer_crl_locations,
+            rejected_location=self._rejected_location,
+            max_rejected=self._max_rejected,
         )
+
+    def record_rejected(self, certificates: Sequence[bytes]) -> None:
+        """
+        Keep DER certificates that failed validation in the rejected location, one file per thumbprint and only
+        when the file does not exist yet, the first of the sequence (the leaf) last. Errors are logged.
+        """
+        location = self._rejected_location
+        if location is None:
+            return
+        try:
+            if not location.is_dir():
+                return
+            for der in reversed(certificates):
+                target = location / f"{certificate_thumbprint(der).hex()}.der"
+                if not target.exists():
+                    write_atomic(target, der, 0o644)
+            self._prune_rejected(location)
+        except OSError as exc:
+            _logger.warning("Could not keep a rejected certificate in %s: %s", location, exc)
+
+    def _prune_rejected(self, location: Path) -> None:
+        files = sorted(
+            (entry for entry in location.iterdir() if entry.suffix == ".der" and entry.is_file()),
+            key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
+        )
+        for entry in files[: max(len(files) - self._max_rejected, 0)]:
+            entry.unlink(missing_ok=True)
 
     @property
     def snapshot(self) -> StoreSnapshot:

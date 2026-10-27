@@ -663,8 +663,23 @@ class CertificateValidator:
         try:
             leaf = validation.run(chain)
         except _Rejected as rejection:
+            self._keep_rejected(chain)
             return self._rejected(rejection, tuple(validation.suppressed))
         return Outcome(True, leaf, tuple(validation.suppressed))
+
+    def _keep_rejected(self, chain: bytes) -> None:
+        try:
+            pieces = split_certificate_chain(bytes(chain))[: self.max_chain_length]
+        except UaError:
+            return
+        parsed: list[bytes] = []
+        for piece in pieces:
+            try:
+                x509.load_der_x509_certificate(piece)
+            except ValueError:
+                continue
+            parsed.append(piece)
+        self._trust_store.record_rejected(parsed)
 
     def validate_user_certificate(self, chain: bytes, policy_uri: str | None) -> Outcome:
         """
