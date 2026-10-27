@@ -344,6 +344,8 @@ class Server:
     async def _secure_discovery_client(self, client: Client) -> None:
         if self.iserver.certificate is None or self.iserver.private_key is None:
             return
+        if self.iserver.trust_store is not None:
+            client.set_trust_store(self.iserver.trust_store)
         await client.set_security(
             security_policies.SecurityPolicyBasic256Sha256,
             uacrypto.CertProperties(uacrypto.der_from_x509(self.iserver.certificate), "DER"),
@@ -361,6 +363,11 @@ class Server:
         least every 10 minutes, so this method will use our asyncio thread to
         re-register every period seconds
         if period is 0 registration is not automatically renewed
+
+        The discovery server accepts the registration only on a secure channel, so the server needs its
+        certificate and private key, and an application URI (set_application_uri) equal to the ApplicationUri of
+        its certificate. The certificate of the discovery server is validated against the trust store of this
+        server (set_trust_store).
         """
         if not 0 <= period <= MAX_DISCOVERY_PERIOD_SECONDS:
             raise ValueError(f"period must be between 0 and {MAX_DISCOVERY_PERIOD_SECONDS} seconds")

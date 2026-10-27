@@ -9,6 +9,7 @@ from enginir_opcua.server.internal_session import ChannelSecurity
 
 from .conftest import find_free_port
 from .harness import EXAMPLES, TWO_SESSION_USERS, TwoUserManager, make_certificate, signing_client
+from .pki import CLIENT_APPLICATION_URI
 
 
 class Delays:
@@ -74,10 +75,12 @@ async def test_srv39_success_resets_the_counter(signing_server: Server, delays: 
     assert delays.slept == [1.0]
 
 
-async def test_srv39_key_of_the_signing_server_login_is_a_peer_key(signing_server: Server, delays: Delays) -> None:
-    """Part 4, 5.7.3.1: a failed secured login is recorded under the key of its channel."""
+async def test_srv39_secured_login_is_recorded_under_the_application_uri(
+    signing_server: Server, delays: Delays
+) -> None:
+    """Part 4, 5.7.3.1: a failed secured login is recorded under the ApplicationUri of the client certificate."""
     await _fail(signing_server, 1)
-    assert list(signing_server.iserver.identity_guard.records) == ["ip:127.0.0.1"]
+    assert list(signing_server.iserver.identity_guard.records) == [f"uri:{CLIENT_APPLICATION_URI}"]
 
 
 async def test_srv39_key_is_the_ip_address_when_unsecured() -> None:

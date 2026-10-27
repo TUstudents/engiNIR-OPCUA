@@ -7,9 +7,10 @@ from enginir_opcua.common.utils import ServiceError
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
 
 from .conftest import find_free_port
-from .harness import EXAMPLES, start_discovery_server
+from .harness import PKI, start_discovery_server
+from .pki import CLIENT_APPLICATION_URI
 
-REGISTRANT_URI = "urn:example.org:FreeOpcUa:python-opcua"
+REGISTRANT_URI = CLIENT_APPLICATION_URI
 
 
 def _registered_server(uri: str) -> ua.RegisteredServer:
@@ -35,10 +36,10 @@ async def _registrant(server: Server, secure: bool = True) -> Client:
     if secure:
         await client.set_security(
             SecurityPolicyBasic256Sha256,
-            EXAMPLES / "certificate-example.der",
-            EXAMPLES / "private-key-example.pem",
+            PKI.peer1.certificate,
+            PKI.peer1.key,
             None,
-            EXAMPLES / "certificate-example.der",
+            PKI.server.certificate,
             ua.MessageSecurityMode.SignAndEncrypt,
         )
     await client.connect_sessionless()

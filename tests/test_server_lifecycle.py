@@ -48,7 +48,7 @@ async def test_srv10_registering_twice_keeps_one_renewal_task_and_stop_cancels_i
     """Part 4, 5.5.5.1: one task renews every registration; stop() ends it."""
     server = Server(allow_no_security=True)
     await server.init()
-    await give_identity(server, "urn:enginir:opcua:server")
+    await give_identity(server, "urn:enginir:opcua:server", discovery)
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     await server.register_to_discovery(discovery.endpoint.geturl(), period=1)
@@ -96,7 +96,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
     """Part 4, 5.7.4: after stop() nothing of the server is left running."""
     server = Server(allow_no_security=True)
     await server.init()
-    await give_identity(server, "urn:enginir:opcua:server")
+    await give_identity(server, "urn:enginir:opcua:server", discovery)
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     await server.register_to_discovery(discovery.endpoint.geturl(), period=1)

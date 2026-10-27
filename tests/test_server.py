@@ -50,7 +50,7 @@ async def test_discovery(registrant, discovery_server):
     async with client:
         servers = await client.find_servers()
         new_app_uri = "urn:enginir:opcua:server:test_discovery"
-        await give_identity(registrant, new_app_uri)
+        await give_identity(registrant, new_app_uri, discovery_server)
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), 0)
         # let server register registration
         await asyncio.sleep(0.5)
@@ -64,7 +64,7 @@ async def test_unregister_discovery(registrant, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         new_app_uri = "urn:enginir:opcua:server:test_discovery2"
-        await give_identity(registrant, new_app_uri)
+        await give_identity(registrant, new_app_uri, discovery_server)
         # register without automatic renewal
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         await asyncio.sleep(0.5)
@@ -83,10 +83,10 @@ async def test_find_servers2(registrant, discovery_server):
     async with client:
         servers = await client.find_servers()
         new_app_uri1 = "urn:enginir:opcua:server:test_discovery1"
-        await give_identity(registrant, new_app_uri1)
+        await give_identity(registrant, new_app_uri1, discovery_server)
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         new_app_uri2 = "urn:enginir:opcua:test_discovery2"
-        await give_identity(registrant, new_app_uri2)
+        await give_identity(registrant, new_app_uri2, discovery_server)
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         await asyncio.sleep(0.1)  # let server register registration
         new_servers = await client.find_servers()

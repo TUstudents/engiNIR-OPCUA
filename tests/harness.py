@@ -422,21 +422,28 @@ def make_certificate(application_uri: str) -> tuple[bytes, bytes]:
 
 async def start_discovery_server(port: int) -> Server:
     """A discovery server that accepts registrations on a None and a SignAndEncrypt endpoint."""
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     await srv.set_application_uri("urn:enginir:opcua:discovery")
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
-    await srv.load_certificate(EXAMPLES / "certificate-example.der")
-    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    await srv.load_certificate(PKI.server.certificate)
+    await srv.load_private_key(PKI.server.key)
+    srv.set_trust_store(PKI.trust_store())
     srv.accept_server_registrations()
     await srv.start()
     return srv
 
 
-async def give_identity(srv: Server, application_uri: str) -> None:
-    """Gives the server its own ApplicationUri and a generated certificate that carries it."""
-    certificate, private_key = make_certificate(application_uri)
-    await srv.load_certificate(certificate, "DER")
-    await srv.load_private_key(private_key, format="PEM")
+async def give_identity(srv: Server, application_uri: str, discovery: Server | None = None) -> None:
+    """Gives the server an ApplicationUri and a generated certificate that carries it.
+
+    The server trusts the certificates of PKI; the discovery server, when given, trusts the new certificate.
+    """
+    peer = PKI.issue(f"identity-{abs(hash(application_uri))}", application_uri)
+    await srv.load_certificate(peer.certificate)
+    await srv.load_private_key(peer.key)
     await srv.set_application_uri(application_uri)
+    srv.set_trust_store(PKI.trust_store())
+    if discovery is not None and discovery.iserver.trust_store is not None:
+        discovery.iserver.trust_store.pin(peer.identity.certificate)

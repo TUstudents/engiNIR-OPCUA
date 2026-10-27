@@ -43,7 +43,7 @@ def tloop():
 
 @pytest.fixture(scope="module")
 def server(tloop):
-    s = Server(tloop=tloop)
+    s = Server(allow_no_security=True, tloop=tloop)
     s.aio_obj.iserver.set_user_manager(PermissiveUserManager())
     s.aio_obj.allow_plaintext_password = True
     s.disable_clock(True)

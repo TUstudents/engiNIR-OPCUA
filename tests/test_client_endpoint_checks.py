@@ -9,18 +9,19 @@ from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.uacrypto import CertProperties
 
 from .conftest import find_free_port
-from .harness import EXAMPLES, ResponseTampering, TwoUserManager, make_certificate
+from .harness import EXAMPLES, PKI, ResponseTampering, TwoUserManager, make_certificate
 
 
 @pytest.fixture
 async def two_endpoint_server() -> AsyncIterator[Server]:
-    srv = Server(user_manager=TwoUserManager())
+    srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_Sign])
     srv.set_identity_tokens([ua.UserNameIdentityToken])
-    await srv.load_certificate(EXAMPLES / "certificate-example.der")
-    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    await srv.load_certificate(PKI.server.certificate)
+    await srv.load_private_key(PKI.server.key)
+    srv.set_trust_store(PKI.trust_store())
     await srv.start()
     yield srv
     await srv.stop()
@@ -28,10 +29,11 @@ async def two_endpoint_server() -> AsyncIterator[Server]:
 
 async def _discovering_client(server: Server) -> Client:
     client = Client(server.endpoint.geturl())
+    client.set_trust_store(PKI.trust_store())
     await client.set_security(
         security_policies.SecurityPolicyBasic256Sha256,
-        EXAMPLES / "certificates" / "peer-certificate-example-1.der",
-        EXAMPLES / "certificates" / "peer-private-key-example-1.pem",
+        PKI.peer1.certificate,
+        PKI.peer1.key,
         None,
         None,
         ua.MessageSecurityMode.Sign,
