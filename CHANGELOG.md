@@ -198,6 +198,47 @@ Subscriptions (OPC 10000-4, 5.13 and 5.14):
   and both Publish bindings, tells the previous owner `Good_SubscriptionTransferred` and honours SendInitialValues.
 - `InternalSubscription.publish()`, `has_published_results()` and `_trigger_publish` are removed.
 
+Attribute, method and view services (OPC 10000-4, 5.8 to 5.12):
+- No role bypasses AccessLevel or WriteMask, Admin included; only the server's own in-process session is exempt. Remote
+  clients can't write read-only variables or attributes without the WriteMask bit, `NamespaceArray` included.
+- Write checks the DataType (subtypes allowed), ValueRank, ArrayDimensions and null values; a StatusCode or
+  SourceTimestamp from a client needs the StatusWrite or TimestampWrite bit, otherwise `Bad_WriteNotSupported`.
+  `Node.write_value` no longer sends a SourceTimestamp. A value setter's return value is the write result, and
+  `Server.write_attribute_value` raises on a bad result. A client write to an attribute with a value callback is
+  `Bad_NotWritable`.
+- Read honours IndexRange and TimestampsToReturn and ignores DataEncoding; a variable that was never set reads as
+  `Bad_NoValue`. `ua.IndexRange` implements NumericRange (OPC 10000-4, 7.27) for Read, Write, HistoryRead, monitored
+  items and PubSub targets.
+- Call checks that the method belongs to the object, Executable/UserExecutable and every input argument.
+  `Node.call_method` sends Python ints as Int64, so methods with other integer argument types need typed Variants.
+  Hand-built `ua.Argument` objects need a ValueRank; a method without a callback gives `Bad_NotSupported`.
+- Browse honours ResultMask, NodeClassMask and RequestedMaxReferencesPerNode; BrowseNext and continuation points
+  exist; unknown nodes give `Bad_NodeIdUnknown`. With ResultMask 0, `get_children` returns empty fields.
+- AddNodes from a client: namespace 0 is refused (`Bad_NodeIdRejected`, also `instantiate()` with `idx=0`), the
+  parent reference must be hierarchical and the BrowseName unique. AddReferences refuses duplicates; DeleteNodes and
+  DeleteReferences refuse namespace 0.
+
+Monitored items and events (OPC 10000-4, 5.13):
+- QueueSize 0 or 1 means 1 for data items (it used to mean 10 000); the maximum is 1000. The sampling interval is
+  revised (0 becomes 10 ms, a negative value the publishing interval). A null filter in ModifyMonitoredItems removes
+  the filter. A deleted monitored node delivers `Bad_NodeIdUnknown`. `InternalSubscription(max_queue_size=...)` is
+  now `limits=MonitoredItemLimits(...)`; `MonitoredItemValues` is removed.
+- Events also reach the Server object and every notifier above their source. `EventGenerator` no longer clears other
+  EventNotifier bits; the default Message is a LocalizedText; DaylightSavingInOffset is set only while DST applies.
+  68 fields of the generated event classes now declare built-in types.
+
+History (OPC 10000-11):
+- `HistoryStorageInterface` is replaced for custom backends: reads take a `TimeDomain` and return a `Page`; saves are
+  `save_node_value()` and `save_event()`; new `has_node()`, `has_event()`, `flush()` and `stores_server_timestamp`.
+- SQLite history files from earlier releases are refused with an error naming the file.
+- A HistoryRead of a node that isn't historized gives `Bad_HistoryOperationUnsupported`, without the HistoryRead bit
+  `Bad_NotReadable`. Two of start, end and count are required. Equal timestamps return the latest value with the
+  ExtraData bit; empty ranges give `Good_NoData`.
+- `Node.read_raw_history()` and `read_event_history()` without arguments read everything until now, and with only a
+  count the newest values; `read_raw_history` defaults `return_bounds` to False.
+- `validate_table_name` and `SqlInjectionError` are removed. `set_storage()` after historizing raises. A notifier's
+  event history includes the events of the sources below it.
+
 Crypto:
 - Verifiers raise `ua.uaerrors.SignatureError` and decryption failures `ua.uaerrors.DecryptionError` (both
   `UaError`); `uacrypto.InvalidSignature` is gone.
