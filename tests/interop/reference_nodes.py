@@ -1,17 +1,14 @@
 import asyncio
+import shutil
 import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cryptography.x509.oid import ExtendedKeyUsageOID
-
 from enginir_opcua import Server, ua, uamethod
 from enginir_opcua.common.callback import CallbackType, ServerItemCallback
-from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
 from enginir_opcua.crypto.permission_rules import User, UserRole
-from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.server.internal_server import InternalServer
 
 from .support import NAMESPACE_URI, USER_NAME, USER_PASSWORD, SecurityCase
@@ -112,20 +109,8 @@ async def serve(directory: Path, case: SecurityCase, trusted_clients: Path, port
     server.set_security_policy([case.server_policy])
     server.set_identity_tokens([ua.AnonymousIdentityToken, ua.UserNameIdentityToken])
     if case.policy is not None:
-        key, certificate = directory / "server-key.pem", directory / "server-certificate.der"
-        await setup_self_signed_certificate(
-            key,
-            certificate,
-            SERVER_APPLICATION_URI,
-            host,
-            [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH],
-            {},
-        )
-        await server.load_certificate(str(certificate))
-        await server.load_private_key(key)
-        trust_store = TrustStore([trusted_clients], [])
-        await trust_store.load()
-        server.set_trust_store(trust_store)
+        await server.set_pki_directory(directory / "server-pki")
+        shutil.copytree(trusted_clients, directory / "server-pki" / "trusted" / "certs", dirs_exist_ok=True)
     namespace, simulation = await populate(server, observations)
 
     def count_items(event: ServerItemCallback, *_: object) -> None:

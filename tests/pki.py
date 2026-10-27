@@ -184,6 +184,23 @@ def write_crl_directory(directory: Path, *crls: x509.CertificateRevocationList) 
     return directory
 
 
+def write_pki_layout(
+    root: Path,
+    trusted: tuple[x509.Certificate, ...] = (),
+    issuers: tuple[x509.Certificate, ...] = (),
+    trusted_crls: tuple[x509.CertificateRevocationList, ...] = (),
+    issuer_crls: tuple[x509.CertificateRevocationList, ...] = (),
+    rejected: bool = True,
+) -> Path:
+    write_trust_directory(root / "trusted" / "certs", *trusted)
+    write_crl_directory(root / "trusted" / "crl", *trusted_crls)
+    write_trust_directory(root / "issuer" / "certs", *issuers)
+    write_crl_directory(root / "issuer" / "crl", *issuer_crls)
+    if rejected:
+        (root / "rejected" / "certs").mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def chain_bytes(*identities: Identity) -> bytes:
     return b"".join(identity.der for identity in identities)
 

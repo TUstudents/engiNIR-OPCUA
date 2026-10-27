@@ -1,10 +1,11 @@
 """
 A server with encryption that creates its own certificate and only accepts clients it trusts.
 
-The server certificate and private key are generated in examples/certificates/generated on the first run.
-A client certificate is only accepted when it is in examples/certificates/generated/trusted-clients, so run
-client-with-encryption.py once to create the client certificate and copy
-examples/certificates/generated/client-certificate-example.der into that directory before starting the server.
+The server uses a PKI directory, examples/certificates/generated/server-pki. On the first run the folders are
+created and a self-signed server certificate and its private key are generated in own/. A client certificate is
+only accepted when it is in trusted/certs. A client that is refused leaves its certificate in rejected/certs: run
+client-with-encryption.py, move its file from rejected/certs to trusted/certs and restart the server (a running
+server picks the file up with server.reload_trust_store()).
 """
 
 import asyncio
@@ -14,23 +15,17 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "..")
-from cryptography.x509.oid import ExtendedKeyUsageOID
-
 from enginir_opcua import Server, ua
-from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
-from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.server.user_managers import CertificateUserManager
 
 logging.basicConfig(level=logging.INFO)
 
 
 async def main():
-    generated = Path(__file__).parent / "certificates" / "generated"
-    server_cert = generated / "server-certificate-example.der"
-    server_private_key = generated / "server-private-key-example.pem"
-    client_cert = generated / "client-certificate-example.der"
-    trusted_clients = generated / "trusted-clients"
-    trusted_clients.mkdir(parents=True, exist_ok=True)
+    pki = Path(__file__).parent / "certificates" / "generated" / "server-pki"
+    client_cert = (
+        Path(__file__).parent / "certificates" / "generated" / "client-pki" / "own" / "certs" / "application.der"
+    )
 
     host_name = socket.gethostname()
     server_app_uri = f"myselfsignedserver@{host_name}"
@@ -46,24 +41,7 @@ async def main():
     await server.set_application_uri(server_app_uri)
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
-
-    await setup_self_signed_certificate(
-        server_private_key,
-        server_cert,
-        server_app_uri,
-        host_name,
-        [ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.SERVER_AUTH],
-        {
-            "countryName": "CN",
-            "stateOrProvinceName": "AState",
-            "localityName": "Foo",
-            "organizationName": "Bar Ltd",
-        },
-    )
-
-    await server.load_certificate(server_cert)
-    await server.load_private_key(server_private_key)
-    server.set_trust_store(TrustStore([trusted_clients], []))
+    await server.set_pki_directory(pki)
 
     idx = 0
 

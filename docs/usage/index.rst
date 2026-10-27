@@ -18,6 +18,7 @@ Usage Guide
 
     common/overview
     common/node-nodeid
+    common/pki-directory
 
 .. toctree::
     :maxdepth: 2

@@ -2,14 +2,14 @@
 The stores a certificate validator decides over:
 - trusted certificates (anchors, whether or not they are CA certificates)
 - issuer certificates (CAs needed to build a chain, not anchors by themselves)
-- certificate revocation lists
+- certificate revocation lists, for all CAs or only for the trusted or only for the issuer CAs
 
 A load builds a new immutable snapshot and installs it with one assignment.
 """
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
@@ -17,13 +17,15 @@ import anyio
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from enginir_opcua.crypto.uacrypto import get_content
+from enginir_opcua.crypto.cert_gen import write_atomic
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint, get_content
 from enginir_opcua.ua.uaerrors import ConfigurationError
 
 _logger = logging.getLogger(__name__)
 
 CERTIFICATE_EXTENSIONS = frozenset({".der", ".cer", ".crt", ".pem"})
 CRL_EXTENSIONS = frozenset({".crl", ".der", ".pem"})
+DEFAULT_MAX_REJECTED = 100
 
 
 def _der(certificate: x509.Certificate) -> bytes:
@@ -36,6 +38,12 @@ class StoreSnapshot:
     issuers: tuple[x509.Certificate, ...] = ()
     crls: tuple[x509.CertificateRevocationList, ...] = ()
     pinned: tuple[x509.Certificate, ...] = ()
+    trusted_crls: tuple[x509.CertificateRevocationList, ...] = ()
+    issuer_crls: tuple[x509.CertificateRevocationList, ...] = ()
+
+    @property
+    def has_revocation_lists(self) -> bool:
+        return bool(self.crls or self.trusted_crls or self.issuer_crls)
 
     @cached_property
     def trusted_der(self) -> frozenset[bytes]:
@@ -58,16 +66,30 @@ class TrustStore:
         trust_locations: Sequence[Path] = (),
         crl_locations: Sequence[Path] = (),
         issuer_locations: Sequence[Path] = (),
+        *,
+        trusted_crl_locations: Sequence[Path] = (),
+        issuer_crl_locations: Sequence[Path] = (),
+        rejected_location: Path | None = None,
+        max_rejected: int = DEFAULT_MAX_REJECTED,
     ) -> None:
         """
         Args:
             trust_locations: directories with trusted certificates (anchors).
             crl_locations: directories with certificate revocation lists, for trusted and issuer certificates.
             issuer_locations: directories with CA certificates needed for chains, which are not anchors.
+            trusted_crl_locations: directories with revocation lists that only apply to trusted CA certificates.
+            issuer_crl_locations: directories with revocation lists that only apply to issuer CA certificates.
+            rejected_location: directory that receives the certificates of peers that failed validation, never read
+                for validation.
+            max_rejected: the most files kept in rejected_location, the oldest are removed first.
         """
         self._trust_locations: list[Path] = [Path(location) for location in trust_locations]
         self._crl_locations: list[Path] = [Path(location) for location in crl_locations]
         self._issuer_locations: list[Path] = [Path(location) for location in issuer_locations]
+        self._trusted_crl_locations: list[Path] = [Path(location) for location in trusted_crl_locations]
+        self._issuer_crl_locations: list[Path] = [Path(location) for location in issuer_crl_locations]
+        self._rejected_location: Path | None = Path(rejected_location) if rejected_location else None
+        self._max_rejected = max_rejected
         self._snapshot = StoreSnapshot()
         self._pinned: tuple[x509.Certificate, ...] = ()
 
@@ -84,6 +106,94 @@ class TrustStore:
         return self._issuer_locations
 
     @property
+    def trusted_crl_locations(self) -> list[Path]:
+        return self._trusted_crl_locations
+
+    @property
+    def issuer_crl_locations(self) -> list[Path]:
+        return self._issuer_crl_locations
+
+    @property
+    def rejected_location(self) -> Path | None:
+        return self._rejected_location
+
+    @property
+    def max_rejected(self) -> int:
+        return self._max_rejected
+
+    @property
+    def has_crl_locations(self) -> bool:
+        return bool(self._crl_locations or self._trusted_crl_locations or self._issuer_crl_locations)
+
+    @property
+    def has_revocation_lists(self) -> bool:
+        """True when revocation lists are configured explicitly or a PKI directory holds at least one."""
+        return bool(self._crl_locations) or self._snapshot.has_revocation_lists
+
+    @classmethod
+    def from_pki_directory(cls, root: str | Path, *, max_rejected: int = DEFAULT_MAX_REJECTED) -> "TrustStore":
+        """
+        A store over the folders of a PKI directory: trusted/certs and trusted/crl, issuer/certs and issuer/crl,
+        and rejected/certs for the certificates that failed validation. trusted/certs has to exist. The other
+        folders are used when they exist.
+        """
+        base = Path(root)
+        issuer_certs, trusted_crl, issuer_crl, rejected = (
+            base / "issuer" / "certs",
+            base / "trusted" / "crl",
+            base / "issuer" / "crl",
+            base / "rejected" / "certs",
+        )
+        return cls(
+            [base / "trusted" / "certs"],
+            [],
+            [issuer_certs] if issuer_certs.is_dir() else [],
+            trusted_crl_locations=[trusted_crl] if trusted_crl.is_dir() else [],
+            issuer_crl_locations=[issuer_crl] if issuer_crl.is_dir() else [],
+            rejected_location=rejected if rejected.is_dir() else None,
+            max_rejected=max_rejected,
+        )
+
+    def copy(self) -> "TrustStore":
+        """A store with the same locations and the certificates of none: it has to be loaded."""
+        return TrustStore(
+            self._trust_locations,
+            self._crl_locations,
+            self._issuer_locations,
+            trusted_crl_locations=self._trusted_crl_locations,
+            issuer_crl_locations=self._issuer_crl_locations,
+            rejected_location=self._rejected_location,
+            max_rejected=self._max_rejected,
+        )
+
+    def record_rejected(self, certificates: Sequence[bytes]) -> None:
+        """
+        Keep DER certificates that failed validation in the rejected location, one file per thumbprint and only
+        when the file does not exist yet, the first of the sequence (the leaf) last. Errors are logged.
+        """
+        location = self._rejected_location
+        if location is None:
+            return
+        try:
+            if not location.is_dir():
+                return
+            for der in reversed(certificates):
+                target = location / f"{certificate_thumbprint(der).hex()}.der"
+                if not target.exists():
+                    write_atomic(target, der, 0o644)
+            self._prune_rejected(location)
+        except OSError as exc:
+            _logger.warning("Could not keep a rejected certificate in %s: %s", location, exc)
+
+    def _prune_rejected(self, location: Path) -> None:
+        files = sorted(
+            (entry for entry in location.iterdir() if entry.suffix == ".der" and entry.is_file()),
+            key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
+        )
+        for entry in files[: max(len(files) - self._max_rejected, 0)]:
+            entry.unlink(missing_ok=True)
+
+    @property
     def snapshot(self) -> StoreSnapshot:
         return self._snapshot
 
@@ -92,16 +202,18 @@ class TrustStore:
         if certificate in self._pinned:
             return
         self._pinned = (*self._pinned, certificate)
-        self._snapshot = StoreSnapshot(
-            self._snapshot.trusted, self._snapshot.issuers, self._snapshot.crls, self._pinned
-        )
+        self._snapshot = replace(self._snapshot, pinned=self._pinned)
 
     async def load(self) -> None:
         """(Re)load the certificates and revocation lists, and replace the snapshot when all locations are readable."""
         trusted = await self._load_certificates(self._trust_locations)
         issuers = await self._load_certificates(self._issuer_locations)
         crls = await self._load_crls(self._crl_locations)
-        self._snapshot = StoreSnapshot(tuple(trusted), tuple(issuers), tuple(crls), self._pinned)
+        trusted_crls = await self._load_crls(self._trusted_crl_locations)
+        issuer_crls = await self._load_crls(self._issuer_crl_locations)
+        self._snapshot = StoreSnapshot(
+            tuple(trusted), tuple(issuers), tuple(crls), self._pinned, tuple(trusted_crls), tuple(issuer_crls)
+        )
 
     @staticmethod
     async def _files(location: Path, extensions: frozenset[str]) -> list[Path]:
