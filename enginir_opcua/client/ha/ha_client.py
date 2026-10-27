@@ -71,6 +71,10 @@ class HaSecurityConfig:
     server_certificate: CertProperties | None = None
     mode: ua.MessageSecurityMode | None = None
 
+    def __post_init__(self) -> None:
+        if self.policy is not None and self.server_certificate is None:
+            raise ValueError("server_certificate is required when the HaClient uses security")
+
 
 @dataclass(frozen=True, eq=True)
 class HaConfig:
@@ -224,6 +228,10 @@ class HaClient:
         server_certificate: CertProperties | None = None,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
     ) -> None:
+        """
+        Set the security of every client. The server certificate is required: it is never fetched from an
+        unsecured GetEndpoints call, neither at start nor on a reconnect.
+        """
         self.security_config = HaSecurityConfig(policy, certificate, private_key, server_certificate, mode)
 
     async def create_subscription(self, period: int, handler: TypeSubHandler) -> str:
