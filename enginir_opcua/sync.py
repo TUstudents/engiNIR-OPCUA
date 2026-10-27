@@ -384,11 +384,6 @@ class Client:
         aio_sub = self.tloop.post(coro)
         return Subscription(self.tloop, aio_sub)
 
-    def get_subscription_revised_params(
-        self, params: ua.CreateSubscriptionParameters, results: ua.CreateSubscriptionResult
-    ) -> ua.ModifySubscriptionParameters | None:  # type: ignore
-        return self.aio_obj.get_subscription_revised_params(params, results)
-
     @syncmethod
     def delete_subscriptions(self, subscription_ids: Iterable[int]) -> list[ua.StatusCode]: ...
 
@@ -468,9 +463,6 @@ class Client:
 
     @syncmethod
     def close_session(self) -> None: ...
-
-    def get_keepalive_count(self, period: float) -> int:
-        return self.aio_obj.get_keepalive_count(period)
 
     @syncmethod
     def delete_nodes(

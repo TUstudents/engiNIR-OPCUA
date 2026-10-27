@@ -25,8 +25,8 @@ from ..common.node import Node
 from ..common.shortcuts import Shortcuts
 from ..common.structures import load_enums, load_type_definitions
 from ..common.structures104 import load_data_type_definitions
-from ..common.subscription import Subscription, SubscriptionHandler
-from ..common.ua_utils import copy_dataclass_attr, value_to_datavalue
+from ..common.subscription import Subscription, SubscriptionHandler, subscription_parameters
+from ..common.ua_utils import value_to_datavalue
 from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
@@ -1473,84 +1473,32 @@ class Client:
           `queue_maxsize` bounds the internal buffer.
 
         :param period: Either a publishing interval in milliseconds or a
-            `CreateSubscriptionParameters` instance.
+            `CreateSubscriptionParameters` instance. With an interval, the keep-alive count gives a keep-alive about
+            every 10 s (at most a quarter of the session timeout) and the lifetime covers at least 300 s and three
+            keep-alives; use `subscription_parameters` to change that. The revised values are stored and corrected
+            once by `Subscription.init`.
         :param handler: Optional callback handler. If None, iterator mode.
         :param queue_maxsize: Iterator-mode queue bound (default 1000).
         """
         if isinstance(period, ua.CreateSubscriptionParameters):
             params = period
         else:
-            params = ua.CreateSubscriptionParameters()
-            params.RequestedPublishingInterval = period
-            params.RequestedLifetimeCount = 10000
-            params.RequestedMaxKeepAliveCount = self.get_keepalive_count(period)
-            params.MaxNotificationsPerPublish = 10000
-            params.PublishingEnabled = publishing
-            params.Priority = 0
+            params = subscription_parameters(period, publishing, session_timeout=self.session_timeout)
         subscription = Subscription(
             self.uaclient.session,
             params,
             handler,
             queue_maxsize=queue_maxsize,
         )
-        results = await subscription.init()
-        new_params = self.get_subscription_revised_params(params, results)
-        if new_params:
-            results = await subscription.update(new_params)
-            _logger.info("Result from subscription update: %s", results)
+        await subscription.init()
         self._subscriptions.append(subscription)
         return subscription
-
-    def get_subscription_revised_params(
-        self,
-        params: ua.CreateSubscriptionParameters,
-        results: ua.CreateSubscriptionResult,
-    ) -> ua.ModifySubscriptionParameters | None:
-        if (
-            results.RevisedPublishingInterval == params.RequestedPublishingInterval
-            and results.RevisedLifetimeCount == params.RequestedLifetimeCount
-            and results.RevisedMaxKeepAliveCount == params.RequestedMaxKeepAliveCount
-        ):
-            return None
-        _logger.warning("Revised values returned differ from subscription values: %s", results)
-        revised_interval = results.RevisedPublishingInterval
-        new_keepalive_count = self.get_keepalive_count(revised_interval)
-        if (
-            revised_interval != params.RequestedPublishingInterval
-            and new_keepalive_count != params.RequestedMaxKeepAliveCount
-        ):
-            _logger.info(
-                "KeepAliveCount will be updated to %s for consistency with RevisedPublishInterval",
-                new_keepalive_count,
-            )
-            modified_params = ua.ModifySubscriptionParameters()
-            copy_dataclass_attr(params, modified_params)
-            modified_params.RequestedMaxKeepAliveCount = new_keepalive_count
-            modified_params.SubscriptionId = results.SubscriptionId
-            modified_params.RequestedPublishingInterval = results.RevisedPublishingInterval
-            modified_params.RequestedLifetimeCount = results.RevisedLifetimeCount
-            return modified_params
-        return None
 
     async def delete_subscriptions(self, subscription_ids: Iterable[int]) -> list[ua.StatusCode]:
         """
         Deletes the provided list of subscription_ids
         """
         return await self.uaclient.delete_subscriptions(subscription_ids)
-
-    def get_keepalive_count(self, period: float) -> int:
-        """
-        We request the server to send a Keepalive notification when
-        no notification has been received for 75% of the session lifetime.
-        This is especially useful to keep the session up
-        when self.session_timeout < self.secure_channel_timeout.
-
-        Part4 5.13.2: If the requested value is 0, the Server
-        shall revise with the smallest supported keep-alive count.
-        """
-        if not period:
-            return 0
-        return int((self.session_timeout / period) * 0.75)
 
     async def get_namespace_array(self) -> list[str]:
         ns_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))

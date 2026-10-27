@@ -521,27 +521,34 @@ async def test_subscription_data_change_many(opc):
     await opc.opc.delete_nodes([v1, v2])
 
 
-def test_get_keepalive_count(mocker):
-    """
-    Check the subscription parameter MaxKeepAliveCount value
-    with various publishInterval and session_timeout values.
-    """
+@pytest.mark.parametrize(
+    ("session_timeout", "period", "keep_alive", "lifetime"),
+    [(3_600_000, 1000, 10, 300), (20_000, 1000, 5, 300), (3_600_000, 100, 100, 3000), (3_600_000, 0, 10, 300)],
+)
+async def test_cli10_create_subscription_uses_the_time_based_counts(
+    session_timeout: int, period: int, keep_alive: int, lifetime: int
+) -> None:
+    """Part 4, 5.14.2.2: keep-alive about every 10 s (at most a quarter of the session timeout), lifetime 3x or more."""
+    client = Client("opc.tcp://fake")
+    client.session_timeout = session_timeout
+    created: list[ua.CreateSubscriptionParameters] = []
 
-    c = Client("opc.tcp://fake")
-    # session timeout < publish_interval
-    publish_interval = 1000  # ms
-    c.session_timeout = 30000  # ms
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 22
-    # session_timeout > publish_interval
-    publish_interval = 75000
-    c.session_timeout = 30000
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 0
-    # RequestedPublishingInterval == 0: defer to server (spec Part 4 §5.13.2)
-    publish_interval = 0
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 0
+    async def create_subscription(
+        params: ua.CreateSubscriptionParameters, callback: object
+    ) -> ua.CreateSubscriptionResult:
+        created.append(params)
+        return ua.CreateSubscriptionResult(
+            SubscriptionId=1,
+            RevisedPublishingInterval=params.RequestedPublishingInterval,
+            RevisedLifetimeCount=params.RequestedLifetimeCount,
+            RevisedMaxKeepAliveCount=params.RequestedMaxKeepAliveCount,
+        )
+
+    client.uaclient.session.create_subscription = create_subscription  # type: ignore[method-assign]
+    await client.create_subscription(period)
+    assert created[0].RequestedMaxKeepAliveCount == keep_alive
+    assert created[0].RequestedLifetimeCount >= lifetime
+    assert created[0].RequestedLifetimeCount >= 3 * keep_alive
 
 
 async def test_subscribe_server_time(opc):
