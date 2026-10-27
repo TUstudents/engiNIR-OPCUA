@@ -36,8 +36,31 @@ if TYPE_CHECKING:
 
 from enginir_opcua import ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
+from enginir_opcua.ua.numeric_range import IndexRange
 
 _logger = logging.getLogger(__name__)
+
+VALID_TIMESTAMPS_TO_RETURN = (
+    ua.TimestampsToReturn.Source,
+    ua.TimestampsToReturn.Server,
+    ua.TimestampsToReturn.Both,
+    ua.TimestampsToReturn.Neither,
+)
+
+
+def status_of_error(error: Exception) -> ua.StatusCode:
+    if isinstance(error, ua.uaerrors.UaStatusCodeError) and isinstance(error.code, int):
+        return ua.StatusCode(error.code)
+    return ua.StatusCode(ua.StatusCodes.BadInternalError)
+
+
+def has_no_value(dv: ua.DataValue) -> bool:
+    return (
+        (dv.Value is None or dv.Value.VariantType == ua.VariantType.Null)
+        and (dv.StatusCode is None or dv.StatusCode.is_good())
+        and dv.SourceTimestamp is None
+        and dv.ServerTimestamp is None
+    )
 
 
 class AttributeValue:
@@ -84,12 +107,21 @@ class AttributeService:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
 
-    def read(self, params: ua.ReadParameters) -> list[ua.DataValue]:
-        # self.logger.debug("read %s", params)
-        res: list[ua.DataValue] = []
-        for readvalue in params.NodesToRead:
-            res.append(self._aspace.read_attribute_value(readvalue.NodeId, readvalue.AttributeId))
-        return res
+    def read(self, params: ua.ReadParameters, trusted: bool = False) -> list[ua.DataValue]:
+        if params.MaxAge < 0:
+            raise ua.uaerrors.BadMaxAgeInvalid()
+        if params.TimestampsToReturn not in VALID_TIMESTAMPS_TO_RETURN:
+            raise ua.uaerrors.BadTimestampsToReturnInvalid()
+        return [
+            self._aspace.read_attribute(
+                item.NodeId,
+                item.AttributeId,
+                trusted=trusted,
+                index_range=item.IndexRange,
+                timestamps=params.TimestampsToReturn,
+            )
+            for item in params.NodesToRead
+        ]
 
     async def write(self, params: ua.WriteParameters, user: User = User(role=UserRole.Admin)) -> list[ua.StatusCode]:
         # self.logger.debug("write %s as user %s", params, user)
@@ -849,6 +881,99 @@ class AddressSpace:
 
         self._nodes = LazyLoadingDict(shelve.open(str(path), "r"))
         self._referenced_by = None
+
+    def read_attribute(
+        self,
+        nodeid: ua.NodeId,
+        attr: int,
+        *,
+        trusted: bool = False,
+        index_range: str | None = None,
+        timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both,
+    ) -> ua.DataValue:
+        try:
+            return self._read_attribute(nodeid, attr, trusted, index_range, timestamps)
+        except Exception as error:
+            status = status_of_error(error)
+            if status.value == ua.StatusCodes.BadInternalError:
+                _logger.exception("Error while reading attribute %s of %s", attr, nodeid)
+            return ua.DataValue(StatusCode=status)
+
+    def _read_attribute(
+        self, nodeid: ua.NodeId, attr: int, trusted: bool, index_range: str | None, timestamps: ua.TimestampsToReturn
+    ) -> ua.DataValue:
+        node = self._node_for_service(nodeid)
+        attval = node.attributes.get(attr)  # type: ignore[call-overload]
+        if attval is None:
+            raise ua.uaerrors.BadAttributeIdInvalid()
+        is_value = attr == ua.AttributeIds.Value
+        if is_value and not trusted:
+            self._check_readable(node)
+        parsed_range = IndexRange.parse(index_range)
+        stored = attval.value_callback(nodeid, ua.AttributeIds(attr)) if attval.value_callback else attval.value
+        if stored is None:
+            raise ua.uaerrors.BadAttributeIdInvalid()
+        if is_value and self._node_class(node) == ua.NodeClass.Variable and has_no_value(stored):
+            raise ua.uaerrors.BadNoValue()
+        result = dataclasses.replace(stored)
+        if result.StatusCode is not None and result.StatusCode.is_bad():
+            result.Value = ua.Variant(None, ua.VariantType.Null)
+        elif parsed_range is not None:
+            if result.Value is None:
+                raise ua.uaerrors.BadIndexRangeNoData()
+            result.Value = parsed_range.select(result.Value)
+        return self._with_timestamps(result, is_value, timestamps)
+
+    @staticmethod
+    def _with_timestamps(dv: ua.DataValue, is_value: bool, timestamps: ua.TimestampsToReturn) -> ua.DataValue:
+        want_source = is_value and timestamps in (ua.TimestampsToReturn.Source, ua.TimestampsToReturn.Both)
+        want_server = timestamps in (ua.TimestampsToReturn.Server, ua.TimestampsToReturn.Both)
+        if not want_source:
+            dv.SourceTimestamp = None
+            dv.SourcePicoseconds = None
+        if not want_server:
+            dv.ServerTimestamp = None
+            dv.ServerPicoseconds = None
+        elif dv.ServerTimestamp is None:
+            dv.ServerTimestamp = datetime.now(UTC)
+        return dv
+
+    def _node_for_service(self, nodeid: ua.NodeId) -> NodeData:
+        if nodeid is None or nodeid.is_null():
+            raise ua.uaerrors.BadNodeIdInvalid()
+        node = self._nodes.get(nodeid)
+        if node is None:
+            raise ua.uaerrors.BadNodeIdUnknown()
+        return node
+
+    @staticmethod
+    def _node_class(node: NodeData) -> int | None:
+        attval = node.attributes.get(ua.AttributeIds.NodeClass)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return None
+        return int(attval.value.Value.Value)
+
+    @staticmethod
+    def _byte_attribute(node: NodeData, attr: ua.AttributeIds) -> int | None:
+        attval = node.attributes.get(attr)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return None
+        value = attval.value.Value.Value
+        return int(value) if isinstance(value, int) else None
+
+    def _check_readable(self, node: NodeData) -> None:
+        if self._node_class(node) != ua.NodeClass.Variable:
+            return
+        access = self._byte_attribute(node, ua.AttributeIds.AccessLevel)
+        if access is None:
+            access = 1 << ua.AccessLevel.CurrentRead
+        if not ua.ua_binary.is_bit_set(access, ua.AccessLevel.CurrentRead):
+            raise ua.uaerrors.BadNotReadable()
+        user_access = self._byte_attribute(node, ua.AttributeIds.UserAccessLevel)
+        if user_access is None:
+            user_access = access
+        if not ua.ua_binary.is_bit_set(user_access, ua.AccessLevel.CurrentRead):
+            raise ua.uaerrors.BadUserAccessDenied()
 
     def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds) -> ua.DataValue:
         node = self._nodes.get(nodeid)

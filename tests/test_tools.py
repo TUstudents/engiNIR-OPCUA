@@ -9,7 +9,7 @@ import pytest
 from enginir_opcua.tools import uacall, uaclient, uadiscover, uahistoryread, uals, uaread, uawrite
 
 ROOT_NODE = "i=85"
-RW_NODE = "i=3078"
+RW_NODE = "ns=2;s=ToolsReadWrite"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")

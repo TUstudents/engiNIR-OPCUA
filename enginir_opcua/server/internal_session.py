@@ -660,7 +660,7 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
-        results = self.iserver.attribute_service.read(params)
+        results = self.iserver.attribute_service.read(params, trusted=not self.external)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostRead, ServerItemCallback(params, results, user, self.external)
         )

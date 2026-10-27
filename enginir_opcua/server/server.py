@@ -221,9 +221,9 @@ class Server:
         status_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus))
         build_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_BuildInfo))
 
-        status = await status_node.read_value()
+        status_dv = await status_node.read_data_value(raise_on_bad_status=False)
+        status = status_dv.Value.Value if status_dv.Value is not None else None
         if status is None:
-            # first time
             status = ua.ServerStatusDataType()
             status.SecondsTillShutdown = 0
 

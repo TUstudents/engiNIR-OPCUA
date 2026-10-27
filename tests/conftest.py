@@ -160,8 +160,13 @@ class ServerProcess(Process):
         srv.allow_plaintext_password = True
         srv.set_endpoint(url)
         await srv.init()
+        namespace = await srv.register_namespace("http://test.example/tools")
         await add_server_methods(srv)
         await add_server_custom_enum_struct(srv)
+        tools_node = await srv.nodes.objects.add_variable(
+            ua.NodeId("ToolsReadWrite", namespace), f"{namespace}:ToolsReadWrite", "", ua.VariantType.String
+        )
+        await tools_node.set_writable()
         async with srv:
             with self.cond:
                 self.cond.notify_all()

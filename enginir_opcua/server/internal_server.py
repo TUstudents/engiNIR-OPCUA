@@ -205,6 +205,8 @@ class InternalServer:
         uries = ["http://opcfoundation.org/UA/"]
         ns_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
         await ns_node.write_value(uries)
+        server_array_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerArray))
+        await server_array_node.write_value(ua.Variant([], ua.VariantType.String))
 
         params = ua.WriteParameters()
         for limit in fields(self.operation_limits):
@@ -218,8 +220,20 @@ class InternalServer:
                 SourceTimestamp=datetime.now(UTC),
             )
             params.NodesToWrite.append(attr)
+        capabilities = {
+            ua.ObjectIds.Server_ServerCapabilities_MaxMonitoredItemsQueueSize: ua.Variant(
+                self.max_monitored_item_queue_size, ua.VariantType.UInt32
+            ),
+        }
+        for nodeid, variant in capabilities.items():
+            capability = ua.WriteValue()
+            capability.NodeId = ua.NodeId(nodeid)
+            capability.AttributeId = ua.AttributeIds.Value
+            capability.Value = ua.DataValue(variant)
+            params.NodesToWrite.append(capability)
         result = await self.isession.write(params)
-        result[0].check()
+        for status in result:
+            status.check()
 
     async def load_standard_address_space(self, shelf_file: Path | None = None) -> None:
         if shelf_file:
