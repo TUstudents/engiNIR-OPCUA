@@ -1,45 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from enginir_opcua import ua
-
-ADMIN_TYPES = [
-    ua.ObjectIds.RegisterServerRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.RegisterServer2Request_Encoding_DefaultBinary,
-    ua.ObjectIds.AddNodesRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.DeleteNodesRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.AddReferencesRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.DeleteReferencesRequest_Encoding_DefaultBinary,
-]
-
-USER_TYPES = [
-    ua.ObjectIds.CreateSessionRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CloseSessionRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.ActivateSessionRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.ReadRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.WriteRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.BrowseRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.GetEndpointsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.FindServersRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.TranslateBrowsePathsToNodeIdsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CreateSubscriptionRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.ModifySubscriptionRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.DeleteSubscriptionsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.TransferSubscriptionsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CreateMonitoredItemsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.ModifyMonitoredItemsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.DeleteMonitoredItemsRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.HistoryReadRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.PublishRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CancelRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.RepublishRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CloseSecureChannelRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.CallRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.SetMonitoringModeRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.SetPublishingModeRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.RegisterNodesRequest_Encoding_DefaultBinary,
-    ua.ObjectIds.UnregisterNodesRequest_Encoding_DefaultBinary,
-]
 
 
 class UserRole(Enum):
@@ -50,6 +13,48 @@ class UserRole(Enum):
     Admin = 0
     Anonymous = 1
     User = 3
+
+
+ROLE_RANK: dict[UserRole, int] = {UserRole.Anonymous: 0, UserRole.User: 1, UserRole.Admin: 2}
+
+
+def _type_id(request_type: str) -> ua.NodeId:
+    return ua.NodeId(getattr(ua.ObjectIds, f"{request_type}Request_Encoding_DefaultBinary"))
+
+
+def _rows(role: UserRole, *request_types: str) -> dict[ua.NodeId, UserRole]:
+    return {_type_id(request_type): role for request_type in request_types}
+
+
+DEFAULT_MINIMUM_ROLES: dict[ua.NodeId, UserRole] = {
+    **_rows(
+        UserRole.Anonymous,
+        "Read",
+        "Browse",
+        "BrowseNext",
+        "TranslateBrowsePathsToNodeIds",
+        "RegisterNodes",
+        "UnregisterNodes",
+        "QueryFirst",
+        "QueryNext",
+        "HistoryRead",
+        "CreateSubscription",
+        "ModifySubscription",
+        "SetPublishingMode",
+        "DeleteSubscriptions",
+        "Republish",
+        "TransferSubscriptions",
+        "Publish",
+        "SetTriggering",
+        "CreateMonitoredItems",
+        "ModifyMonitoredItems",
+        "SetMonitoringMode",
+        "DeleteMonitoredItems",
+        "Cancel",
+    ),
+    **_rows(UserRole.User, "Write", "Call", "HistoryUpdate"),
+    **_rows(UserRole.Admin, "AddNodes", "DeleteNodes", "AddReferences", "DeleteReferences"),
+}
 
 
 @dataclass
@@ -63,24 +68,22 @@ class PermissionRuleset:
     Base class for permission ruleset
     """
 
-    def check_validity(self, user, action_type, body):
+    def check_validity(self, user: User, action_type_id: ua.NodeId, body: Any) -> bool:
         raise NotImplementedError
 
 
 class SimpleRoleRuleset(PermissionRuleset):
     """
-    Standard simple role-based ruleset.
-    Admins alone can change address space, admins and users can read/write, and anonymous users can't do anything.
+    Standard simple role-based ruleset: a map from request type to the lowest role that may send it.
+    Anonymous users can read, browse, subscribe and read history, users can also write and call methods,
+    and only admins change the address space. A request type without a row, and a user without a known role, is denied.
     """
 
-    def __init__(self):
-        admin_ids = list(map(ua.NodeId, ADMIN_TYPES))
-        user_ids = list(map(ua.NodeId, USER_TYPES))
-        self._permission_dict = {
-            UserRole.Admin: set().union(admin_ids, user_ids),
-            UserRole.User: set().union(user_ids),
-            UserRole.Anonymous: set(),
-        }
+    def __init__(self, minimum_roles: dict[ua.NodeId, UserRole] | None = None) -> None:
+        self._minimum_roles = dict(DEFAULT_MINIMUM_ROLES if minimum_roles is None else minimum_roles)
 
-    def check_validity(self, user, action_type_id, body):
-        return action_type_id in self._permission_dict.get(user.role, ())
+    def check_validity(self, user: User, action_type_id: ua.NodeId, body: Any) -> bool:
+        minimum = self._minimum_roles.get(action_type_id)
+        if minimum is None or user.role not in ROLE_RANK:
+            return False
+        return ROLE_RANK[user.role] >= ROLE_RANK[minimum]

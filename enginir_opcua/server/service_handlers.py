@@ -229,7 +229,6 @@ async def delete_monitored_items(
 
 def build_service_table() -> list[ServiceEntry]:
     sessionless: dict[str, Any] = {"requires": Requires.NoSession, "permission": Permission.Unchecked}
-    admin: dict[str, Any] = {"permission": Permission.Admin}
     return [
         entry("GetEndpoints", ua.GetEndpointsParameters, get_endpoints, **sessionless),
         entry("FindServers", ua.FindServersParameters, find_servers, **sessionless),
@@ -238,9 +237,21 @@ def build_service_table() -> list[ServiceEntry]:
         entry("CreateSession", ua.CreateSessionParameters, create_session, **sessionless),
         entry("ActivateSession", ua.ActivateSessionParameters, activate_session, **sessionless),
         entry("CloseSession", Primitives.Boolean.unpack, close_session, **sessionless),
-        entry("Cancel", ua.CancelParameters, cancel),
-        entry("Read", ua.ReadParameters, read, operations=OperationBound("NodesToRead", "max_nodes_per_read")),
-        entry("Write", ua.WriteParameters, write, operations=OperationBound("NodesToWrite", "max_nodes_per_write")),
+        entry("Cancel", ua.CancelParameters, cancel, permission=Permission.Anonymous),
+        entry(
+            "Read",
+            ua.ReadParameters,
+            read,
+            operations=OperationBound("NodesToRead", "max_nodes_per_read"),
+            permission=Permission.Anonymous,
+        ),
+        entry(
+            "Write",
+            ua.WriteParameters,
+            write,
+            operations=OperationBound("NodesToWrite", "max_nodes_per_write"),
+            permission=Permission.User,
+        ),
         entry(
             "HistoryRead",
             ua.HistoryReadParameters,
@@ -248,106 +259,126 @@ def build_service_table() -> list[ServiceEntry]:
             operations=OperationBound(
                 "NodesToRead", "max_nodes_per_history_read_data", "max_nodes_per_history_read_events"
             ),
+            permission=Permission.Anonymous,
         ),
         entry(
-            "Browse", ua.BrowseParameters, browse, operations=OperationBound("NodesToBrowse", "max_nodes_per_browse")
+            "Browse",
+            ua.BrowseParameters,
+            browse,
+            operations=OperationBound("NodesToBrowse", "max_nodes_per_browse"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "TranslateBrowsePathsToNodeIds",
             ua.TranslateBrowsePathsToNodeIdsParameters,
             translate_browse_paths,
             operations=OperationBound("BrowsePaths", "max_nodes_per_translate_browse_paths"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "RegisterNodes",
             ua.RegisterNodesParameters,
             register_nodes,
             operations=OperationBound("NodesToRegister", "max_nodes_per_register_nodes"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "UnregisterNodes",
             ua.UnregisterNodesParameters,
             unregister_nodes,
             operations=OperationBound("NodesToUnregister", "max_nodes_per_register_nodes"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "Call",
             ua.CallParameters,
             call,
             operations=OperationBound("MethodsToCall", "max_nodes_per_method_call"),
+            permission=Permission.User,
         ),
         entry(
             "AddNodes",
             ua.AddNodesParameters,
             add_nodes,
             operations=OperationBound("NodesToAdd", "max_nodes_per_node_management"),
-            **admin,
+            permission=Permission.Admin,
         ),
         entry(
             "DeleteNodes",
             ua.DeleteNodesParameters,
             delete_nodes,
             operations=OperationBound("NodesToDelete", "max_nodes_per_node_management"),
-            **admin,
+            permission=Permission.Admin,
         ),
         entry(
             "AddReferences",
             ua.AddReferencesParameters,
             add_references,
             operations=OperationBound("ReferencesToAdd", "max_nodes_per_node_management"),
-            **admin,
+            permission=Permission.Admin,
         ),
         entry(
             "DeleteReferences",
             ua.DeleteReferencesParameters,
             delete_references,
             operations=OperationBound("ReferencesToDelete", "max_nodes_per_node_management"),
-            **admin,
+            permission=Permission.Admin,
         ),
-        entry("CreateSubscription", ua.CreateSubscriptionParameters, create_subscription),
-        entry("ModifySubscription", ua.ModifySubscriptionParameters, modify_subscription),
+        entry(
+            "CreateSubscription", ua.CreateSubscriptionParameters, create_subscription, permission=Permission.Anonymous
+        ),
+        entry(
+            "ModifySubscription", ua.ModifySubscriptionParameters, modify_subscription, permission=Permission.Anonymous
+        ),
         entry(
             "SetPublishingMode",
             ua.SetPublishingModeParameters,
             set_publishing_mode,
             operations=OperationBound("SubscriptionIds", None),
+            permission=Permission.Anonymous,
         ),
         entry(
             "DeleteSubscriptions",
             ua.DeleteSubscriptionsParameters,
             delete_subscriptions,
             operations=OperationBound("SubscriptionIds", None),
+            permission=Permission.Anonymous,
         ),
-        entry("Republish", ua.RepublishParameters, republish),
+        entry("Republish", ua.RepublishParameters, republish, permission=Permission.Anonymous),
         entry(
             "TransferSubscriptions",
             ua.TransferSubscriptionsParameters,
             transfer_subscriptions,
             operations=OperationBound("SubscriptionIds", None),
+            permission=Permission.Anonymous,
         ),
-        entry("Publish", ua.PublishParameters, publish),
+        entry("Publish", ua.PublishParameters, publish, permission=Permission.Anonymous),
         entry(
             "CreateMonitoredItems",
             ua.CreateMonitoredItemsParameters,
             create_monitored_items,
             operations=OperationBound("ItemsToCreate", "max_monitored_items_per_call"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "ModifyMonitoredItems",
             ua.ModifyMonitoredItemsParameters,
             modify_monitored_items,
             operations=OperationBound("ItemsToModify", "max_monitored_items_per_call"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "SetMonitoringMode",
             ua.SetMonitoringModeParameters,
             set_monitoring_mode,
             operations=OperationBound("MonitoredItemIds", "max_monitored_items_per_call"),
+            permission=Permission.Anonymous,
         ),
         entry(
             "DeleteMonitoredItems",
             ua.DeleteMonitoredItemsParameters,
             delete_monitored_items,
             operations=OperationBound("MonitoredItemIds", "max_monitored_items_per_call"),
+            permission=Permission.Anonymous,
         ),
     ]

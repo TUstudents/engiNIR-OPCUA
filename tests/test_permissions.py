@@ -113,8 +113,11 @@ async def test_client_anonymous(srv_crypto_one_cert):
     )
     async with clt:
         await clt.get_endpoints()
+        assert await clt.nodes.objects.get_children()
+        child = await clt.nodes.objects.get_child(["0:MyObject", "0:MyVariable"])
+        assert await child.read_value() is not None
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
-            await clt.nodes.objects.get_children()
+            await child.set_value(1.0)
 
 
 async def test_x509identity_user(srv_crypto_one_cert):
@@ -137,8 +140,11 @@ async def test_x509identity_anonymous(srv_crypto_one_cert):
     await clt.load_private_key(anonymous_peer_creds["private_key"])
     async with clt:
         await clt.get_endpoints()
+        assert await clt.nodes.objects.get_children()
+        child = await clt.nodes.objects.get_child(["0:MyObject", "0:MyVariable"])
+        assert await child.read_value() is not None
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
-            await clt.nodes.objects.get_children()
+            await child.set_value(1.0)
 
 
 async def test_client_user_x509identity_admin(srv_crypto_one_cert):
