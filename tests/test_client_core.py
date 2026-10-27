@@ -57,3 +57,49 @@ async def test_cli9_write_values_needs_equal_lengths(connected: Client) -> None:
     nodes = [connected.get_node(ua.ObjectIds.Server_NamespaceArray)]
     with pytest.raises(ValueError):
         await connected.write_values(nodes, [1, 2])
+
+
+async def test_cli2_register_server2_succeeds_without_the_fallback(server: Server) -> None:
+    """Part 4, 5.5.6: RegisterServer2 is tried first; RegisterServer is not sent when it works."""
+    client = Client(server.endpoint.geturl())
+    calls: list[str] = []
+
+    async def register_server2(params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
+        calls.append("2")
+        return []
+
+    async def register_server(registered: ua.RegisteredServer) -> None:
+        calls.append("1")
+
+    client.uaclient.register_server2 = register_server2  # type: ignore[method-assign]
+    client.uaclient.register_server = register_server  # type: ignore[method-assign]
+    await client.register_server(server)
+    await client.register_server(server, [ua.MdnsDiscoveryConfiguration()])
+    assert calls == ["2", "2"]
+
+
+async def test_cli2_register_server_falls_back_only_when_register_server2_is_unsupported(server: Server) -> None:
+    """Part 4, 5.5.5 and 5.5.6: RegisterServer is the fallback for Bad_ServiceUnsupported only."""
+    client = Client(server.endpoint.geturl())
+    calls: list[tuple[str, bool]] = []
+
+    async def unsupported(params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
+        raise ua.uaerrors.BadServiceUnsupported
+
+    async def refused(params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
+        raise ua.uaerrors.BadUserAccessDenied
+
+    async def register_server(registered: ua.RegisteredServer) -> None:
+        calls.append(("1", registered.IsOnline))
+
+    client.uaclient.register_server = register_server  # type: ignore[method-assign]
+    client.uaclient.unregister_server = register_server  # type: ignore[method-assign]
+    client.uaclient.register_server2 = unsupported  # type: ignore[method-assign]
+    client.uaclient.unregister_server2 = unsupported  # type: ignore[method-assign]
+    await client.register_server(server)
+    await client.unregister_server(server)
+    assert calls == [("1", True), ("1", False)]
+    client.uaclient.register_server2 = refused  # type: ignore[method-assign]
+    with pytest.raises(ua.uaerrors.BadUserAccessDenied):
+        await client.register_server(server)
+    assert len(calls) == 2

@@ -749,6 +749,7 @@ class UaClient:
         response.ResponseHeader.ServiceResult.check()
 
     async def unregister_server(self, registered_server: ua.RegisteredServer) -> None:
+        """Same request as register_server; the caller's RegisteredServer.IsOnline = False makes it an unregistration."""
         self.logger.debug("unregister_server")
         request = ua.RegisterServerRequest()
         request.Server = registered_server
@@ -768,6 +769,7 @@ class UaClient:
         return response.ConfigurationResults
 
     async def unregister_server2(self, params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
+        """Same request as register_server2; the caller's RegisteredServer.IsOnline = False makes it an unregistration."""
         self.logger.debug("unregister_server2")
         request = ua.RegisterServer2Request()
         request.Parameters = params

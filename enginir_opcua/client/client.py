@@ -772,47 +772,47 @@ class Client:
         params.EndpointUrl = self.server_url.geturl()
         return await self.uaclient.get_endpoints(params)
 
+    def _registered_server(self, server: "enginir_opcua.server.Server", online: bool) -> ua.RegisteredServer:
+        registered = ua.RegisteredServer()
+        registered.ServerUri = server.get_application_uri()
+        registered.ProductUri = server.product_uri
+        registered.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
+        registered.ServerType = server.application_type
+        registered.ServerNames = [ua.LocalizedText(server.name)]
+        registered.IsOnline = online
+        return registered
+
     async def register_server(
         self, server: "enginir_opcua.server.Server", discovery_configuration: ua.DiscoveryConfiguration | None = None
     ) -> None:
         """
-        register a server to discovery server
-        if discovery_configuration is provided, the newer register_server2 service call is used
+        Register a server with a discovery server.
+        RegisterServer2 is sent, with discovery_configuration if given. Only when the discovery server answers
+        Bad_ServiceUnsupported, the older RegisterServer is sent instead.
         """
-        serv = ua.RegisteredServer()
-        serv.ServerUri = server.get_application_uri()
-        serv.ProductUri = server.product_uri
-        serv.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
-        serv.ServerType = server.application_type
-        serv.ServerNames = [ua.LocalizedText(server.name)]
-        serv.IsOnline = True
-        if discovery_configuration:
-            params = ua.RegisterServer2Parameters()
-            params.Server = serv
-            params.DiscoveryConfiguration = discovery_configuration
+        registered = self._registered_server(server, True)
+        params = ua.RegisterServer2Parameters()
+        params.Server = registered
+        params.DiscoveryConfiguration = discovery_configuration or []
+        try:
             await self.uaclient.register_server2(params)
-        await self.uaclient.register_server(serv)
+        except ua.uaerrors.BadServiceUnsupported:
+            await self.uaclient.register_server(registered)
 
     async def unregister_server(
         self, server: "enginir_opcua.server.Server", discovery_configuration: ua.DiscoveryConfiguration | None = None
     ) -> None:
         """
-        register a server to discovery server
-        if discovery_configuration is provided, the newer register_server2 service call is used
+        Remove a server from a discovery server: the same calls as register_server with IsOnline set to False.
         """
-        serv = ua.RegisteredServer()
-        serv.ServerUri = server.get_application_uri()
-        serv.ProductUri = server.product_uri
-        serv.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
-        serv.ServerType = server.application_type
-        serv.ServerNames = [ua.LocalizedText(server.name)]
-        serv.IsOnline = False
-        if discovery_configuration:
-            params = ua.RegisterServer2Parameters()
-            params.Server = serv
-            params.DiscoveryConfiguration = discovery_configuration
+        registered = self._registered_server(server, False)
+        params = ua.RegisterServer2Parameters()
+        params.Server = registered
+        params.DiscoveryConfiguration = discovery_configuration or []
+        try:
             await self.uaclient.unregister_server2(params)
-        await self.uaclient.unregister_server(serv)
+        except ua.uaerrors.BadServiceUnsupported:
+            await self.uaclient.unregister_server(registered)
 
     async def find_servers(self, uris: Iterable[str] | None = None) -> list[ua.ApplicationDescription]:
         """
