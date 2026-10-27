@@ -126,7 +126,7 @@ def test_cli14_ha_security_without_server_certificate_is_a_configuration_error()
     key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
     with pytest.raises(ValueError, match="server_certificate"):
         HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key)
-    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1"])
+    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1", "opc.tcp://127.0.0.1:2"])
     with pytest.raises(ValueError, match="server_certificate"):
         HaClient(config).set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key)
 
@@ -138,7 +138,7 @@ def test_cli14_ha_security_with_a_trust_store_is_accepted() -> None:
     store = PKI.trust_store()
     secured = HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
     assert secured.trust_store is store
-    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1"])
+    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1", "opc.tcp://127.0.0.1:2"])
     ha = HaClient(config)
     ha.set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
     assert ha.security_config.trust_store is store
@@ -149,10 +149,10 @@ async def test_cli14_ha_reconnect_gives_the_trust_store_to_the_client(monkeypatc
     certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
     key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
     store = PKI.trust_store()
-    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1"])
+    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1", "opc.tcp://127.0.0.1:2"])
     ha = HaClient(config)
     ha.set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
-    (client,) = ha.clients
+    client = next(iter(ha.clients))
     seen: list[object] = []
 
     async def noop(*arguments: object, **keywords: object) -> None:
