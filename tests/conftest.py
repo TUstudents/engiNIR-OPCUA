@@ -412,7 +412,7 @@ async def ha_servers(server_key_and_cert):
         srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         srvs.append(srv)
         await srv.init()
-        await srv.set_application_uri("urn:enginir:opcua:discovery")
+        await srv.set_application_uri("urn:enginir:opcua:server")
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
         srv.set_security_policy(
             [
