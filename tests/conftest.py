@@ -427,6 +427,8 @@ async def ha_servers(server_key_and_cert):
         # default the service level to 255 once started
         slevel = srv.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
         await slevel.write_value(ua.Variant(255, ua.VariantType.Byte))
+        redundancy = srv.get_node(ua.NodeId(ua.ObjectIds.Server_ServerRedundancy_RedundancySupport))
+        await redundancy.write_value(ua.Variant(ua.RedundancySupport.Warm, ua.VariantType.Int32))
         return srv
 
     port_1 = find_free_port()

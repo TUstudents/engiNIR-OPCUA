@@ -1,6 +1,6 @@
-import hashlib
+import asyncio
 import logging
-import pickle
+from enum import IntEnum
 from itertools import chain, islice
 
 from enginir_opcua.common.utils import wait_for
@@ -12,6 +12,18 @@ class ClientNotFound(Exception):
     pass
 
 
+class ConnectionStates(IntEnum):
+    """
+    OPC UA Part 4 - Services Release
+    Section 6.6.2.4.2 ServiceLevel
+    """
+
+    IN_MAINTENANCE = 0
+    NO_DATA = 1
+    DEGRADED = 2
+    HEALTHY = 200
+
+
 async def event_wait(evt, timeout) -> bool:
     try:
         await wait_for(evt.wait(), timeout)
@@ -20,8 +32,28 @@ async def event_wait(evt, timeout) -> bool:
     return evt.is_set()
 
 
-def get_digest(conf) -> str:
-    return hashlib.md5(pickle.dumps(conf)).hexdigest()
+async def wait_any(timeout: float, stop: asyncio.Event, *wakeups: asyncio.Event) -> bool:
+    """
+    Wait until the stop event or one of the wake-up events is set, or the timeout passes.
+    A wake-up event that ended the wait is cleared. Returns True when the stop event is set.
+    """
+    if stop.is_set():
+        return True
+    events = (stop, *wakeups)
+    for event in wakeups:
+        if event.is_set():
+            event.clear()
+            return False
+    waiters = [asyncio.ensure_future(event.wait()) for event in events]
+    try:
+        await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+    for event in wakeups:
+        event.clear()
+    return stop.is_set()
 
 
 def batch(iterable, size):

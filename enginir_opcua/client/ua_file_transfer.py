@@ -1,7 +1,6 @@
 """
-Low level implementation of OPC UA File Transfer.
-This module contains the mandatory functionality specified
-by the OPC Foundation.
+Client side of OPC UA File Transfer: reading and writing the content of a FileType Object in chunks, and driving a
+FileDirectoryType Object.
 
 See also:
 OPC 10000-5: OPC Unified Architecture V1.04
@@ -9,38 +8,160 @@ Part 5: Information Model - Annex C (normative) File Transfer
 https://reference.opcfoundation.org/Core/docs/Part5/C.1/
 """
 
+import asyncio
 import logging
+import weakref
+from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any
 
+from enginir_opcua import ua
 from enginir_opcua.common.node import Node
 from enginir_opcua.ua import NodeId, OpenFileMode, Variant, VariantType
 
 _logger = logging.getLogger(__name__)
 
+DEFAULT_CHUNK_SIZE = 65536
+MAX_READ_LENGTH = 2**31 - 1
+MAX_POSITION = 2**64 - 1
 
-class UaFile:
+METHOD_FALLBACKS: dict[str, int] = {
+    "Open": ua.ObjectIds.FileType_Open,
+    "Close": ua.ObjectIds.FileType_Close,
+    "Read": ua.ObjectIds.FileType_Read,
+    "Write": ua.ObjectIds.FileType_Write,
+    "GetPosition": ua.ObjectIds.FileType_GetPosition,
+    "SetPosition": ua.ObjectIds.FileType_SetPosition,
+    "CreateDirectory": ua.ObjectIds.FileDirectoryType_CreateDirectory,
+    "CreateFile": ua.ObjectIds.FileDirectoryType_CreateFile,
+    "Delete": ua.ObjectIds.FileDirectoryType_DeleteFileSystemObject,
+    "MoveOrCopy": ua.ObjectIds.FileDirectoryType_MoveOrCopy,
+}
+
+_max_byte_string_length: "weakref.WeakKeyDictionary[Any, int | None]" = weakref.WeakKeyDictionary()
+
+
+class InvalidStateError(ua.uaerrors.UaError):
+    """A call that doesn't fit the state of the file object, for example reading a file that is not open."""
+
+
+class FileTransferError(ua.uaerrors.UaError):
+    """
+    A read or write failed in the middle. `partial_data` holds the bytes read so far, `bytes_written` the bytes
+    the server confirmed. The original exception is the `__cause__`.
+    """
+
+    def __init__(self, message: str, partial_data: bytes = b"", bytes_written: int = 0) -> None:
+        super().__init__(message)
+        self.partial_data = partial_data
+        self.bytes_written = bytes_written
+
+    @property
+    def bytes_read(self) -> int:
+        return len(self.partial_data)
+
+
+def validate_open_mode(open_mode: int) -> int:
+    """
+    Check an open mode against OPC 10000-5, C.2.1.
+    :raises ValueError: when the mode isn't a valid combination of Read, Write, EraseExisting and Append
+    """
+    mode = int(open_mode)
+    if mode < 0 or mode > 255:
+        raise ValueError(f"open mode {mode} does not fit a Byte")
+    if mode & 0xF0:
+        raise ValueError(f"open mode {mode} sets reserved bits")
+    if not mode & (OpenFileMode.Read | OpenFileMode.Write):
+        raise ValueError(f"open mode {mode} needs Read or Write")
+    if mode & OpenFileMode.EraseExisting and not mode & OpenFileMode.Write:
+        raise ValueError(f"open mode {mode}: EraseExisting needs Write")
+    return mode
+
+
+class _MethodCaller:
+    def __init__(self, node: Node, timeout: float | None) -> None:
+        self._node = node
+        self._timeout = timeout
+        self._methods: dict[str, NodeId] = {}
+
+    async def _resolve(self, name: str) -> NodeId:
+        method = self._methods.get(name)
+        if method is not None:
+            return method
+        try:
+            method = (await self._node.get_child(name)).nodeid
+        except ua.uaerrors.UaError:
+            fallback = METHOD_FALLBACKS.get(name)
+            if fallback is None:
+                raise ua.uaerrors.UaError(f"The Method {name} was not found on {self._node}") from None
+            _logger.debug("Method %s not found on %s, using the Method of the type", name, self._node)
+            method = NodeId(fallback)
+        self._methods[name] = method
+        return method
+
+    async def _call(self, name: str, *args: Any) -> Any:
+        method = await self._resolve(name)
+        _logger.debug("Calling %s on %s", name, self._node)
+        if self._timeout is None:
+            return await self._node.call_method(method, *args)
+        async with asyncio.timeout(self._timeout):
+            return await self._node.call_method(method, *args)
+
+
+class UaFile(_MethodCaller):
     """
     Provides the functionality to work with "C.2 FileType".
     """
 
-    def __init__(self, file_node: Node, open_mode: OpenFileMode = OpenFileMode.Read.value) -> None:
+    _property_nodes: dict[str, Node | None]
+
+    def __init__(
+        self,
+        file_node: Node,
+        open_mode: int = OpenFileMode.Read,
+        *,
+        chunk_size: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
         """
-        Initializes a new instance of the UaFile class.
+        Initializes a new instance of the UaFile class. Nothing is sent.
         :param file_node: The node of the file to open.
         :param open_mode: The open mode, see: enginir_opcua.ua.OpenFileMode.
+        :param chunk_size: Bytes per Read and Write call; default the smaller of 64 KiB and the server's
+        MaxByteStringLength.
+        :param timeout: Timeout in seconds of every Method call.
+        :raises ValueError: for an open mode that OPC UA doesn't allow.
         """
+        super().__init__(file_node, timeout)
         self._file_node = file_node
-        self._open_mode = open_mode
-
+        self._open_mode = validate_open_mode(open_mode)
+        if chunk_size is not None and not 1 <= chunk_size <= MAX_READ_LENGTH:
+            raise ValueError(f"chunk_size {chunk_size} is outside 1 to {MAX_READ_LENGTH}")
+        self._requested_chunk_size = chunk_size
+        self._chunk_size: int | None = chunk_size
         self._file_handle: int | None = None
-        self._read_node: Node | None = None
-        self._write_node: Node | None = None
-        self._get_position_node: Node | None = None
-        self._set_position_node: Node | None = None
+        self._session_identity: int | None = None
+        self._lock = asyncio.Lock()
+        self._property_nodes = {}
+
+    @property
+    def handle(self) -> int | None:
+        return self._file_handle
+
+    @property
+    def is_open(self) -> bool:
+        return self._file_handle is not None
+
+    @property
+    def chunk_size(self) -> int:
+        return self._chunk_size or DEFAULT_CHUNK_SIZE
+
+    def _identity(self) -> int | None:
+        token = getattr(self._file_node.session, "authentication_token", None)
+        return None if token is None else hash(str(token))
 
     async def __aenter__(self) -> "UaFile":
-        await self.open(self._open_mode)
+        await self.open()
         return self
 
     async def __aexit__(
@@ -48,10 +169,16 @@ class UaFile:
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
-    ) -> Any:
-        return await self.close()
+    ) -> None:
+        if exc_type is None:
+            await self.close()
+            return
+        try:
+            await self.close()
+        except Exception:
+            _logger.warning("closing %s failed after an error in the body", self._file_node, exc_info=True)
 
-    async def open(self, open_mode: OpenFileMode | None = None) -> None:
+    async def open(self, open_mode: int | None = None) -> int:
         """
         Open is used to open a file represented by an Object of FileType.
         The open mode of OPC UA differs significantly from the
@@ -59,53 +186,148 @@ class UaFile:
         => See the OPC UA specification for more information.
         :param open_mode: Open mode defined in C.2.1.
         :return: The file handle.
+        :raises InvalidStateError: when the file is already open
         """
-        _logger.debug("Request to open file %s in mode: %s", self._file_node, OpenFileMode)
-        open_node = await self._file_node.get_child("Open")
-        arg1_mode = Variant(open_mode or self._open_mode, VariantType.Byte)
-        self._file_handle = await self._file_node.call_method(open_node, arg1_mode)
+        if self._file_handle is not None:
+            raise InvalidStateError(f"{self._file_node} is already open")
+        mode = self._open_mode if open_mode is None else validate_open_mode(open_mode)
+        _logger.debug("Request to open file %s in mode: %s", self._file_node, mode)
+        async with self._lock:
+            handle = await self._call("Open", Variant(mode, VariantType.Byte))
+            self._file_handle = int(handle)
+            self._session_identity = self._identity()
+        return self._file_handle
+
+    def adopt(self, handle: int) -> None:
+        """
+        Make this object the owner of a handle the server gave out elsewhere, for example by
+        `UaDirectory.create_file(name, True)`, so that `close()` releases it.
+        """
+        if self._file_handle is not None:
+            raise InvalidStateError(f"{self._file_node} is already open")
+        self._file_handle = int(handle)
+        self._session_identity = self._identity()
+
+    def _require_open(self) -> int:
+        if self._file_handle is None:
+            raise InvalidStateError(f"{self._file_node} is not open")
+        if self._session_identity != self._identity():
+            self._file_handle = None
+            raise ConnectionError("file handle belongs to a closed session")
+        return self._file_handle
 
     async def close(self) -> None:
         """
         Close is used to close a file represented by a FileType.
-        When a client closes a file the handle becomes invalid.
+        When a client closes a file the handle becomes invalid. The handle is dropped even when the call fails,
+        and a second close does nothing.
         """
+        handle = self._file_handle
+        if handle is None:
+            return
+        self._file_handle = None
+        if self._session_identity != self._identity():
+            _logger.info("file handle of %s belongs to a closed session; not closing", self._file_node)
+            return
         _logger.debug("Request to close file %s", self._file_node)
-        read_node = await self._file_node.get_child("Close")
-        arg1_file_handle = Variant(self._file_handle, VariantType.UInt32)
-        await self._file_node.call_method(read_node, arg1_file_handle)
+        await asyncio.shield(self._locked_call("Close", Variant(handle, VariantType.UInt32)))
 
-    async def read(self) -> bytes:
+    async def _locked_call(self, name: str, *args: Any) -> Any:
+        async with self._lock:
+            return await self._call(name, *args)
+
+    async def _resolve_chunk_size(self) -> int:
+        if self._chunk_size is not None:
+            return self._chunk_size
+        session = self._file_node.session
+        if session not in _max_byte_string_length:
+            try:
+                limit = await Node(
+                    session, NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength)
+                ).read_value()
+            except Exception:
+                limit = None
+            _max_byte_string_length[session] = int(limit) if limit else None
+        limit = _max_byte_string_length[session]
+        self._chunk_size = min(DEFAULT_CHUNK_SIZE, limit) if limit else DEFAULT_CHUNK_SIZE
+        return self._chunk_size
+
+    async def _read_chunk(self, handle: int, length: int) -> bytes:
+        data = await self._call("Read", Variant(handle, VariantType.UInt32), Variant(length, VariantType.Int32))
+        return data if data is not None else b""
+
+    async def read_chunk(self, length: int) -> bytes:
         """
-        Read is used to read a part of the file starting from the current file position.
-        The file position is advanced by the number of bytes read.
-        :return: Contains the returned data of the file.
-        If the ByteString is empty it indicates that the end of the file is reached.
+        One Read call. The server may return fewer bytes than asked; an empty result is the end of the file.
         """
-        _logger.debug("Request to read from file %s", self._file_node)
-        size = await self.get_size()
-        if self._read_node is None:
-            self._read_node = await self._file_node.get_child("Read")
-        arg1_file_handle = Variant(self._file_handle, VariantType.UInt32)
-        arg2_length = Variant(size, VariantType.Int32)
-        return await self._file_node.call_method(self._read_node, arg1_file_handle, arg2_length)
+        if not 1 <= length <= MAX_READ_LENGTH:
+            raise ValueError(f"length {length} is outside 1 to {MAX_READ_LENGTH}")
+        handle = self._require_open()
+        async with self._lock:
+            return await self._read_chunk(handle, length)
+
+    async def iter_chunks(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        """
+        Read from the current position to the end of the file, yielding every non-empty result of the Read Method.
+        """
+        size = chunk_size or await self._resolve_chunk_size()
+        while chunk := await self.read_chunk(size):
+            yield chunk
+
+    async def read(self, max_bytes: int | None = None) -> bytes:
+        """
+        Read the file from the current position to the end, in chunks. An empty file gives b"".
+        The file position is advanced to the end.
+        :param max_bytes: stop with a ValueError when the file is larger than this
+        :raises FileTransferError: when a Read fails; `partial_data` holds what was read so far
+        """
+        handle = self._require_open()
+        size = await self._resolve_chunk_size()
+        chunks: list[bytes] = []
+        total = 0
+        async with self._lock:
+            while True:
+                try:
+                    chunk = await self._read_chunk(handle, size)
+                except Exception as exc:
+                    raise FileTransferError(
+                        f"reading {self._file_node} failed after {total} bytes: {exc}", b"".join(chunks)
+                    ) from exc
+                if not chunk:
+                    break
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise ValueError(f"the file is larger than max_bytes={max_bytes}")
+                chunks.append(chunk)
+        return b"".join(chunks)
 
     async def write(self, data: bytes) -> None:
         """
         Write is used to write a part of the file starting from the current file position.
-        The file position is advanced by the number of bytes written.
+        The file position is advanced by the number of bytes written. The data is split into chunks.
         :param data: Contains the data to be written at the position of the file.
         It is server-dependent whether the written data are persistently
         stored if the session is ended without calling the Close Method with the fileHandle.
-        Writing an empty or null ByteString returns a Good result code without any
-        effect on the file.
+        Writing an empty or null ByteString sends nothing.
+        :raises FileTransferError: when a Write fails; `bytes_written` holds the confirmed bytes
         """
-        _logger.debug("Request to write to file %s", self._file_node)
-        if self._write_node is None:
-            self._write_node = await self._file_node.get_child("Write")
-        arg1_file_handle = Variant(self._file_handle, VariantType.UInt32)
-        arg2_data = Variant(data, VariantType.ByteString)
-        await self._file_node.call_method(self._write_node, arg1_file_handle, arg2_data)
+        handle = self._require_open()
+        if not data:
+            return
+        size = await self._resolve_chunk_size()
+        written = 0
+        async with self._lock:
+            for offset in range(0, len(data), size):
+                piece = bytes(data[offset : offset + size])
+                try:
+                    await self._call(
+                        "Write", Variant(handle, VariantType.UInt32), Variant(piece, VariantType.ByteString)
+                    )
+                except Exception as exc:
+                    raise FileTransferError(
+                        f"writing {self._file_node} failed after {written} bytes: {exc}", bytes_written=written
+                    ) from exc
+                written += len(piece)
 
     async def get_position(self) -> int:
         """
@@ -113,11 +335,8 @@ class UaFile:
         :return: The position of the fileHandle in the file.
         If a Read or Write is called it starts at that position.
         """
-        _logger.debug("Request to get position from file %s", self._file_node)
-        if self._get_position_node is None:
-            self._get_position_node = await self._file_node.get_child("GetPosition")
-        arg1_file_handle = Variant(self._file_handle, VariantType.UInt32)
-        return await self._file_node.call_method(self._get_position_node, arg1_file_handle)
+        handle = self._require_open()
+        return int(await self._locked_call("GetPosition", Variant(handle, VariantType.UInt32)))
 
     async def set_position(self, position: int) -> None:
         """
@@ -126,12 +345,28 @@ class UaFile:
         If a Read or Write is called it starts at that position.
         If the position is higher than the file size the position is set to the end of the file.
         """
-        _logger.debug("Request to set position in file %s", self._file_node)
-        if self._set_position_node is None:
-            self._set_position_node = await self._file_node.get_child("SetPosition")
-        arg1_file_handle = Variant(self._file_handle, VariantType.UInt32)
-        arg2_position = Variant(position, VariantType.UInt64)
-        return await self._file_node.call_method(self._set_position_node, arg1_file_handle, arg2_position)
+        if not 0 <= position <= MAX_POSITION:
+            raise ValueError(f"position {position} is outside 0 to {MAX_POSITION}")
+        handle = self._require_open()
+        await self._locked_call(
+            "SetPosition", Variant(handle, VariantType.UInt32), Variant(position, VariantType.UInt64)
+        )
+
+    async def _property(self, name: str) -> Node | None:
+        if name not in self._property_nodes:
+            try:
+                self._property_nodes[name] = await self._file_node.get_child(name)
+            except ua.uaerrors.UaError:
+                self._property_nodes[name] = None
+        return self._property_nodes[name]
+
+    async def _read_property(self, name: str, optional: bool = False) -> Any:
+        node = await self._property(name)
+        if node is None:
+            if optional:
+                return None
+            raise ua.uaerrors.UaError(f"The Property {name} was not found on {self._file_node}")
+        return await node.read_value()
 
     async def get_size(self) -> int:
         """
@@ -139,9 +374,7 @@ class UaFile:
         When a file is opened for write the size might not be accurate.
         :return: The size of the file in Bytes.
         """
-        _logger.debug("Request to get size of file %s", self._file_node)
-        size_node = await self._file_node.get_child("Size")
-        return await size_node.read_value()
+        return int(await self._read_property("Size"))
 
     async def get_writable(self) -> bool:
         """
@@ -150,39 +383,37 @@ class UaFile:
         is writable this may be restricted to a certain user / user group.
         The Property does not take into account whether the file is currently
         opened for writing by another client and thus currently locked and not writable by others.
-        :return:
         """
-        _logger.debug("Request to get writable of file %s", self._file_node)
-        writable_node = await self._file_node.get_child("Writable")
-        return await writable_node.read_value()
+        return bool(await self._read_property("Writable"))
 
     async def get_user_writable(self) -> bool:
         """
         UserWritable indicates whether the file is writable taking user access rights into account.
         The Property does not take into account whether the file is currently opened
         for writing by another client and thus currently locked and not writable by others.
-        :return: Indicates whether the file is writable taking user access rights into account
         """
-        _logger.debug("Request to get user writable of file %s", self._file_node)
-        user_writable_node = await self._file_node.get_child("UserWritable")
-        return await user_writable_node.read_value()
+        return bool(await self._read_property("UserWritable"))
 
-    async def get_open_count(self) -> Any:
+    async def get_open_count(self) -> int:
         """
         OpenCount indicates the number of currently valid file handles on the file.
-        :return: Amount of currently valid file handles on the file
         """
-        _logger.debug("Request to get open count of file %s", self._file_node)
-        open_count_node = await self._file_node.get_child("OpenCount")
-        return await open_count_node.read_value()
+        return int(await self._read_property("OpenCount"))
+
+    async def get_mime_type(self) -> str | None:
+        """
+        MimeType is an optional Property; None when the file has none.
+        """
+        return await self._read_property("MimeType", optional=True)
 
 
-class UaDirectory:
+class UaDirectory(_MethodCaller):
     """
     Provides the functionality to work with "C.3 File System".
     """
 
-    def __init__(self, directory_node: Node) -> None:
+    def __init__(self, directory_node: Node, *, timeout: float | None = None) -> None:
+        super().__init__(directory_node, timeout)
         self._directory_node = directory_node
 
     async def create_directory(self, directory_name: str) -> NodeId:
@@ -198,11 +429,9 @@ class UaDirectory:
         :return: The NodeId of the created directory Object.
         """
         _logger.debug("Request to create directory %s in %s", directory_name, self._directory_node)
-        create_directory_node = await self._directory_node.get_child("CreateDirectory")
-        arg1_directory_name = Variant(directory_name, VariantType.String)
-        return await self._directory_node.call_method(create_directory_node, arg1_directory_name)
+        return await self._call("CreateDirectory", Variant(directory_name, VariantType.String))
 
-    async def create_file(self, file_name: str, request_file_open: bool) -> tuple[NodeId, int]:
+    async def create_file(self, file_name: str, request_file_open: bool = False) -> tuple[NodeId, int]:
         """
         CreateFile is used to create a new FileType Object organized by this Object.
         The created file can be written using the Write Method of the FileType.
@@ -224,10 +453,10 @@ class UaDirectory:
         and shall be ignored by the caller.
         """
         _logger.debug("Request to create file %s in %s", file_name, self._directory_node)
-        create_file_node = await self._directory_node.get_child("CreateFile")
-        arg1_file_name = Variant(file_name, VariantType.String)
-        arg2_request_file_open = Variant(request_file_open, VariantType.Boolean)
-        return await self._directory_node.call_method(create_file_node, arg1_file_name, arg2_request_file_open)
+        node_id, handle = await self._call(
+            "CreateFile", Variant(file_name, VariantType.String), Variant(request_file_open, VariantType.Boolean)
+        )
+        return node_id, int(handle)
 
     async def delete(self, object_to_delete: NodeId) -> None:
         """
@@ -237,8 +466,7 @@ class UaDirectory:
         directory to delete are deleted recursively.
         """
         _logger.debug("Request to delete file %s from %s", object_to_delete, self._directory_node)
-        delete_node = await self._directory_node.get_child("Delete")
-        await self._directory_node.call_method(delete_node, object_to_delete)
+        await self._call("Delete", Variant(object_to_delete, VariantType.NodeId))
 
     async def move_or_copy(
         self, object_to_move_or_copy: NodeId, target_directory: NodeId, create_copy: bool, new_name: str
@@ -266,9 +494,10 @@ class UaDirectory:
             target_directory,
             new_name,
         )
-        move_or_copy_node = await self._directory_node.get_child("MoveOrCopy")
-        arg3_create_copy = Variant(create_copy, VariantType.Boolean)
-        arg4_new_name = Variant(new_name, VariantType.String)
-        return await self._directory_node.call_method(
-            move_or_copy_node, object_to_move_or_copy, target_directory, arg3_create_copy, arg4_new_name
+        return await self._call(
+            "MoveOrCopy",
+            Variant(object_to_move_or_copy, VariantType.NodeId),
+            Variant(target_directory, VariantType.NodeId),
+            Variant(create_copy, VariantType.Boolean),
+            Variant(new_name, VariantType.String),
         )
