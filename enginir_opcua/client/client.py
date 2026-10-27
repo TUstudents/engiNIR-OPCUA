@@ -29,13 +29,15 @@ from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, security_policies, uacrypto
-from ..crypto.validator import CertificateValidatorMethod
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import ApplicationHook, CertificateValidator
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
     BadSecurityChecksFailed,
     BadSecurityPolicyRejected,
     BadSessionIdInvalid,
+    ConfigurationError,
 )
 from .ua_client import StateSubscription, UaClient, UaClientState
 
@@ -56,17 +58,6 @@ _supervisor_owns_requests: contextvars.ContextVar[bool] = contextvars.ContextVar
 )
 
 
-def _first_cert_from_chain(der: bytes) -> bytes:
-    """Return only the leading certificate's bytes from a (possibly chained) DER blob.
-
-    Servers sometimes hand back the server certificate concatenated with its
-    chain; our crypto layer trips on the chained form, so peel off the first
-    cert by reading the outer SEQUENCE length (bytes 2:4) and slicing.
-    """
-    cert_len = int.from_bytes(der[2:4], byteorder="big", signed=False) + 4
-    return der[:cert_len]
-
-
 class Client:
     """
     High level client to connect to an OPC-UA server.
@@ -85,6 +76,7 @@ class Client:
         auto_reconnect: bool = False,
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
+        allow_deprecated_policies: bool = False,
     ) -> None:
         """
         :param url: url of the server.
@@ -101,6 +93,7 @@ class Client:
         :param reconnect_max_delay: exponential backoff cap for reconnect attempts (seconds).
         :param reconnect_request_timeout: how long requests block waiting for the
             connection to become ready while the supervisor is reconnecting.
+        :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
 
         Some other client parameters can be changed by setting
         attributes on the constructed object:
@@ -152,8 +145,13 @@ class Client:
         self._reconnect_request_timeout: float = reconnect_request_timeout
         self._stale_check_margin: float = 1.5
         self._stale_check_interval: float = 0.5
-        self.certificate_validator: CertificateValidatorMethod | None = None
-        """hook to validate a certificate, raises a ServiceError when not valid"""
+        self.trust_store: TrustStore | None = None
+        self.certificate_validator: CertificateValidator | None = None
+        self.allow_deprecated_policies: bool = allow_deprecated_policies
+        self.application_hook: ApplicationHook | None = None
+        self._default_validator: CertificateValidator | None = None
+        self._pinned_server_certificate: x509.Certificate | None = None
+        """extra check after the certificate validator accepted the server certificate, raises a ServiceError"""
         # Set before connect() to let a fresh client process resume the existing
         # server-side session via ActivateSession instead of creating a new one
         # (spec Part 4 §6.7) — useful after a client crash.
@@ -243,6 +241,15 @@ class Client:
         """Set the maximum number of requests sent concurrently."""
         self.uaclient.set_max_concurrent_requests(max_concurrent_requests)
 
+    def set_trust_store(self, trust_store: TrustStore) -> None:
+        """
+        Set the trusted certificates, issuer certificates and revocation lists that the server certificate is
+        validated against. Without a trust store only a server certificate passed to set_security is trusted.
+        Call this before connect()
+        """
+        self.trust_store = trust_store
+        self._default_validator = None
+
     async def set_security_string(self, string: str) -> None:
         """
         Set SecureChannel mode.
@@ -286,6 +293,11 @@ class Client:
         Set SecureChannel mode.
         Call this before connect()
         """
+        if getattr(policy, "deprecated", False) and not self.allow_deprecated_policies:
+            raise ConfigurationError(
+                f"{policy.__name__} is deprecated and is only available with Client(allow_deprecated_policies=True)"
+            )
+        pin_server_certificate = server_certificate is not None
         if server_certificate is None:
             # Force unencrypted/unsigned SecureChannel to list the endpoints
             new_policy = security_policies.SecurityPolicyNone()
@@ -294,7 +306,7 @@ class Client:
             endpoints = await self.connect_and_get_server_endpoints()
             self._discovered_endpoints = endpoints
             endpoint = Client.find_endpoint(endpoints, mode, policy.URI)
-            server_certificate = uacrypto.x509_from_der(_first_cert_from_chain(endpoint.ServerCertificate))
+            server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
             server_certificate = uacrypto.CertProperties(server_certificate)
         if not isinstance(certificate, uacrypto.CertProperties):
@@ -306,7 +318,9 @@ class Client:
         ]
         if not isinstance(private_key, uacrypto.CertProperties):
             private_key = uacrypto.CertProperties(private_key, password=private_key_password)
-        return await self._set_security(policy, certificate, private_key, server_certificate, mode, chain)
+        return await self._set_security(
+            policy, certificate, private_key, server_certificate, mode, chain, pin_server_certificate
+        )
 
     async def _set_security(
         self,
@@ -316,9 +330,12 @@ class Client:
         server_cert: uacrypto.CertProperties,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
         certificate_chain: Sequence[uacrypto.CertProperties] | None = None,
+        pin_server_certificate: bool = False,
     ) -> None:
         if isinstance(server_cert, uacrypto.CertProperties):
             server_cert = await uacrypto.load_certificate(server_cert.path_or_content, server_cert.extension)
+        self._pinned_server_certificate = server_cert if pin_server_certificate else None
+        self._default_validator = None
         cert = await uacrypto.load_certificate(certificate.path_or_content, certificate.extension)
         certificate_chain = certificate_chain or []
         chain = await asyncio.gather(
@@ -658,7 +675,26 @@ class Client:
         connect to socket defined in url
         """
 
+        await self._prepare_certificate_validation()
         await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port)
+
+    async def _prepare_certificate_validation(self) -> None:
+        if self.certificate_validator is not None:
+            self.uaclient.certificate_validator = self.certificate_validator
+            return
+        if self._default_validator is None:
+            store = (
+                TrustStore(
+                    self.trust_store.trust_locations, self.trust_store.crl_locations, self.trust_store.issuer_locations
+                )
+                if self.trust_store
+                else TrustStore()
+            )
+            if self._pinned_server_certificate is not None:
+                store.pin(self._pinned_server_certificate)
+            self._default_validator = CertificateValidator(store)
+        await self._default_validator.trust_store.load()
+        self.uaclient.certificate_validator = self._default_validator
 
     def disconnect_socket(self) -> None:
         if self.uaclient:
@@ -798,8 +834,8 @@ class Client:
         self.security_policy.asymmetric_cryptography.verify(data, response.ServerSignature.Signature)
         self._server_nonce = response.ServerNonce
         server_certificate = None
-        if response.ServerCertificate is not None:
-            server_certificate = _first_cert_from_chain(response.ServerCertificate)
+        if response.ServerCertificate:
+            server_certificate = uacrypto.split_certificate_chain(response.ServerCertificate)[0]
         if not self.security_policy.peer_certificate:
             self.security_policy.peer_certificate = server_certificate
         elif self.security_policy.peer_certificate != server_certificate:
@@ -807,9 +843,9 @@ class Client:
         self._check_discovered_endpoints(response.ServerEndpoints)
         ep = Client.find_endpoint(response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI)
 
-        if self.certificate_validator and server_certificate:
+        if self.application_hook and server_certificate:
             try:
-                await self.certificate_validator(x509.load_der_x509_certificate(server_certificate), ep.Server)
+                await self.application_hook(x509.load_der_x509_certificate(server_certificate), ep.Server)
             except ServiceError as exp:
                 status = ua.StatusCode(exp.code)
                 _logger.error("create_session fault response: %s (%s)", status.doc, status.name)
@@ -831,7 +867,7 @@ class Client:
             (
                 endpoint.SecurityMode,
                 endpoint.SecurityPolicyUri,
-                _first_cert_from_chain(endpoint.ServerCertificate) if endpoint.ServerCertificate else b"",
+                uacrypto.split_certificate_chain(endpoint.ServerCertificate)[0] if endpoint.ServerCertificate else b"",
                 frozenset(
                     (policy.PolicyId or "", policy.TokenType, policy.SecurityPolicyUri or "")
                     for policy in endpoint.UserIdentityTokens

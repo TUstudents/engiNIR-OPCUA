@@ -435,6 +435,9 @@ class SecurityPolicy(ABC):
     AsymmetricEncryptionURI: str
     AsymmetricSignatureURI: str
     secure_channel_nonce_length: int
+    min_asymmetric_key_length: int = 0
+    max_asymmetric_key_length: int = 0
+    certificate_hash_algorithms: tuple[str, ...] = ()
     asymmetric_cryptography: CryptographyNone
     symmetric_cryptography: CryptographyNone
     Mode: MessageSecurityMode
@@ -592,6 +595,9 @@ class SecurityPolicyAes128Sha256RsaOaep(RsaSecurityPolicy):
     AsymmetricEncryptionURI = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
     AsymmetricSignatureURI = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
     secure_channel_nonce_length = 32
+    min_asymmetric_key_length = 2048
+    max_asymmetric_key_length = 4096
+    certificate_hash_algorithms = ("sha256", "sha384", "sha512")
 
     signature_key_size = 32
     symmetric_key_size = 16
@@ -633,6 +639,9 @@ class SecurityPolicyAes256Sha256RsaPss(RsaSecurityPolicy):
     AsymmetricEncryptionURI = "http://opcfoundation.org/UA/security/rsa-oaep-sha2-256"
     AsymmetricSignatureURI = "http://opcfoundation.org/UA/security/rsa-pss-sha2-256"
     secure_channel_nonce_length = 32
+    min_asymmetric_key_length = 2048
+    max_asymmetric_key_length = 4096
+    certificate_hash_algorithms = ("sha256", "sha384", "sha512")
 
     signature_key_size = 32
     symmetric_key_size = 32
@@ -680,6 +689,9 @@ class SecurityPolicyBasic128Rsa15(RsaSecurityPolicy):
     AsymmetricEncryptionURI = "http://www.w3.org/2001/04/xmlenc#rsa-1_5"
     AsymmetricSignatureURI = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
     secure_channel_nonce_length = 16
+    min_asymmetric_key_length = 1024
+    max_asymmetric_key_length = 2048
+    certificate_hash_algorithms = ("sha1", "sha256", "sha384", "sha512")
 
     signature_key_size = 16
     symmetric_key_size = 16
@@ -728,6 +740,9 @@ class SecurityPolicyBasic256(RsaSecurityPolicy):
     AsymmetricEncryptionURI = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
     AsymmetricSignatureURI = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
     secure_channel_nonce_length = 32
+    min_asymmetric_key_length = 1024
+    max_asymmetric_key_length = 2048
+    certificate_hash_algorithms = ("sha1", "sha256", "sha384", "sha512")
 
     signature_key_size = 24
     symmetric_key_size = 32
@@ -773,6 +788,9 @@ class SecurityPolicyBasic256Sha256(RsaSecurityPolicy):
     AsymmetricEncryptionURI = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
     AsymmetricSignatureURI = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
     secure_channel_nonce_length = 32
+    min_asymmetric_key_length = 2048
+    max_asymmetric_key_length = 4096
+    certificate_hash_algorithms = ("sha256", "sha384", "sha512")
 
     signature_key_size = 32
     symmetric_key_size = 32
@@ -786,6 +804,19 @@ class SecurityPolicyBasic256Sha256(RsaSecurityPolicy):
     p_hash = staticmethod(uacrypto.p_sha256)
     encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
     sign_asymmetric = staticmethod(uacrypto.sign_sha256)
+
+
+def policy_class_for_uri(policy_uri: str | None) -> type[SecurityPolicy] | None:
+    for cls in [
+        SecurityPolicyBasic256Sha256,
+        SecurityPolicyBasic256,
+        SecurityPolicyBasic128Rsa15,
+        SecurityPolicyAes128Sha256RsaOaep,
+        SecurityPolicyAes256Sha256RsaPss,
+    ]:
+        if policy_uri == cls.URI:
+            return cls
+    return None
 
 
 def encrypt_asymmetric(pubkey, data, policy_uri):

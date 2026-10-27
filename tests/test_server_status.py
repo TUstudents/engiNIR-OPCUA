@@ -46,7 +46,7 @@ async def test_server_status_clock_updates_preserve_fields(server: Server) -> No
 
 @pytest.mark.parametrize("disabled_clock", [False, True])
 async def test_server_status_start_time_and_clock_shutdown(disabled_clock: bool) -> None:
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.iserver.disabled_clock = disabled_clock
     before = datetime.now(UTC)

@@ -14,7 +14,7 @@ def func(parent, value):
 async def main():
     _logger = logging.getLogger(__name__)
     # setup our server
-    server = Server(user_manager=PermissiveUserManager())
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 

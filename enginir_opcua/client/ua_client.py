@@ -33,6 +33,7 @@ from ..common.connection import (
 )
 from ..common.utils import wait_for
 from ..crypto import security_policies
+from ..crypto.validator import CertificateValidator, PeerRole, ValidationContext
 from ..observer import NULL_OBSERVER, Observer
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
@@ -83,6 +84,9 @@ class UASocketProtocol(asyncio.Protocol):
         else:
             limits = copy.deepcopy(limits)  # Make a copy because the limits can change in the session
         self._channel = SecureChannel(security_policy, limits)
+        self._channel.peer_certificate_check = self._check_server_certificate
+        self.certificate_validator: CertificateValidator | None = None
+        self.validation_host_name: str | None = None
         self._acknowledged_version = 0
         self._reader = FrameReader(lambda: self._channel.limits.max_recv_buffer)
 
@@ -96,6 +100,18 @@ class UASocketProtocol(asyncio.Protocol):
         # Predicate telling whether the owning session is closing, so late responses
         # to cancelled requests are logged as expected teardown rather than warnings.
         self.is_session_closing: Callable[[], bool] | None = None
+
+    def _check_server_certificate(self, chain: bytes) -> None:
+        if self.certificate_validator is None:
+            raise ua.UaStatusCodeError(
+                ua.StatusCodes.BadCertificateUntrusted,
+                "No certificate validator is configured, so no server certificate is trusted; "
+                "configure the trust store of the client (set_trust_store)",
+            )
+        context = ValidationContext(
+            PeerRole.SERVER, self._channel.security_policy.URI, host_name=self.validation_host_name
+        )
+        self.certificate_validator.validate_application_certificate(chain, context).raise_for_status()
 
     def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
         self.state = UASocketState.OPEN
@@ -137,7 +153,9 @@ class UASocketProtocol(asyncio.Protocol):
             self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
             response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
             response.ResponseHeader.ServiceResult.check()
-            self._channel.check_open_response(response.Parameters, params, self._acknowledged_version)
+            self._channel.check_open_response(
+                response.Parameters, params, self._acknowledged_version, msg.security_header().SenderCertificate
+            )
             self._open_secure_channel_exchange = response
             self._channel.set_channel(response.Parameters, params.RequestType, params.ClientNonce)
         self._process_received_message(msg)
@@ -410,6 +428,8 @@ class UaClient:
         self._timeout = timeout
         self._request_semaphore = asyncio.Semaphore(self._max_concurrent_requests)
         self.security_policy: security_policies.SecurityPolicy = security_policies.SecurityPolicyNone()
+        self.certificate_validator: CertificateValidator | None = None
+        self.validation_host_name: str | None = None
         self.protocol: UASocketProtocol | None = None
         self._pre_request_hook: Callable[[], Awaitable[None]] | None = None
         self._state: UaClientState = UaClientState.DISCONNECTED
@@ -532,6 +552,8 @@ class UaClient:
 
     def _make_protocol(self) -> UASocketProtocol:
         self.protocol = UASocketProtocol(self._timeout, security_policy=self.security_policy)
+        self.protocol.certificate_validator = self.certificate_validator
+        self.protocol.validation_host_name = self.validation_host_name
         self.protocol.pre_request_hook = self._pre_request_hook
         self.protocol.on_connection_lost = self._on_transport_lost
         self.protocol.is_session_closing = self._is_session_closing
@@ -553,6 +575,7 @@ class UaClient:
     async def connect_socket(self, host: str, port: int) -> None:
         """Connect to server socket."""
         self.logger.info("opening connection")
+        self.validation_host_name = host
         self._set_state(UaClientState.CONNECTING)
         try:
             await asyncio.wait_for(

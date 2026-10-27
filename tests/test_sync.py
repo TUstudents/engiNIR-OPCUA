@@ -93,7 +93,7 @@ def test_sync_client_set_max_concurrent_requests(client):
 
 def test_sync_server_set_application_uri(tloop):
     """Sync Server must expose set_application_uri / get_application_uri (GH-1967)."""
-    s = Server(tloop=tloop)
+    s = Server(allow_no_security=True, tloop=tloop)
     s.disable_clock(True)
     new_uri = "urn:enginir:opcua:server:sync_test_app_uri"
     s.set_application_uri(new_uri)
@@ -215,7 +215,7 @@ def test_sync_server_get_node(server, idx):
 async def test_sync_server_creating_shelf_files_works(tloop: ThreadLoop, tmp_path: Path) -> None:
     shelf_file_path: Path = tmp_path / "shelf_file"
 
-    Server(tloop=tloop, shelf_file=shelf_file_path)
+    Server(allow_no_security=True, tloop=tloop, shelf_file=shelf_file_path)
 
 
 class MySubHandler:
@@ -368,12 +368,12 @@ def test_sync_server_init_failure_stops_own_tloop(monkeypatch):
     monkeypatch.setattr(AsyncServer, "init", failing_init)
     before = alive_thread_loops()
     with pytest.raises(RuntimeError, match="init failed"):
-        Server()
+        Server(allow_no_security=True)
     assert alive_thread_loops() == before
 
 
 def test_sync_server_stop_failure_stops_own_tloop(monkeypatch):
-    s = Server()
+    s = Server(allow_no_security=True)
 
     async def failing_stop():
         raise RuntimeError("stop failed")

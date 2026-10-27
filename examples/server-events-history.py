@@ -9,7 +9,7 @@ from enginir_opcua.server.history_sql import HistorySQLite
 
 if __name__ == "__main__":
     # setup our server
-    server = Server()
+    server = Server(allow_no_security=True)
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 
     # set up our own namespace, not really necessary but should as spec

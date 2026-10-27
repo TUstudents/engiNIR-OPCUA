@@ -6,7 +6,7 @@ from enginir_opcua.common.type_dictionary_builder import DataTypeDictionaryBuild
 
 
 async def main():
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/UA/SampleServer")
     server.set_server_name("Custom structure demo server")

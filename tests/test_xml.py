@@ -74,7 +74,7 @@ async def test_xml_import(opc):
 
 @pytest.fixture(params=["client", "server"])
 async def disposable_opc(request):
-    srv = Server(user_manager=PermissiveUserManager())
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     srv.allow_plaintext_password = True
     await srv.init()
     port = find_free_port()

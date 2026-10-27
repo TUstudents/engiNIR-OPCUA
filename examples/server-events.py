@@ -9,7 +9,7 @@ _logger = logging.getLogger("enginir_opcua")
 
 
 async def main():
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     # setup our own namespace, not really necessary but should as spec

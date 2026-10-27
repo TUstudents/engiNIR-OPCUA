@@ -12,7 +12,6 @@ from enginir_opcua.common.callback import CallbackType, ServerItemCallback
 from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
 from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 from enginir_opcua.server.internal_server import InternalServer
 
 from .support import NAMESPACE_URI, USER_NAME, USER_PASSWORD, SecurityCase
@@ -126,11 +125,7 @@ async def serve(directory: Path, case: SecurityCase, trusted_clients: Path, port
         await server.load_private_key(key)
         trust_store = TrustStore([trusted_clients], [])
         await trust_store.load()
-        server.set_certificate_validator(
-            CertificateValidator(
-                CertificateValidatorOptions.TRUSTED_VALIDATION | CertificateValidatorOptions.PEER_CLIENT, trust_store
-            )
-        )
+        server.set_trust_store(trust_store)
     namespace, simulation = await populate(server, observations)
 
     def count_items(event: ServerItemCallback, *_: object) -> None:

@@ -23,7 +23,8 @@ from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
 from ..crypto import uacrypto
-from ..crypto.validator import CertificateValidatorMethod
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
@@ -139,6 +140,7 @@ class InternalServer:
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
         self.certificate: Any = None
+        self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
         self.attribute_service = AttributeService(self.aspace)
@@ -151,8 +153,10 @@ class InternalServer:
         if user_manager is None:
             user_manager = AnonymousReadOnlyUserManager()
         self.user_manager: UserManager = user_manager
-        self.certificate_validator: CertificateValidatorMethod | None = None
-        """hook to validate a certificate, raises a ServiceError when not valid"""
+        self.trust_store: TrustStore | None = None
+        self.certificate_validator: CertificateValidator | None = None
+        self.application_hook: ApplicationHook | None = None
+        """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())

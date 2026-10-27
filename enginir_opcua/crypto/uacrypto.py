@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +53,21 @@ async def load_certificate(path_or_content: bytes | str | Path, extension: str |
     if _is_pem_format(path_or_content, extension):
         return x509.load_pem_x509_certificate(content, default_backend())
     return x509.load_der_x509_certificate(content, default_backend())
+
+
+async def load_certificates(
+    path_or_content: bytes | str | Path, extension: str | None = None
+) -> list[x509.Certificate]:
+    """Load every certificate of a file or bytes: a PEM bundle holds several, a DER file or a DER chain one or more."""
+    content = await get_content(path_or_content)
+    if _is_pem_format(path_or_content, extension):
+        return x509.load_pem_x509_certificates(content)
+    return [x509.load_der_x509_certificate(piece, default_backend()) for piece in split_certificate_chain(content)]
+
+
+def certificate_thumbprint(certificate: bytes) -> bytes:
+    """The SHA-1 thumbprint of a DER certificate, which identifies it in the OpenSecureChannel header."""
+    return hashlib.sha1(certificate, usedforsecurity=False).digest()
 
 
 DER_SEQUENCE_TAG = 0x30

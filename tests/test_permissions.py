@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from enginir_opcua import Client, Server, ua
@@ -8,28 +6,19 @@ from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.server.user_managers import CertificateUserManager
 
 from .conftest import find_free_port
+from .pki import generated_pki
 
 pytestmark = pytest.mark.asyncio
 
 uri_crypto_cert = f"opc.tcp://127.0.0.1:{find_free_port()}"
-BASE_DIR = Path(__file__).parent.parent
-EXAMPLE_PATH = BASE_DIR / "examples"
-srv_crypto_params = (EXAMPLE_PATH / "private-key-example.pem", EXAMPLE_PATH / "certificate-example.der")
+PKI = generated_pki()
+srv_crypto_params = (PKI.server.key, PKI.server.certificate)
 
-admin_peer_creds = {
-    "certificate": EXAMPLE_PATH / "certificates/peer-certificate-example-1.der",
-    "private_key": EXAMPLE_PATH / "certificates/peer-private-key-example-1.pem",
-}
+admin_peer_creds = {"certificate": PKI.peer1.certificate, "private_key": PKI.peer1.key}
 
-user_peer_creds = {
-    "certificate": EXAMPLE_PATH / "certificates/peer-certificate-example-2.der",
-    "private_key": EXAMPLE_PATH / "certificates/peer-private-key-example-2.pem",
-}
+user_peer_creds = {"certificate": PKI.peer2.certificate, "private_key": PKI.peer2.key}
 
-anonymous_peer_creds = {
-    "certificate": EXAMPLE_PATH / "certificates/peer-certificate-example-3.der",
-    "private_key": EXAMPLE_PATH / "certificates/peer-private-key-example-3.pem",
-}
+anonymous_peer_creds = {"certificate": PKI.peer3.certificate, "private_key": PKI.peer3.key}
 
 
 @pytest.fixture(scope="module")
@@ -42,13 +31,14 @@ async def srv_crypto_one_cert(request):
     await cert_user_manager.add_admin(admin_peer_certificate, name="Admin")
     await cert_user_manager.add_user(user_peer_certificate, name="User")
     await cert_user_manager.add_role(anonymous_peer_certificate, name="Anonymous", user_role=UserRole.Anonymous)
-    srv = Server(user_manager=cert_user_manager)
+    srv = Server(allow_no_security=True, user_manager=cert_user_manager)
 
     srv.set_endpoint(uri_crypto_cert)
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     await srv.init()
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
+    srv.set_trust_store(PKI.trust_store())
     idx = 0
     myobj = await srv.nodes.objects.add_object(idx, "MyObject")
     myvar = await myobj.add_variable(idx, "MyVariable", 0.0)

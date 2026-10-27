@@ -17,7 +17,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _start_server(port: int) -> Server:
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()

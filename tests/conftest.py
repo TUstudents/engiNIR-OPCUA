@@ -22,7 +22,7 @@ from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .harness import (
-    EXAMPLES,
+    PKI,
     TWO_SESSION_USERS,
     RawPeer,
     RawServer,
@@ -156,7 +156,7 @@ class ServerProcess(Process):
         self.stop_ev = Event()
 
     async def run_server(self, url):
-        srv = Server(user_manager=PermissiveUserManager())
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         srv.allow_plaintext_password = True
         srv.set_endpoint(url)
         await srv.init()
@@ -202,7 +202,7 @@ async def running_server(request):
 @pytest.fixture(scope="module")
 async def server():
     # start our own server
-    srv = Server(user_manager=PermissiveUserManager())
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
@@ -248,7 +248,7 @@ async def opc(request):
     :return:
     """
     if request.param == "client":
-        srv = Server(user_manager=PermissiveUserManager())
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         srv.allow_plaintext_password = True
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
@@ -263,7 +263,7 @@ async def opc(request):
         await srv.stop()
     elif request.param == "server":
         # start our own server
-        srv = Server()
+        srv = Server(allow_no_security=True)
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num1}")
         await add_server_methods(srv)
@@ -291,7 +291,7 @@ async def history(request):
 
 class HistoryServer:
     def __init__(self):
-        self.srv = Server()
+        self.srv = Server(allow_no_security=True)
         self.srv_node = None
         self.ev_values = None
         self.var = None
@@ -348,20 +348,12 @@ async def history_server(request):
 
 @pytest.fixture(scope="session")
 def client_key_and_cert(request):
-    base_dir = Path(__file__).parent.parent
-    cert_dir = base_dir / "examples/certificates"
-    key = cert_dir / "peer-private-key-example-1.pem"
-    cert = cert_dir / "peer-certificate-example-1.der"
-    return key, cert
+    return PKI.peer1.key, PKI.peer1.certificate
 
 
 @pytest.fixture(scope="session")
 def server_key_and_cert(request):
-    base_dir = Path(__file__).parent.parent
-    cert_dir = base_dir / "examples"
-    key = cert_dir / "private-key-example.pem"
-    cert = cert_dir / "certificate-example.der"
-    return key, cert
+    return PKI.server.key, PKI.server.certificate
 
 
 @pytest.fixture(scope="function")
@@ -393,7 +385,7 @@ async def ha_servers(server_key_and_cert):
     key, cert = server_key_and_cert
 
     async def create_srv(port, key, cert):
-        srv = Server(user_manager=PermissiveUserManager())
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         srvs.append(srv)
         await srv.init()
         await srv.set_application_uri("urn:enginir:opcua:discovery")
@@ -406,6 +398,7 @@ async def ha_servers(server_key_and_cert):
         )
         await srv.load_certificate(cert)
         await srv.load_private_key(key)
+        srv.set_trust_store(PKI.trust_store())
         await srv.start()
         # default the service level to 255 once started
         slevel = srv.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
@@ -574,7 +567,7 @@ def tampered_responses(monkeypatch: pytest.MonkeyPatch) -> ResponseTampering:
 @pytest.fixture
 async def two_sessions() -> AsyncIterator[TwoSessions]:
     port = find_free_port()
-    srv = Server(user_manager=TwoUserManager())
+    srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
@@ -591,13 +584,14 @@ async def two_sessions() -> AsyncIterator[TwoSessions]:
 
 @pytest.fixture
 async def signing_server() -> AsyncIterator[Server]:
-    srv = Server(user_manager=TwoUserManager())
+    srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_Sign])
     srv.set_identity_tokens([ua.UserNameIdentityToken])
-    await srv.load_certificate(EXAMPLES / "certificate-example.der")
-    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    await srv.load_certificate(PKI.server.certificate)
+    await srv.load_private_key(PKI.server.key)
+    srv.set_trust_store(PKI.trust_store())
     await srv.start()
     yield srv
     await srv.stop()

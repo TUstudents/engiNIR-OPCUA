@@ -37,7 +37,7 @@ async def create_variables(node: Node, ns: ua.UInt16) -> list[Node]:
 async def main():
     logging.basicConfig(level=logging.INFO)
     # setup our server
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 
