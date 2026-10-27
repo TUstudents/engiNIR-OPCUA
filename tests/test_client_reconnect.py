@@ -218,3 +218,51 @@ async def test_cli39_stale_watchdog_survives_an_escalation(local_server: Server)
         assert client._stale_watchdog_task is not None and not client._stale_watchdog_task.done()
     finally:
         await client.disconnect()
+
+
+async def test_cli5_messages_fetched_with_republish_are_acknowledged_in_the_next_publish(
+    local_server: Server,
+) -> None:
+    """Part 4, 5.14.1.1: after a restore with gaps, the next Publish request acknowledges what Republish returned."""
+    variable = await local_server.get_objects_node().add_variable(2, "GapVar", 0)
+    await variable.set_writable()
+    client = await reconnecting_client(local_server)
+    try:
+        subscription = await client.create_subscription(50)
+        await subscription.subscribe_data_change(client.get_node(variable.nodeid))
+        await asyncio.sleep(0.3)
+        session = client.uaclient.session
+        republished: list[tuple[int, int]] = []
+        carried: list[tuple[int, int]] = []
+        real_acknowledge = session.acknowledge
+        real_publish = session.publish
+
+        def acknowledge(subscription_id: int, sequence_number: int) -> None:
+            republished.append((subscription_id, sequence_number))
+            real_acknowledge(subscription_id, sequence_number)
+
+        async def publish(acks: list[ua.SubscriptionAcknowledgement], *arguments: Any) -> Any:
+            carried.extend((a.SubscriptionId, a.SequenceNumber) for a in acks)
+            return await real_publish(acks, *arguments)
+
+        session.acknowledge = acknowledge  # type: ignore[method-assign]
+        session.publish = publish  # type: ignore[method-assign]
+        real_connect_socket = client.connect_socket
+        delayed: list[int] = []
+
+        async def slow_connect_socket() -> None:
+            if not delayed:
+                delayed.append(1)
+                for value in range(1, 8):
+                    await variable.write_value(value)
+                    await asyncio.sleep(0.1)
+            await real_connect_socket()
+
+        client.connect_socket = slow_connect_socket  # type: ignore[method-assign]
+        await reconnect_cycle(client)
+        await asyncio.sleep(0.5)
+        gap_acks = [ack for ack in republished if ack[1] > 0]
+        assert gap_acks
+        assert set(gap_acks) <= set(carried)
+    finally:
+        await client.disconnect()
