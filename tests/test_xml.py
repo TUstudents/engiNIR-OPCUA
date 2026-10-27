@@ -9,6 +9,7 @@ from pytz import timezone
 
 from enginir_opcua import Client, Node, Server, ua, uamethod
 from enginir_opcua.common.structures104 import new_enum, new_enum_field, new_struct, new_struct_field
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua import uaerrors
 
 from .conftest import Opc, find_free_port
@@ -73,7 +74,8 @@ async def test_xml_import(opc):
 
 @pytest.fixture(params=["client", "server"])
 async def disposable_opc(request):
-    srv = Server(allow_no_security=True)
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+    srv.allow_plaintext_password = True
     await srv.init()
     port = find_free_port()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")

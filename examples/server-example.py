@@ -7,6 +7,7 @@ from math import sin
 
 from enginir_opcua import Server, ua, uamethod
 from enginir_opcua.common.subscription import DataChangeEvent, OpcEvent
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 _logger = logging.getLogger(__name__)
 
@@ -25,7 +26,8 @@ def multiply(parent, x, y):
 
 
 async def main():
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+    server.allow_plaintext_password = True
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_server_name("engiNIR OPC UA Example Server")

@@ -121,6 +121,7 @@ class Client:
         self.session_timeout = 3600000  # 1 hour
         self.connection_lost_callback: Callable[[Exception], Coroutine[Any, Any, None]] | None = None
         self._policy_ids: list[ua.UserTokenPolicy] = []
+        self._discovered_endpoints: list[ua.EndpointDescription] | None = None
         self.uaclient: UaClient = UaClient(timeout)
         self.uaclient.pre_request_hook = self._wait_until_ready
         self.user_certificate: x509.Certificate | None = None
@@ -303,6 +304,7 @@ class Client:
             self.security_policy = new_policy
             self.uaclient.security_policy = new_policy
             endpoints = await self.connect_and_get_server_endpoints()
+            self._discovered_endpoints = endpoints
             endpoint = Client.find_endpoint(endpoints, mode, policy.URI)
             server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
@@ -530,6 +532,11 @@ class Client:
         if not self._try_load_persisted_session():
             return False
         try:
+            if not self._policy_ids:
+                endpoints = await self.get_endpoints()
+                self._policy_ids = Client.find_endpoint(
+                    endpoints, self.security_policy.Mode, self.security_policy.URI
+                ).UserIdentityTokens
             await self._activate_with_credentials()
         except Exception as exc:
             if isinstance(exc, BadSessionIdInvalid):
@@ -833,6 +840,7 @@ class Client:
             self.security_policy.peer_certificate = server_certificate
         elif self.security_policy.peer_certificate != server_certificate:
             raise ua.UaError("Server certificate mismatch")
+        self._check_discovered_endpoints(response.ServerEndpoints)
         ep = Client.find_endpoint(response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI)
 
         if self.application_hook and server_certificate:
@@ -852,6 +860,28 @@ class Client:
             )
             self.session_timeout = response.RevisedSessionTimeout
         return response
+
+    @staticmethod
+    def _endpoint_summary(endpoints: Iterable[ua.EndpointDescription]) -> set[tuple[Any, ...]]:
+        return {
+            (
+                endpoint.SecurityMode,
+                endpoint.SecurityPolicyUri,
+                uacrypto.split_certificate_chain(endpoint.ServerCertificate)[0] if endpoint.ServerCertificate else b"",
+                frozenset(
+                    (policy.PolicyId or "", policy.TokenType, policy.SecurityPolicyUri or "")
+                    for policy in endpoint.UserIdentityTokens
+                ),
+            )
+            for endpoint in endpoints
+        }
+
+    def _check_discovered_endpoints(self, endpoints: Iterable[ua.EndpointDescription]) -> None:
+        if self._discovered_endpoints is None:
+            return
+        if self._endpoint_summary(self._discovered_endpoints) != self._endpoint_summary(endpoints):
+            _logger.error("The endpoints of CreateSession differ from the endpoints found by discovery")
+            raise BadSecurityChecksFailed
 
     def _start_renew_loop(self) -> None:
         if self._renew_channel_task is not None and not self._renew_channel_task.done():
@@ -1013,8 +1043,7 @@ class Client:
                     BadSecurityChecksFailed,
                     BadSecurityPolicyRejected,
                 ) as exc:
-                    _logger.warning("Reconnect failed with security error %r; refreshing endpoints", exc)
-                    await self._refresh_endpoints_quiet()
+                    _logger.warning("Reconnect failed with security error %r; retrying", exc)
                 except Exception as exc:
                     _logger.warning("Reconnect attempt failed: %r; retrying in %.1fs", exc, delay)
                 else:
@@ -1075,12 +1104,6 @@ class Client:
             return True
         await self._close_session_quiet()
         return False
-
-    async def _refresh_endpoints_quiet(self) -> None:
-        try:
-            await self.connect_and_get_server_endpoints()
-        except Exception:
-            _logger.debug("GetEndpoints refresh during reconnect failed", exc_info=True)
 
     async def _teardown_transport_only(self) -> None:
         """Cancel the channel-renew loop and drop the socket; leave the session intact.

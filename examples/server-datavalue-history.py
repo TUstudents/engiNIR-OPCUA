@@ -6,11 +6,12 @@ import math
 
 from enginir_opcua import Server, ua
 from enginir_opcua.server.history_sql import HistorySQLite
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 async def main():
     # setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
 
     # Configure server to use sqlite as history database (default is a simple memory dict)
     server.iserver.history_manager.set_storage(HistorySQLite("my_datavalue_history.sql"))

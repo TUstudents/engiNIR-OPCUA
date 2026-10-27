@@ -6,11 +6,12 @@ import time
 
 sys.path.insert(0, "..")
 from enginir_opcua import Server, ua
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 async def mymain():
     # setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 

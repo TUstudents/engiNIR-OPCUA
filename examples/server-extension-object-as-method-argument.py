@@ -1,6 +1,7 @@
 import asyncio
 
 from enginir_opcua import Server, ua, uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 async def main():
@@ -20,7 +21,7 @@ async def main():
 
         return ret
 
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_security_policy([ua.SecurityPolicyType.NoSecurity])

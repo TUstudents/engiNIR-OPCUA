@@ -103,6 +103,7 @@ async def populate(server: Server, observations: Observations) -> tuple[int, asy
 async def serve(directory: Path, case: SecurityCase, trusted_clients: Path, port: int) -> AsyncIterator[OurServer]:
     observations = Observations()
     server = Server(user_manager=SampleUsers())
+    server.allow_plaintext_password = case.policy is None
     await server.init()
     host = socket.gethostname()
     await server.set_application_uri(SERVER_APPLICATION_URI)

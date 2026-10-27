@@ -11,6 +11,7 @@ from enginir_opcua.client import client as client_module
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.crypto.uacrypto import CertProperties
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
 from .pki import (
@@ -73,13 +74,14 @@ def chain(tmp_path_factory: pytest.TempPathFactory) -> Chain:
 
 @pytest.fixture()
 async def _server(chain: Chain) -> AsyncIterator[None]:
-    srv = Server(allow_no_security=True)
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await srv.init()
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     srv.set_endpoint(uri_crypto)
     await srv.load_certificate(chain.server_certificate)
     await srv.load_private_key(chain.server_key)
     srv.set_trust_store(TrustStore([chain.trusted], []))
+    srv.set_user_trust_store(TrustStore([chain.trusted], []))
 
     async with srv:
         yield

@@ -15,6 +15,7 @@ except ImportError:
 
 from enginir_opcua import Server
 from enginir_opcua.common.callback import CallbackType
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 def create_monitored_items(event, dispatcher):
@@ -49,7 +50,7 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     # now setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     # await server.disable_clock()
     # server.set_endpoint("opc.tcp://localhost:4840/enginir-opcua/server/")

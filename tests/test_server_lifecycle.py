@@ -10,9 +10,10 @@ import pytest
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.server.internal_session import SessionManager
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
-from .harness import signing_client
+from .harness import give_identity, signing_client, start_discovery_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,12 +24,7 @@ def _renewal_tasks() -> list[asyncio.Task[Any]]:
 
 @pytest.fixture
 async def discovery() -> AsyncIterator[Server]:
-    server = Server(allow_no_security=True)
-    await server.init()
-    await server.set_application_uri("urn:enginir:opcua:lifecycle-discovery")
-    server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
-    server.accept_server_registrations()
-    await server.start()
+    server = await start_discovery_server(find_free_port())
     yield server
     await server.stop()
 
@@ -52,6 +48,7 @@ async def test_srv10_registering_twice_keeps_one_renewal_task_and_stop_cancels_i
     """Part 4, 5.5.5.1: one task renews every registration; stop() ends it."""
     server = Server(allow_no_security=True)
     await server.init()
+    await give_identity(server, "urn:enginir:opcua:server", discovery)
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     await server.register_to_discovery(discovery.endpoint.geturl(), period=1)
@@ -99,6 +96,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
     """Part 4, 5.7.4: after stop() nothing of the server is left running."""
     server = Server(allow_no_security=True)
     await server.init()
+    await give_identity(server, "urn:enginir:opcua:server", discovery)
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     await server.register_to_discovery(discovery.endpoint.geturl(), period=1)
@@ -117,7 +115,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
 
 async def test_srv10_sync_method_callbacks_work_after_a_restart() -> None:
     """Part 4, 5.11.2: a synchronous method callback is still run after the server was stopped and started."""
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     idx = await server.register_namespace("urn:enginir:opcua:restart-method")

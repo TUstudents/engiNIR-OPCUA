@@ -79,6 +79,10 @@ class UaProcessor:
         return ChannelSecurity(policy.peer_certificate, policy.URI, policy.Mode)
 
     @property
+    def peer_address(self) -> str | None:
+        return self.name[0] if self.name else None
+
+    @property
     def max_request_message_size(self) -> int:
         return self._limits.max_message_size
 

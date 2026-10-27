@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from enginir_opcua import ua
 
 from ..common.utils import Buffer, ServiceError
-from ..crypto.permission_rules import UserRole
+from ..crypto.permission_rules import ROLE_RANK, UserRole
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary
 from .internal_session import Session, SessionChannel
 
@@ -29,8 +29,16 @@ class Requires(Enum):
 
 class Permission(Enum):
     Unchecked = 0
-    User = 1
-    Admin = 2
+    Anonymous = 1
+    User = 2
+    Admin = 3
+
+
+MINIMUM_RANK: dict[Permission, int] = {
+    Permission.Anonymous: ROLE_RANK[UserRole.Anonymous],
+    Permission.User: ROLE_RANK[UserRole.User],
+    Permission.Admin: ROLE_RANK[UserRole.Admin],
+}
 
 
 @dataclass(frozen=True)
@@ -63,8 +71,8 @@ class ServiceEntry:
     type_id: ua.NodeId
     decode: Callable[[Buffer], Any]
     handler: ServiceHandler
+    permission: Permission
     requires: Requires = Requires.ActivatedSession
-    permission: Permission = Permission.User
     operations: OperationBound | None = None
 
 
@@ -72,8 +80,9 @@ def entry(
     request_type: str,
     parameters: type | Callable[[Buffer], Any],
     handler: ServiceHandler,
+    *,
+    permission: Permission,
     requires: Requires = Requires.ActivatedSession,
-    permission: Permission = Permission.User,
     operations: OperationBound | None = None,
 ) -> ServiceEntry:
     type_id = ua.NodeId(getattr(ua.ObjectIds, f"{request_type}Request_Encoding_DefaultBinary"))
@@ -85,7 +94,7 @@ def entry(
 
     else:
         decode = parameters
-    return ServiceEntry(request_type, type_id, decode, handler, requires, permission, operations)
+    return ServiceEntry(request_type, type_id, decode, handler, permission, requires, operations)
 
 
 def status_of(error: Exception) -> int:
@@ -116,7 +125,7 @@ class Dispatcher:
             return
         permissions = channel.permissions
         if permissions is None:
-            if service.permission is Permission.Admin and session.user.role != UserRole.Admin:
+            if ROLE_RANK.get(session.user.role, -1) < MINIMUM_RANK[service.permission]:
                 raise ServiceError(ua.StatusCodes.BadUserAccessDenied)
             return
         if permissions.check_validity(session.user, service.type_id, body) is False:

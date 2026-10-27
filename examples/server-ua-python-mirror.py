@@ -4,6 +4,7 @@ sys.path.insert(0, "..")
 import time
 
 from enginir_opcua import Server, ua
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 # INFO: The concept in this example is that the software model is first built in OPC UA via XML. After that, matching
 # python objects are created based on the UA address space design. Do not use this example to build a UA address space
@@ -99,7 +100,7 @@ class MyObj(UaObject):
 
 if __name__ == "__main__":
     # setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 
     # set up our own namespace, not really necessary but should as spec

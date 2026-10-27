@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from enginir_opcua import ua
 from enginir_opcua.crypto import uacrypto
 from enginir_opcua.crypto.permission_rules import User, UserRole
 
@@ -11,7 +12,19 @@ if TYPE_CHECKING:
     from .internal_server import InternalServer
 
 
+ALL_TOKEN_TYPES: frozenset[ua.UserTokenType] = frozenset(
+    {ua.UserTokenType.Anonymous, ua.UserTokenType.UserName, ua.UserTokenType.Certificate}
+)
+
+
 class UserManager:
+    """
+    Decides who the user of a Session is. `accepted_token_types` lists the kinds of UserIdentityToken the server
+    offers on its endpoints; a token of any other kind is rejected before `get_user` is asked.
+    """
+
+    accepted_token_types: frozenset[ua.UserTokenType] = ALL_TOKEN_TYPES
+
     def get_user(
         self,
         iserver: "InternalServer",
@@ -22,7 +35,13 @@ class UserManager:
         raise NotImplementedError
 
 
-class PermissiveUserManager:
+class AnonymousReadOnlyUserManager(UserManager):
+    """
+    The default user manager: accepts Anonymous tokens as the read-only role and nothing else.
+    """
+
+    accepted_token_types = frozenset({ua.UserTokenType.Anonymous})
+
     def get_user(
         self,
         iserver: "InternalServer",
@@ -30,21 +49,41 @@ class PermissiveUserManager:
         password: str | None = None,
         certificate: Any = None,
     ) -> User | None:
-        """
-        Default user_manager, does nothing much but check for admin
-        """
-        if username and iserver.allow_remote_admin and username in ("admin", "Admin"):
+        return User(role=UserRole.Anonymous)
+
+
+class PermissiveUserManager(UserManager):
+    """
+    INSECURE, for tests and demos only: any user name with any password is accepted, `admin` and `Admin` as
+    Admin and every other login, Anonymous included, as User. It is never the default; pass it to the server
+    explicitly.
+    """
+
+    def get_user(
+        self,
+        iserver: "InternalServer",
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        if username in ("admin", "Admin"):
             return User(role=UserRole.Admin)
         return User(role=UserRole.User)
 
 
-class CertificateUserManager:
+class CertificateUserManager(UserManager):
     """
     Certificate user manager, takes a certificate handler with its associated users and provides those users.
+    A user is found by the certificate of an X509 token, or by the certificate of the SecureChannel for an
+    Anonymous token. A login without a registered certificate is refused unless `allow_anonymous` is set, which
+    gives it the read-only role.
     """
 
-    def __init__(self) -> None:
+    accepted_token_types = frozenset({ua.UserTokenType.Anonymous, ua.UserTokenType.Certificate})
+
+    def __init__(self, allow_anonymous: bool = False) -> None:
         self._trusted_certificates: dict[str, dict[str, Any]] = {}
+        self.allow_anonymous = allow_anonymous
 
     async def add_role(
         self,
@@ -73,16 +112,19 @@ class CertificateUserManager:
         password: str | None = None,
         certificate: Any = None,
     ) -> User | None:
-        if certificate is None:
-            return None
         correct_users = [
             prospective_certificate["user"]
             for prospective_certificate in self._trusted_certificates.values()
-            if certificate == prospective_certificate["certificate"]
+            if certificate is not None and certificate == prospective_certificate["certificate"]
         ]
-        if len(correct_users) == 0:
-            return None
-        return correct_users[0]
+        if correct_users:
+            return correct_users[0]
+        if self.allow_anonymous and username is None:
+            return User(role=UserRole.Anonymous)
+        return None
+
+    def pinned_certificates(self) -> list[Any]:
+        return [uacrypto.x509_from_der(entry["certificate"]) for entry in self._trusted_certificates.values()]
 
     async def add_user(self, certificate_path: Path, name: str, format: str | None = None) -> None:
         await self.add_role(certificate_path=certificate_path, user_role=UserRole.User, name=name, format=format)

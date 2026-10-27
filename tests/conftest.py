@@ -19,8 +19,18 @@ from enginir_opcua.client.ua_client import UASocketState
 from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
-from .harness import PKI, TWO_SESSION_USERS, RawPeer, RawServer, ResponseTampering, TwoSessions, TwoUserManager
+from .harness import (
+    PKI,
+    TWO_SESSION_USERS,
+    RawPeer,
+    RawServer,
+    ResponseTampering,
+    TwoSessions,
+    TwoUserManager,
+    start_discovery_server,
+)
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -146,7 +156,8 @@ class ServerProcess(Process):
         self.stop_ev = Event()
 
     async def run_server(self, url):
-        srv = Server(allow_no_security=True)
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+        srv.allow_plaintext_password = True
         srv.set_endpoint(url)
         await srv.init()
         await add_server_methods(srv)
@@ -191,7 +202,8 @@ async def running_server(request):
 @pytest.fixture(scope="module")
 async def server():
     # start our own server
-    srv = Server(allow_no_security=True)
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+    srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
     await add_server_methods(srv)
@@ -204,15 +216,8 @@ async def server():
 
 @pytest.fixture(scope="module")
 async def discovery_server():
-    # start our own server
-    srv = Server(allow_no_security=True)
-    await srv.init()
-    await srv.set_application_uri("urn:enginir:opcua:discovery")
-    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_discovery}")
-    srv.accept_server_registrations()
-    await srv.start()
+    srv = await start_discovery_server(port_discovery)
     yield srv
-    # stop the server
     await srv.stop()
 
 
@@ -243,7 +248,8 @@ async def opc(request):
     :return:
     """
     if request.param == "client":
-        srv = Server(allow_no_security=True)
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+        srv.allow_plaintext_password = True
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
         await add_server_methods(srv)
@@ -379,7 +385,7 @@ async def ha_servers(server_key_and_cert):
     key, cert = server_key_and_cert
 
     async def create_srv(port, key, cert):
-        srv = Server(allow_no_security=True)
+        srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         srvs.append(srv)
         await srv.init()
         await srv.set_application_uri("urn:enginir:opcua:discovery")
@@ -562,6 +568,7 @@ def tampered_responses(monkeypatch: pytest.MonkeyPatch) -> ResponseTampering:
 async def two_sessions() -> AsyncIterator[TwoSessions]:
     port = find_free_port()
     srv = Server(allow_no_security=True, user_manager=TwoUserManager())
+    srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
