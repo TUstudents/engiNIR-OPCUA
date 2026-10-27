@@ -18,6 +18,12 @@ Tests that reproduce a review finding carry its ID in the name, for example `tes
 | `signing_server` | A server with only Basic256Sha256 Sign and the users of `two_sessions`; connect with `signing_client(server, "alice")` |
 | `two_sessions` | Ownership and isolation checks: a fresh server with users `alice` and `bob`, each connected with their own client |
 
+## Certificates in tests
+
+Tests that connect with security generate their certificates: `tests/pki.py` builds them (`make_identity`, `make_ca`, `make_crl`, `sha1_signed`) and `generated_pki()` returns a set of server and client certificates, written once per run to a temporary directory. The committed certificates under `examples/` are expired and have no key usage, so no test connects with them. Never commit a key for a test.
+
+The library trusts nothing by default, so a test trusts explicitly: `server.set_trust_store(PKI.trust_store())` for the client certificates of the server, and either `client.set_trust_store(PKI.trust_store())` or a server certificate passed to `set_security` (which pins it) for the client. A server that offers the None policy asks for it with `Server(allow_no_security=True)`; one that offers Basic128Rsa15 or Basic256 with `Server(allow_deprecated_policies=True)`. Never weaken the validator to make a test pass: name the step in `suppress` when a test needs it.
+
 `SessionProbe` (in `harness.py`, no fixture) is a client with an open None-policy channel on which a test creates several sessions and sends requests under any session's token: `probe = await SessionProbe.open(url)`, `create_session()`, `activate(token)`, `read_server_state(token)`, `send(token, request, response_type)`, `send_edited(token, request, response_type, edit)` for malformed bodies, `close_session(token)`. Use it for session binding, limits, channel moves and Publish queue tests; open a second probe for a second channel.
 
 ## Spec byte vectors
@@ -45,7 +51,7 @@ Today the encoder writes `04 02000000`, which is the bug.
 | `test_client_vs_reference.py` | GetEndpoints, FindServers, connect, browse, read, write, a 20,000 element array (many chunks), method call, data change and event subscriptions, channel token renewal, reconnect, TransferSubscriptions with Republish, HistoryRead (skips: the reference server has no history), `load_data_type_definitions` | None; Basic256Sha256 Sign and SignAndEncrypt; Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss SignAndEncrypt; each with Anonymous, UserName (`user1`) and X509 user token (None only with Anonymous) |
 | `test_reference_client_vs_server.py` | The console client connects and browses (`--browseall`), then reads, writes, calls a method and subscribes against nodes our server publishes under the reference server's node ids | The same policies; Anonymous and UserName |
 
-The client picks the most secure endpoint, so the tests start our server with one policy at a time. The client accepts our server's certificate (`--autoaccept`, the only choice its command line offers); our server only accepts the client's certificate after the test copied it into an explicit trust directory, and a test checks that an untrusted certificate is refused.
+The client picks the most secure endpoint, so the tests start our server with one policy at a time. The reference client accepts our server's certificate (`--autoaccept`, the only choice its command line offers). Our client trusts the reference server's own certificate by copying it into an explicit trust store, and suppresses the host name step, because that certificate carries the machine's host name and the tests connect to `localhost`. Our server only accepts the client's certificate after the test copied it into an explicit trust directory, and a test checks that an untrusted certificate is refused.
 
 To run them locally you need the .NET 8 SDK (Microsoft's `dotnet-install.sh` can install it into any directory with `--install-dir`):
 

@@ -1,3 +1,12 @@
+"""
+A server with encryption that creates its own certificate and only accepts clients it trusts.
+
+The server certificate and private key are generated in examples/certificates/generated on the first run.
+A client certificate is only accepted when it is in examples/certificates/generated/trusted-clients, so run
+client-with-encryption.py once to create the client certificate and copy
+examples/certificates/generated/client-certificate-example.der into that directory before starting the server.
+"""
+
 import asyncio
 import logging
 import socket
@@ -16,15 +25,19 @@ logging.basicConfig(level=logging.INFO)
 
 
 async def main():
-    cert_base = Path(__file__).parent
-    server_cert = Path(cert_base / "certificates/server-certificate-example.der")
-    server_private_key = Path(cert_base / "certificates/server-private-key-example.pem")
+    generated = Path(__file__).parent / "certificates" / "generated"
+    server_cert = generated / "server-certificate-example.der"
+    server_private_key = generated / "server-private-key-example.pem"
+    client_cert = generated / "client-certificate-example.der"
+    trusted_clients = generated / "trusted-clients"
+    trusted_clients.mkdir(parents=True, exist_ok=True)
 
     host_name = socket.gethostname()
     server_app_uri = f"myselfsignedserver@{host_name}"
 
     cert_user_manager = CertificateUserManager()
-    await cert_user_manager.add_user("certificates/peer-certificate-example-1.der", name="test_user")
+    if client_cert.exists():
+        await cert_user_manager.add_user(client_cert, name="test_user")
 
     server = Server(user_manager=cert_user_manager)
 
@@ -34,8 +47,6 @@ async def main():
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     server.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
 
-    # Below is only required if the server should generate its own certificate,
-    # It will renew also when the valid datetime range is out of range (on startup, no on runtime)
     await setup_self_signed_certificate(
         server_private_key,
         server_cert,
@@ -50,22 +61,15 @@ async def main():
         },
     )
 
-    # load server certificate and private key. This enables endpoints
-    # with signing and encryption.
-    await server.load_certificate(str(server_cert))
-    await server.load_private_key(str(server_private_key))
-
-    trust_store = TrustStore([Path("examples") / "certificates" / "trusted" / "certs"], [])
-    server.set_trust_store(trust_store)
+    await server.load_certificate(server_cert)
+    await server.load_private_key(server_private_key)
+    server.set_trust_store(TrustStore([trusted_clients], []))
 
     idx = 0
 
-    # populating our address space
     myobj = await server.nodes.objects.add_object(idx, "MyObject")
     myvar = await myobj.add_variable(idx, "MyVariable", 0.0)
-    await myvar.set_writable()  # Set MyVariable to be writable by clients
-
-    # starting!
+    await myvar.set_writable()
 
     async with server:
         while True:

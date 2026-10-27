@@ -58,3 +58,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# certificates and keys the examples generate
+/examples/certificates/generated/

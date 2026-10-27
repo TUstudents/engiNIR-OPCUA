@@ -1,15 +1,27 @@
+"""
+A client that sends its certificate chain, and trusts the root of the server certificate explicitly.
+
+The sample chain in examples/certificates/chain has no key usage extensions, so the validator is told to
+suppress that one step; everything else is checked. A server that validates the client needs the root in its
+trust store as well.
+"""
+
 import asyncio
+import shutil
+import tempfile
 from enum import Enum
 from pathlib import Path
 
 from enginir_opcua import Client, ua
 from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.crypto.uacrypto import CertProperties
+from enginir_opcua.crypto.validator import CertificateValidator, Suppression
 
 url = "opc.tcp://localhost:4840/enginir-opcua/server/"
 namespace = "http://examples.freeopcua.github.io"
 
-CERT_BASE = Path(__file__).parent / "examples" / "certificates" / "chain"
+CERT_BASE = Path(__file__).parent / "certificates" / "chain"
 
 
 class CertChain(Enum):
@@ -25,6 +37,12 @@ async def main():
     print(f"Connecting to {url} ...")
     client = Client(url=url)
     client.application_uri = "urn:example.org:FreeOpcUa:python-opcua-client"
+
+    trusted = Path(tempfile.mkdtemp())
+    shutil.copy(CERT_BASE / "root.cert.der", trusted)
+    trust_store = TrustStore([trusted], [])
+    await trust_store.load()
+    client.certificate_validator = CertificateValidator(trust_store, suppress=[Suppression.USAGE])
 
     # Set communication certificates including chain
     await client.set_security(
