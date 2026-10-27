@@ -3,8 +3,9 @@ import logging
 
 import pytest
 
-from enginir_opcua import ua
-from enginir_opcua.client.ua_client import UaClient, UASocketProtocol
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.client import client as client_module
+from enginir_opcua.client.ua_client import UaClient, UaClientState, UASocketProtocol
 from enginir_opcua.common.connection import SecureChannel
 from enginir_opcua.ua.ua_binary import struct_to_binary
 
@@ -95,3 +96,67 @@ async def test_cli1_response_for_an_id_never_issued_closes_the_channel(raw_serve
     await send_read_response(peer, channel, 4711)
     assert await peer.is_closed_by_peer()
     assert protocol.is_closed
+
+
+async def test_cli38_timed_out_renewal_does_not_block_the_next_one(raw_server: RawServer) -> None:
+    """Part 6, 6.7.4: a renewal that timed out leaves the channel able to send the next renewal."""
+    uaclient, peer, _channel = await handshaken(raw_server)
+    renew = ua.OpenSecureChannelParameters(
+        RequestType=ua.SecurityTokenRequestType.Renew,
+        SecurityMode=ua.MessageSecurityMode.None_,
+        RequestedLifetime=3_600_000,
+    )
+    for _ in range(2):
+        with pytest.raises(TimeoutError):
+            await uaclient.open_secure_channel(renew)
+        await peer.receive()
+
+
+async def test_cli38_renewal_retries_while_the_token_is_valid(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 6, 6.7.4: a failed renewal is tried again while the security token is still valid."""
+    monkeypatch.setattr(client_module, "RENEW_RETRY_DELAY", 0.05)
+    client = Client(server.endpoint.geturl())
+    await client.connect()
+    client.secure_channel_timeout = 2000
+    try:
+        real_renewal = client.open_secure_channel
+        attempts: list[bool] = []
+
+        async def renewal(renew: bool = False) -> None:
+            attempts.append(renew)
+            if len(attempts) == 1:
+                raise TimeoutError
+            await real_renewal(renew=renew)
+
+        monkeypatch.setattr(client, "open_secure_channel", renewal)
+        await Client._cancel_task(client._renew_channel_task)
+        client._renew_channel_task = None
+        client._start_renew_loop()
+        await asyncio.sleep(2.0)
+        assert len(attempts) >= 2
+        assert client._renew_channel_task is not None and not client._renew_channel_task.done()
+    finally:
+        await client.disconnect()
+
+
+async def test_cli38_renewal_failing_past_the_token_lifetime_is_a_loss(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 6, 6.7.4: when no renewal succeeded before the token expired, the channel is lost."""
+    monkeypatch.setattr(client_module, "RENEW_RETRY_DELAY", 0.05)
+    client = Client(server.endpoint.geturl())
+    await client.connect()
+    client.secure_channel_timeout = 2000
+    try:
+
+        async def renewal(renew: bool = False) -> None:
+            raise TimeoutError
+
+        monkeypatch.setattr(client, "open_secure_channel", renewal)
+        await Client._cancel_task(client._renew_channel_task)
+        client._renew_channel_task = None
+        async with client.subscribe_state() as states:
+            client._start_renew_loop()
+            await states.wait_for_state(UaClientState.DISCONNECTED, timeout=5)
+    finally:
+        await client.disconnect()

@@ -151,8 +151,10 @@ class UASocketProtocol(asyncio.Protocol):
 
     def _process_frame(self, header: ua.Header, body: Buffer) -> None:
         msg = self._channel.receive_from_header_and_body(header, body)
-        if header.MessageType == ua.MessageType.SecureOpen:
-            params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+        if header.MessageType == ua.MessageType.SecureOpen and isinstance(
+            self._open_secure_channel_exchange, ua.OpenSecureChannelParameters
+        ):
+            params = self._open_secure_channel_exchange
             self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
             response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
             response.ResponseHeader.ServiceResult.check()
@@ -364,12 +366,14 @@ class UASocketProtocol(asyncio.Protocol):
                 "The response must be processed and returned before the next request can be sent."
             )
         self._open_secure_channel_exchange = params
-        await wait_for(self._send_request(request, message_type=ua.MessageType.SecureOpen), self.timeout)
-        assert isinstance(self._open_secure_channel_exchange, ua.OpenSecureChannelResponse)
-
-        _return = self._open_secure_channel_exchange.Parameters
-        self._open_secure_channel_exchange = None
-        return _return
+        try:
+            pending = self._send_request(request, message_type=ua.MessageType.SecureOpen)
+            await self._wait_for_response(pending, self._request_id, self.timeout)
+            exchange = self._open_secure_channel_exchange
+            assert isinstance(exchange, ua.OpenSecureChannelResponse)
+            return exchange.Parameters
+        finally:
+            self._open_secure_channel_exchange = None
 
     async def close_secure_channel(self) -> None:
         """

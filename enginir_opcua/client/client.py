@@ -46,6 +46,8 @@ _logger = logging.getLogger(__name__)
 
 SESSION_NONCE_MIN_LENGTH = 32
 SESSION_NONCE_MAX_LENGTH = 128
+RENEW_RETRY_DELAY = 1.0
+RENEW_RETRY_MAX_DELAY = 10.0
 
 _T = TypeVar("_T")
 
@@ -1181,16 +1183,28 @@ class Client:
         In theory, we could do that only if no session activity,
         but it does not cost much.
         """
+        last_renewal = time.monotonic()
+        delay = 0.0
         try:
             while not self.uaclient.is_disconnect_requested:
-                await asyncio.sleep(max(1.0, self.secure_channel_timeout * 0.75 / 1000))
+                await asyncio.sleep(delay or max(1.0, self.secure_channel_timeout * 0.75 / 1000))
                 _logger.debug("renewing channel")
-                await self.open_secure_channel(renew=True)
-        except ConnectionError as e:
-            _logger.info("connection error  in watchdog loop %s", e, exc_info=True)
-            raise
-        except Exception:
-            _logger.exception("Error while renewing session")
+                try:
+                    await self.open_secure_channel(renew=True)
+                except ConnectionError as e:
+                    _logger.info("connection error in the channel renewal loop: %s", e)
+                    return
+                except Exception as e:
+                    if time.monotonic() - last_renewal >= self.secure_channel_timeout / 1000:
+                        _logger.error("The security token expired without a successful renewal: %r", e)
+                        self.uaclient.notify_transport_lost()
+                        return
+                    delay = min(delay * 2, RENEW_RETRY_MAX_DELAY) if delay else RENEW_RETRY_DELAY
+                    _logger.warning("Renewing the secure channel failed (%r); trying again in %.2fs", e, delay)
+                else:
+                    last_renewal = time.monotonic()
+                    delay = 0.0
+        except asyncio.CancelledError:
             raise
 
     def server_policy(self, token_type: ua.UserTokenType) -> ua.UserTokenPolicy:
