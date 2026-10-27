@@ -934,6 +934,7 @@ def test_where_clause():
     cf = ua.ContentFilter()
     el = ua.ContentFilterElement()
     op = ua.SimpleAttributeOperand()
+    op.AttributeId = ua.AttributeIds.Value
     op.BrowsePath.append(ua.QualifiedName("property", 2))
     el.FilterOperands.append(op)
     for i in range(10):

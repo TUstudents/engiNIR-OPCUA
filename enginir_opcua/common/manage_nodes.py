@@ -407,8 +407,8 @@ async def create_data_type(
     else:
         attrs.Description = ua.LocalizedText(description)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
-    attrs.WriteMask = 0
-    attrs.UserWriteMask = 0
+    attrs.WriteMask = 1 << ua.WriteMask.DataTypeDefinition
+    attrs.UserWriteMask = 1 << ua.WriteMask.DataTypeDefinition
     attrs.IsAbstract = False  # True mean they cannot be instantiated
     addnode.NodeAttributes = attrs
     results = await parent.session.add_nodes([addnode])
@@ -521,8 +521,10 @@ def _vtype_to_argument(vtype: Any) -> ua.Argument:
     if isinstance(vtype, ua.Argument):
         return vtype
     arg = ua.Argument()
+    arg.ValueRank = ua.ValueRank.Scalar
     if isinstance(vtype, list | tuple) and len(vtype) > 0:
         vtype = vtype[0]
+        arg.ValueRank = ua.ValueRank.OneDimension
     if hasattr(vtype, "data_type"):
         arg.DataType = vtype.data_type
     elif inspect.isclass(vtype) and issubclass(vtype, Enum):

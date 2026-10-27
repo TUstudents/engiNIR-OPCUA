@@ -9,7 +9,7 @@ import pytest
 from enginir_opcua.tools import uacall, uaclient, uadiscover, uahistoryread, uals, uaread, uawrite
 
 ROOT_NODE = "i=85"
-RW_NODE = "i=3078"
+RW_NODE = "ns=2;s=ToolsReadWrite"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
@@ -22,7 +22,7 @@ def test_cli_tools(running_server):
     write_val = ["val_to_write"]
     rw_opts = default_opts + rw_node
     write_opts = rw_opts + write_val
-    call_opts = default_opts + call_node + write_val
+    call_opts = default_opts + call_node + ["1.5"]
 
     tool_opts = {}
     tool_opts[uaread] = rw_opts

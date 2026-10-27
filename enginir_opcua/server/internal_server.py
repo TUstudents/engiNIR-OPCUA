@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from copy import copy
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
@@ -109,7 +109,15 @@ class InternalServer:
         self.max_session_timeout_ms: float = 600_000
         self.min_session_timeout_ms: float = 5_000
         self.max_unacked_messages_per_subscription: int = 5_000
-        self.max_monitored_item_queue_size: int = 10_000
+        self.max_monitored_item_queue_size: int = 1_000
+        self.default_event_queue_size: int = 100
+        self.min_sampling_interval_ms: float = 10.0
+        self.history_sampling_interval_ms: float = 0.0
+        self.max_history_data_response_size: int = 10_000
+        self.max_history_continuation_points: int = 10
+        self.max_sampling_interval_ms: float = 3_600_000.0
+        self.max_monitored_items_per_subscription: int = 10_000
+        self.max_monitored_items: int = 100_000
         # Per-connection inbound message queue depth. data_received() refuses
         # further frames and closes the transport once this many parsed
         # messages are queued behind the processor coroutine.
@@ -139,12 +147,15 @@ class InternalServer:
         # CreateSubscription returns BadTooManySubscriptions.
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
+        self.max_browse_continuation_points: int = 10
+        self.max_browse_references_per_node: int = 10_000
+        self.max_translate_matches: int = 1_000
         self.certificate: Any = None
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
         self.attribute_service = AttributeService(self.aspace)
-        self.view_service = ViewService(self.aspace)
+        self.view_service = ViewService(self.aspace, self)
         self.method_service = MethodService(self.aspace)
         self.node_mgt_service = NodeManagementService(self.aspace)
         self.asyncio_transports: list[Any] = []
@@ -205,6 +216,8 @@ class InternalServer:
         uries = ["http://opcfoundation.org/UA/"]
         ns_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
         await ns_node.write_value(uries)
+        server_array_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_ServerArray))
+        await server_array_node.write_value(ua.Variant([], ua.VariantType.String))
 
         params = ua.WriteParameters()
         for limit in fields(self.operation_limits):
@@ -218,8 +231,29 @@ class InternalServer:
                 SourceTimestamp=datetime.now(UTC),
             )
             params.NodesToWrite.append(attr)
+        capabilities = {
+            ua.ObjectIds.Server_ServerCapabilities_MaxHistoryContinuationPoints: ua.Variant(
+                self.max_history_continuation_points, ua.VariantType.UInt16
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MinSupportedSampleRate: ua.Variant(
+                self.min_sampling_interval_ms, ua.VariantType.Double
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MaxBrowseContinuationPoints: ua.Variant(
+                self.max_browse_continuation_points, ua.VariantType.UInt16
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MaxMonitoredItemsQueueSize: ua.Variant(
+                self.max_monitored_item_queue_size, ua.VariantType.UInt32
+            ),
+        }
+        for nodeid, variant in capabilities.items():
+            capability = ua.WriteValue()
+            capability.NodeId = ua.NodeId(nodeid)
+            capability.AttributeId = ua.AttributeIds.Value
+            capability.Value = ua.DataValue(variant)
+            params.NodesToWrite.append(capability)
         result = await self.isession.write(params)
-        result[0].check()
+        for status in result:
+            status.check()
 
     async def load_standard_address_space(self, shelf_file: Path | None = None) -> None:
         if shelf_file:
@@ -420,18 +454,12 @@ class InternalServer:
         """
         Set attribute Historizing of node to True and start storing data for history
         """
-        await node.write_attribute(ua.AttributeIds.Historizing, ua.DataValue(True))
-        await node.set_attr_bit(ua.AttributeIds.AccessLevel, ua.AccessLevel.HistoryRead)
-        await node.set_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.HistoryRead)
         await self.history_manager.historize_data_change(node, period, count)
 
     async def disable_history_data_change(self, node: Node) -> None:
         """
         Set attribute Historizing of node to False and stop storing data for history
         """
-        await node.write_attribute(ua.AttributeIds.Historizing, ua.DataValue(False))
-        await node.unset_attr_bit(ua.AttributeIds.AccessLevel, ua.AccessLevel.HistoryRead)
-        await node.unset_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.HistoryRead)
         await self.history_manager.dehistorize(node)
 
     async def enable_history_event(
@@ -440,19 +468,12 @@ class InternalServer:
         """
         Set attribute History Read of object events to True and start storing data for history
         """
-        event_notifier = await source.read_event_notifier()
-        if ua.EventNotifier.SubscribeToEvents not in event_notifier:
-            raise ua.UaError("Node does not generate events", event_notifier)
-        if ua.EventNotifier.HistoryRead not in event_notifier:
-            event_notifier.add(ua.EventNotifier.HistoryRead)
-            await source.set_event_notifier(event_notifier)
         await self.history_manager.historize_event(source, period, count)
 
     async def disable_history_event(self, source: Node) -> None:
         """
         Set attribute History Read of node to False and stop storing data for history
         """
-        await source.unset_attr_bit(ua.AttributeIds.EventNotifier, ua.EventNotifier.HistoryRead)
         await self.history_manager.dehistorize(source)
 
     def subscribe_server_callback(self, event: str, handle: Callable[..., Any]) -> None:
@@ -471,10 +492,11 @@ class InternalServer:
         self, nodeid: ua.NodeId, datavalue: ua.DataValue, attr: ua.AttributeIds = ua.AttributeIds.Value
     ) -> None:
         """
-        directly write datavalue to the Attribute, bypassing some checks and structure creation,
-        so it is a little faster
+        directly write datavalue to the Attribute as the application itself: the access bits are not checked, the
+        type, shape and range are. Raises the error of a bad result
         """
-        await self.aspace.write_attribute_value(nodeid, attr, datavalue)
+        status = await self.aspace.write_attribute_value(nodeid, attr, datavalue)
+        status.check()
 
     def set_attribute_value_callback(
         self,
@@ -491,14 +513,14 @@ class InternalServer:
     def set_attribute_value_setter(
         self,
         nodeid: ua.NodeId,
-        setter: Callable[[NodeData, ua.AttributeIds, ua.DataValue], None],
+        setter: Callable[[NodeData, ua.AttributeIds, ua.DataValue], ua.StatusCode | Awaitable[Any] | None],
         attr: ua.AttributeIds = ua.AttributeIds.Value,
     ) -> None:
         """
-        Set a setter function for the Attribute. This setter will be called when a new value is set using
-        write_attribute_value() instead of directly writing the value. This is useful, for example, if you want to
-        intercept writes to certain attributes to perform some kind of validation of the value to be written and return
-        appropriate status codes to the client.
+        Set a setter function for the Attribute. This setter will be called when a new value is written, instead of
+        storing it, and has to store the value itself. Its returned StatusCode is the result of the write (nothing
+        returned is Good); a bad result, or a raised status-coded error, means nothing was written and the data change
+        callbacks are not called.
         """
         self.aspace.set_attribute_value_setter(nodeid, attr, setter)
 

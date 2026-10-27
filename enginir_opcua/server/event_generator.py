@@ -65,7 +65,7 @@ class EventGenerator:
         if not self.event.SourceName:
             self.event.SourceName = (await Node(self.isession, self.event.SourceNode).read_browse_name()).Name
 
-        await emitting_node.set_event_notifier([ua.EventNotifier.SubscribeToEvents])
+        await self._set_subscribe_to_events(emitting_node)
 
         if add_generates_event:
             refs = []
@@ -79,6 +79,16 @@ class EventGenerator:
             results = await self.isession.add_references(refs)
             for result in results:
                 result.check()
+
+    async def _set_subscribe_to_events(self, emitting_node: Node) -> None:
+        try:
+            bits = await emitting_node.read_event_notifier()
+        except ua.UaStatusCodeError as error:
+            if error.code == ua.StatusCodes.BadAttributeIdInvalid:
+                return
+            raise
+        if ua.EventNotifier.SubscribeToEvents not in bits:
+            await emitting_node.set_event_notifier([*bits, ua.EventNotifier.SubscribeToEvents])
 
     def __str__(self) -> str:
         return (
@@ -107,13 +117,13 @@ class EventGenerator:
         self.event.LocalTime = ua.uaprotocol_auto.TimeZoneDataType()
         localtime = time.localtime(self.event.Time.timestamp())
         self.event.LocalTime.Offset = localtime.tm_gmtoff // 60
-        self.event.LocalTime.DaylightSavingInOffset = bool(localtime.tm_isdst != -1)
+        self.event.LocalTime.DaylightSavingInOffset = bool(localtime.tm_isdst > 0)
 
         if message:
             self.event.Message = ua.LocalizedText(message)
-        elif not self.event.Message:
+        elif not self.event.Message or not getattr(self.event.Message, "Text", True):
             self.event.Message = ua.LocalizedText(
                 (await Node(self.isession, self.event.SourceNode).read_browse_name()).Name
-            ).Text
+            )
 
         await self.isession.subscription_service.trigger_event(self.event, subscription_id=subscription_id)

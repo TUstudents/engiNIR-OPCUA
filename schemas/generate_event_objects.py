@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import IO, Any
 
 import enginir_opcua.ua.object_ids as ob_ids
+from enginir_opcua import ua
 import generate_model_event as gme
 import nodeset_source
 
@@ -19,6 +20,32 @@ class EventsCodeGenerator:
         self.event_model = event_model
         self.indent = "    "
         self.iidx = 0  # indent index
+        self.data_type_parents = self.load_data_type_parents(input_path) if input_path is not None else {}
+
+    @staticmethod
+    def load_data_type_parents(input_path: Path | str) -> dict[str, str]:
+        parents: dict[str, str] = {}
+        for _, element in ET.iterparse(input_path):
+            if not element.tag.endswith("UADataType"):
+                continue
+            for ref in element.iter():
+                if ref.tag.endswith("Reference") and ref.attrib.get("ReferenceType") in ("HasSubtype", "i=45"):
+                    if ref.attrib.get("IsForward") == "false" and ref.text:
+                        parents[element.attrib["NodeId"]] = ref.text.strip()
+        return parents
+
+    def variant_type_of_data_type(self, data_type: str) -> str:
+        current = data_type
+        while current:
+            number = int(current.split("=")[1]) if current.startswith("i=") else None
+            if number is not None and 1 <= number <= 25:
+                return ua.VariantType(number).name
+            if number == ob_ids.ObjectIds.Enumeration:
+                return "Int32"
+            if number == ob_ids.ObjectIds.Structure:
+                return "ExtensionObject"
+            current = self.data_type_parents.get(current, "")
+        raise RuntimeError(f"DataType {data_type} has no built-in super type")
 
     def event_list(self) -> None:
         tree = ET.parse(self.event_model)
@@ -94,16 +121,13 @@ from .events import Event
         else:
             return "None"
 
-    @staticmethod
-    def get_data_type(reference: Any) -> str:
+    def get_data_type(self, reference: Any) -> str:
         if str(reference.refBrowseName) in ("Time", "ReceiveTime"):
             return "ua.VariantType.DateTime"
         elif str(reference.refBrowseName) == "LocalTime":
             return "ua.VariantType.ExtensionObject"
         elif str(reference.refDataType).startswith("i="):
-            return "ua.NodeId(ua.ObjectIds.{0})".format(
-                str(ob_ids.ObjectIdNames[int(str(reference.refDataType).split("=")[1])]).split("_")[0]
-            )
+            return "ua.VariantType.{0}".format(self.variant_type_of_data_type(str(reference.refDataType)))
         else:
             return "ua.VariantType.{0}".format(reference.refDataType)
 

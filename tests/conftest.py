@@ -160,9 +160,15 @@ class ServerProcess(Process):
         srv.allow_plaintext_password = True
         srv.set_endpoint(url)
         await srv.init()
+        namespace = await srv.register_namespace("http://test.example/tools")
         await add_server_methods(srv)
         await add_server_custom_enum_struct(srv)
+        tools_node = await srv.nodes.objects.add_variable(
+            ua.NodeId("ToolsReadWrite", namespace), f"{namespace}:ToolsReadWrite", "", ua.VariantType.String
+        )
+        await tools_node.set_writable()
         async with srv:
+            await srv.historize_node_data_change(tools_node, period=None)
             with self.cond:
                 self.cond.notify_all()
             while not self.stop_ev.is_set():
@@ -240,6 +246,22 @@ async def client():
     await ro_clt.disconnect()
 
 
+def declare_new_variables_writable(client: Client) -> None:
+    """The variables a test client adds are declared writable, because the server refuses writes to read-only ones."""
+    session = client.uaclient.session
+    add_nodes = session.add_nodes
+    writable = ua.AccessLevel.CurrentRead.mask | ua.AccessLevel.CurrentWrite.mask
+
+    async def add_writable_variables(items: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
+        for item in items:
+            if item.NodeClass == ua.NodeClass.Variable:
+                item.NodeAttributes.AccessLevel = writable
+                item.NodeAttributes.UserAccessLevel = writable
+        return await add_nodes(items)
+
+    session.add_nodes = add_writable_variables  # type: ignore[method-assign]
+
+
 @pytest.fixture(scope="module")
 async def opc(request):
     """
@@ -253,11 +275,13 @@ async def opc(request):
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
         await add_server_methods(srv)
+        await srv.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
         await srv.start()
         # start client
         # long timeout since travis (automated testing) can be really slow
         clt = Client(f"opc.tcp://admin@127.0.0.1:{port_num}", timeout=10)
         await clt.connect()
+        declare_new_variables_writable(clt)
         yield Opc(clt, srv)
         await clt.disconnect()
         await srv.stop()
@@ -312,10 +336,10 @@ async def create_srv_events(history_server: HistoryServer):
 
 async def create_var(history_server: HistoryServer):
     o = history_server.srv.nodes.objects
-    history_server.values = [i for i in range(20)]
+    history_server.values = [i for i in range(21)]
     history_server.var = await o.add_variable(3, "history_var", 0)
     await history_server.srv.historize_node_data_change(history_server.var, period=None, count=0)
-    for i in history_server.values:
+    for i in history_server.values[1:]:
         await history_server.var.write_value(i)
     await asyncio.sleep(1)
 

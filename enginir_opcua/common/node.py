@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, overload
 
 from enginir_opcua import ua
@@ -50,6 +50,23 @@ def _to_nodeid(nodeid: Node | ua.NodeId | str | int) -> ua.NodeId:
     if isinstance(nodeid, str):
         return ua.NodeId.from_string(nodeid)
     raise ua.UaError(f"Could not resolve '{nodeid}' to a type id")
+
+
+_EARLIEST_SPECIFIED_TIME = ua.get_win_epoch() + timedelta(microseconds=1)
+
+
+def _history_time_domain(
+    starttime: datetime | None, endtime: datetime | None, numvalues: int
+) -> tuple[datetime, datetime]:
+    start = starttime or ua.get_win_epoch()
+    end = endtime or ua.get_win_epoch()
+    given = sum((starttime is not None, endtime is not None, numvalues > 0))
+    if given < 2 and endtime is None:
+        end = datetime.now(UTC)
+        given += 1
+    if given < 2:
+        start = _EARLIEST_SPECIFIED_TIME
+    return start, end
 
 
 class Node:
@@ -678,7 +695,7 @@ class Node:
         starttime: datetime | None = None,
         endtime: datetime | None = None,
         numvalues: int = 0,
-        return_bounds: bool = True,
+        return_bounds: bool = False,
     ) -> list[ua.DataValue]:
         """
         Read raw history of a node
@@ -688,14 +705,7 @@ class Node:
         """
         details = ua.ReadRawModifiedDetails()
         details.IsReadModified = False
-        if starttime:
-            details.StartTime = starttime
-        else:
-            details.StartTime = ua.get_win_epoch()
-        if endtime:
-            details.EndTime = endtime
-        else:
-            details.EndTime = ua.get_win_epoch()
+        details.StartTime, details.EndTime = _history_time_domain(starttime, endtime, numvalues)
         details.NumValuesPerNode = numvalues
         details.ReturnBounds = return_bounds
         history = []
@@ -761,14 +771,7 @@ class Node:
         then result will be truncated
         """
         details = ua.ReadEventDetails()
-        if starttime:
-            details.StartTime = starttime
-        else:
-            details.StartTime = ua.get_win_epoch()
-        if endtime:
-            details.EndTime = endtime
-        else:
-            details.EndTime = ua.get_win_epoch()
+        details.StartTime, details.EndTime = _history_time_domain(starttime, endtime, numvalues)
         details.NumValuesPerNode = numvalues
         if isinstance(evtypes, Node | ua.NodeId | str | int):
             evtypes = [evtypes]

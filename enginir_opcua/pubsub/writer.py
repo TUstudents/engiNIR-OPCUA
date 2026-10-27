@@ -47,7 +47,7 @@ from ..ua.uatypes import (
     VariantType,
 )
 from .dataset import PublishedDataSet
-from .information_model import PubSubInformationModel
+from .information_model import PubSubInformationModel, write_typed
 from .protocols import IPubSub, PubSubSender
 from .uadp import (
     UadpDataSetDataValue,
@@ -480,13 +480,13 @@ class WriterGroup(PubSubInformationModel):
         msg_settings = nodes[0]
         msg_cfg = self.get_msg_cfg()
         group_version = await msg_settings.get_child("0:GroupVersion")
-        await group_version.set_data_value(DataValue(msg_cfg.GroupVersion))
+        await write_typed(group_version, msg_cfg.GroupVersion)
         ordering = await msg_settings.get_child("0:DataSetOrdering")
-        await ordering.set_data_value(DataValue(msg_cfg.DataSetOrdering))
+        await write_typed(ordering, msg_cfg.DataSetOrdering)
         mask = await msg_settings.get_child("0:NetworkMessageContentMask")
-        await mask.set_data_value(DataValue(msg_cfg.NetworkMessageContentMask))
+        await write_typed(mask, msg_cfg.NetworkMessageContentMask)
         sampling_offset = await msg_settings.get_child("0:SamplingOffset")
-        await sampling_offset.set_data_value(DataValue(msg_cfg.SamplingOffset))
+        await write_typed(sampling_offset, msg_cfg.SamplingOffset)
         publishing_offset = await msg_settings.get_child("0:PublishingOffset")
         await publishing_offset.set_data_value(
             DataValue(Variant(msg_cfg.PublishingOffset, VariantType.Double, is_array=True))

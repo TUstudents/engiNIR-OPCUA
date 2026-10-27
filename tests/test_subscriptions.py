@@ -1,5 +1,5 @@
 import asyncio
-from asyncio import Future, TimeoutError, sleep, wait_for
+from asyncio import Future, sleep, wait_for
 from copy import copy
 from datetime import UTC, datetime, timedelta
 
@@ -131,7 +131,7 @@ async def test_subscription_count(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter", 0.1)
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     nb = 100
     for i in range(nb):
         val = await var.read_value()
@@ -148,7 +148,7 @@ async def test_subscription_count_list(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter1", [0.1, 0.2])
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     nb = 12
     for i in range(nb):
         val = await var.read_value()
@@ -185,7 +185,7 @@ async def test_subscription_count_empty(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter3", [0.1, 0.2, 0.3])
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     while True:
         val = await var.read_value()
         # we do not want to modify object in our db, we need a copy in order to generate event
@@ -818,7 +818,8 @@ async def test_events_MyObject(opc):
     await opc.opc.delete_nodes([o])
 
 
-async def test_events_wrong_source(opc):
+async def test_srv23_events_of_any_source_reach_the_server_object(opc):
+    """Part 3, 7.17: the Server Object has an implied HasEventSource to every source."""
     objects = opc.server.nodes.objects
     o = await objects.add_object(3, "MyObject")
     evgen = await opc.server.get_event_generator(emitting_node=o)
@@ -828,8 +829,9 @@ async def test_events_wrong_source(opc):
     tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
-    with pytest.raises(TimeoutError):  # we should not receive event
-        _ = await myhandler.result()
+    ev = await myhandler.result()
+    assert ev.Message.Text == msg
+    assert ev.SourceName == "MyObject"
     await sub.unsubscribe(handle)
     await sub.delete()
     await opc.opc.delete_nodes([o])
@@ -1091,9 +1093,10 @@ async def test_internal_server_subscription(opc):
     objects = opc.server.nodes.objects
     sub_obj = await objects.add_object(idx, "SubTestObject")
     sub_var = await sub_obj.add_variable(idx, "SubTestVariable", 0)
+    await sub_var.set_writable()
     sub = await opc.server.create_subscription(1, sub_handler)
     # Server subscribes to own variable data changes
-    await sub.subscribe_data_change([sub_var])
+    await sub.subscribe_data_change([sub_var], queuesize=100)
     client_var = await opc.opc.nodes.objects.get_child([f"{idx}:SubTestObject", f"{idx}:SubTestVariable"])
     for i in range(10):
         await client_var.write_value(i)

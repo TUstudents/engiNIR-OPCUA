@@ -137,7 +137,7 @@ async def test_server_method(server):
         return [ua.Variant(variant.Value * 2, variant.VariantType)]
 
     o = server.nodes.objects
-    v = await o.add_method(3, "Method1", func, [ua.VariantType.Int64], [ua.VariantType.Int64])
+    v = await o.add_method(3, "Method1", func, [ua.VariantType.Double], [ua.VariantType.Double])
     result = await o.call_method(v, ua.Variant(2.1))
     assert result == 4.2
 
@@ -859,7 +859,7 @@ async def test_message_limits_fail_read(restore_transport_limits_server: Server)
     server.bserver.limits.max_recv_buffer = 10240000
     server.bserver.limits.max_send_buffer = 8192
     test_string = b"a" * 100 * 1024
-    n = await server.nodes.objects.add_variable(1, "MyLimitVariable", test_string)
+    n = await server.nodes.objects.add_variable(1, "MyLimitReadVariable", test_string)
     await n.set_writable(True)
     client = Client(server.endpoint.geturl())
     client.max_chunkcount = 10

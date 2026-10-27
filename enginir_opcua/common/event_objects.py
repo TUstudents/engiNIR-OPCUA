@@ -44,7 +44,7 @@ class AuditEvent(BaseEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditEventType)
-        self.add_property('ActionTimeStamp', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('ActionTimeStamp', None, ua.VariantType.DateTime)
         self.add_property('Status', False, ua.VariantType.Boolean)
         self.add_property('ServerId', None, ua.VariantType.String)
         self.add_property('ClientAuditEntryId', None, ua.VariantType.String)
@@ -81,10 +81,10 @@ class AuditOpenSecureChannelEvent(AuditChannelEvent):
         self.EventType = ua.NodeId(ua.ObjectIds.AuditOpenSecureChannelEventType)
         self.add_property('ClientCertificate', None, ua.VariantType.ByteString)
         self.add_property('ClientCertificateThumbprint', None, ua.VariantType.String)
-        self.add_property('RequestType', None, ua.NodeId(ua.ObjectIds.SecurityTokenRequestType))
+        self.add_property('RequestType', None, ua.VariantType.Int32)
         self.add_property('SecurityPolicyUri', None, ua.VariantType.String)
-        self.add_property('SecurityMode', None, ua.NodeId(ua.ObjectIds.MessageSecurityMode))
-        self.add_property('RequestedLifetime', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('SecurityMode', None, ua.VariantType.Int32)
+        self.add_property('RequestedLifetime', None, ua.VariantType.Double)
         self.add_property('CertificateErrorEventId', None, ua.VariantType.ByteString)
 
 
@@ -108,7 +108,7 @@ class AuditCreateSessionEvent(AuditSessionEvent):
         self.add_property('SecureChannelId', None, ua.VariantType.String)
         self.add_property('ClientCertificate', None, ua.VariantType.ByteString)
         self.add_property('ClientCertificateThumbprint', None, ua.VariantType.String)
-        self.add_property('RevisedSessionTimeout', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('RevisedSessionTimeout', None, ua.VariantType.Double)
 
 
 class AuditActivateSessionEvent(AuditSessionEvent):
@@ -118,8 +118,8 @@ class AuditActivateSessionEvent(AuditSessionEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditActivateSessionEventType)
-        self.add_property('ClientSoftwareCertificates', None, ua.NodeId(ua.ObjectIds.SignedSoftwareCertificate))
-        self.add_property('UserIdentityToken', None, ua.NodeId(ua.ObjectIds.UserIdentityToken))
+        self.add_property('ClientSoftwareCertificates', None, ua.VariantType.ExtensionObject)
+        self.add_property('UserIdentityToken', None, ua.VariantType.ExtensionObject)
         self.add_property('SecureChannelId', None, ua.VariantType.String)
         self.add_property('CurrentRoleIds', None, ua.VariantType.NodeId)
 
@@ -216,7 +216,7 @@ class AuditAddNodesEvent(AuditNodeManagementEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditAddNodesEventType)
-        self.add_property('NodesToAdd', None, ua.NodeId(ua.ObjectIds.AddNodesItem))
+        self.add_property('NodesToAdd', None, ua.VariantType.ExtensionObject)
 
 
 class AuditDeleteNodesEvent(AuditNodeManagementEvent):
@@ -226,7 +226,7 @@ class AuditDeleteNodesEvent(AuditNodeManagementEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditDeleteNodesEventType)
-        self.add_property('NodesToDelete', None, ua.NodeId(ua.ObjectIds.DeleteNodesItem))
+        self.add_property('NodesToDelete', None, ua.VariantType.ExtensionObject)
 
 
 class AuditAddReferencesEvent(AuditNodeManagementEvent):
@@ -236,7 +236,7 @@ class AuditAddReferencesEvent(AuditNodeManagementEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditAddReferencesEventType)
-        self.add_property('ReferencesToAdd', None, ua.NodeId(ua.ObjectIds.AddReferencesItem))
+        self.add_property('ReferencesToAdd', None, ua.VariantType.ExtensionObject)
 
 
 class AuditDeleteReferencesEvent(AuditNodeManagementEvent):
@@ -246,7 +246,7 @@ class AuditDeleteReferencesEvent(AuditNodeManagementEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditDeleteReferencesEventType)
-        self.add_property('ReferencesToDelete', None, ua.NodeId(ua.ObjectIds.DeleteReferencesItem))
+        self.add_property('ReferencesToDelete', None, ua.VariantType.ExtensionObject)
 
 
 class AuditUpdateEvent(AuditEvent):
@@ -266,7 +266,7 @@ class AuditWriteUpdateEvent(AuditUpdateEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditWriteUpdateEventType)
         self.add_property('AttributeId', None, ua.VariantType.UInt32)
-        self.add_property('IndexRange', None, ua.NodeId(ua.ObjectIds.NumericRange))
+        self.add_property('IndexRange', None, ua.VariantType.String)
         self.add_property('OldValue', None, ua.VariantType.Variant)
         self.add_property('NewValue', None, ua.VariantType.Variant)
 
@@ -328,7 +328,7 @@ class GeneralModelChangeEvent(BaseModelChangeEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.GeneralModelChangeEventType)
-        self.add_property('Changes', None, ua.NodeId(ua.ObjectIds.ModelChangeStructureDataType))
+        self.add_property('Changes', None, ua.VariantType.ExtensionObject)
 
 
 class TransitionEvent(BaseEvent):
@@ -374,7 +374,7 @@ class SemanticChangeEvent(BaseEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.SemanticChangeEventType)
-        self.add_property('Changes', None, ua.NodeId(ua.ObjectIds.SemanticChangeStructureDataType))
+        self.add_property('Changes', None, ua.VariantType.ExtensionObject)
 
 
 class AuditUrlMismatchEvent(AuditCreateSessionEvent):
@@ -404,16 +404,16 @@ class Condition(BaseEvent):
         self.add_property('SupportsFilteredRetain', None, ua.VariantType.Boolean)
         self.add_property('EnabledState/Id', None, ua.VariantType.Boolean)
         self.add_property('EnabledState/EffectiveDisplayName', None, ua.VariantType.LocalizedText)
-        self.add_property('EnabledState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('EnabledState/EffectiveTransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('EnabledState/TransitionTime', None, ua.VariantType.DateTime)
+        self.add_property('EnabledState/EffectiveTransitionTime', None, ua.VariantType.DateTime)
         self.add_property('EnabledState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('EnabledState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('EnabledState', None, ua.VariantType.LocalizedText)
-        self.add_property('Quality/SourceTimestamp', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('Quality/SourceTimestamp', None, ua.VariantType.DateTime)
         self.add_variable('Quality', None, ua.VariantType.StatusCode)
-        self.add_property('LastSeverity/SourceTimestamp', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('LastSeverity/SourceTimestamp', None, ua.VariantType.DateTime)
         self.add_variable('LastSeverity', None, ua.VariantType.UInt16)
-        self.add_property('Comment/SourceTimestamp', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('Comment/SourceTimestamp', None, ua.VariantType.DateTime)
         self.add_variable('Comment', None, ua.VariantType.LocalizedText)
         self.add_property('ClientUserId', None, ua.VariantType.String)
 
@@ -484,7 +484,7 @@ class DialogCondition(Condition):
         self.add_property('EnabledState/Id', None, ua.VariantType.Boolean)
         self.add_variable('EnabledState', None, ua.VariantType.LocalizedText)
         self.add_property('DialogState/Id', None, ua.VariantType.Boolean)
-        self.add_property('DialogState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('DialogState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('DialogState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('DialogState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('DialogState', None, ua.VariantType.LocalizedText)
@@ -506,12 +506,12 @@ class AcknowledgeableCondition(Condition):
         self.add_property('EnabledState/Id', None, ua.VariantType.Boolean)
         self.add_variable('EnabledState', None, ua.VariantType.LocalizedText)
         self.add_property('AckedState/Id', None, ua.VariantType.Boolean)
-        self.add_property('AckedState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('AckedState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('AckedState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('AckedState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('AckedState', None, ua.VariantType.LocalizedText)
         self.add_property('ConfirmedState/Id', None, ua.VariantType.Boolean)
-        self.add_property('ConfirmedState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('ConfirmedState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('ConfirmedState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('ConfirmedState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('ConfirmedState', None, ua.VariantType.LocalizedText)
@@ -528,40 +528,40 @@ class AlarmCondition(AcknowledgeableCondition):
         self.add_variable('EnabledState', None, ua.VariantType.LocalizedText)
         self.add_property('ActiveState/Id', None, ua.VariantType.Boolean)
         self.add_property('ActiveState/EffectiveDisplayName', None, ua.VariantType.LocalizedText)
-        self.add_property('ActiveState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('ActiveState/EffectiveTransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('ActiveState/TransitionTime', None, ua.VariantType.DateTime)
+        self.add_property('ActiveState/EffectiveTransitionTime', None, ua.VariantType.DateTime)
         self.add_property('ActiveState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('ActiveState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('ActiveState', None, ua.VariantType.LocalizedText)
         self.add_property('InputNode', None, ua.VariantType.NodeId)
         self.add_property('SuppressedState/Id', None, ua.VariantType.Boolean)
-        self.add_property('SuppressedState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('SuppressedState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('SuppressedState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('SuppressedState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('SuppressedState', None, ua.VariantType.LocalizedText)
         self.add_property('OutOfServiceState/Id', None, ua.VariantType.Boolean)
-        self.add_property('OutOfServiceState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('OutOfServiceState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('OutOfServiceState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('OutOfServiceState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('OutOfServiceState', None, ua.VariantType.LocalizedText)
         self.add_property('SuppressedOrShelved', None, ua.VariantType.Boolean)
-        self.add_property('MaxTimeShelved', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('MaxTimeShelved', None, ua.VariantType.Double)
         self.add_property('AudibleEnabled', None, ua.VariantType.Boolean)
-        self.add_variable('AudibleSound', None, ua.NodeId(ua.ObjectIds.AudioDataType))
+        self.add_variable('AudibleSound', None, ua.VariantType.ByteString)
         self.add_property('SilenceState/Id', None, ua.VariantType.Boolean)
-        self.add_property('SilenceState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('SilenceState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('SilenceState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('SilenceState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('SilenceState', None, ua.VariantType.LocalizedText)
-        self.add_property('OnDelay', None, ua.NodeId(ua.ObjectIds.Duration))
-        self.add_property('OffDelay', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('OnDelay', None, ua.VariantType.Double)
+        self.add_property('OffDelay', None, ua.VariantType.Double)
         self.add_variable('FirstInGroupFlag', None, ua.VariantType.Boolean)
         self.add_property('LatchedState/Id', None, ua.VariantType.Boolean)
-        self.add_property('LatchedState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('LatchedState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('LatchedState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('LatchedState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('LatchedState', None, ua.VariantType.LocalizedText)
-        self.add_property('ReAlarmTime', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('ReAlarmTime', None, ua.VariantType.Double)
         self.add_variable('ReAlarmRepeatCount', None, ua.VariantType.Int16)
 
 
@@ -598,10 +598,10 @@ class AuditHistoryEventUpdateEvent(AuditHistoryUpdateEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryEventUpdateEventType)
         self.add_property('UpdatedNode', None, ua.VariantType.NodeId)
-        self.add_property('PerformInsertReplace', None, ua.NodeId(ua.ObjectIds.PerformUpdateType))
-        self.add_property('Filter', None, ua.NodeId(ua.ObjectIds.EventFilter))
-        self.add_property('NewValues', None, ua.NodeId(ua.ObjectIds.HistoryEventFieldList))
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.HistoryEventFieldList))
+        self.add_property('PerformInsertReplace', None, ua.VariantType.Int32)
+        self.add_property('Filter', None, ua.VariantType.ExtensionObject)
+        self.add_property('NewValues', None, ua.VariantType.ExtensionObject)
+        self.add_property('OldValues', None, ua.VariantType.ExtensionObject)
 
 
 class AuditHistoryValueUpdateEvent(AuditHistoryUpdateEvent):
@@ -612,9 +612,9 @@ class AuditHistoryValueUpdateEvent(AuditHistoryUpdateEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryValueUpdateEventType)
         self.add_property('UpdatedNode', None, ua.VariantType.NodeId)
-        self.add_property('PerformInsertReplace', None, ua.NodeId(ua.ObjectIds.PerformUpdateType))
-        self.add_property('NewValues', None, ua.NodeId(ua.ObjectIds.DataValue))
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.DataValue))
+        self.add_property('PerformInsertReplace', None, ua.VariantType.Int32)
+        self.add_property('NewValues', None, ua.VariantType.DataValue)
+        self.add_property('OldValues', None, ua.VariantType.DataValue)
 
 
 class AuditHistoryDeleteEvent(AuditHistoryUpdateEvent):
@@ -635,9 +635,9 @@ class AuditHistoryRawModifyDeleteEvent(AuditHistoryDeleteEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryRawModifyDeleteEventType)
         self.add_property('IsDeleteModified', None, ua.VariantType.Boolean)
-        self.add_property('StartTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('EndTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.DataValue))
+        self.add_property('StartTime', None, ua.VariantType.DateTime)
+        self.add_property('EndTime', None, ua.VariantType.DateTime)
+        self.add_property('OldValues', None, ua.VariantType.DataValue)
 
 
 class AuditHistoryAtTimeDeleteEvent(AuditHistoryDeleteEvent):
@@ -647,8 +647,8 @@ class AuditHistoryAtTimeDeleteEvent(AuditHistoryDeleteEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryAtTimeDeleteEventType)
-        self.add_property('ReqTimes', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.DataValue))
+        self.add_property('ReqTimes', None, ua.VariantType.DateTime)
+        self.add_property('OldValues', None, ua.VariantType.DataValue)
 
 
 class AuditHistoryEventDeleteEvent(AuditHistoryDeleteEvent):
@@ -659,7 +659,7 @@ class AuditHistoryEventDeleteEvent(AuditHistoryDeleteEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryEventDeleteEventType)
         self.add_property('EventIds', None, ua.VariantType.ByteString)
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.HistoryEventFieldList))
+        self.add_property('OldValues', None, ua.VariantType.ExtensionObject)
 
 
 class EventQueueOverflowEvent(BaseEvent):
@@ -741,7 +741,7 @@ class ExclusiveRateOfChangeAlarm(ExclusiveLimitAlarm):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.ExclusiveRateOfChangeAlarmType)
-        self.add_property('EngineeringUnits', None, ua.NodeId(ua.ObjectIds.EUInformation))
+        self.add_property('EngineeringUnits', None, ua.VariantType.ExtensionObject)
 
 
 class ExclusiveDeviationAlarm(ExclusiveLimitAlarm):
@@ -765,22 +765,22 @@ class NonExclusiveLimitAlarm(LimitAlarm):
         self.add_property('ActiveState/Id', None, ua.VariantType.Boolean)
         self.add_variable('ActiveState', None, ua.VariantType.LocalizedText)
         self.add_property('HighHighState/Id', None, ua.VariantType.Boolean)
-        self.add_property('HighHighState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('HighHighState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('HighHighState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('HighHighState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('HighHighState', None, ua.VariantType.LocalizedText)
         self.add_property('HighState/Id', None, ua.VariantType.Boolean)
-        self.add_property('HighState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('HighState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('HighState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('HighState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('HighState', None, ua.VariantType.LocalizedText)
         self.add_property('LowState/Id', None, ua.VariantType.Boolean)
-        self.add_property('LowState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('LowState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('LowState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('LowState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('LowState', None, ua.VariantType.LocalizedText)
         self.add_property('LowLowState/Id', None, ua.VariantType.Boolean)
-        self.add_property('LowLowState/TransitionTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('LowLowState/TransitionTime', None, ua.VariantType.DateTime)
         self.add_property('LowLowState/TrueState', None, ua.VariantType.LocalizedText)
         self.add_property('LowLowState/FalseState', None, ua.VariantType.LocalizedText)
         self.add_variable('LowLowState', None, ua.VariantType.LocalizedText)
@@ -802,7 +802,7 @@ class NonExclusiveRateOfChangeAlarm(NonExclusiveLimitAlarm):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.NonExclusiveRateOfChangeAlarmType)
-        self.add_property('EngineeringUnits', None, ua.NodeId(ua.ObjectIds.EUInformation))
+        self.add_property('EngineeringUnits', None, ua.VariantType.ExtensionObject)
 
 
 class NonExclusiveDeviationAlarm(NonExclusiveLimitAlarm):
@@ -851,7 +851,7 @@ class AuditConditionShelvingEvent(AuditConditionEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditConditionShelvingEventType)
-        self.add_property('ShelvingTime', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('ShelvingTime', None, ua.VariantType.Double)
 
 
 class ProgressEvent(BaseEvent):
@@ -872,7 +872,7 @@ class SystemStatusChangeEvent(SystemEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.SystemStatusChangeEventType)
-        self.add_property('SystemState', None, ua.NodeId(ua.ObjectIds.ServerState))
+        self.add_property('SystemState', None, ua.VariantType.Int32)
 
 
 class SystemOffNormalAlarm(OffNormalAlarm):
@@ -923,7 +923,7 @@ class CertificateExpirationAlarm(SystemOffNormalAlarm):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.CertificateExpirationAlarmType)
         self.add_property('ExpirationDate', None, ua.VariantType.DateTime)
-        self.add_property('ExpirationLimit', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('ExpirationLimit', None, ua.VariantType.Double)
         self.add_property('CertificateType', None, ua.VariantType.NodeId)
         self.add_property('Certificate', None, ua.VariantType.ByteString)
 
@@ -946,7 +946,7 @@ class PubSubStatusEvent(SystemEvent):
         self.EventType = ua.NodeId(ua.ObjectIds.PubSubStatusEventType)
         self.add_property('ConnectionId', None, ua.VariantType.NodeId)
         self.add_property('GroupId', None, ua.VariantType.NodeId)
-        self.add_property('State', None, ua.NodeId(ua.ObjectIds.PubSubState))
+        self.add_property('State', None, ua.VariantType.Int32)
 
 
 class ConfigurationUpdatedAuditEvent(AuditEvent):
@@ -956,8 +956,8 @@ class ConfigurationUpdatedAuditEvent(AuditEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.ConfigurationUpdatedAuditEventType)
-        self.add_property('OldVersion', None, ua.NodeId(ua.ObjectIds.VersionTime))
-        self.add_property('NewVersion', None, ua.NodeId(ua.ObjectIds.VersionTime))
+        self.add_property('OldVersion', None, ua.VariantType.UInt32)
+        self.add_property('NewVersion', None, ua.VariantType.UInt32)
 
 
 class PubSubTransportLimitsExceedEvent(PubSubStatusEvent):
@@ -989,7 +989,7 @@ class DiscrepancyAlarm(AlarmCondition):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.DiscrepancyAlarmType)
         self.add_property('TargetValueNode', None, ua.VariantType.NodeId)
-        self.add_property('ExpectedTime', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('ExpectedTime', None, ua.VariantType.Double)
         self.add_property('Tolerance', None, ua.VariantType.Double)
 
 
@@ -1083,9 +1083,9 @@ class AuditHistoryAnnotationUpdateEvent(AuditHistoryUpdateEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryAnnotationUpdateEventType)
-        self.add_property('PerformInsertReplace', None, ua.NodeId(ua.ObjectIds.PerformUpdateType))
-        self.add_property('NewValues', None, ua.NodeId(ua.ObjectIds.Annotation))
-        self.add_property('OldValues', None, ua.NodeId(ua.ObjectIds.Annotation))
+        self.add_property('PerformInsertReplace', None, ua.VariantType.Int32)
+        self.add_property('NewValues', None, ua.VariantType.ExtensionObject)
+        self.add_property('OldValues', None, ua.VariantType.ExtensionObject)
 
 
 class TrustListOutOfDateAlarm(SystemOffNormalAlarm):
@@ -1096,8 +1096,8 @@ class TrustListOutOfDateAlarm(SystemOffNormalAlarm):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.TrustListOutOfDateAlarmType)
         self.add_property('TrustListId', None, ua.VariantType.NodeId)
-        self.add_property('LastUpdateTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('UpdateFrequency', None, ua.NodeId(ua.ObjectIds.Duration))
+        self.add_property('LastUpdateTime', None, ua.VariantType.DateTime)
+        self.add_property('UpdateFrequency', None, ua.VariantType.Double)
 
 
 class BaseLogEvent(BaseEvent):
@@ -1111,7 +1111,7 @@ class BaseLogEvent(BaseEvent):
         self.add_property('ConditionClassName', None, ua.VariantType.LocalizedText)
         self.add_property('ErrorCode', None, ua.VariantType.StatusCode)
         self.add_property('ErrorCodeNode', None, ua.VariantType.NodeId)
-        self.add_property('TraceContext', None, ua.NodeId(ua.ObjectIds.TraceContextDataType))
+        self.add_property('TraceContext', None, ua.VariantType.ExtensionObject)
 
 
 class LogOverflowEvent(BaseEvent):
@@ -1130,7 +1130,7 @@ class AuditClientEvent(AuditEvent):
     def __init__(self, sourcenode=None, message=None, severity=1):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditClientEventType)
-        self.add_property('ServerUri', None, ua.NodeId(ua.ObjectIds.UriString))
+        self.add_property('ServerUri', None, ua.VariantType.String)
 
 
 class AuditClientUpdateMethodResultEvent(AuditClientEvent):
@@ -1182,8 +1182,8 @@ class AuditHistoryBulkInsertEvent(AuditEvent):
         super().__init__(sourcenode, message, severity)
         self.EventType = ua.NodeId(ua.ObjectIds.AuditHistoryBulkInsertEventType)
         self.add_property('UpdatedNode', None, ua.VariantType.NodeId)
-        self.add_property('StartTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
-        self.add_property('EndTime', None, ua.NodeId(ua.ObjectIds.UtcTime))
+        self.add_property('StartTime', None, ua.VariantType.DateTime)
+        self.add_property('EndTime', None, ua.VariantType.DateTime)
 
 
 IMPLEMENTED_EVENTS = {

@@ -106,6 +106,8 @@ async def _instantiate_node(
     else:
         _logger.error("Instantiate: Node class not supported: %s", rdesc.NodeClass)
         raise RuntimeError("Instantiate: Node class not supported")
+    if addnode.NodeClass not in (ua.NodeClass.Object, ua.NodeClass.Variable):
+        addnode.TypeDefinition = ua.NodeId()
     if dname is not None:
         addnode.NodeAttributes.DisplayName = dname
 

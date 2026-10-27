@@ -90,6 +90,12 @@ async def browse(ctx: ServiceContext, params: ua.BrowseParameters) -> ua.BrowseR
     return response
 
 
+async def browse_next(ctx: ServiceContext, params: ua.BrowseNextParameters) -> ua.BrowseNextResponse:
+    response = ua.BrowseNextResponse()
+    response.Parameters.Results = await ctx.active_session.services.browse_next(params)
+    return response
+
+
 async def translate_browse_paths(
     ctx: ServiceContext, params: ua.TranslateBrowsePathsToNodeIdsParameters
 ) -> ua.TranslateBrowsePathsToNodeIdsResponse:
@@ -222,6 +228,12 @@ async def set_monitoring_mode(
     return response
 
 
+async def set_triggering(ctx: ServiceContext, params: ua.SetTriggeringParameters) -> ua.SetTriggeringResponse:
+    response = ua.SetTriggeringResponse()
+    response.Parameters = await ctx.active_session.services.set_triggering(params)
+    return response
+
+
 async def delete_monitored_items(
     ctx: ServiceContext, params: ua.DeleteMonitoredItemsParameters
 ) -> ua.DeleteMonitoredItemsResponse:
@@ -269,6 +281,13 @@ def build_service_table() -> list[ServiceEntry]:
             ua.BrowseParameters,
             browse,
             operations=OperationBound("NodesToBrowse", "max_nodes_per_browse"),
+            permission=Permission.Anonymous,
+        ),
+        entry(
+            "BrowseNext",
+            ua.BrowseNextParameters,
+            browse_next,
+            operations=OperationBound("ContinuationPoints", "max_nodes_per_browse"),
             permission=Permission.Anonymous,
         ),
         entry(
@@ -377,6 +396,7 @@ def build_service_table() -> list[ServiceEntry]:
             operations=OperationBound("MonitoredItemIds", "max_monitored_items_per_call"),
             permission=Permission.Anonymous,
         ),
+        entry("SetTriggering", ua.SetTriggeringParameters, set_triggering, permission=Permission.Anonymous),
         entry(
             "DeleteMonitoredItems",
             ua.DeleteMonitoredItemsParameters,
