@@ -26,7 +26,7 @@ from ..crypto.validator import CertificateValidatorMethod
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
-from .identity import TOKEN_TYPES
+from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
 from .service_dispatch import Dispatcher
 from .service_handlers import build_service_table
@@ -93,6 +93,7 @@ class InternalServer:
         self.endpoints: list[ua.EndpointDescription] = []
         self._channel_id_counter = 5
         self.allow_plaintext_password = False
+        self.identity_guard = IdentityGuard()
         self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server

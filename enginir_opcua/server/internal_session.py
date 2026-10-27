@@ -20,7 +20,7 @@ from ..common.utils import ServiceError, create_nonce
 from ..crypto import uacrypto
 from ..crypto.uacrypto import x509
 from .address_space import AddressSpace
-from .identity import match_token_policy, user_name_credentials
+from .identity import COUNTED_FAILURES, match_token_policy, peer_key, user_name_credentials
 from .subscription_service import SubscriptionService
 
 if TYPE_CHECKING:
@@ -54,6 +54,9 @@ class SessionChannel(Protocol):
 
     @property
     def security(self) -> ChannelSecurity: ...
+
+    @property
+    def peer_address(self) -> str | None: ...
 
     @property
     def max_request_message_size(self) -> int: ...
@@ -438,8 +441,40 @@ class SessionManager:
         ):
             raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
 
-    def activate_session(
+    async def activate_session(
         self, channel: SessionChannel, token: ua.NodeId, params: ua.ActivateSessionParameters
+    ) -> ua.ActivateSessionResult:
+        if token not in self.sessions:
+            raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
+        guard = self.iserver.identity_guard
+        key = peer_key(channel.security, channel.peer_address)
+        delay = guard.begin(key)
+        try:
+            if delay > 0:
+                _logger.warning("Delaying ActivateSession of %s by %.0f s after repeated identity failures", key, delay)
+                await guard.sleep(delay)
+            return self._activate(channel, token, params, key)
+        finally:
+            guard.end(key)
+
+    def _validated_user(
+        self, session: Session, params: ua.ActivateSessionParameters, security: ChannelSecurity, key: str
+    ) -> User:
+        guard = self.iserver.identity_guard
+        try:
+            user = session.validate_identity(params, security)
+        except (ServiceError, ua.uaerrors.UaStatusCodeError) as error:
+            if error.code in COUNTED_FAILURES:
+                guard.record_failure(key)
+            raise
+        except Exception:
+            guard.record_failure(key)
+            raise
+        guard.record_success(key)
+        return user
+
+    def _activate(
+        self, channel: SessionChannel, token: ua.NodeId, params: ua.ActivateSessionParameters, key: str
     ) -> ua.ActivateSessionResult:
         session = self.sessions.get(token)
         if session is None:
@@ -456,7 +491,7 @@ class SessionManager:
             channel.verify(challenge, params.ClientSignature.Signature)
         except ua.uaerrors.SignatureError:
             raise ServiceError(ua.StatusCodes.BadApplicationSignatureInvalid) from None
-        user = session.validate_identity(params, security)
+        user = self._validated_user(session, params, security, key)
         if moving and user != session.user:
             _logger.warning("Rejected moving session %s to a new channel with a different user", session.name)
             raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)

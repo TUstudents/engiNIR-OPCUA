@@ -46,7 +46,7 @@ async def create_session(ctx: ServiceContext, params: ua.CreateSessionParameters
 
 async def activate_session(ctx: ServiceContext, params: ua.ActivateSessionParameters) -> ua.ActivateSessionResponse:
     response = ua.ActivateSessionResponse()
-    response.Parameters = ctx.iserver.session_manager.activate_session(
+    response.Parameters = await ctx.iserver.session_manager.activate_session(
         ctx.channel, ctx.header.AuthenticationToken, params
     )
     return response

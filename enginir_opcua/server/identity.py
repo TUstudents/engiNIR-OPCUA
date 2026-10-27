@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
-from collections.abc import Iterable
+import time
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from cryptography import x509
 
 from enginir_opcua import ua
 
@@ -33,6 +37,16 @@ USER_TOKEN_SECURITY_POLICIES: tuple[type[security_policies.SecurityPolicy], ...]
     security_policies.SecurityPolicyAes256Sha256RsaPss,
 )
 
+MAX_PEER_KEY_BYTES = 256
+COUNTED_FAILURES: frozenset[int] = frozenset(
+    {
+        ua.StatusCodes.BadIdentityTokenInvalid,
+        ua.StatusCodes.BadIdentityTokenRejected,
+        ua.StatusCodes.BadUserSignatureInvalid,
+        ua.StatusCodes.BadSecurityPolicyRejected,
+        ua.StatusCodes.BadUserAccessDenied,
+    }
+)
 MAX_USER_NAME_BYTES = 255
 LENGTH_FIELD_BYTES = 4
 
@@ -163,3 +177,97 @@ def user_name_credentials(
     if password is None:
         raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
     return user_name, password
+
+
+def certificate_application_uri(der: bytes) -> str | None:
+    try:
+        san = x509.load_der_x509_certificate(der).extensions.get_extension_for_class(x509.SubjectAlternativeName)
+    except (ValueError, x509.ExtensionNotFound):
+        return None
+    uris = san.value.get_values_for_type(x509.UniformResourceIdentifier)
+    return uris[0] if uris else None
+
+
+def peer_key(security: ChannelSecurity, peer_address: str | None) -> str:
+    if security.mode != ua.MessageSecurityMode.None_ and security.certificate:
+        uri = certificate_application_uri(security.certificate)
+        if uri:
+            return ("uri:" + uri)[:MAX_PEER_KEY_BYTES]
+    return ("ip:" + (peer_address or "unknown"))[:MAX_PEER_KEY_BYTES]
+
+
+@dataclass
+class FailureRecord:
+    failures: int = 0
+    last_failure: float = 0.0
+    in_flight: int = 0
+
+
+class IdentityGuard:
+    """Slows down peers that keep failing the identity check; the table holds only peers with failures."""
+
+    def __init__(
+        self,
+        failures_before_delay: int = 5,
+        first_delay: float = 1.0,
+        max_delay: float = 30.0,
+        max_keys: int = 10_000,
+        idle_seconds: float = 600.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self.failures_before_delay = failures_before_delay
+        self.first_delay = first_delay
+        self.max_delay = max_delay
+        self.max_keys = max_keys
+        self.idle_seconds = idle_seconds
+        self.clock = clock
+        self.sleep = sleep
+        self.records: dict[str, FailureRecord] = {}
+
+    def begin(self, key: str) -> float:
+        record = self._record(key)
+        count = record.failures + record.in_flight
+        record.in_flight += 1
+        if count < self.failures_before_delay:
+            return 0.0
+        return min(self.first_delay * 2.0 ** (count - self.failures_before_delay), self.max_delay)
+
+    def end(self, key: str) -> None:
+        record = self.records.get(key)
+        if record is None:
+            return
+        record.in_flight -= 1
+        self._drop_if_clean(key, record)
+
+    def record_failure(self, key: str) -> None:
+        record = self._record(key)
+        record.failures += 1
+        record.last_failure = self.clock()
+
+    def record_success(self, key: str) -> None:
+        record = self.records.get(key)
+        if record is not None:
+            record.failures = 0
+
+    def _record(self, key: str) -> FailureRecord:
+        record = self.records.get(key)
+        if record is None:
+            if len(self.records) >= self.max_keys:
+                self._make_room()
+            record = self.records[key] = FailureRecord()
+        elif record.failures and self.clock() - record.last_failure > self.idle_seconds:
+            record.failures = 0
+        return record
+
+    def _drop_if_clean(self, key: str, record: FailureRecord) -> None:
+        if record.failures == 0 and record.in_flight <= 0:
+            self.records.pop(key, None)
+
+    def _make_room(self) -> None:
+        now = self.clock()
+        for key, record in list(self.records.items()):
+            if record.in_flight <= 0 and now - record.last_failure > self.idle_seconds:
+                del self.records[key]
+        while len(self.records) >= self.max_keys:
+            del self.records[next(iter(self.records))]
