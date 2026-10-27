@@ -179,9 +179,11 @@ class TestHaClient:
 
         # urls to reconnect should only be added once
         await ha_client.reconciliator.stop()
+        await asyncio.wait_for(next(iter(ha_client._reconciliator_task.values())), 5)
+        ha_client.url_to_reset.clear()
         await ha_client.reconnect(first_client)
         await ha_client.reconnect(first_client)
-        assert len(ha_client.url_to_reset) == 2
+        assert ha_client.url_to_reset == {first_client.server_url.geturl()}
 
     @pytest.mark.asyncio
     async def test_failover_warm(self, ha_client, srv_variables):
@@ -549,3 +551,82 @@ class TestReconciliator:
 
         # HaManager / HaClient.reconnect was NOT called during the recovery window.
         assert reconnect_spy.call_count == 0
+
+
+class TestHaLifecycle:
+    @pytest.mark.asyncio
+    async def test_ha_stop_twice(self, ha_client):
+        await ha_client.start()
+        await wait_clients_socket(ha_client, UASocketState.OPEN)
+        await ha_client.stop()
+        await ha_client.stop()
+        assert not ha_client.is_running
+
+    @pytest.mark.asyncio
+    async def test_ha_stop_closes_subscription_objects(self, ha_client, srv_variables):
+        await ha_client.start()
+        node, _values = [(n, v) for n, v in srv_variables.items()][0]
+        sub = await ha_client.create_subscription(100, MySubHandler())
+        await ha_client.subscribe_data_change(sub, [node])
+        await wait_node_in_real_map(ha_client, sub, node.nodeid.to_string())
+        real_subs = [subs[sub] for subs in ha_client.reconciliator.name_to_subscription.values()]
+        assert len(real_subs) == 2
+        await ha_client.stop()
+        assert all(s.is_deleted for s in real_subs)
+
+    @pytest.mark.asyncio
+    async def test_cli46_connected_degraded_standby_is_not_reset(self, ha_client, ha_servers, mocker):
+        srv1, srv2 = ha_servers
+        slevel = srv2.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
+        await slevel.write_value(ua.Variant(150, ua.VariantType.Byte))
+        try:
+            await ha_client.start()
+            standby = ha_client.get_client_by_url(f"opc.tcp://127.0.0.1:{srv2.endpoint.port}")
+            await wait_for_status_change(ha_client, standby, 150)
+            socket = standby.uaclient.protocol
+            spy = mocker.spy(ha_client, "reconnect")
+            await asyncio.sleep(3)
+            assert spy.call_count == 0
+            assert standby.uaclient.protocol is socket
+            active = ha_client.active_client
+            assert active is not None
+            assert active.server_url.port == srv1.endpoint.port
+        finally:
+            await slevel.write_value(ua.Variant(255, ua.VariantType.Byte))
+
+    @pytest.mark.asyncio
+    async def test_cli48_maintenance_server_is_disconnected(self, ha_client, ha_servers):
+        _srv1, srv2 = ha_servers
+        slevel = srv2.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
+        try:
+            await ha_client.start()
+            client2 = ha_client.get_client_by_url(f"opc.tcp://127.0.0.1:{srv2.endpoint.port}")
+            await wait_for_status_change(ha_client, client2, 255)
+            await slevel.write_value(ua.Variant(0, ua.VariantType.Byte))
+            for _ in range(40):
+                if client2.uaclient.state is UaClientState.DISCONNECTED:
+                    break
+                await asyncio.sleep(0.25)
+            assert client2.uaclient.state is UaClientState.DISCONNECTED
+            await asyncio.sleep(2)
+            assert client2.uaclient.state is UaClientState.DISCONNECTED
+        finally:
+            await slevel.write_value(ua.Variant(255, ua.VariantType.Byte))
+
+    @pytest.mark.asyncio
+    async def test_cli52_hotandmirrored_server_is_refused(self, ha_client, ha_servers):
+        srv1, _srv2 = ha_servers
+        redundancy = srv1.get_node(ua.NodeId(ua.ObjectIds.Server_ServerRedundancy_RedundancySupport))
+        await redundancy.write_value(ua.Variant(ua.RedundancySupport.HotAndMirrored, ua.VariantType.Int32))
+        try:
+            await ha_client.start()
+            refused = ha_client.get_client_by_url(f"opc.tcp://127.0.0.1:{srv1.endpoint.port}")
+            for _ in range(40):
+                if ha_client.clients[refused].redundancy_ok is False:
+                    break
+                await asyncio.sleep(0.25)
+            assert ha_client.clients[refused].redundancy_ok is False
+            await asyncio.sleep(2)
+            assert ha_client.active_client is not refused
+        finally:
+            await redundancy.write_value(ua.Variant(ua.RedundancySupport.Warm, ua.VariantType.Int32))
