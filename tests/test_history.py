@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -146,3 +147,19 @@ async def test_history_var_read_repeated_continuation_point():
     res = await node.read_raw_history(numvalues=0)
     assert [] == res
     assert 2 == node.calls
+
+
+async def test_srv54_history_keeps_every_value_written_within_one_publish_cycle():
+    """Part 4, 7.21: the capture asks for a queue of its own, a queue of one would keep only the last value."""
+    from enginir_opcua import Server
+
+    srv = Server()
+    await srv.init()
+    var = await srv.nodes.objects.add_variable(2, "BurstVar", 0)
+    await srv.historize_node_data_change(var, count=500)
+    for value in range(1, 101):
+        await var.write_value(value)
+    await asyncio.sleep(0.3)
+    values = await srv.iserver.history_manager.storage.read_node_history(var.nodeid, None, None, 0)
+    assert len(values[0]) == 101
+    await srv.iserver.history_manager._sub.delete()

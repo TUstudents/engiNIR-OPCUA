@@ -109,7 +109,12 @@ class InternalServer:
         self.max_session_timeout_ms: float = 600_000
         self.min_session_timeout_ms: float = 5_000
         self.max_unacked_messages_per_subscription: int = 5_000
-        self.max_monitored_item_queue_size: int = 10_000
+        self.max_monitored_item_queue_size: int = 1_000
+        self.default_event_queue_size: int = 100
+        self.min_sampling_interval_ms: float = 10.0
+        self.max_sampling_interval_ms: float = 3_600_000.0
+        self.max_monitored_items_per_subscription: int = 10_000
+        self.max_monitored_items: int = 100_000
         # Per-connection inbound message queue depth. data_received() refuses
         # further frames and closes the transport once this many parsed
         # messages are queued behind the processor coroutine.

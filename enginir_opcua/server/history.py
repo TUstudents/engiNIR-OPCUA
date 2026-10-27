@@ -242,6 +242,9 @@ class HistoryDict(HistoryStorageInterface):
         pass
 
 
+HISTORY_QUEUE_SIZE = 1000
+
+
 class SubHandler:
     def __init__(self, storage: HistoryStorageInterface) -> None:
         self.storage = storage
@@ -294,7 +297,7 @@ class HistoryManager:
         if node in self._handlers:
             raise ua.UaError(f"Node {node} is already historized")
         await self.storage.new_historized_node(node.nodeid, period, count)
-        handler = await self._sub.subscribe_data_change(node)
+        handler = await self._sub.subscribe_data_change(node, queuesize=HISTORY_QUEUE_SIZE)
         self._handlers[node] = handler
 
     async def historize_event(self, source: Node, period: timedelta | None = timedelta(days=7), count: int = 0) -> None:
@@ -323,7 +326,7 @@ class HistoryManager:
 
         await self.storage.new_historized_event(source.nodeid, event_types, period, count)
 
-        handler = await self._sub.subscribe_events(source, event_types)
+        handler = await self._sub.subscribe_events(source, event_types, queuesize=HISTORY_QUEUE_SIZE)
         self._handlers[source] = handler
 
     async def dehistorize(self, node: Node) -> None:
