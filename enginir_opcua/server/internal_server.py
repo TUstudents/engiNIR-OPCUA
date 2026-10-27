@@ -232,6 +232,12 @@ class InternalServer:
             )
             params.NodesToWrite.append(attr)
         capabilities = {
+            ua.ObjectIds.Server_ServerCapabilities_MaxHistoryContinuationPoints: ua.Variant(
+                self.max_history_continuation_points, ua.VariantType.UInt16
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MinSupportedSampleRate: ua.Variant(
+                self.min_sampling_interval_ms, ua.VariantType.Double
+            ),
             ua.ObjectIds.Server_ServerCapabilities_MaxBrowseContinuationPoints: ua.Variant(
                 self.max_browse_continuation_points, ua.VariantType.UInt16
             ),

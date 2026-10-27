@@ -331,3 +331,24 @@ async def test_srv21_capture_keeps_every_change_in_notification_order(history_ri
     page = await history_rig.storage.read_node_history(var.nodeid, TimeDomain(None, None, 1000))
     stored = [entry.value.Value.Value for entry in page.entries]
     assert stored == list(range(51))
+
+
+async def test_srv62_history_capabilities_have_values(history_rig: HistoryRig) -> None:
+    """Part 11, 5.7.2; Part 5, 6.3.2."""
+    prefix = "HistoryServerCapabilities_"
+
+    async def value_of(name: str) -> object:
+        node = history_rig.server.get_node(ua.NodeId(getattr(ua.ObjectIds, prefix + name)))
+        return await node.read_value()
+
+    assert await value_of("AccessHistoryDataCapability") is True
+    assert await value_of("AccessHistoryEventsCapability") is True
+    assert await value_of("MaxReturnDataValues") == 10_000
+    assert await value_of("MaxReturnEventValues") == 10_000
+    assert await value_of("InsertDataCapability") is False
+    assert await value_of("DeleteRawCapability") is False
+    assert await value_of("ServerTimestampSupported") is True
+    points = history_rig.server.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxHistoryContinuationPoints))
+    assert await points.read_value() == 10
+    rate = history_rig.server.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MinSupportedSampleRate))
+    assert await rate.read_value() == history_rig.server.iserver.min_sampling_interval_ms

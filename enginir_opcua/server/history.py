@@ -248,6 +248,33 @@ class HistoryManager:
     async def init(self) -> None:
         await self.storage.init()
         self._ensure_consumer()
+        await self._write_capabilities()
+
+    async def _write_capabilities(self) -> None:
+        ids = ua.ObjectIds
+        flags = {
+            ids.HistoryServerCapabilities_AccessHistoryDataCapability: True,
+            ids.HistoryServerCapabilities_AccessHistoryEventsCapability: True,
+            ids.HistoryServerCapabilities_InsertDataCapability: False,
+            ids.HistoryServerCapabilities_ReplaceDataCapability: False,
+            ids.HistoryServerCapabilities_UpdateDataCapability: False,
+            ids.HistoryServerCapabilities_DeleteRawCapability: False,
+            ids.HistoryServerCapabilities_DeleteAtTimeCapability: False,
+            ids.HistoryServerCapabilities_InsertAnnotationCapability: False,
+            ids.HistoryServerCapabilities_InsertEventCapability: False,
+            ids.HistoryServerCapabilities_ReplaceEventCapability: False,
+            ids.HistoryServerCapabilities_UpdateEventCapability: False,
+            ids.HistoryServerCapabilities_DeleteEventCapability: False,
+            ids.HistoryServerCapabilities_ServerTimestampSupported: self.storage.stores_server_timestamp,
+        }
+        for node_id, flag in flags.items():
+            await self._set_trusted(ua.NodeId(node_id), ua.AttributeIds.Value, flag, ua.VariantType.Boolean)
+        size = self.iserver.max_history_data_response_size
+        for node_id in (
+            ids.HistoryServerCapabilities_MaxReturnDataValues,
+            ids.HistoryServerCapabilities_MaxReturnEventValues,
+        ):
+            await self._set_trusted(ua.NodeId(node_id), ua.AttributeIds.Value, size, ua.VariantType.UInt32)
 
     def set_storage(self, storage: HistoryStorageInterface) -> None:
         """
