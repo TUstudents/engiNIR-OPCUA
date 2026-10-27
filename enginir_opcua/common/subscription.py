@@ -439,6 +439,8 @@ class Subscription:
     def session_event(self, status: ua.StatusCode) -> None:
         if status.value == ua.StatusCodes.BadShutdown and self.state is SubscriptionState.ACTIVE:
             self.state = SubscriptionState.SUSPENDED
+        message = ua.NotificationMessage(NotificationData=[ua.StatusChangeNotification(Status=status)])  # type: ignore[list-item]
+        self.enqueue(ua.PublishResult(self.subscription_id or 0, NotificationMessage=message))
 
     def _ensure_delivery_task(self) -> None:
         if self._delivery_task is None or self._delivery_task.done():
