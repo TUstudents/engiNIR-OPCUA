@@ -21,7 +21,16 @@ from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.server.user_managers import PermissiveUserManager
 
-from .harness import EXAMPLES, TWO_SESSION_USERS, RawPeer, RawServer, ResponseTampering, TwoSessions, TwoUserManager
+from .harness import (
+    EXAMPLES,
+    TWO_SESSION_USERS,
+    RawPeer,
+    RawServer,
+    ResponseTampering,
+    TwoSessions,
+    TwoUserManager,
+    start_discovery_server,
+)
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -207,15 +216,8 @@ async def server():
 
 @pytest.fixture(scope="module")
 async def discovery_server():
-    # start our own server
-    srv = Server()
-    await srv.init()
-    await srv.set_application_uri("urn:enginir:opcua:discovery")
-    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_discovery}")
-    srv.accept_server_registrations()
-    await srv.start()
+    srv = await start_discovery_server(port_discovery)
     yield srv
-    # stop the server
     await srv.stop()
 
 

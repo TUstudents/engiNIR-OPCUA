@@ -9,8 +9,14 @@ import asyncio
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient
@@ -389,3 +395,45 @@ async def signing_client(server: Server, user: str = "alice") -> Client:
     client.set_user(user)
     client.set_password(TWO_SESSION_USERS[user])
     return client
+
+
+def make_certificate(application_uri: str) -> tuple[bytes, bytes]:
+    """A self-signed certificate (DER) with the ApplicationUri, and its private key (PEM), made for one test."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test application")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(application_uri)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    return certificate.public_bytes(serialization.Encoding.DER), pem
+
+
+async def start_discovery_server(port: int) -> Server:
+    """A discovery server that accepts registrations on a None and a SignAndEncrypt endpoint."""
+    srv = Server()
+    await srv.init()
+    await srv.set_application_uri("urn:enginir:opcua:discovery")
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
+    await srv.load_certificate(EXAMPLES / "certificate-example.der")
+    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    srv.accept_server_registrations()
+    await srv.start()
+    return srv
+
+
+async def give_identity(srv: Server, application_uri: str) -> None:
+    """Gives the server its own ApplicationUri and a generated certificate that carries it."""
+    certificate, private_key = make_certificate(application_uri)
+    await srv.load_certificate(certificate, "DER")
+    await srv.load_private_key(private_key, format="PEM")
+    await srv.set_application_uri(application_uri)

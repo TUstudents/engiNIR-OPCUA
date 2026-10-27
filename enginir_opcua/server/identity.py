@@ -271,3 +271,19 @@ class IdentityGuard:
                 del self.records[key]
         while len(self.records) >= self.max_keys:
             del self.records[next(iter(self.records))]
+
+
+def authorize_register_server(security: ChannelSecurity, server: ua.RegisteredServer) -> None:
+    if security.mode == ua.MessageSecurityMode.None_:
+        _logger.warning("Rejected RegisterServer on a channel without security")
+        raise ServiceError(ua.StatusCodes.BadSecurityModeInsufficient)
+    channel_uri = certificate_application_uri(security.certificate) if security.certificate else None
+    if not channel_uri or server.ServerUri != channel_uri:
+        _logger.warning(
+            "Rejected RegisterServer: ServerUri %r is not the ApplicationUri of the channel", server.ServerUri
+        )
+        raise ServiceError(ua.StatusCodes.BadServerUriInvalid)
+    if not server.ServerNames:
+        raise ServiceError(ua.StatusCodes.BadServerNameMissing)
+    if server.IsOnline and not server.DiscoveryUrls:
+        raise ServiceError(ua.StatusCodes.BadDiscoveryUrlMissing)

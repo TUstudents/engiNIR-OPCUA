@@ -8,6 +8,7 @@ from enginir_opcua import ua
 
 from ..common.utils import ServiceError
 from ..ua.ua_binary import Primitives
+from .identity import authorize_register_server
 from .internal_session import PublishRequestData
 from .service_dispatch import OperationBound, Permission, Requires, ServiceContext, ServiceEntry, entry
 
@@ -27,6 +28,7 @@ async def find_servers(ctx: ServiceContext, params: ua.FindServersParameters) ->
 async def register_server(ctx: ServiceContext, server: ua.RegisteredServer) -> ua.RegisterServerResponse:
     if not ctx.iserver.accept_server_registrations:
         raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
+    authorize_register_server(ctx.channel.security, server)
     ctx.iserver.register_server(server)
     return ua.RegisterServerResponse()
 
@@ -34,6 +36,7 @@ async def register_server(ctx: ServiceContext, server: ua.RegisteredServer) -> u
 async def register_server2(ctx: ServiceContext, params: ua.RegisterServer2Parameters) -> ua.RegisterServer2Response:
     if not ctx.iserver.accept_server_registrations:
         raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
+    authorize_register_server(ctx.channel.security, params.Server)
     ctx.iserver.register_server2(params)
     return ua.RegisterServer2Response()
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass, fields
@@ -77,9 +78,10 @@ OPERATION_LIMIT_NODES: dict[str, int] = {
 
 
 class ServerDesc:
-    def __init__(self, serv: Any, cap: Any = None) -> None:
+    def __init__(self, serv: Any, cap: Any = None, registered_at: float | None = None) -> None:
         self.Server = serv
         self.Capabilities = cap
+        self.registered_at = registered_at
 
 
 class InternalServer:
@@ -98,6 +100,9 @@ class InternalServer:
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
+        self.max_registered_servers: int = 100
+        self.registration_timeout: float = 600.0
+        self.clock: Callable[[], float] = time.monotonic
         # Server-side limits — clamp client-requested values to avoid resource exhaustion
         # when clients abandon long-lived sessions. Tighten on a per-deployment basis.
         self.max_session_timeout_ms: float = 600_000
@@ -351,7 +356,9 @@ class InternalServer:
         servers = []
         params_server_uris = [uri.split(":") for uri in params.ServerUris] if params.ServerUris else []
         our_application_uris = [edp.Server.ApplicationUri for edp in self.endpoints]
-        for desc in self._known_servers.values():
+        for desc in list(self._known_servers.values()):
+            if self._is_registration_expired(desc):
+                continue
             if params_server_uris:
                 serv_uri = desc.Server.ApplicationUri.split(":")
                 if not any(serv_uri[: len(uri)] == uri for uri in params_server_uris):
@@ -367,17 +374,33 @@ class InternalServer:
             servers.append(serv)
         return servers
 
+    def _is_registration_expired(self, desc: ServerDesc) -> bool:
+        return desc.registered_at is not None and self.clock() - desc.registered_at > self.registration_timeout
+
+    def _registered_uris(self) -> list[str]:
+        return [uri for uri, desc in self._known_servers.items() if desc.registered_at is not None]
+
     def register_server(self, server: Any, conf: Any = None) -> None:
+        uri = server.ServerUri
+        known = self._known_servers.get(uri)
+        if known is not None and known.registered_at is None:
+            raise ServiceError(ua.StatusCodes.BadServerUriInvalid)
+        if not server.IsOnline:
+            self._known_servers.pop(uri, None)
+            return
+        for expired in [u for u in self._registered_uris() if self._is_registration_expired(self._known_servers[u])]:
+            del self._known_servers[expired]
+        if known is None and len(self._registered_uris()) >= self.max_registered_servers:
+            _logger.warning("Rejected the registration of %s: the registry is full", uri)
+            raise ServiceError(ua.StatusCodes.BadResourceUnavailable)
         appdesc = ua.ApplicationDescription()
-        appdesc.ApplicationUri = server.ServerUri
+        appdesc.ApplicationUri = uri
         appdesc.ProductUri = server.ProductUri
-        # FIXME: select name from client locale
         appdesc.ApplicationName = server.ServerNames[0]
         appdesc.ApplicationType = server.ServerType
         appdesc.DiscoveryUrls = server.DiscoveryUrls
-        # FIXME: select discovery uri using reachability from client network
         appdesc.GatewayServerUri = server.GatewayServerUri
-        self._known_servers[server.ServerUri] = ServerDesc(appdesc, conf)
+        self._known_servers[uri] = ServerDesc(appdesc, conf, registered_at=self.clock())
 
     def register_server2(self, params: ua.RegisterServer2Parameters) -> None:
         return self.register_server(params.Server, params.DiscoveryConfiguration)

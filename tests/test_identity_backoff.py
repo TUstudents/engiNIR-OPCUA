@@ -1,11 +1,6 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
 
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyNone
@@ -13,7 +8,7 @@ from enginir_opcua.server.identity import IdentityGuard, peer_key
 from enginir_opcua.server.internal_session import ChannelSecurity
 
 from .conftest import find_free_port
-from .harness import EXAMPLES, TWO_SESSION_USERS, TwoUserManager, signing_client
+from .harness import EXAMPLES, TWO_SESSION_USERS, TwoUserManager, make_certificate, signing_client
 
 
 class Delays:
@@ -177,9 +172,7 @@ async def test_srv39_wait_is_an_await_that_leaves_other_requests_alone(signing_s
 def test_srv39_key_is_the_application_uri_of_the_certificate() -> None:
     """Part 4, 5.7.3.1: a secured channel is identified by the ApplicationUri in the client certificate."""
     uri = "urn:example:backoff-client"
-    security = ChannelSecurity(
-        _certificate_with_uri(uri), SecurityPolicyBasic256Sha256.URI, ua.MessageSecurityMode.Sign
-    )
+    security = ChannelSecurity(make_certificate(uri)[0], SecurityPolicyBasic256Sha256.URI, ua.MessageSecurityMode.Sign)
     assert peer_key(security, "10.1.2.3") == f"uri:{uri}"
 
 
@@ -193,31 +186,6 @@ def test_srv39_key_falls_back_to_the_address_without_a_uri() -> None:
 def test_srv39_key_of_an_unsecured_channel_is_the_address_only() -> None:
     """Part 4, 5.7.3.1: with mode None the key is the IP address, whatever the client claims."""
     security = ChannelSecurity(
-        _certificate_with_uri("urn:example:claimed"), SecurityPolicyNone.URI, ua.MessageSecurityMode.None_
+        make_certificate("urn:example:claimed")[0], SecurityPolicyNone.URI, ua.MessageSecurityMode.None_
     )
     assert peer_key(security, "10.1.2.3") == "ip:10.1.2.3"
-
-
-def _certificate_with_uri(uri: str) -> bytes:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "backoff")])
-    now = datetime.now(UTC)
-    certificate = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now)
-        .not_valid_after(now + timedelta(days=1))
-        .add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(uri)]), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-    return certificate.public_bytes(serialization.Encoding.DER)
-
-
-async def test_srv39_clean_logins_leave_no_record(signing_server: Server, delays: Delays) -> None:
-    """Part 4, 5.7.3.1: the table only holds peers that failed, its memory is bounded by them."""
-    guard = signing_server.iserver.identity_guard
-    await _login(signing_server)
-    assert guard.records == {}

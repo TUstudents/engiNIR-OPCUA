@@ -316,6 +316,15 @@ class Server:
         params.ServerUris = uris
         return self.iserver.find_servers(params)
 
+    async def _secure_discovery_client(self, client: Client) -> None:
+        if self.iserver.certificate is None or self.iserver.private_key is None:
+            return
+        await client.set_security(
+            security_policies.SecurityPolicyBasic256Sha256,
+            uacrypto.CertProperties(uacrypto.der_from_x509(self.iserver.certificate), "DER"),
+            uacrypto.CertProperties(uacrypto.pem_from_key(self.iserver.private_key), "PEM"),
+        )
+
     async def register_to_discovery(
         self,
         url: str = "opc.tcp://localhost:4840",
@@ -331,6 +340,7 @@ class Server:
         if not 0 <= period <= MAX_DISCOVERY_PERIOD_SECONDS:
             raise ValueError(f"period must be between 0 and {MAX_DISCOVERY_PERIOD_SECONDS} seconds")
         client = Client(url)
+        await self._secure_discovery_client(client)
         await client.connect_sessionless()
         try:
             await client.register_server(self, discovery_configuration)
