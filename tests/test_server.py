@@ -30,17 +30,28 @@ from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.ua.ua_binary import uatcp_to_binary
 
+from .conftest import find_free_port
+from .harness import give_identity
+
 pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
 
 
-async def test_discovery(server, discovery_server):
+@pytest.fixture
+async def registrant():
+    srv = Server()
+    await srv.init()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    return srv
+
+
+async def test_discovery(registrant, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         servers = await client.find_servers()
         new_app_uri = "urn:enginir:opcua:server:test_discovery"
-        await server.set_application_uri(new_app_uri)
-        await server.register_to_discovery(discovery_server.endpoint.geturl(), 0)
+        await give_identity(registrant, new_app_uri, discovery_server)
+        await registrant.register_to_discovery(discovery_server.endpoint.geturl(), 0)
         # let server register registration
         await asyncio.sleep(0.5)
         new_servers = await client.find_servers()
@@ -49,34 +60,34 @@ async def test_discovery(server, discovery_server):
         assert new_app_uri in [s.ApplicationUri for s in new_servers]
 
 
-async def test_unregister_discovery(server, discovery_server):
+async def test_unregister_discovery(registrant, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         new_app_uri = "urn:enginir:opcua:server:test_discovery2"
-        await server.set_application_uri(new_app_uri)
+        await give_identity(registrant, new_app_uri, discovery_server)
         # register without automatic renewal
-        await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
+        await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         await asyncio.sleep(0.5)
         # unregister, no automatic renewal to stop
-        await server.unregister_from_discovery(discovery_server.endpoint.geturl())
+        await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
         await asyncio.sleep(0.5)
         # reregister with automatic renewal
-        await server.register_to_discovery(discovery_server.endpoint.geturl(), period=60)
+        await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=60)
         await asyncio.sleep(0.5)
         # unregister, cancel scheduled renewal
-        await server.unregister_from_discovery(discovery_server.endpoint.geturl())
+        await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
 
 
-async def test_find_servers2(server, discovery_server):
+async def test_find_servers2(registrant, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
         servers = await client.find_servers()
         new_app_uri1 = "urn:enginir:opcua:server:test_discovery1"
-        await server.set_application_uri(new_app_uri1)
-        await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
+        await give_identity(registrant, new_app_uri1, discovery_server)
+        await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         new_app_uri2 = "urn:enginir:opcua:test_discovery2"
-        await server.set_application_uri(new_app_uri2)
-        await server.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
+        await give_identity(registrant, new_app_uri2, discovery_server)
+        await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
         await asyncio.sleep(0.1)  # let server register registration
         new_servers = await client.find_servers()
         assert len(new_servers) - len(servers) == 2
@@ -574,7 +585,7 @@ async def test_context_manager():
         state[0] += 1
 
     # create server and replace instance methods with dummy methods
-    server = Server()
+    server = Server(allow_no_security=True)
     server.start = increment_state.__get__(server)
     server.stop = increment_state.__get__(server)
     assert state[0] == 0
@@ -882,7 +893,7 @@ async def test_loading_shelf(tmp_path: Path):
     demo_shelf_file: Path = tmp_path / "some_shelf"
 
     # create cache file
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init(shelf_file=demo_shelf_file)
     del server
 
@@ -896,7 +907,7 @@ async def test_loading_shelf(tmp_path: Path):
     sh.close()
 
     # ensure that we are actually loading from the cache
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init(shelf_file=demo_shelf_file)
     sh2 = shelve.open(str(demo_shelf_file), "w", writeback=False)
     nod2 = sh2[id.to_string()].attributes[ua.AttributeIds.Value]
@@ -924,7 +935,7 @@ async def test_null_auth(server):
 
 
 async def test_start_server_when_port_is_in_use(server: Server):
-    server2 = Server()
+    server2 = Server(allow_no_security=True)
     await server2.init()
     url = server.endpoint.geturl()
     server2.set_endpoint(url)  # try to bind on the same endpoint as an already running server
@@ -1034,7 +1045,7 @@ async def test_protocol_rejects_a_repeated_hello_and_closes_the_connection() -> 
 
 
 async def test_default_application_identity_is_enginir() -> None:
-    srv = Server()
+    srv = Server(allow_no_security=True)
     clt = Client("opc.tcp://127.0.0.1:4840")
     assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
     assert srv.get_application_uri() == "urn:enginir:opcua:server"

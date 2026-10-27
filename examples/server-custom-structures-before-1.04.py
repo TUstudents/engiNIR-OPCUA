@@ -3,10 +3,11 @@ import logging
 
 from enginir_opcua import Server, ua
 from enginir_opcua.common.type_dictionary_builder import DataTypeDictionaryBuilder
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 async def main():
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/UA/SampleServer")
     server.set_server_name("Custom structure demo server")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import secrets
 import time
@@ -13,6 +12,7 @@ from enginir_opcua import ua
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
 from ..crypto.security_policies import SecurityPolicyNone
+from ..crypto.uacrypto import certificate_thumbprint, split_certificate_chain
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from .utils import Buffer, NotEnoughData
 
@@ -35,6 +35,13 @@ KNOWN_MESSAGE_TYPES = frozenset(
         ua.MessageType.SecureClose,
     }
 )
+
+
+def _refuse_unchecked_certificate(_chain: bytes) -> None:
+    raise TransportError(
+        ua.StatusCodes.BadSecurityChecksFailed,
+        "No certificate check is set on the channel, so no peer certificate is trusted",
+    )
 
 
 class TransportError(UaError):
@@ -346,9 +353,9 @@ class MessageChunk:
                 for cert in security_policy.host_certificate_chain:
                     chunk.SecurityHeader.SenderCertificate += cert
             if security_policy.peer_certificate:
-                chunk.SecurityHeader.ReceiverCertificateThumbPrint = hashlib.sha1(
-                    security_policy.peer_certificate, usedforsecurity=False
-                ).digest()
+                chunk.SecurityHeader.ReceiverCertificateThumbPrint = certificate_thumbprint(
+                    security_policy.peer_certificate
+                )
             chunk.MessageHeader.ChannelId = channel_id
             chunk.SequenceHeader.RequestId = request_id
             return [chunk]
@@ -417,6 +424,7 @@ class SecureChannel:
         self._incoming_size = 0
         self.security_policy = security_policy
         self._policies: list[Any] = []
+        self.peer_certificate_check: Callable[[bytes], None] = _refuse_unchecked_certificate
         self._open = False
         self.security_token = ua.ChannelSecurityToken()
         self._current: TokenSlot | None = None
@@ -582,9 +590,10 @@ class SecureChannel:
         if policy.URI != SecurityPolicyNone.URI:
             if not security_header.SenderCertificate or not security_header.ReceiverCertificateThumbPrint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Certificate or thumbprint is missing")
-            thumbprint = hashlib.sha1(policy.host_certificate or b"", usedforsecurity=False).digest()
+            thumbprint = certificate_thumbprint(policy.host_certificate or b"")
             if security_header.ReceiverCertificateThumbPrint != thumbprint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
+            self.peer_certificate_check(security_header.SenderCertificate)
         if params.ClientProtocolVersion != protocol_version:
             raise OpenRequestError(ua.StatusCodes.BadProtocolVersionUnsupported, "Protocol version differs from Hello")
         if renew != self._open:
@@ -616,7 +625,10 @@ class SecureChannel:
         response: ua.OpenSecureChannelResult,
         params: ua.OpenSecureChannelParameters,
         protocol_version: int,
+        sender_certificate: bytes | None = None,
     ) -> None:
+        if self.security_policy.URI != SecurityPolicyNone.URI:
+            self.peer_certificate_check(self._server_chain(sender_certificate))
         token = response.SecurityToken
         if response.ServerProtocolVersion != protocol_version:
             raise ua.uaerrors.BadProtocolVersionUnsupported()
@@ -626,6 +638,16 @@ class SecureChannel:
             nonce = response.ServerNonce or b""
             if len(nonce) != self.security_policy.secure_channel_nonce_length or nonce == params.ClientNonce:
                 raise ua.uaerrors.BadNonceInvalid()
+
+    def _server_chain(self, sender_certificate: bytes | None) -> bytes:
+        leaf = self.security_policy.peer_certificate or b""
+        try:
+            pieces = split_certificate_chain(sender_certificate) if sender_certificate else []
+        except UaError:
+            return leaf
+        if pieces and pieces[0] == leaf:
+            return leaf + b"".join(pieces[1:])
+        return leaf
 
     def message_to_binary(
         self, message: bytes, message_type: ua.MessageType = ua.MessageType.SecureMessage, request_id: int = 0

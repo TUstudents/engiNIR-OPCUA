@@ -66,7 +66,9 @@ def reference_stack(reference_client_dll: Path) -> ReferenceStack:
 
 @pytest.fixture(scope="module")
 async def identity(tmp_path_factory: pytest.TempPathFactory) -> ClientIdentity:
-    return await make_identity(tmp_path_factory.mktemp("interop-identity"))
+    pki = os.environ.get(PKI_ENV)
+    reference_certificates = sorted((Path(pki) / "own" / "certs").glob("*.der")) if pki else []
+    return await make_identity(tmp_path_factory.mktemp("interop-identity"), reference_certificates)
 
 
 @pytest.fixture(scope="module")

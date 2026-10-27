@@ -20,9 +20,10 @@ class UserManager:
 
 @pytest.fixture()
 async def srv_user():
-    srv = Server(user_manager=UserManager())
+    srv = Server(allow_no_security=True, user_manager=UserManager())
     srv.set_endpoint(uri)
     srv.set_identity_tokens([ua.UserNameIdentityToken])
+    srv.allow_plaintext_password = True
 
     await srv.init()
     await srv.start()

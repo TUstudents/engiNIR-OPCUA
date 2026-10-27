@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import signal
 import socket
 from collections.abc import Awaitable, Callable
@@ -10,6 +11,7 @@ from typing import Any
 from enginir_opcua import Client, ua
 from enginir_opcua.client.ua_client import UASocketProtocol
 from enginir_opcua.crypto import security_policies
+from enginir_opcua.crypto.truststore import TrustStore
 
 NAMESPACE_URI = "http://opcfoundation.org/Quickstarts/ReferenceServer"
 USER_NAME = "user1"
@@ -71,14 +73,22 @@ MATRIX = tuple(
 class ClientIdentity:
     certificate: Path
     private_key: Path
+    server_trust: TrustStore | None = None
 
 
-async def make_identity(directory: Path) -> ClientIdentity:
+async def make_identity(directory: Path, reference_server_certificates: list[Path] | None = None) -> ClientIdentity:
     client = Client("opc.tcp://localhost:4840")
     certificate, private_key = await client.setup_self_signed_certificate(
         directory / "key.pem", directory / "certificate.der"
     )
-    return ClientIdentity(certificate, private_key)
+    server_trust = None
+    if reference_server_certificates:
+        trusted = directory / "trusted-reference-server"
+        trusted.mkdir()
+        for index, reference in enumerate(reference_server_certificates):
+            shutil.copyfile(reference, trusted / f"reference-server-{index}.der")
+        server_trust = TrustStore([trusted], [])
+    return ClientIdentity(certificate, private_key, server_trust)
 
 
 async def connect(
@@ -90,6 +100,8 @@ async def connect(
     **client_options: Any,
 ) -> Client:
     client = Client(url, **client_options)
+    if identity.server_trust is not None:
+        client.set_trust_store(identity.server_trust)
     if channel_lifetime_ms is not None:
         client.secure_channel_timeout = channel_lifetime_ms
     if case.policy is not None:

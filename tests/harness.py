@@ -9,8 +9,14 @@ import asyncio
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ua_client import UaClient
@@ -21,8 +27,11 @@ from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256,
 from enginir_opcua.server.internal_server import InternalServer
 from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 
+from .pki import generated_pki
+
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
 EXAMPLES = Path(__file__).parent.parent / "examples"
+PKI = generated_pki()
 
 
 class RawPeer:
@@ -380,12 +389,61 @@ async def signing_client(server: Server, user: str = "alice") -> Client:
     client = Client(server.endpoint.geturl())
     await client.set_security(
         SecurityPolicyBasic256Sha256,
-        str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"),
-        str(EXAMPLES / "certificates" / "peer-private-key-example-1.pem"),
+        PKI.peer1.certificate,
+        PKI.peer1.key,
         None,
-        str(EXAMPLES / "certificate-example.der"),
+        PKI.server.certificate,
         ua.MessageSecurityMode.Sign,
     )
     client.set_user(user)
     client.set_password(TWO_SESSION_USERS[user])
     return client
+
+
+def make_certificate(application_uri: str) -> tuple[bytes, bytes]:
+    """A self-signed certificate (DER) with the ApplicationUri, and its private key (PEM), made for one test."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test application")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(application_uri)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    return certificate.public_bytes(serialization.Encoding.DER), pem
+
+
+async def start_discovery_server(port: int) -> Server:
+    """A discovery server that accepts registrations on a None and a SignAndEncrypt endpoint."""
+    srv = Server(allow_no_security=True)
+    await srv.init()
+    await srv.set_application_uri("urn:enginir:opcua:discovery")
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
+    await srv.load_certificate(PKI.server.certificate)
+    await srv.load_private_key(PKI.server.key)
+    srv.set_trust_store(PKI.trust_store())
+    srv.accept_server_registrations()
+    await srv.start()
+    return srv
+
+
+async def give_identity(srv: Server, application_uri: str, discovery: Server | None = None) -> None:
+    """Gives the server an ApplicationUri and a generated certificate that carries it.
+
+    The server trusts the certificates of PKI; the discovery server, when given, trusts the new certificate.
+    """
+    peer = PKI.issue(f"identity-{abs(hash(application_uri))}", application_uri)
+    await srv.load_certificate(peer.certificate)
+    await srv.load_private_key(peer.key)
+    await srv.set_application_uri(application_uri)
+    srv.set_trust_store(PKI.trust_store())
+    if discovery is not None and discovery.iserver.trust_store is not None:
+        discovery.iserver.trust_store.pin(peer.identity.certificate)

@@ -9,6 +9,7 @@ from enginir_opcua import ua, uamethod
 from enginir_opcua.client import Client as AsyncClient
 from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.server import Server as AsyncServer
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import (
     Client,
     Server,
@@ -42,7 +43,8 @@ def tloop():
 
 @pytest.fixture(scope="module")
 def server(tloop):
-    s = Server(tloop=tloop)
+    s = Server(allow_no_security=True, user_manager=PermissiveUserManager(), tloop=tloop)
+    s.aio_obj.allow_plaintext_password = True
     s.disable_clock(True)
     s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/enginir-opcua/server/")
     uri = "http://examples.freeopcua.github.io"
@@ -90,7 +92,7 @@ def test_sync_client_set_max_concurrent_requests(client):
 
 def test_sync_server_set_application_uri(tloop):
     """Sync Server must expose set_application_uri / get_application_uri (GH-1967)."""
-    s = Server(tloop=tloop)
+    s = Server(allow_no_security=True, tloop=tloop)
     s.disable_clock(True)
     new_uri = "urn:enginir:opcua:server:sync_test_app_uri"
     s.set_application_uri(new_uri)
@@ -212,7 +214,7 @@ def test_sync_server_get_node(server, idx):
 async def test_sync_server_creating_shelf_files_works(tloop: ThreadLoop, tmp_path: Path) -> None:
     shelf_file_path: Path = tmp_path / "shelf_file"
 
-    Server(tloop=tloop, shelf_file=shelf_file_path)
+    Server(allow_no_security=True, tloop=tloop, shelf_file=shelf_file_path)
 
 
 class MySubHandler:
@@ -365,12 +367,12 @@ def test_sync_server_init_failure_stops_own_tloop(monkeypatch):
     monkeypatch.setattr(AsyncServer, "init", failing_init)
     before = alive_thread_loops()
     with pytest.raises(RuntimeError, match="init failed"):
-        Server()
+        Server(allow_no_security=True)
     assert alive_thread_loops() == before
 
 
 def test_sync_server_stop_failure_stops_own_tloop(monkeypatch):
-    s = Server()
+    s = Server(allow_no_security=True)
 
     async def failing_stop():
         raise RuntimeError("stop failed")

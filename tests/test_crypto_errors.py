@@ -7,7 +7,7 @@ from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.security_policies import SecurityPolicy
 
-from .harness import EXAMPLES, signing_client
+from .harness import PKI, signing_client
 
 POLICIES = [
     security_policies.SecurityPolicyBasic128Rsa15,
@@ -23,8 +23,8 @@ SEED = b"d" * 32
 
 @pytest.fixture(scope="module")
 async def credentials() -> tuple[object, object]:
-    certificate = await uacrypto.load_certificate(EXAMPLES / "certificate-example.der")
-    private_key = await uacrypto.load_private_key(EXAMPLES / "private-key-example.pem")
+    certificate = await uacrypto.load_certificate(PKI.server.certificate)
+    private_key = await uacrypto.load_private_key(PKI.server.key)
     return certificate, private_key
 
 
@@ -129,11 +129,13 @@ async def test_cry7_bad_x509_token_signature_is_user_signature_invalid(
     signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 5.7.3: Bad_UserSignatureInvalid for a missing or invalid userTokenSignature."""
+    await signing_server.stop()
     signing_server.set_identity_tokens([ua.UserNameIdentityToken, ua.X509IdentityToken])
+    await signing_server.start()
     _corrupt_signature(monkeypatch, user_token=True)
     client: Client = await signing_client(signing_server)
-    await client.load_client_certificate(str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"))
-    await client.load_private_key(EXAMPLES / "certificates" / "peer-private-key-example-1.pem")
+    await client.load_client_certificate(str(PKI.peer1.certificate))
+    await client.load_private_key(PKI.peer1.key)
     with pytest.raises(ua.uaerrors.BadUserSignatureInvalid):
         await client.connect()
     await client.disconnect()

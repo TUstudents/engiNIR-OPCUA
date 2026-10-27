@@ -1,8 +1,10 @@
 import argparse
 import asyncio
 import concurrent.futures
+import getpass
 import logging
 import math
+import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -18,7 +20,10 @@ except ImportError:
 
 
 from enginir_opcua import Client, Node, Server, ua, uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
+
+PASSWORD_VARIABLE = "ENGINIR_OPCUA_PASSWORD"
 
 
 def add_minimum_args(parser: argparse.ArgumentParser) -> None:
@@ -72,8 +77,10 @@ def add_common_args(parser: argparse.ArgumentParser, default_node: str = "i=84",
     )
     parser.add_argument("--user", help="User name for authentication. Overrides the user name given in the URL.")
     parser.add_argument(
-        "--password",
-        help="Password name for authentication. Overrides the password given in the URL.",
+        "--ask-password",
+        action="store_true",
+        help="Ask for the password on the terminal. Without it the password is taken from the environment variable"
+        f" {PASSWORD_VARIABLE} when that is set. Either overrides the password given in the URL.",
     )
 
 
@@ -247,11 +254,18 @@ def _val_to_variant(val: str, args: argparse.Namespace) -> ua.Variant:
     raise ValueError(f"Invalid datatype: {args.datatype}")
 
 
+def _password_from(args: argparse.Namespace) -> str | None:
+    if args.ask_password:
+        return getpass.getpass("Password: ")
+    return os.environ.get(PASSWORD_VARIABLE)
+
+
 async def _configure_client_with_args(client: Client, args: argparse.Namespace) -> None:
     if args.user:
         client.set_user(args.user)
-    if args.password:
-        client.set_password(args.password)
+    password = _password_from(args)
+    if password:
+        client.set_password(password)
     await client.set_security_string(args.security)
 
 
@@ -597,8 +611,10 @@ async def _uaclient() -> None:
 
 async def _uaserver() -> None:
     parser = argparse.ArgumentParser(
-        description="Run an example OPC-UA server. By importing xml definition and using uawrite "
-        " command line, it is even possible to expose real data using this server"
+        description="Run a DEMO OPC-UA server with no security: it listens on all interfaces, offers the endpoint"
+        " without encryption and, by default, accepts only anonymous read-only sessions. Do not use it to expose real"
+        " data on a network you do not trust. By importing xml definition and using uawrite command line, it is"
+        " possible to expose data using this server (see --accept-all-logins)."
     )
     # we set up a server, this is a bit different from other tool, so we do not reuse common arguments
     parser.add_argument(
@@ -637,10 +653,16 @@ async def _uaserver() -> None:
     )
     parser.add_argument("--certificate", help="set server certificate")
     parser.add_argument("--private_key", help="set server private key")
+    parser.add_argument(
+        "--accept-all-logins",
+        action="store_true",
+        help="INSECURE: accept every user name and password, with Admin for admin, and let anonymous users write",
+    )
     args = parser.parse_args()
     logging.basicConfig(format="%(levelname)s: %(message)s", level=getattr(logging, args.loglevel))
 
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager() if args.accept_all_logins else None, allow_no_security=True)
+    server.allow_plaintext_password = args.accept_all_logins
     await server.init()
     server.set_endpoint(args.url)
     if args.certificate:

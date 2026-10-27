@@ -11,6 +11,7 @@ import pytest
 
 from enginir_opcua import Server, ua
 from enginir_opcua.crypto.permission_rules import User
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
 from .harness import SessionProbe
@@ -24,7 +25,7 @@ class RolelessUserManager:
 
 
 async def _server(user_manager: Any = None) -> Server:
-    srv = Server(user_manager=user_manager)
+    srv = Server(allow_no_security=True, user_manager=user_manager)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await srv.start()
@@ -34,6 +35,13 @@ async def _server(user_manager: Any = None) -> Server:
 @pytest.fixture
 async def srv() -> AsyncIterator[Server]:
     server = await _server()
+    yield server
+    await server.stop()
+
+
+@pytest.fixture
+async def user_srv() -> AsyncIterator[Server]:
+    server = await _server(PermissiveUserManager())
     yield server
     await server.stop()
 
@@ -162,10 +170,10 @@ def _call_request(method_id: ua.NodeId) -> ua.CallRequest:
     return request
 
 
-async def test_srv41_read_is_answered_while_a_call_runs(srv: Server) -> None:
+async def test_srv41_read_is_answered_while_a_call_runs(user_srv: Server) -> None:
     """Part 4, 5.3: requests of one Session can run at the same time, a slow Call does not delay a Read."""
-    method_id = await _slow_method(srv, 1.5)
-    probe = await SessionProbe.open(srv.endpoint.geturl())
+    method_id = await _slow_method(user_srv, 1.5)
+    probe = await SessionProbe.open(user_srv.endpoint.geturl())
     try:
         token = await _activated(probe)
         call = asyncio.create_task(probe.send(token, _call_request(method_id), ua.CallResponse))
@@ -178,11 +186,11 @@ async def test_srv41_read_is_answered_while_a_call_runs(srv: Server) -> None:
         probe.close()
 
 
-async def test_srv41_requests_above_the_in_flight_cap_get_server_too_busy(srv: Server) -> None:
+async def test_srv41_requests_above_the_in_flight_cap_get_server_too_busy(user_srv: Server) -> None:
     """Part 4, 5.3: a Session with too many requests in flight gets Bad_ServerTooBusy."""
-    srv.iserver.session_manager.max_requests_in_flight_per_session = 2
-    method_id = await _slow_method(srv, 1.0)
-    probe = await SessionProbe.open(srv.endpoint.geturl())
+    user_srv.iserver.session_manager.max_requests_in_flight_per_session = 2
+    method_id = await _slow_method(user_srv, 1.0)
+    probe = await SessionProbe.open(user_srv.endpoint.geturl())
     try:
         token = await _activated(probe)
         calls = [asyncio.create_task(probe.send(token, _call_request(method_id), ua.CallResponse)) for _ in range(3)]

@@ -6,14 +6,13 @@ Can be used on server side or to implement binary/https opc-ua servers
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
+import time
 from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from struct import unpack_from
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,28 +22,20 @@ from ..common.callback import CallbackService
 from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
-from ..crypto import security_policies, uacrypto
-from ..crypto.validator import CertificateValidatorMethod
+from ..crypto import uacrypto
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
+from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
 from .service_dispatch import Dispatcher
 from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
-from .user_managers import PermissiveUserManager, UserManager
+from .user_managers import AnonymousReadOnlyUserManager, UserManager
 
 _logger = logging.getLogger(__name__)
-
-
-USER_TOKEN_SECURITY_POLICIES: tuple[type[security_policies.SecurityPolicy], ...] = (
-    security_policies.SecurityPolicyNone,
-    security_policies.SecurityPolicyBasic128Rsa15,
-    security_policies.SecurityPolicyBasic256,
-    security_policies.SecurityPolicyBasic256Sha256,
-    security_policies.SecurityPolicyAes128Sha256RsaOaep,
-    security_policies.SecurityPolicyAes256Sha256RsaPss,
-)
 
 
 @dataclass
@@ -88,9 +79,10 @@ OPERATION_LIMIT_NODES: dict[str, int] = {
 
 
 class ServerDesc:
-    def __init__(self, serv: Any, cap: Any = None) -> None:
+    def __init__(self, serv: Any, cap: Any = None, registered_at: float | None = None) -> None:
         self.Server = serv
         self.Capabilities = cap
+        self.registered_at = registered_at
 
 
 class InternalServer:
@@ -103,11 +95,15 @@ class InternalServer:
         self.callback_service = CallbackService()
         self.endpoints: list[ua.EndpointDescription] = []
         self._channel_id_counter = 5
-        self.allow_remote_admin = True
+        self.allow_plaintext_password = False
+        self.identity_guard = IdentityGuard()
         self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
+        self.max_registered_servers: int = 100
+        self.registration_timeout: float = 600.0
+        self.clock: Callable[[], float] = time.monotonic
         # Server-side limits — clamp client-requested values to avoid resource exhaustion
         # when clients abandon long-lived sessions. Tighten on a per-deployment basis.
         self.max_session_timeout_ms: float = 600_000
@@ -144,6 +140,7 @@ class InternalServer:
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
         self.certificate: Any = None
+        self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
         self.attribute_service = AttributeService(self.aspace)
@@ -154,11 +151,17 @@ class InternalServer:
         self.subscription_service: SubscriptionService = SubscriptionService(self.aspace, iserver=self)
         self.history_manager = HistoryManager(self)
         if user_manager is None:
-            _logger.info("No user manager specified. Using default permissive manager instead.")
-            user_manager = PermissiveUserManager()
-        self.user_manager = user_manager
-        self.certificate_validator: CertificateValidatorMethod | None = None
-        """hook to validate a certificate, raises a ServiceError when not valid"""
+            user_manager = AnonymousReadOnlyUserManager()
+        self.user_manager: UserManager = user_manager
+        self.trust_store: TrustStore | None = None
+        self.certificate_validator: CertificateValidator | None = None
+        self.user_trust_store: TrustStore | None = None
+        self.user_certificate_grace_seconds: float = 60.0
+        self.wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self._user_validator: CertificateValidator | None = None
+        self._pinned_user_validator: tuple[frozenset[bytes], CertificateValidator] | None = None
+        self.application_hook: ApplicationHook | None = None
+        """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())
@@ -362,7 +365,9 @@ class InternalServer:
         servers = []
         params_server_uris = [uri.split(":") for uri in params.ServerUris] if params.ServerUris else []
         our_application_uris = [edp.Server.ApplicationUri for edp in self.endpoints]
-        for desc in self._known_servers.values():
+        for desc in list(self._known_servers.values()):
+            if self._is_registration_expired(desc):
+                continue
             if params_server_uris:
                 serv_uri = desc.Server.ApplicationUri.split(":")
                 if not any(serv_uri[: len(uri)] == uri for uri in params_server_uris):
@@ -378,17 +383,33 @@ class InternalServer:
             servers.append(serv)
         return servers
 
+    def _is_registration_expired(self, desc: ServerDesc) -> bool:
+        return desc.registered_at is not None and self.clock() - desc.registered_at > self.registration_timeout
+
+    def _registered_uris(self) -> list[str]:
+        return [uri for uri, desc in self._known_servers.items() if desc.registered_at is not None]
+
     def register_server(self, server: Any, conf: Any = None) -> None:
+        uri = server.ServerUri
+        known = self._known_servers.get(uri)
+        if known is not None and known.registered_at is None:
+            raise ServiceError(ua.StatusCodes.BadServerUriInvalid)
+        if not server.IsOnline:
+            self._known_servers.pop(uri, None)
+            return
+        for expired in [u for u in self._registered_uris() if self._is_registration_expired(self._known_servers[u])]:
+            del self._known_servers[expired]
+        if known is None and len(self._registered_uris()) >= self.max_registered_servers:
+            _logger.warning("Rejected the registration of %s: the registry is full", uri)
+            raise ServiceError(ua.StatusCodes.BadResourceUnavailable)
         appdesc = ua.ApplicationDescription()
-        appdesc.ApplicationUri = server.ServerUri
+        appdesc.ApplicationUri = uri
         appdesc.ProductUri = server.ProductUri
-        # FIXME: select name from client locale
         appdesc.ApplicationName = server.ServerNames[0]
         appdesc.ApplicationType = server.ServerType
         appdesc.DiscoveryUrls = server.DiscoveryUrls
-        # FIXME: select discovery uri using reachability from client network
         appdesc.GatewayServerUri = server.GatewayServerUri
-        self._known_servers[server.ServerUri] = ServerDesc(appdesc, conf)
+        self._known_servers[uri] = ServerDesc(appdesc, conf, registered_at=self.clock())
 
     def register_server2(self, params: ua.RegisterServer2Parameters) -> None:
         return self.register_server(params.Server, params.DiscoveryConfiguration)
@@ -487,106 +508,33 @@ class InternalServer:
         """
         return self.aspace.read_attribute_value(nodeid, attr)
 
+    def user_certificate_validator(self) -> CertificateValidator | None:
+        store = self.user_trust_store
+        if store is not None:
+            if self._user_validator is None or self._user_validator.trust_store is not store:
+                self._user_validator = CertificateValidator(store)
+            return self._user_validator
+        pinned = getattr(self.user_manager, "pinned_certificates", None)
+        certificates = pinned() if pinned is not None else []
+        if not certificates:
+            return None
+        key = frozenset(uacrypto.der_from_x509(certificate) for certificate in certificates)
+        if self._pinned_user_validator is None or self._pinned_user_validator[0] != key:
+            pinned_store = TrustStore()
+            for certificate in certificates:
+                pinned_store.pin(certificate)
+            self._pinned_user_validator = (key, CertificateValidator(pinned_store))
+        return self._pinned_user_validator[1]
+
+    def offered_token_classes(self) -> tuple[type, ...]:
+        accepted = getattr(self.user_manager, "accepted_token_types", None)
+        if accepted is None:
+            return tuple(self.supported_tokens)
+        return tuple(token for token in self.supported_tokens if TOKEN_TYPES.get(token) in accepted)
+
     def set_user_manager(self, user_manager: UserManager) -> None:
         """
         set up a function which that will check for authorize users. Input function takes username
         and password as parameters and returns True of user is allowed access, False otherwise.
         """
         self.user_manager = user_manager
-
-    def _username_token_policy(
-        self, isession: Any, token: ua.UserNameIdentityToken
-    ) -> tuple[ua.UserTokenPolicy, ua.EndpointDescription]:
-        channel = isession.channel_security
-        for endpoint in self.endpoints:
-            if channel is not None and (
-                endpoint.SecurityPolicyUri != channel.policy_uri or endpoint.SecurityMode != channel.mode
-            ):
-                continue
-            for policy in endpoint.UserIdentityTokens:
-                if policy.TokenType == ua.UserTokenType.UserName and policy.PolicyId == token.PolicyId:
-                    return policy, endpoint
-        self.logger.warning("Rejected user token with unknown PolicyId %s", token.PolicyId)
-        raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-
-    @staticmethod
-    def _token_encryption_algorithm(policy: ua.UserTokenPolicy, endpoint: ua.EndpointDescription) -> str:
-        policy_uri = policy.SecurityPolicyUri or endpoint.SecurityPolicyUri
-        for policy_class in USER_TOKEN_SECURITY_POLICIES:
-            if policy_class.URI == policy_uri:
-                return policy_class.AsymmetricEncryptionURI
-        raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-
-    def decrypt_user_token(self, isession: Any, token: ua.UserNameIdentityToken) -> tuple[str, str]:
-        """
-        unpack the username and password for the benefit of the user defined user manager
-        """
-        policy, endpoint = self._username_token_policy(isession, token)
-        if not token.Password and not token.EncryptionAlgorithm:
-            return token.UserName, token.Password
-        expected_algorithm = self._token_encryption_algorithm(policy, endpoint)
-        if (token.EncryptionAlgorithm or "") != expected_algorithm:
-            self.logger.warning(
-                "Rejected user token encrypted with %r, policy %s requires %r",
-                token.EncryptionAlgorithm,
-                policy.PolicyId,
-                expected_algorithm,
-            )
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-        password = token.Password
-        if expected_algorithm:
-            password = self._decrypt_password_secret(isession.nonce, expected_algorithm, password)
-        elif isinstance(password, bytes):
-            password = password.decode("utf-8")
-        return token.UserName, password
-
-    def _decrypt_password_secret(self, nonce: bytes, algorithm: str, secret: bytes) -> str:
-        if algorithm == "http://www.w3.org/2001/04/xmlenc#rsa-1_5":
-            raw = uacrypto.decrypt_rsa15(self.private_key, secret)
-        elif algorithm == "http://www.w3.org/2001/04/xmlenc#rsa-oaep":
-            raw = uacrypto.decrypt_rsa_oaep(self.private_key, secret)
-        elif algorithm == "http://opcfoundation.org/UA/security/rsa-oaep-sha2-256":
-            raw = uacrypto.decrypt_rsa_oaep_sha256(self.private_key, secret)
-        else:
-            raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-        length = unpack_from("<I", raw)[0]
-        plain = raw[4 : 4 + length]
-        password, token_nonce = plain[: len(plain) - len(nonce)], plain[len(plain) - len(nonce) :]
-        if len(plain) < len(nonce) or not hmac.compare_digest(token_nonce, nonce):
-            self.logger.warning("Rejected user token that is not bound to the current server nonce")
-            raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
-        return password.decode("utf-8")
-
-    def verify_x509_token(self, isession: Any, token: ua.X509IdentityToken, signature: ua.SignatureData) -> bytes:
-        """
-        verify certificate signature
-        """
-        cert = uacrypto.x509_from_der(token.CertificateData)
-        alg = signature.Algorithm
-        sig = signature.Signature
-
-        # TODO check if algorithm is allowed, throw BadSecurityPolicyRejected if not
-
-        challenge = b""
-        if self.certificate is not None:
-            challenge += uacrypto.der_from_x509(self.certificate)
-        if isession.nonce is not None:
-            challenge += isession.nonce
-
-        if not (alg and sig):
-            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid)
-
-        try:
-            if alg == "http://www.w3.org/2000/09/xmldsig#rsa-sha1":
-                uacrypto.verify_sha1(cert, challenge, sig)
-            elif alg == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256":
-                uacrypto.verify_sha256(cert, challenge, sig)
-            elif alg == "http://opcfoundation.org/UA/security/rsa-pss-sha2-256":
-                uacrypto.verify_pss_sha256(cert, challenge, sig)
-            else:
-                self.logger.warning("Unknown certificate signature algorithm %s", alg)
-                raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-        except ua.uaerrors.SignatureError:
-            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid) from None
-
-        return token.CertificateData

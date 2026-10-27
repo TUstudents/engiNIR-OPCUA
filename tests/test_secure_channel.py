@@ -71,6 +71,10 @@ class ChannelPair:
         return receiver.receive_from_header_and_body(header, Buffer(bytes(body)))
 
 
+def accept_any_certificate(_chain: bytes) -> None:
+    return None
+
+
 def open_pair(policy: bool = False) -> ChannelPair:
     clock = FakeClock()
     if policy:
@@ -96,6 +100,7 @@ def open_pair(policy: bool = False) -> ChannelPair:
     server = SecureChannel(server_policy, TransportLimits())
     for channel in (client, server):
         channel._clock = clock
+        channel.peer_certificate_check = accept_any_certificate
     pair = ChannelPair(client, server, clock)
     pair._open(ua.SecurityTokenRequestType.Issue, 3_600_000)
     return pair
@@ -256,6 +261,7 @@ def test_com63_nonce_of_the_wrong_length_is_nonce_invalid() -> None:
     """Part 6, 6.7.4: the ClientNonce has the length of the policy."""
     pair = open_pair(policy=True)
     server = SecureChannel(pair.server.security_policy, TransportLimits())
+    server.peer_certificate_check = accept_any_certificate
     header = signed_header(server)
     mode = ua.MessageSecurityMode.Sign
     for nonce in (b"", os.urandom(16), os.urandom(33)):
@@ -355,3 +361,29 @@ async def test_cli8_renewal_interval_follows_every_revised_lifetime(monkeypatch:
     monkeypatch.setattr(client, "open_secure_channel", fake_open)
     await client._renew_channel_loop()
     assert sleeps == [30.0, 6.0, 1.0]
+
+
+def test_srv3_channel_without_a_certificate_check_refuses_the_peer_certificate_on_issue_and_renew() -> None:
+    """Part 4, 6.1.3 and Part 6, 6.7.4: with a policy other than None and no check set, nothing is trusted."""
+    pair = open_pair(policy=True)
+    bare = SecureChannel(pair.server.security_policy, TransportLimits())
+    header = signed_header(bare)
+    params = open_params(ua.SecurityTokenRequestType.Issue, os.urandom(32), ua.MessageSecurityMode.Sign)
+    with pytest.raises(TransportError) as error:
+        bare.validate_open_request(0, header, params, 0)
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+    pair.server.peer_certificate_check = bare.peer_certificate_check
+    renew = open_params(ua.SecurityTokenRequestType.Renew, os.urandom(32), ua.MessageSecurityMode.Sign)
+    with pytest.raises(TransportError) as error:
+        pair.server.validate_open_request(pair.server.channel_id, signed_header(pair.server), renew, 0)
+    assert error.value.status == ua.StatusCodes.BadSecurityChecksFailed
+
+
+def test_srv3_client_channel_without_a_certificate_check_refuses_the_open_response() -> None:
+    """Part 4, 6.1.3: the client side fails closed as well."""
+    pair = open_pair(policy=True)
+    params = open_params(ua.SecurityTokenRequestType.Renew, os.urandom(32), ua.MessageSecurityMode.Sign)
+    result = pair.server.open(params, pair._ids)
+    bare = SecureChannel(pair.client.security_policy, TransportLimits())
+    with pytest.raises(ua.UaError):
+        bare.check_open_response(result, params, 0)

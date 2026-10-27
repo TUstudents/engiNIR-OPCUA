@@ -59,7 +59,7 @@ async def test_client_connection_lost():
 
     # Test the disconnect behavoir
     port = find_free_port()
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
@@ -83,7 +83,7 @@ async def test_client_connection_lost():
 
 async def test_client_connection_lost_callback():
     port = find_free_port()
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
@@ -109,7 +109,7 @@ async def test_client_connection_lost_callback():
 
 async def test_session_watchdog():
     port = find_free_port()
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.iserver.min_session_timeout_ms = 100
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")

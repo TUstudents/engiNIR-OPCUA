@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, urlparse
 
+from cryptography import x509
+
 from enginir_opcua import ua
 
 from ..client import Client
@@ -31,7 +33,10 @@ from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import security_policies, uacrypto, validator
 from ..crypto.permission_rules import SimpleRoleRuleset
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
+from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
 from .event_generator import EventGenerator
@@ -95,7 +100,14 @@ class Server:
         server listens on some internal IP.
     """
 
-    def __init__(self, iserver: InternalServer | None = None, user_manager: UserManager | None = None) -> None:
+    def __init__(
+        self,
+        iserver: InternalServer | None = None,
+        user_manager: UserManager | None = None,
+        *,
+        allow_no_security: bool = False,
+        allow_deprecated_policies: bool = False,
+    ) -> None:
         self.endpoint: ParseResult = urlparse("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
         self._application_uri: str = "urn:enginir:opcua:server"
         self.product_uri: str = "urn:enginir:opcua"
@@ -110,10 +122,12 @@ class Server:
         self._discovery_period: int = 60
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
+        self._default_validator: CertificateValidator | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
-        # enable all endpoints by default
+        self.allow_deprecated_policies: bool = allow_deprecated_policies
+        # the secure endpoints are enabled by default, the None endpoint only when asked for
         self._security_policy: list[ua.SecurityPolicyType] = [
-            ua.SecurityPolicyType.NoSecurity,
+            *([ua.SecurityPolicyType.NoSecurity] if allow_no_security else []),
             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
             ua.SecurityPolicyType.Basic256Sha256_Sign,
             ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
@@ -261,6 +275,17 @@ class Server:
         """
         self.iserver.certificate = await uacrypto.load_certificate(path_or_content, format)
 
+    async def load_certificate_chain(self, chain: Iterable[str | bytes | Path]) -> None:
+        """
+        load the intermediate CA certificates between the server certificate and its root, leaf side first.
+        Each item is a DER or PEM file (a PEM file may hold several certificates) or the bytes of one.
+        The server sends the chain after its certificate wherever it sends its certificate.
+        """
+        certificates: list[x509.Certificate] = []
+        for item in chain:
+            certificates.extend(await uacrypto.load_certificates(item))
+        self.iserver.certificate_chain = certificates
+
     async def load_private_key(
         self, path_or_content: str | Path | bytes, password: str | bytes | None = None, format: str | None = None
     ) -> None:
@@ -316,6 +341,17 @@ class Server:
         params.ServerUris = uris
         return self.iserver.find_servers(params)
 
+    async def _secure_discovery_client(self, client: Client) -> None:
+        if self.iserver.certificate is None or self.iserver.private_key is None:
+            return
+        if self.iserver.trust_store is not None:
+            client.set_trust_store(self.iserver.trust_store)
+        await client.set_security(
+            security_policies.SecurityPolicyBasic256Sha256,
+            uacrypto.CertProperties(uacrypto.der_from_x509(self.iserver.certificate), "DER"),
+            uacrypto.CertProperties(uacrypto.pem_from_key(self.iserver.private_key), "PEM"),
+        )
+
     async def register_to_discovery(
         self,
         url: str = "opc.tcp://localhost:4840",
@@ -327,10 +363,16 @@ class Server:
         least every 10 minutes, so this method will use our asyncio thread to
         re-register every period seconds
         if period is 0 registration is not automatically renewed
+
+        The discovery server accepts the registration only on a secure channel, so the server needs its
+        certificate and private key, and an application URI (set_application_uri) equal to the ApplicationUri of
+        its certificate. The certificate of the discovery server is validated against the trust store of this
+        server (set_trust_store).
         """
         if not 0 <= period <= MAX_DISCOVERY_PERIOD_SECONDS:
             raise ValueError(f"period must be between 0 and {MAX_DISCOVERY_PERIOD_SECONDS} seconds")
         client = Client(url)
+        await self._secure_discovery_client(client)
         await client.connect_sessionless()
         try:
             await client.register_server(self, discovery_configuration)
@@ -390,11 +432,13 @@ class Server:
             except Exception as e:
                 _logger.warning("Could not withdraw the registration from %s: %s", url, e)
 
-    def allow_remote_admin(self, allow: bool) -> None:
-        """
-        Enable or disable the builtin Admin user from network clients
-        """
-        self.iserver.allow_remote_admin = allow
+    @property
+    def allow_plaintext_password(self) -> bool:
+        return self.iserver.allow_plaintext_password
+
+    @allow_plaintext_password.setter
+    def allow_plaintext_password(self, allow: bool) -> None:
+        self.iserver.allow_plaintext_password = allow
 
     def set_endpoint(self, url: str) -> None:
         self.endpoint = urlparse(url)
@@ -410,20 +454,26 @@ class Server:
         """
         Method setting up the security policies for connections
         to the server, where security_policy is a list of integers.
-        During server initialization, all endpoints are enabled:
+        During server initialization, all secure endpoints are enabled. The None endpoint is only
+        enabled with Server(allow_no_security=True) or by listing ua.SecurityPolicyType.NoSecurity here.
+        The deprecated Basic128Rsa15 and Basic256 policies need Server(allow_deprecated_policies=True).
 
-                security_policy = [
-                            ua.SecurityPolicyType.NoSecurity,
-                            ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
-                            ua.SecurityPolicyType.Basic256Sha256_Sign
-                                ]
-
-        E.g. to limit the number of endpoints and disable no encryption:
+        E.g. to limit the number of endpoints:
 
                 set_security_policy([
                             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
 
         """
+        deprecated = [
+            policy_type.name
+            for policy_type in security_policy
+            if getattr(security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0], "deprecated", False)
+        ]
+        if deprecated and not self.allow_deprecated_policies:
+            raise ConfigurationError(
+                f"The deprecated policies {', '.join(deprecated)} are only available with "
+                "Server(allow_deprecated_policies=True)"
+            )
         self._security_policy = security_policy
         if permission_ruleset is not None:
             self._permission_ruleset = permission_ruleset
@@ -465,6 +515,8 @@ class Server:
             ):
                 no_cert = True
                 continue
+            if getattr(policy, "deprecated", False):
+                _logger.warning("The deprecated policy %s is offered, do not use it anymore", policy_type.name)
             self._set_endpoints(policy, mode, level)
             self._policies.append(
                 security_policies.SecurityPolicyFactory(
@@ -473,17 +525,41 @@ class Server:
                     self.iserver.certificate,
                     self.iserver.private_key,
                     permission_ruleset=self._permission_ruleset,
+                    certificate_chain=self.iserver.certificate_chain,
                 )
             )
 
         if no_cert:
             _logger.warning("Endpoints other than open requested but private key and certificate are not set.")
+        if not self.iserver.endpoints:
+            raise ConfigurationError(
+                "The server has no endpoint: load a certificate and a private key for the secure policies, or "
+                "enable the None policy with Server(allow_no_security=True)"
+            )
+
+    def _password_policy_uri(
+        self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode
+    ) -> str | None:
+        if mode == ua.MessageSecurityMode.SignAndEncrypt:
+            return security_policies.SecurityPolicyNone.URI
+        if mode == ua.MessageSecurityMode.Sign:
+            return policy.URI
+        if self.iserver.certificate and self.iserver.private_key:
+            for token_policy_type in self._security_policy:
+                token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
+                if token_mode == ua.MessageSecurityMode.SignAndEncrypt:
+                    return token_policy.URI  # type: ignore[attr-defined,no-any-return]
+        if self.allow_plaintext_password:
+            _logger.warning("No encrypting policy available, the password is advertised for transfer in plaintext")
+            return security_policies.SecurityPolicyNone.URI
+        _logger.info("No UserName token policy on an unsecured endpoint without an encrypting policy")
+        return None
 
     def _set_endpoints(
         self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode, level: int
     ) -> None:
         idtokens = []
-        tokens = self.iserver.supported_tokens
+        tokens = self.iserver.offered_token_classes()
         if ua.AnonymousIdentityToken in tokens:
             idtoken = ua.UserTokenPolicy()
             idtoken.PolicyId = "anonymous"
@@ -512,30 +588,13 @@ class Server:
                 idtokens.append(idtoken)
 
         if ua.UserNameIdentityToken in tokens:
-            idtoken = ua.UserTokenPolicy()
-            idtoken.PolicyId = "username"
-            idtoken.TokenType = ua.UserTokenType.UserName
-            if mode == ua.MessageSecurityMode.SignAndEncrypt:
-                # channel is encrypted, no need to encrypt password again
-                idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            elif mode == ua.MessageSecurityMode.Sign:
-                # use same policy for encryption
-                idtoken.SecurityPolicyUri = policy.URI
-            # try to avoid plaintext password, find first policy with encryption
-            elif self.iserver.certificate and self.iserver.private_key:
-                for token_policy_type in self._security_policy:
-                    token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
-                    if token_mode != ua.MessageSecurityMode.SignAndEncrypt:
-                        continue
-                    idtoken.SecurityPolicyUri = token_policy.URI  # type: ignore[attr-defined]
-                    break
-                else:
-                    _logger.warning("No encrypting policy available, password may get transferred in plaintext")
-                    idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            else:
-                _logger.warning("No encrypting policy available, password may get transferred in plaintext")
-                idtoken.SecurityPolicyUri = security_policies.SecurityPolicyNone.URI
-            idtokens.append(idtoken)
+            password_policy_uri = self._password_policy_uri(policy, mode)
+            if password_policy_uri is not None:
+                idtoken = ua.UserTokenPolicy()
+                idtoken.PolicyId = "username"
+                idtoken.TokenType = ua.UserTokenType.UserName
+                idtoken.SecurityPolicyUri = password_policy_uri
+                idtokens.append(idtoken)
 
         appdesc = ua.ApplicationDescription()
         appdesc.ApplicationName = ua.LocalizedText(self.name)
@@ -548,7 +607,10 @@ class Server:
         edp.EndpointUrl = self.endpoint.geturl()
         edp.Server = appdesc
         if self.iserver.certificate:
-            edp.ServerCertificate = uacrypto.der_from_x509(self.iserver.certificate)
+            edp.ServerCertificate = b"".join(
+                uacrypto.der_from_x509(certificate)
+                for certificate in (self.iserver.certificate, *self.iserver.certificate_chain)
+            )
         edp.SecurityMode = mode
         edp.SecurityPolicyUri = policy.URI
         edp.UserIdentityTokens = idtokens
@@ -566,6 +628,9 @@ class Server:
         if self.iserver.certificate is not None:
             # Log warnings about the certificate
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
+        await self._prepare_certificate_validation()
+        if self.iserver.user_trust_store is not None:
+            await self.iserver.user_trust_store.load()
         await self._setup_server_nodes()
         await self.iserver.start()
         try:
@@ -579,6 +644,28 @@ class Server:
             raise exp
         else:
             _logger.debug("%s server started", self)
+
+    async def _prepare_certificate_validation(self) -> None:
+        current = self.iserver.certificate_validator
+        if current is not None and current is not self._default_validator:
+            _logger.warning(
+                "A custom certificate validator is in use; it decides which client certificates are trusted"
+            )
+            return
+        trust_store = self.iserver.trust_store or TrustStore()
+        await trust_store.load()
+        self._default_validator = CertificateValidator(trust_store)
+        self.iserver.certificate_validator = self._default_validator
+        has_secure_policy = any(
+            security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0] is not security_policies.SecurityPolicyNone
+            for policy_type in self._security_policy
+        )
+        snapshot = trust_store.snapshot
+        if has_secure_policy and not (snapshot.trusted or snapshot.pinned):
+            _logger.warning(
+                "No client certificate is trusted, so no client can connect with security: "
+                "configure the trusted certificates with set_trust_store"
+            )
 
     def _get_bind_socket_info(self) -> tuple[str | None, int | None]:
         if self.socket_address is not None:
@@ -957,19 +1044,40 @@ class Server:
         nodeids = [node.nodeid for node in nodes]
         return [self.iserver.read_attribute_value(nodeid, attr) for nodeid in nodeids]
 
-    def set_certificate_validator(self, validator: validator.CertificateValidatorMethod) -> None:
+    def set_trust_store(self, trust_store: TrustStore) -> None:
         """
-        Assign a method to be called when certificate needs to be validated.
+        Set the trusted certificates, issuer certificates and revocation lists that client certificates are
+        validated against. Without a trust store no client certificate is trusted.
+        """
+        self.iserver.trust_store = trust_store
 
-        Function is called with certificate and application description and should raise the correct status code
-        when invalid.
+    def set_user_trust_store(self, trust_store: TrustStore) -> None:
+        """
+        Set the trusted certificates, issuer certificates and revocation lists that the certificates of X509
+        identity tokens (user certificates) are validated against. They are separate from the application
+        certificates of set_trust_store. Without one, no user certificate is trusted, except the ones of a
+        CertificateUserManager, which are pinned.
+        """
+        self.iserver.user_trust_store = trust_store
 
-            async def example_validation_method(certificate: x509.Certificate, app_description: ua.ApplicationDescription):
-                ...
+    def set_certificate_validator(self, validator: CertificateValidator) -> None:
+        """
+        Replace the certificate validator that checks the certificate of every client at OpenSecureChannel.
+        Use set_trust_store to configure the default validator instead.
+        """
+        self.iserver.certificate_validator = validator
+
+    def set_application_hook(self, hook: validator.ApplicationHook) -> None:
+        """
+        Assign a method that is called with the certificate and application description of a client in
+        CreateSession, after the certificate validator accepted the certificate. It can only reject, by raising
+        the correct status code:
+
+            async def example_hook(certificate: x509.Certificate, app_description: ua.ApplicationDescription):
                 if not_valid_condition:
                     raise ServiceError(ua.StatusCodes.BadCertificateInvalid)
         """
-        self.iserver.certificate_validator = validator
+        self.iserver.application_hook = hook
 
     async def get_pubsub(self) -> PubSub:
         """
