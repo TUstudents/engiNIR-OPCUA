@@ -634,7 +634,9 @@ class CertificateValidator:
             raise ConfigurationError("Revocation checking needs at least one crl location in the trust store")
         self._check_revocation = check_revocation
         if not self.revocation_active:
-            _logger.warning("Revocation of certificates is not checked: no crl location is configured")
+            _logger.warning(
+                "Revocation of certificates is not checked: no certificate revocation list is configured or loaded"
+            )
         self.accept_ca_application_certificates = accept_ca_application_certificates
         self.max_chain_length = max_chain_length
         self._clock = clock or (lambda: datetime.now(UTC))
