@@ -472,6 +472,8 @@ class UaClient:
         self._state: UaClientState = UaClientState.DISCONNECTED
         self._state_listeners: list[Callable[[UaClientState], None]] = []
         self._disconnect_requested: bool = False
+        self._reconnect_hold = False
+        self.reconnect_on_loss = False
         self.observer: Observer = NULL_OBSERVER
         self.session: UaSession = UaSession(self)
 
@@ -501,6 +503,8 @@ class UaClient:
     def _set_state(self, target: UaClientState) -> None:
         """Set state and notify listeners. Same-state assignments are no-ops."""
         if target is self._state:
+            return
+        if self._reconnect_hold and target is not UaClientState.RECONNECTING:
             return
         self._state = target
         self._observe(lambda: self.observer.on_state_change(target))
@@ -545,10 +549,13 @@ class UaClient:
         """Called from UASocketProtocol.connection_lost.
 
         Surface the loss as a state change so that subscribers (the supervisor,
-        tests, user code) can react. Skip if we're already tearing down — the
-        user-initiated path drives state through DISCONNECTING/DISCONNECTED itself.
+        tests, user code) can react. Skip if we're already tearing down or reconnecting.
         """
-        if self._state not in (UaClientState.DISCONNECTED, UaClientState.DISCONNECTING):
+        if self._reconnect_hold or self._state in (UaClientState.DISCONNECTED, UaClientState.DISCONNECTING):
+            return
+        if self.reconnect_on_loss and self._state is UaClientState.CONNECTED:
+            self.enter_reconnecting()
+        else:
             self._set_state(UaClientState.DISCONNECTED)
 
     def notify_transport_lost(self) -> None:
@@ -557,11 +564,18 @@ class UaClient:
         self._on_transport_lost(None)
 
     def enter_reconnecting(self) -> None:
-        """Mark the client as reconnecting; the supervisor calls this before an attempt."""
+        """Mark the client as reconnecting. Until complete_reconnect or mark_disconnected the state stays
+        RECONNECTING, whatever the attempts do to the socket and the channel."""
+        self._reconnect_hold = True
         self._set_state(UaClientState.RECONNECTING)
+
+    def complete_reconnect(self) -> None:
+        self._reconnect_hold = False
+        self._set_state(UaClientState.CONNECTED)
 
     def mark_disconnected(self) -> None:
         """Mark the client as disconnected; the supervisor calls this when it gives up."""
+        self._reconnect_hold = False
         self._set_state(UaClientState.DISCONNECTED)
 
     @property
