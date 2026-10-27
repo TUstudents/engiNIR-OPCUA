@@ -42,6 +42,10 @@ from .ua_session import SessionState, UaSession
 MAX_ABANDONED_REQUESTS = 10000
 
 
+def _timeout(timeout: float | None) -> dict[str, float]:
+    return {} if timeout is None else {"timeout": timeout}
+
+
 class UaClientState(Enum):
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
@@ -796,44 +800,44 @@ class UaClient:
     # --- AbstractSession: delegate to default session ---
 
     async def browse(self, parameters: ua.BrowseParameters, timeout: float | None = None) -> list[ua.BrowseResult]:
-        return await self.session.browse(parameters, timeout=timeout)
+        return await self.session.browse(parameters, **_timeout(timeout))
 
     async def browse_next(
         self, parameters: ua.BrowseNextParameters, timeout: float | None = None
     ) -> list[ua.BrowseResult]:
-        return await self.session.browse_next(parameters, timeout=timeout)
+        return await self.session.browse_next(parameters, **_timeout(timeout))
 
     async def translate_browsepaths_to_nodeids(
         self, browse_paths: list[ua.BrowsePath], timeout: float | None = None
     ) -> list[ua.BrowsePathResult]:
-        return await self.session.translate_browsepaths_to_nodeids(browse_paths, timeout=timeout)
+        return await self.session.translate_browsepaths_to_nodeids(browse_paths, **_timeout(timeout))
 
     async def register_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> list[ua.NodeId]:
-        return await self.session.register_nodes(nodes, timeout=timeout)
+        return await self.session.register_nodes(nodes, **_timeout(timeout))
 
     async def unregister_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> None:
-        return await self.session.unregister_nodes(nodes, timeout=timeout)
+        return await self.session.unregister_nodes(nodes, **_timeout(timeout))
 
     async def read(self, parameters: ua.ReadParameters, timeout: float | None = None) -> list[ua.DataValue]:
-        return await self.session.read(parameters, timeout=timeout)
+        return await self.session.read(parameters, **_timeout(timeout))
 
     async def write(self, params: ua.WriteParameters, timeout: float | None = None) -> list[ua.StatusCode]:
-        return await self.session.write(params, timeout=timeout)
+        return await self.session.write(params, **_timeout(timeout))
 
     async def history_read(
         self, params: ua.HistoryReadParameters, timeout: float | None = None
     ) -> list[ua.HistoryReadResult]:
-        return await self.session.history_read(params, timeout=timeout)
+        return await self.session.history_read(params, **_timeout(timeout))
 
     async def history_update(
         self, params: ua.HistoryUpdateParameters, timeout: float | None = None
     ) -> list[ua.HistoryUpdateResult]:
-        return await self.session.history_update(params, timeout=timeout)
+        return await self.session.history_update(params, **_timeout(timeout))
 
     async def read_attributes(
         self, nodeids: list[ua.NodeId], attr: ua.AttributeIds, timeout: float | None = None
     ) -> list[ua.DataValue]:
-        return await self.session.read_attributes(nodeids, attr, timeout=timeout)
+        return await self.session.read_attributes(nodeids, attr, **_timeout(timeout))
 
     async def write_attributes(
         self,
@@ -842,30 +846,30 @@ class UaClient:
         attributeid: ua.AttributeIds = ua.AttributeIds.Value,
         timeout: float | None = None,
     ) -> list[ua.StatusCode]:
-        return await self.session.write_attributes(nodeids, datavalues, attributeid, timeout=timeout)
+        return await self.session.write_attributes(nodeids, datavalues, attributeid, **_timeout(timeout))
 
     async def add_nodes(
         self, nodestoadd: list[ua.AddNodesItem], timeout: float | None = None
     ) -> list[ua.AddNodesResult]:
-        return await self.session.add_nodes(nodestoadd, timeout=timeout)
+        return await self.session.add_nodes(nodestoadd, **_timeout(timeout))
 
     async def add_references(
         self, refs: list[ua.AddReferencesItem], timeout: float | None = None
     ) -> list[ua.StatusCode]:
-        return await self.session.add_references(refs, timeout=timeout)
+        return await self.session.add_references(refs, **_timeout(timeout))
 
     async def delete_references(
         self, refs: list[ua.DeleteReferencesItem], timeout: float | None = None
     ) -> list[ua.StatusCode]:
-        return await self.session.delete_references(refs, timeout=timeout)
+        return await self.session.delete_references(refs, **_timeout(timeout))
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters, timeout: float | None = None) -> list[ua.StatusCode]:
-        return await self.session.delete_nodes(params, timeout=timeout)
+        return await self.session.delete_nodes(params, **_timeout(timeout))
 
     async def call(
         self, methodstocall: list[ua.CallMethodRequest], timeout: float | None = None
     ) -> list[ua.CallMethodResult]:
-        return await self.session.call(methodstocall, timeout=timeout)
+        return await self.session.call(methodstocall, **_timeout(timeout))
 
     async def create_subscription(
         self,
@@ -873,24 +877,24 @@ class UaClient:
         callback: Callable[..., Any],
         timeout: float | None = None,
     ) -> ua.CreateSubscriptionResult:
-        return await self.session.create_subscription(params, callback, timeout=timeout)
+        return await self.session.create_subscription(params, callback, **_timeout(timeout))
 
     async def update_subscription(
         self, params: ua.ModifySubscriptionParameters, timeout: float | None = None
     ) -> ua.ModifySubscriptionResult:
-        return await self.session.update_subscription(params, timeout=timeout)
+        return await self.session.update_subscription(params, **_timeout(timeout))
 
     modify_subscription = update_subscription  # legacy support
 
     async def delete_subscriptions(
         self, subscription_ids: list[int], timeout: float | None = None
     ) -> list[ua.StatusCode]:
-        return await self.session.delete_subscriptions(subscription_ids, timeout=timeout)
+        return await self.session.delete_subscriptions(subscription_ids, **_timeout(timeout))
 
     async def transfer_subscriptions(
         self, params: ua.TransferSubscriptionsParameters, timeout: float | None = None
     ) -> list[ua.TransferResult]:
-        return await self.session.transfer_subscriptions(params, timeout=timeout)
+        return await self.session.transfer_subscriptions(params, **_timeout(timeout))
 
     async def inform_subscriptions(self, status: ua.StatusCode) -> None:
         return await self.session.inform_subscriptions(status)
@@ -903,26 +907,26 @@ class UaClient:
         params: ua.CreateMonitoredItemsParameters,
         timeout: float | None = None,
     ) -> list[ua.MonitoredItemCreateResult]:
-        return await self.session.create_monitored_items(params, timeout=timeout)
+        return await self.session.create_monitored_items(params, **_timeout(timeout))
 
     async def delete_monitored_items(
         self, params: ua.DeleteMonitoredItemsParameters, timeout: float | None = None
     ) -> list[ua.StatusCode]:
-        return await self.session.delete_monitored_items(params, timeout=timeout)
+        return await self.session.delete_monitored_items(params, **_timeout(timeout))
 
     async def modify_monitored_items(
         self,
         params: ua.ModifyMonitoredItemsParameters,
         timeout: float | None = None,
     ) -> list[ua.MonitoredItemModifyResult]:
-        return await self.session.modify_monitored_items(params, timeout=timeout)
+        return await self.session.modify_monitored_items(params, **_timeout(timeout))
 
     async def set_monitoring_mode(
         self, params: ua.SetMonitoringModeParameters, timeout: float | None = None
     ) -> list[ua.uatypes.StatusCode]:
-        return await self.session.set_monitoring_mode(params, timeout=timeout)
+        return await self.session.set_monitoring_mode(params, **_timeout(timeout))
 
     async def set_publishing_mode(
         self, params: ua.SetPublishingModeParameters, timeout: float | None = None
     ) -> list[ua.uatypes.StatusCode]:
-        return await self.session.set_publishing_mode(params, timeout=timeout)
+        return await self.session.set_publishing_mode(params, **_timeout(timeout))
