@@ -40,8 +40,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethod", 2),
         ua.QualifiedName("ServerMethod", 2),
         func,
-        [ua.Int64],
-        [ua.Int64],
+        [ua.VariantType.Double],
+        [ua.VariantType.Double],
     )
 
     @uamethod
@@ -74,8 +74,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethodArray", 2),
         ua.QualifiedName("ServerMethodArray", 2),
         func2,
-        [ua.VariantType.String, ua.VariantType.Int64],
-        [ua.VariantType.Int64],
+        [ua.VariantType.String, ua.VariantType.Double],
+        [ua.VariantType.Double],
     )
 
     @uamethod
@@ -87,8 +87,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethodArray2", 2),
         ua.QualifiedName("ServerMethodArray2", 2),
         func3,
-        [ua.VariantType.Int64],
-        [ua.Int64],
+        [[ua.VariantType.Double]],
+        [[ua.VariantType.Double]],
     )
 
     @uamethod
@@ -968,7 +968,9 @@ async def test_method_async(opc):
 async def test_method_byte_array(opc):
     o = opc.opc.nodes.objects
     m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(m, 1, (2, 3, 4))
+    val, mybytes = await o.call_method(
+        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant((2, 3, 4), ua.VariantType.Byte)
+    )
     assert val == 1
     assert mybytes == [2, 3]
 
@@ -976,7 +978,9 @@ async def test_method_byte_array(opc):
 async def test_method_byte_array_better(opc):
     o = opc.opc.nodes.objects
     m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(m, 1, (ua.Variant((2, 3, 4), ua.VariantType.Byte)))
+    val, mybytes = await o.call_method(
+        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant(b"\x02\x03\x04", ua.VariantType.ByteString)
+    )
     assert val == 1
     assert mybytes == [2, 3]
 

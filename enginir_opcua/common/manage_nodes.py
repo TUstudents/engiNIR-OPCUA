@@ -521,8 +521,10 @@ def _vtype_to_argument(vtype: Any) -> ua.Argument:
     if isinstance(vtype, ua.Argument):
         return vtype
     arg = ua.Argument()
+    arg.ValueRank = ua.ValueRank.Scalar
     if isinstance(vtype, list | tuple) and len(vtype) > 0:
         vtype = vtype[0]
+        arg.ValueRank = ua.ValueRank.OneDimension
     if hasattr(vtype, "data_type"):
         arg.DataType = vtype.data_type
     elif inspect.isclass(vtype) and issubclass(vtype, Enum):

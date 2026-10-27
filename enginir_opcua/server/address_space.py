@@ -40,6 +40,13 @@ from enginir_opcua.ua.numeric_range import IndexRange
 
 from .datatype_check import BASE_DATA_TYPE, DataTypeChecker, check_variant
 
+HAS_COMPONENT = ua.NodeId(ua.ObjectIds.HasComponent)
+HAS_PROPERTY = ua.NodeId(ua.ObjectIds.HasProperty)
+HAS_TYPE_DEFINITION = ua.NodeId(ua.ObjectIds.HasTypeDefinition)
+HAS_MODELLING_RULE = ua.NodeId(ua.ObjectIds.HasModellingRule)
+HAS_OPTIONAL_INPUT_ARGUMENT_DESCRIPTION = ua.NodeId(ua.ObjectIds.HasOptionalInputArgumentDescription)
+MAX_TYPE_DEPTH = 64
+
 _logger = logging.getLogger(__name__)
 
 VALID_TIMESTAMPS_TO_RETURN = (
@@ -645,41 +652,133 @@ class MethodService:
             self._pool.shutdown()
             self._pool = None
 
-    async def call(self, methods: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
-        results = []
-        for method in methods:
-            res = await self._call(method)
-            results.append(res)
-        return results
+    async def call(self, methods: list[ua.CallMethodRequest], trusted: bool = False) -> list[ua.CallMethodResult]:
+        return [await self._call(method, trusted) for method in methods]
 
-    async def _call(self, method: ua.CallMethodRequest) -> ua.CallMethodResult:
-        self.logger.info("Calling: %s", method)
-        res = ua.CallMethodResult()
-        if method.ObjectId not in self._aspace or method.MethodId not in self._aspace:
-            res.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
+    async def _call(self, method: ua.CallMethodRequest, trusted: bool) -> ua.CallMethodResult:
+        try:
+            return await self._call_checked(method, trusted)
+        except ua.uaerrors.UaStatusCodeError as error:
+            return ua.CallMethodResult(StatusCode=status_of_error(error))
+
+    async def _call_checked(self, request: ua.CallMethodRequest, trusted: bool) -> ua.CallMethodResult:
+        aspace = self._aspace
+        object_node = aspace.node_for_service(request.ObjectId)
+        if aspace.node_class_of(object_node) not in (ua.NodeClass.Object, ua.NodeClass.ObjectType):
+            raise ua.uaerrors.BadNodeIdInvalid()
+        method_node = aspace.node_for_service(request.MethodId)
+        if aspace.node_class_of(method_node) != ua.NodeClass.Method:
+            raise ua.uaerrors.BadMethodInvalid()
+        if not self._owns(object_node, method_node):
+            raise ua.uaerrors.BadMethodInvalid()
+        if not trusted:
+            self._check_executable(method_node)
+        if method_node.call is None:
+            raise ua.uaerrors.BadNotSupported()
+        arguments = list(request.InputArguments) if request.InputArguments else []
+        results = self._check_arguments(method_node, arguments)
+        if any(result.is_bad() for result in results):
+            return ua.CallMethodResult(
+                StatusCode=ua.StatusCode(ua.StatusCodes.BadInvalidArgument), InputArgumentResults=results
+            )
+        try:
+            outcome = await self._run_method(method_node.call, request.ObjectId, *arguments)
+        except ua.uaerrors.UaStatusCodeError as error:
+            return ua.CallMethodResult(StatusCode=status_of_error(error))
+        except Exception:
+            self.logger.exception("Error executing method call %s, an exception was raised: ", request)
+            return ua.CallMethodResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadUnexpectedError))
+        return self._result_of(outcome)
+
+    @staticmethod
+    def _result_of(outcome: Any) -> ua.CallMethodResult:
+        if isinstance(outcome, ua.CallMethodResult):
+            result = outcome
+        elif isinstance(outcome, ua.StatusCode):
+            result = ua.CallMethodResult(StatusCode=outcome)
         else:
-            node = self._aspace[method.MethodId]
-            if node.call is None:
-                res.StatusCode = ua.StatusCode(ua.StatusCodes.BadNothingToDo)
-            else:
-                try:
-                    if method.InputArguments is None:
-                        # An array value can also be None
-                        method.InputArguments = []
-                    result = await self._run_method(node.call, method.ObjectId, *method.InputArguments)
-                except Exception:
-                    self.logger.exception("Error executing method call %s, an exception was raised: ", method)
-                    res.StatusCode = ua.StatusCode(ua.StatusCodes.BadUnexpectedError)
-                else:
-                    if isinstance(result, ua.CallMethodResult):
-                        res = result
-                    elif isinstance(result, ua.StatusCode):
-                        res.StatusCode = result
-                    else:
-                        res.OutputArguments = result
-                    while len(res.InputArgumentResults) < len(method.InputArguments):
-                        res.InputArgumentResults.append(ua.StatusCode())
-        return res
+            result = ua.CallMethodResult(OutputArguments=outcome if outcome is not None else [])
+        if result.StatusCode.is_bad():
+            result.OutputArguments = []
+        else:
+            result.StatusCode = ua.StatusCode(ua.StatusCodes.Good)
+        return result
+
+    def _owns(self, object_node: NodeData, method_node: NodeData) -> bool:
+        aspace = self._aspace
+        checker = DataTypeChecker(aspace)
+        is_type = aspace.node_class_of(object_node) == ua.NodeClass.ObjectType
+        sources = [object_node]
+        if not is_type:
+            definition = next(
+                (
+                    ref.NodeId
+                    for ref in object_node.references
+                    if ref.IsForward and ref.ReferenceTypeId == HAS_TYPE_DEFINITION
+                ),
+                None,
+            )
+            while definition is not None and len(sources) < MAX_TYPE_DEPTH:
+                type_node = aspace.get(definition)
+                if type_node is None:
+                    break
+                sources.append(type_node)
+                definition = checker.parent_of(definition)
+        for source in sources:
+            for ref in source.references:
+                if (
+                    ref.IsForward
+                    and ref.NodeId == method_node.nodeid
+                    and checker.is_subtype(ref.ReferenceTypeId, HAS_COMPONENT)
+                ):
+                    return not (is_type and self._has_modelling_rule(method_node))
+        return False
+
+    @staticmethod
+    def _has_modelling_rule(node: NodeData) -> bool:
+        return any(ref.IsForward and ref.ReferenceTypeId == HAS_MODELLING_RULE for ref in node.references)
+
+    def _check_executable(self, method_node: NodeData) -> None:
+        executable = self._aspace.bool_attribute(method_node, ua.AttributeIds.Executable)
+        if not executable:
+            raise ua.uaerrors.BadNotExecutable()
+        user_executable = self._aspace.bool_attribute(method_node, ua.AttributeIds.UserExecutable)
+        if user_executable is False:
+            raise ua.uaerrors.BadUserAccessDenied()
+
+    def _property_value(self, node: NodeData, name: str) -> Any:
+        for ref in node.references:
+            if ref.IsForward and ref.ReferenceTypeId == HAS_PROPERTY and ref.BrowseName.Name == name:
+                value = self._aspace.read_attribute_value(ref.NodeId, ua.AttributeIds.Value)
+                return value.Value.Value if value.Value is not None else None
+        return None
+
+    def _check_arguments(self, method_node: NodeData, arguments: list[ua.Variant]) -> list[ua.StatusCode]:
+        expected = self._property_value(method_node, "InputArguments") or []
+        if len(arguments) > len(expected):
+            raise ua.uaerrors.BadTooManyArguments()
+        optional = {
+            ref.BrowseName.Name
+            for ref in method_node.references
+            if ref.IsForward and ref.ReferenceTypeId == HAS_OPTIONAL_INPUT_ARGUMENT_DESCRIPTION
+        }
+        if any(argument.Name not in optional for argument in expected[len(arguments) :]):
+            raise ua.uaerrors.BadArgumentsMissing()
+        checker = DataTypeChecker(self._aspace)
+        results = [
+            ua.StatusCode()
+            if check_variant(
+                checker,
+                variant,
+                argument.DataType,
+                argument.ValueRank,
+                list(argument.ArrayDimensions or []),
+                argument.Name in optional,
+            )
+            else ua.StatusCode(ua.StatusCodes.BadTypeMismatch)
+            for variant, argument in zip(arguments, expected)
+        ]
+        return results if any(result.is_bad() for result in results) else []
 
     async def _run_method(self, func: "Callable[..., Any]", parent: ua.NodeId, *args: Any) -> Any:
         if inspect.iscoroutinefunction(func):
@@ -955,6 +1054,18 @@ class AddressSpace:
         if node is None:
             raise ua.uaerrors.BadNodeIdUnknown()
         return node
+
+    def node_for_service(self, nodeid: ua.NodeId) -> NodeData:
+        return self._node_for_service(nodeid)
+
+    def node_class_of(self, node: NodeData) -> int | None:
+        return self._node_class(node)
+
+    def bool_attribute(self, node: NodeData, attr: ua.AttributeIds) -> bool | None:
+        attval = node.attributes.get(attr)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return None
+        return bool(attval.value.Value.Value)
 
     @staticmethod
     def _node_class(node: NodeData) -> int | None:

@@ -723,7 +723,7 @@ class InternalSession(AbstractSession):
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         """COROUTINE"""
-        return await self.iserver.method_service.call(params)
+        return await self.iserver.method_service.call(params, trusted=not self.external)
 
     async def create_subscription(
         self,
