@@ -758,6 +758,9 @@ class InternalSession(AbstractSession):
     async def set_monitoring_mode(self, params: ua.SetMonitoringModeParameters) -> list[ua.StatusCode]:
         return await self.subscription_service.set_monitoring_mode(params, self.session_id)
 
+    async def set_triggering(self, params: ua.SetTriggeringParameters) -> ua.SetTriggeringResult:
+        return await self.subscription_service.set_triggering(params, self.session_id)
+
     async def set_publishing_mode(self, params: ua.SetPublishingModeParameters) -> list[ua.StatusCode]:
         return await self.subscription_service.set_publishing_mode(params, self.session_id)
 

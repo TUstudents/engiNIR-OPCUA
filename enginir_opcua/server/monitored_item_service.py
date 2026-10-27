@@ -71,6 +71,7 @@ class MonitoredItemData:
         self.held: list[Any] = []
         self.sampler: asyncio.Task[None] | None = None
         self.overflowed: bool = False
+        self.links: set[int] = set()
         self.overflow_entry: ua.EventFieldList | None = None
 
 
@@ -388,6 +389,8 @@ class MonitoredItemService:
         self._clear(mdata)
         self._stop_sampler(mdata)
         self._monitored_items.pop(mid)
+        for other in self._monitored_items.values():
+            other.links.discard(mid)
         return ua.StatusCode()
 
     @staticmethod
@@ -413,8 +416,10 @@ class MonitoredItemService:
             return self.isub.queue_of(mdata.monitored_item_id, self._is_event_item(mdata))
         return mdata.held
 
-    def _push_event(self, mdata: MonitoredItemData, notification: ua.EventFieldList) -> None:
-        queue = self._active_queue(mdata)
+    def _push_event(
+        self, mdata: MonitoredItemData, notification: ua.EventFieldList, target: list[Any] | None = None
+    ) -> None:
+        queue = target if target is not None else self._active_queue(mdata)
         size = max(mdata.queue_size, 1)
         entries = [entry for entry in queue if entry is not mdata.overflow_entry]
         excess = len(entries) - size + 1
@@ -462,11 +467,11 @@ class MonitoredItemService:
         ]
         return fieldlist
 
-    def _push(self, mdata: MonitoredItemData, notification: Any) -> None:
+    def _push(self, mdata: MonitoredItemData, notification: Any, target: list[Any] | None = None) -> None:
         if isinstance(notification, ua.EventFieldList):
-            self._push_event(mdata, notification)
+            self._push_event(mdata, notification, target)
             return
-        queue = self._active_queue(mdata)
+        queue = target if target is not None else self._active_queue(mdata)
         size = max(mdata.queue_size, 1)
         excess = len(queue) - size + 1
         if excess <= 0:
@@ -531,6 +536,7 @@ class MonitoredItemService:
         if data_change_passes(mdata.last_reported, value, flt, eu_range):
             mdata.last_reported = mdata.last_sample
             self._queue_data(mdata, value)
+            self._fire_triggers(mdata)
 
     def _readable(self, mdata: MonitoredItemData, value: ua.DataValue) -> ua.DataValue:
         item = mdata.read_value_id
@@ -551,6 +557,39 @@ class MonitoredItemService:
         ):
             return ua.StatusCodes.BadUserAccessDenied
         return None
+
+    def _fire_triggers(self, mdata: MonitoredItemData) -> None:
+        if mdata.mode == ua.MonitoringMode.Disabled:
+            return
+        for linked_id in mdata.links:
+            linked = self._monitored_items.get(linked_id)
+            if linked is None or linked.mode != ua.MonitoringMode.Sampling or not linked.held:
+                continue
+            held, linked.held = linked.held, []
+            target = self.isub.queue_of(linked_id, self._is_event_item(linked))
+            for notification in held:
+                self._push(linked, notification, target)
+
+    def set_triggering(self, triggering_id: int, add: list[int], remove: list[int]) -> ua.SetTriggeringResult:
+        triggering = self._monitored_items.get(triggering_id)
+        if triggering is None:
+            raise utils.ServiceError(ua.StatusCodes.BadMonitoredItemIdInvalid)
+        if not add and not remove:
+            raise utils.ServiceError(ua.StatusCodes.BadNothingToDo)
+        result = ua.SetTriggeringResult()
+        for linked_id in remove:
+            if linked_id in triggering.links:
+                triggering.links.discard(linked_id)
+                result.RemoveResults.append(ua.StatusCode())
+            else:
+                result.RemoveResults.append(ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid))
+        for linked_id in add:
+            if linked_id in self._monitored_items and linked_id != triggering_id:
+                triggering.links.add(linked_id)
+                result.AddResults.append(ua.StatusCode())
+            else:
+                result.AddResults.append(ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid))
+        return result
 
     def _start_sampler(self, mdata: MonitoredItemData) -> None:
         item = mdata.read_value_id
@@ -681,6 +720,7 @@ class MonitoredItemService:
             return
         fieldlist = self._field_list(mdata, event)
         self._push(mdata, fieldlist)
+        self._fire_triggers(mdata)
 
     def _is_subtype(self, candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:
         return is_subtype(self.aspace, candidate, ancestor)

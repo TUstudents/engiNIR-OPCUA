@@ -273,6 +273,11 @@ class SubscriptionService:
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return sub.monitored_item_srv.modify_monitored_items(params)
 
+    async def set_triggering(self, params: ua.SetTriggeringParameters, session_id: ua.NodeId) -> ua.SetTriggeringResult:
+        self.logger.info("set triggering")
+        sub = self._owned_or_raise(params.SubscriptionId, session_id)
+        return sub.monitored_item_srv.set_triggering(params.TriggeringItemId, params.LinksToAdd, params.LinksToRemove)
+
     async def set_publishing_mode(
         self, params: ua.SetPublishingModeParameters, session_id: ua.NodeId
     ) -> list[ua.StatusCode]:
