@@ -1084,6 +1084,17 @@ class Server:
         self.iserver.private_key = credentials.private_key
         self.iserver.trust_store = TrustStore.from_pki_directory(base)
 
+    def set_user_pki_directory(self, root: str | Path, create: bool = True) -> None:
+        """
+        Use a PKI directory for the user trust list of X509 identity tokens, with the folders trusted/certs,
+        trusted/crl, issuer/certs, issuer/crl and rejected/certs of set_pki_directory and no own/. It is separate
+        from the PKI directory of the application.
+        """
+        base = Path(root)
+        if create:
+            pki.create_directories(base, own=False)
+        self.iserver.user_trust_store = TrustStore.from_pki_directory(base)
+
     async def reload_trust_store(self) -> None:
         """Load the trust store and the user trust store again, to pick up files moved into their folders."""
         for store in (self.iserver.trust_store, self.iserver.user_trust_store):

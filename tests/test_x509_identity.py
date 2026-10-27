@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ async def _start(
     manager: UserManager,
     user_trust: TrustStore | None = None,
     tokens: list[type] | None = None,
+    user_pki_directory: Path | None = None,
 ) -> Server:
     srv = Server(user_manager=manager)
     await srv.init()
@@ -65,6 +67,8 @@ async def _start(
     srv.set_trust_store(PKI.trust_store())
     if user_trust is not None:
         srv.set_user_trust_store(user_trust)
+    if user_pki_directory is not None:
+        srv.set_user_pki_directory(user_pki_directory)
     await srv.start()
     return srv
 
@@ -294,3 +298,40 @@ async def test_srv6_untrusted_user_certificate_is_untrusted(user_pki: UserPki) -
     stranger = live_identity("stranger", uri=None, dns_names=(), subject_alt_name=False, ext_key_usage=None)
     outcome = CertificateValidator(TrustStore()).validate_user_certificate(stranger.der, None)
     assert outcome.status == ua.StatusCodes.BadCertificateUntrusted
+
+
+async def test_pki_user_directory_trusts_the_ca_of_the_user(user_pki: UserPki, tmp_path: Path) -> None:
+    """Part 4, 6.1.3 and 7.40.5: the user trust list can be a PKI directory, separate from the application PKI."""
+    (tmp_path / "users" / "trusted" / "certs").mkdir(parents=True)
+    shutil.copy(user_pki.ca_certificate, tmp_path / "users" / "trusted" / "certs" / "ca.der")
+    srv = await _start(PermissiveUserManager(), user_pki_directory=tmp_path / "users")
+    try:
+        client = await _client(srv, user_pki, chain=True)
+        async with client:
+            assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    finally:
+        await srv.stop()
+    assert not (tmp_path / "users" / "own").exists()
+    assert (tmp_path / "users" / "rejected" / "certs").is_dir()
+
+
+async def test_pki_user_directory_keeps_the_rejected_user_certificate_and_reloads(
+    user_pki: UserPki, tmp_path: Path
+) -> None:
+    """Part 4, 6.1.3 and 7.40.5: a refused user certificate lands in rejected/certs, moving it trusts it."""
+    users = tmp_path / "users"
+    srv = await _start(PermissiveUserManager(), user_pki_directory=users)
+    try:
+        client = await _client(srv, user_pki)
+        with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
+            await client.connect()
+        await client.disconnect()
+        rejected = sorted((users / "rejected" / "certs").glob("*.der"))
+        assert [path.read_bytes() for path in rejected] == [user_pki.user.der]
+        rejected[0].rename(users / "trusted" / "certs" / rejected[0].name)
+        await srv.reload_trust_store()
+        client = await _client(srv, user_pki)
+        async with client:
+            assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    finally:
+        await srv.stop()

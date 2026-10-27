@@ -654,6 +654,9 @@ class Server:
         self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
     ) -> None: ...
 
+    def set_user_pki_directory(self, root: str | Path, create: bool = True) -> None:
+        return self.aio_obj.set_user_pki_directory(root, create)
+
     @syncmethod
     def reload_trust_store(self) -> None: ...
 
