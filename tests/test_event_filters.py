@@ -422,3 +422,102 @@ async def test_srv14_where_clause_filters_delivery_by_event_type_including_subty
     await audit.trigger(message="audit")
     notifications = await publish(sub, wire)
     assert [n.EventFields[0].Value.Text for n in notifications] == ["audit"]
+
+
+OVERFLOW_TYPE = ua.NodeId(ua.ObjectIds.EventQueueOverflowEventType)
+
+
+async def overflow_item(server: Server, queue: int, discard_oldest: bool, where: Any = None) -> tuple[Any, Any]:
+    flt = ua.EventFilter(
+        SelectClauses=[field("Message"), field("EventType")],
+        WhereClause=where if where is not None else ua.ContentFilter(),
+    )
+    sub, wire = await open_subscription(server)
+    request = item_request(
+        ua.NodeId(ua.ObjectIds.Server),
+        ua.AttributeIds.EventNotifier,
+        queue=queue,
+        discard_oldest=discard_oldest,
+        filter=flt,
+    )
+    [result] = await create_items(server, sub, request)
+    assert result.StatusCode.is_good()
+    return sub, wire
+
+
+def labels(notifications: list[Any]) -> list[str]:
+    return [
+        "overflow" if n.EventFields[1].Value == OVERFLOW_TYPE else n.EventFields[0].Value.Text for n in notifications
+    ]
+
+
+async def test_srv60_discard_oldest_puts_one_overflow_event_at_the_front(server: Server) -> None:
+    """Part 4, 5.13.1.5: generated at the first discard, in addition to the queue size, at the beginning."""
+    sub, wire = await overflow_item(server, 3, True)
+    generator = await server.get_event_generator()
+    for number in range(1, 6):
+        await generator.trigger(message=f"m{number}")
+    assert labels(await publish(sub, wire)) == ["overflow", "m3", "m4", "m5"]
+
+
+async def test_srv60_discard_newest_puts_the_overflow_event_at_the_end(server: Server) -> None:
+    """Part 4, 5.13.1.5."""
+    sub, wire = await overflow_item(server, 3, False)
+    generator = await server.get_event_generator()
+    for number in range(1, 6):
+        await generator.trigger(message=f"m{number}")
+    assert labels(await publish(sub, wire)) == ["m1", "m2", "m5", "overflow"]
+
+
+async def test_srv60_a_new_overflow_event_follows_the_next_first_discard(server: Server) -> None:
+    """Part 4, 5.13.1.5: once the queue was emptied, the next overflow is announced again."""
+    sub, wire = await overflow_item(server, 2, True)
+    generator = await server.get_event_generator()
+    for number in range(1, 4):
+        await generator.trigger(message=f"m{number}")
+    assert labels(await publish(sub, wire)) == ["overflow", "m2", "m3"]
+    for number in range(4, 7):
+        await generator.trigger(message=f"m{number}")
+    assert labels(await publish(sub, wire)) == ["overflow", "m5", "m6"]
+
+
+async def test_srv60_the_overflow_event_ignores_the_where_clause(server: Server) -> None:
+    """Part 4, 5.13.1.5 and 7.22.3."""
+    audit_only = ua.ContentFilter(Elements=[element(OP.OfType, lit(AUDIT_EVENT, ua.VariantType.NodeId))])
+    sub, wire = await overflow_item(server, 1, True, audit_only)
+    generator = await server.get_event_generator(ua.ObjectIds.AuditSecurityEventType)
+    for number in range(1, 3):
+        await generator.trigger(message=f"a{number}")
+    assert labels(await publish(sub, wire)) == ["overflow", "a2"]
+
+
+async def test_srv60_overflow_event_content(server: Server) -> None:
+    """Part 4, 5.13.1.5 and Part 5, 6.4.2: source, time, message and severity of the overflow event."""
+    flt = ua.EventFilter(
+        SelectClauses=[
+            field("EventType"),
+            field("SourceNode"),
+            field("SourceName"),
+            field("Severity"),
+            field("Time"),
+            field("ReceiveTime"),
+            field("EventId"),
+            field("Message"),
+        ]
+    )
+    sub, wire = await open_subscription(server)
+    request = item_request(ua.NodeId(ua.ObjectIds.Server), ua.AttributeIds.EventNotifier, queue=1, filter=flt)
+    await create_items(server, sub, request)
+    generator = await server.get_event_generator()
+    await generator.trigger(message="one")
+    await generator.trigger(message="two")
+    notifications = await publish(sub, wire)
+    overflow = notifications[0].EventFields
+    assert overflow[0].Value == OVERFLOW_TYPE
+    assert overflow[1].Value == ua.NodeId(ua.ObjectIds.Server)
+    assert overflow[2].Value == "Server"
+    assert overflow[3].Value == 1
+    assert overflow[4].Value is not None and overflow[5].Value is not None
+    assert len(overflow[6].Value) == 16
+    assert overflow[7].Value.Text
+    assert notifications[1].EventFields[7].Value.Text == "two"

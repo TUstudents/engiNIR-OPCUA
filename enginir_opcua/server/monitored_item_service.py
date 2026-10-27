@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import logging
 import math
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from enginir_opcua import ua
 from enginir_opcua.common import utils
 
+from ..common import event_objects
 from .address_space import AddressSpace
 from .content_filter import MAX_FILTER_ELEMENTS, EventFilterChecker, WhereClauseEvaluator
 from .data_change import data_change_passes
@@ -68,6 +70,8 @@ class MonitoredItemData:
         self.timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both
         self.held: list[Any] = []
         self.sampler: asyncio.Task[None] | None = None
+        self.overflowed: bool = False
+        self.overflow_entry: ua.EventFieldList | None = None
 
 
 class MonitoredItemService:
@@ -409,7 +413,59 @@ class MonitoredItemService:
             return self.isub.queue_of(mdata.monitored_item_id, self._is_event_item(mdata))
         return mdata.held
 
+    def _push_event(self, mdata: MonitoredItemData, notification: ua.EventFieldList) -> None:
+        queue = self._active_queue(mdata)
+        size = max(mdata.queue_size, 1)
+        entries = [entry for entry in queue if entry is not mdata.overflow_entry]
+        excess = len(entries) - size + 1
+        if excess <= 0:
+            queue.append(notification)
+            mdata.overflowed = False
+            return
+        first_discard = not mdata.overflowed
+        mdata.overflowed = True
+        discarded = entries[:excess] if mdata.discard_oldest else entries[len(entries) - excess :]
+        queue[:] = [entry for entry in queue if not any(entry is gone for gone in discarded)]
+        self._append_before_overflow(mdata, queue, notification)
+        if not first_discard:
+            return
+        mdata.overflow_entry = self._overflow_notification(mdata)
+        if mdata.discard_oldest:
+            queue.insert(0, mdata.overflow_entry)
+        else:
+            queue.append(mdata.overflow_entry)
+
+    @staticmethod
+    def _append_before_overflow(mdata: MonitoredItemData, queue: list[Any], notification: ua.EventFieldList) -> None:
+        position = len(queue)
+        if not mdata.discard_oldest and queue and queue[-1] is mdata.overflow_entry:
+            position -= 1
+        queue.insert(position, notification)
+
+    def _overflow_notification(self, mdata: MonitoredItemData) -> ua.EventFieldList:
+        node_id = mdata.read_value_id.NodeId if mdata.read_value_id is not None else ua.NodeId()
+        browse_name = self.aspace.read_attribute_value(node_id, ua.AttributeIds.BrowseName)
+        now = datetime.now(UTC)
+        event: Any = event_objects.EventQueueOverflowEvent(node_id, "Event queue overflow", 1)
+        event.EventId = uuid.uuid4().bytes
+        event.SourceName = browse_name.Value.Value.Name if browse_name.Value is not None else None
+        event.Time = now
+        event.ReceiveTime = now
+        return self._field_list(mdata, event)
+
+    def _field_list(self, mdata: MonitoredItemData, event: Any) -> ua.EventFieldList:
+        fieldlist = ua.EventFieldList()
+        fieldlist.ClientHandle = mdata.client_handle
+        fields = event.to_event_fields(mdata.filter.SelectClauses, self._is_subtype, select_index_range)
+        fieldlist.EventFields = [
+            field if usable else ua.Variant(None) for field, usable in zip(fields, mdata.usable_selects)
+        ]
+        return fieldlist
+
     def _push(self, mdata: MonitoredItemData, notification: Any) -> None:
+        if isinstance(notification, ua.EventFieldList):
+            self._push_event(mdata, notification)
+            return
         queue = self._active_queue(mdata)
         size = max(mdata.queue_size, 1)
         excess = len(queue) - size + 1
@@ -623,13 +679,7 @@ class MonitoredItemService:
         if mdata.where_clause_evaluator is None or not mdata.where_clause_evaluator.eval(event):
             self.logger.info("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
             return
-        fieldlist = ua.EventFieldList()
-        fieldlist.ClientHandle = mdata.client_handle
-        clauses = mdata.filter.SelectClauses
-        fields = event.to_event_fields(clauses, self._is_subtype, select_index_range)
-        fieldlist.EventFields = [
-            field if usable else ua.Variant(None) for field, usable in zip(fields, mdata.usable_selects)
-        ]
+        fieldlist = self._field_list(mdata, event)
         self._push(mdata, fieldlist)
 
     def _is_subtype(self, candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:
