@@ -344,7 +344,7 @@ class Subscription:
 
     async def _create(self, event: SubscriptionEvent) -> ua.CreateSubscriptionResult:
         response = await self.server.create_subscription(
-            self.parameters, callback=self if isinstance(self.server, UaSession) else self.publish_callback
+            self.parameters, callback=self if self._remote else self.publish_callback
         )
         self.subscription_id = response.SubscriptionId  # move to data class
         self._created_at = time.monotonic()
@@ -391,29 +391,16 @@ class Subscription:
         return response
 
     def _register_sink(self, subscription_id: int) -> None:
-        register = getattr(self.server, "register_sink", None)
-        if register is not None:
-            register(subscription_id, self)
-            return
-        callbacks = getattr(self.server, "_subscription_callbacks", None)
-        if callbacks is not None:
-            callbacks[subscription_id] = self.publish_callback
+        if self._remote:
+            cast("UaSession", self.server).register_sink(subscription_id, self)
 
     def _unregister_sink(self, subscription_id: int | None) -> None:
-        if subscription_id is None:
-            return
-        unregister = getattr(self.server, "unregister_sink", None)
-        if unregister is not None:
-            unregister(subscription_id)
-            return
-        callbacks = getattr(self.server, "_subscription_callbacks", None)
-        if callbacks is not None:
-            callbacks.pop(subscription_id, None)
+        if subscription_id is not None and self._remote:
+            cast("UaSession", self.server).unregister_sink(subscription_id)
 
     def _acknowledge(self, sequence_number: int) -> None:
-        acknowledge = getattr(self.server, "acknowledge", None)
-        if acknowledge is not None and self.subscription_id is not None:
-            acknowledge(self.subscription_id, sequence_number)
+        if self._remote and self.subscription_id is not None:
+            cast("UaSession", self.server).acknowledge(self.subscription_id, sequence_number)
 
     # --- sink: called by the publish pipeline ---------------------------------
 

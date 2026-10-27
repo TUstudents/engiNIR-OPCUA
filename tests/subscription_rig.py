@@ -67,6 +67,12 @@ class FakeSession:
         assert self.transfer_result is not None
         return [self.transfer_result]
 
+    def register_sink(self, subscription_id: int, sink: Any) -> None:
+        self._subscription_callbacks[subscription_id] = sink
+
+    def unregister_sink(self, subscription_id: int) -> None:
+        self._subscription_callbacks.pop(subscription_id, None)
+
     def acknowledge(self, subscription_id: int, sequence_number: int) -> None:
         self.acknowledged.append((subscription_id, sequence_number))
 
