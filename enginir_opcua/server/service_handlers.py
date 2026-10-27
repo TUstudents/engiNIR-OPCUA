@@ -228,6 +228,12 @@ async def set_monitoring_mode(
     return response
 
 
+async def set_triggering(ctx: ServiceContext, params: ua.SetTriggeringParameters) -> ua.SetTriggeringResponse:
+    response = ua.SetTriggeringResponse()
+    response.Parameters = await ctx.active_session.services.set_triggering(params)
+    return response
+
+
 async def delete_monitored_items(
     ctx: ServiceContext, params: ua.DeleteMonitoredItemsParameters
 ) -> ua.DeleteMonitoredItemsResponse:
@@ -390,6 +396,7 @@ def build_service_table() -> list[ServiceEntry]:
             operations=OperationBound("MonitoredItemIds", "max_monitored_items_per_call"),
             permission=Permission.Anonymous,
         ),
+        entry("SetTriggering", ua.SetTriggeringParameters, set_triggering, permission=Permission.Anonymous),
         entry(
             "DeleteMonitoredItems",
             ua.DeleteMonitoredItemsParameters,

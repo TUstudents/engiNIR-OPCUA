@@ -104,8 +104,8 @@ async def test_monitored_item_queue_size_clamped() -> None:
         await srv.stop()
 
 
-async def test_zero_queue_size_uses_server_default() -> None:
-    """RequestedQueueSize of 0 (the spec's 'server picks') resolves to the configured max."""
+async def test_srv13_zero_queue_size_of_a_data_item_is_revised_to_one() -> None:
+    """Part 4, 7.21: a queue size of 0 or 1 gives a queue of one value for a data item."""
     port = find_free_port()
     srv = await _start_server(port)
     srv.iserver.max_monitored_item_queue_size = 250
@@ -134,7 +134,7 @@ async def test_zero_queue_size_uses_server_default() -> None:
         request.ItemsToCreate = [mir]
         results = await client.uaclient.create_monitored_items(request)
         assert results[0].StatusCode.is_good()
-        assert results[0].RevisedQueueSize == 250
+        assert results[0].RevisedQueueSize == 1
         await sub.delete()
     finally:
         await client.disconnect()

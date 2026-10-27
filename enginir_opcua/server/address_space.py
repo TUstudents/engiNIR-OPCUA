@@ -500,7 +500,7 @@ class NodeManagementService:
             )
             if aspace.bool_attribute(reference_type, ua.AttributeIds.IsAbstract) or not allowed:
                 raise ua.uaerrors.BadReferenceNotAllowed()
-        if trusted:
+        if trusted and item.ReferenceTypeId != HAS_PROPERTY:
             return
         for ref in parentdata.references:
             if ref.IsForward and ref.ReferenceTypeId == item.ReferenceTypeId:
@@ -646,10 +646,12 @@ class NodeManagementService:
         addref.TargetNodeClass = ua.NodeClass.Unspecified
         self._add_reference_no_check(nodedata, addref).check()
 
-    def delete_nodes(self, deletenodeitems: ua.DeleteNodesParameters, trusted: bool = True) -> list[ua.StatusCode]:
-        return [self._delete_node(item, trusted) for item in deletenodeitems.NodesToDelete]
+    async def delete_nodes(
+        self, deletenodeitems: ua.DeleteNodesParameters, trusted: bool = True
+    ) -> list[ua.StatusCode]:
+        return [await self._delete_node(item, trusted) for item in deletenodeitems.NodesToDelete]
 
-    def _delete_node(self, item: ua.DeleteNodesItem, trusted: bool) -> ua.StatusCode:
+    async def _delete_node(self, item: ua.DeleteNodesItem, trusted: bool) -> ua.StatusCode:
         if item.NodeId is None or item.NodeId.is_null():
             return ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
         if item.NodeId not in self._aspace:
@@ -667,21 +669,21 @@ class NodeManagementService:
                 sourcedata.reference_version += 1
                 self._aspace.reference_removed(source, item.NodeId)
 
-        self._delete_node_callbacks(self._aspace[item.NodeId])
+        await self._delete_node_callbacks(self._aspace[item.NodeId])
 
         del self._aspace[item.NodeId]
 
         return ua.StatusCode()
 
-    def _delete_node_callbacks(self, nodedata: NodeData) -> None:
-        if ua.AttributeIds.Value in nodedata.attributes:
-            for handle, callback in list(nodedata.attributes[ua.AttributeIds.Value].datachange_callbacks.items()):
+    async def _delete_node_callbacks(self, nodedata: NodeData) -> None:
+        for attribute, attval in nodedata.attributes.items():
+            for handle, callback in list(attval.datachange_callbacks.items()):
                 try:
-                    callback(handle, None, ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown))
+                    await callback(handle, None, ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown))
                     self._aspace.delete_datachange_callback(handle)
                 except Exception as ex:
                     self.logger.exception(
-                        "Error calling delete node callback callback %s, %s, %s", nodedata, ua.AttributeIds.Value, ex
+                        "Error calling delete node callback callback %s, %s, %s", nodedata, attribute, ex
                     )
 
     def add_references(self, refs: list[ua.AddReferencesItem], trusted: bool = True) -> list[ua.StatusCode]:

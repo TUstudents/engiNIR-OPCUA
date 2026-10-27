@@ -84,24 +84,52 @@ class Event:
                     break
         return fields
 
-    def to_event_fields(self, select_clauses: list[ua.SimpleAttributeOperand]) -> list[ua.Variant]:
-        fields: list[ua.Variant] = []
-        for sattr in select_clauses:
-            if len(sattr.BrowsePath) == 0:
-                name = ua.AttributeIds(sattr.AttributeId).name
-            else:
-                name = self.browse_path_to_attribute_name(sattr.BrowsePath)
-            try:
-                val = getattr(self, name)
-            except AttributeError:
-                field = ua.Variant(None)
-            else:
-                if val is None:
-                    field = ua.Variant(None)
-                else:
-                    field = ua.Variant(copy.deepcopy(val), self.data_types[name])
-            fields.append(field)
-        return fields
+    def select_field(
+        self,
+        sattr: ua.SimpleAttributeOperand,
+        is_subtype: Callable[[ua.NodeId, ua.NodeId], bool] | None = None,
+        apply_range: Callable[[Any, str], tuple[int, Any]] | None = None,
+    ) -> ua.Variant:
+        if not self._type_definition_matches(sattr.TypeDefinitionId, is_subtype):
+            return ua.Variant(None)
+        if len(sattr.BrowsePath) == 0:
+            name = ua.AttributeIds(sattr.AttributeId).name
+        elif sattr.AttributeId != ua.AttributeIds.Value:
+            return ua.Variant(None)
+        else:
+            if any(not isinstance(element.Name, str) for element in sattr.BrowsePath):
+                return ua.Variant(None)
+            name = self.browse_path_to_attribute_name(sattr.BrowsePath)
+        try:
+            val = getattr(self, name)
+        except AttributeError:
+            return ua.Variant(None)
+        if val is None:
+            return ua.Variant(None)
+        val = copy.deepcopy(val)
+        if sattr.IndexRange and apply_range is not None:
+            code, val = apply_range(val, sattr.IndexRange)
+            if code != ua.StatusCodes.Good:
+                return ua.Variant(ua.StatusCode(code), ua.VariantType.StatusCode)
+        return ua.Variant(val, self.data_types.get(name))
+
+    def _type_definition_matches(
+        self, type_definition: ua.NodeId, is_subtype: Callable[[ua.NodeId, ua.NodeId], bool] | None
+    ) -> bool:
+        if is_subtype is None or type_definition.is_null():
+            return True
+        if type_definition == ua.NodeId(ua.ObjectIds.BaseEventType):
+            return True
+        event_type = getattr(self, "EventType", None)
+        return isinstance(event_type, ua.NodeId) and is_subtype(event_type, type_definition)
+
+    def to_event_fields(
+        self,
+        select_clauses: list[ua.SimpleAttributeOperand],
+        is_subtype: Callable[[ua.NodeId, ua.NodeId], bool] | None = None,
+        apply_range: Callable[[Any, str], tuple[int, Any]] | None = None,
+    ) -> list[ua.Variant]:
+        return [self.select_field(sattr, is_subtype, apply_range) for sattr in select_clauses]
 
     @staticmethod
     def from_event_fields(select_clauses: list[ua.SimpleAttributeOperand], fields: list[ua.Variant]) -> "Event":

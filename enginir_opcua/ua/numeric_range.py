@@ -204,3 +204,19 @@ def _replace(data: list[Any], ranges: Sequence[Dimension], incoming: list[Any], 
                 raise BadIndexRangeDataMismatch()
             result[index] = old[: leaf.low] + new_item + old[leaf.high + 1 :]
     return result
+
+
+def select_index_range(value: Any, text: str) -> tuple[int, Any]:
+    try:
+        parsed = IndexRange.parse(text)
+        if parsed is None:
+            return 0, value
+        if value is None:
+            raise BadIndexRangeNoData()
+        if isinstance(value, Variant):
+            return 0, parsed.select(value)
+        return 0, parsed.select(Variant(value)).Value
+    except (BadIndexRangeInvalid, BadIndexRangeNoData) as error:
+        return int(error.code), None
+    except Exception:
+        return int(BadIndexRangeNoData.code), None

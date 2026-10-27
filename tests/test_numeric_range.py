@@ -179,3 +179,14 @@ def test_srv15_fits_detects_a_range_that_can_never_hold_data() -> None:
     assert not parse("5:6").fits([5])
     assert parse("5:6").fits([0])
     assert not parse("0,0,0").fits([5])
+
+
+def test_srv15_select_index_range_helper_returns_status_and_value() -> None:
+    """Part 4, 7.27."""
+    from enginir_opcua.ua.numeric_range import select_index_range
+
+    assert select_index_range([1, 2, 3], "1:2") == (0, [2, 3])
+    assert select_index_range("abcd", "1:2") == (0, "bc")
+    assert select_index_range([1, 2, 3], "7") == (ua.StatusCodes.BadIndexRangeNoData, None)
+    assert select_index_range([1, 2, 3], "2:1") == (ua.StatusCodes.BadIndexRangeInvalid, None)
+    assert select_index_range(5, "0") == (ua.StatusCodes.BadIndexRangeNoData, None)

@@ -716,7 +716,7 @@ class InternalSession(AbstractSession):
         return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
+        return await self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
 
     async def add_references(self, params: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
         return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
@@ -763,6 +763,9 @@ class InternalSession(AbstractSession):
 
     async def set_monitoring_mode(self, params: ua.SetMonitoringModeParameters) -> list[ua.StatusCode]:
         return await self.subscription_service.set_monitoring_mode(params, self.session_id)
+
+    async def set_triggering(self, params: ua.SetTriggeringParameters) -> ua.SetTriggeringResult:
+        return await self.subscription_service.set_triggering(params, self.session_id)
 
     async def set_publishing_mode(self, params: ua.SetPublishingModeParameters) -> list[ua.StatusCode]:
         return await self.subscription_service.set_publishing_mode(params, self.session_id)
