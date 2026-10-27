@@ -221,7 +221,7 @@ async def pusbsub_src_nodes(server) -> list[NodeId]:
 async def pubsub_dest_nodes(server) -> list[NodeId]:
     node = server.nodes.objects
     ns = 1
-    dest_folder = await node.add_folder(NodeId(String("DestTestNodes"), Int16(ns)), "TestNodes")
+    dest_folder = await node.add_folder(NodeId(String("DestTestNodes"), Int16(ns)), "DestNodes")
     dest_nodes = [
         await dest_folder.add_variable(NodeId(String("DestPubInt32"), Int16(ns)), "Int32", 1, VariantType.Int32),
         await dest_folder.add_variable(NodeId(String("DestPubString"), Int16(ns)), "String", "DemoString"),

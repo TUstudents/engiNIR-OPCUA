@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import uuid
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -239,7 +240,7 @@ def test_sync_tloop_sub(client_no_tloop, server):
 def test_sync_sub(client, server):
     myhandler = MySubHandler()
     sub = client.create_subscription(1, myhandler)
-    var = client.nodes.objects.add_variable(3, "SubVar", 0.1)
+    var = client.nodes.objects.add_variable(3, f"SubVar{uuid.uuid4().hex}", 0.1)
     server.get_node(var.nodeid).set_writable()
     sub.subscribe_data_change(var)
     n, v = myhandler.future.result()
@@ -321,7 +322,7 @@ def test_create_enum_sync_client(client):
 
     client.load_data_type_definitions()
 
-    var = client.nodes.objects.add_variable(idx, "my_enum", ua.MyCustEnum2.toto)
+    var = client.nodes.objects.add_variable(idx, "my_enum_client", ua.MyCustEnum2.toto)
     val = var.read_value()
     assert val == 1
 
@@ -363,7 +364,7 @@ def test_create_struct_sync_client(client):
     client.load_data_type_definitions()
     mystruct = ua.MyMyStructClient()
     mystruct.MyUInt32 = [78, 79]
-    var = client.nodes.objects.add_variable(idx, "my_struct", mystruct)
+    var = client.nodes.objects.add_variable(idx, "my_struct_client", mystruct)
     val = var.read_value()
     assert val.MyUInt32 == [78, 79]
 

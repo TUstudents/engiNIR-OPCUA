@@ -68,7 +68,7 @@ async def test_client_admin(srv_crypto_one_cert):
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
         await child.set_value(42.0)
         assert await child.read_value() == 42.0
-        await child.add_property(0, "MyProperty1", 3)
+        await child.add_property(2, "MyProperty1", 3)
 
 
 async def test_client_user(srv_crypto_one_cert):
@@ -155,4 +155,4 @@ async def test_client_user_x509identity_admin(srv_crypto_one_cert):
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
         await child.set_value(48.0)
         assert await child.read_value() == 48.0
-        await child.add_property(0, "MyProperty4", 3)
+        await child.add_property(2, "MyProperty4", 3)

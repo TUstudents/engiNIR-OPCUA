@@ -92,6 +92,8 @@ async def disposable_opc(request):
 
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
+    if opc.opc is not opc.server:
+        pytest.skip("AddNodes of a Session needs a hierarchical parent reference, the nodesets use ConnectsTo")
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
     nodes = await opc.opc.import_xml(NODESET_DI)
     nodes += await opc.opc.import_xml(NODESET_IA)
@@ -227,13 +229,14 @@ async def test_xml_ns(opc, tmpdir):
     ref_ns = await opc.opc.register_namespace("ref_namespace")
     new_ns = await opc.opc.register_namespace("my_new_namespace")
     bname_ns = await opc.opc.register_namespace("bname_namespace")
-    o = await opc.opc.nodes.objects.add_object(0, "xmlns0")
     onew = await opc.opc.nodes.objects.add_object(new_ns, "xmlns_new")
     vnew = await onew.add_variable(new_ns, "xmlns_new_var", 9.99)
     o_no_export = await opc.opc.nodes.objects.add_object(ref_ns, "xmlns_parent")
     v_no_parent = await o_no_export.add_variable(new_ns, "xmlns_new_var_no_parent", 9.99)
     o_bname = await onew.add_object(f"ns={new_ns};i=4000", f"{bname_ns}:BNAME")
-    nodes = [o, onew, vnew, v_no_parent, o_bname]
+    nodes = [onew, vnew, v_no_parent, o_bname]
+    if opc.opc is opc.server:
+        nodes.insert(0, await opc.opc.nodes.objects.add_object(0, "xmlns0"))
     tmp_path = tmpdir.join("tmp_test_export-ns.xml").strpath
     await opc.opc.export_xml(nodes, tmp_path, export_values=True)
     # delete node and change index og new_ns before re-importing
@@ -578,7 +581,7 @@ async def test_xml_enum_fields(opc, tmpdir):
     my_enum = await new_enum(
         opc.opc,
         idx,
-        "MyEnum",
+        "MyEnumFields",
         [
             field_0,
             "titi",

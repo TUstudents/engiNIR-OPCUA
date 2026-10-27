@@ -713,16 +713,16 @@ class InternalSession(AbstractSession):
         return self.iserver.view_service.translate_browsepaths_to_nodeids(params)
 
     async def add_nodes(self, params: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
-        return self.iserver.node_mgt_service.add_nodes(params, self.user)
+        return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.delete_nodes(params, self.user)
+        return self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
 
     async def add_references(self, params: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.add_references(params, self.user)
+        return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
 
     async def delete_references(self, params: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.delete_references(params, self.user)
+        return self.iserver.node_mgt_service.delete_references(params, trusted=not self.external)
 
     def add_method_callback(self, methodid: ua.NodeId, callback: Callable[..., Any]) -> ua.StatusCode:
         return self.aspace.add_method_callback(methodid, callback)

@@ -26,7 +26,7 @@ from ..common.node import Node
 from ..common.utils import Buffer
 from ..ua.object_ids import ObjectIds
 from ..ua.ua_binary import unpack_uatype
-from ..ua.uaerrors import UaError
+from ..ua.uaerrors import UaError, UaStatusCodeError
 from ..ua.uaprotocol_auto import (
     DataSetReaderDataType,
     PubSubState,
@@ -279,6 +279,11 @@ class DataSetReader(PubSubInformationModel):
             elif self._cfg.SubscribedDataSet.data_type == TargetVariablesDataType.data_type:
                 self._subscribed = SubScribedTargetVariables(self._server, self._cfg.SubscribedDataSet)
         if self._subscribed is not None:
+            if self._node is not None:
+                try:
+                    await (await self._node.get_child("0:SubscribedDataSet")).delete(recursive=True)
+                except UaStatusCodeError:
+                    pass
             if isinstance(self._subscribed, SubScribedTargetVariables):
                 nodes = await instantiate_util.instantiate(
                     self._node,
