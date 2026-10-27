@@ -129,7 +129,9 @@ async def test_cry7_bad_x509_token_signature_is_user_signature_invalid(
     signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 5.7.3: Bad_UserSignatureInvalid for a missing or invalid userTokenSignature."""
+    await signing_server.stop()
     signing_server.set_identity_tokens([ua.UserNameIdentityToken, ua.X509IdentityToken])
+    await signing_server.start()
     _corrupt_signature(monkeypatch, user_token=True)
     client: Client = await signing_client(signing_server)
     await client.load_client_certificate(str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"))

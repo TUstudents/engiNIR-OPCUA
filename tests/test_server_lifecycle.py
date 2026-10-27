@@ -10,6 +10,7 @@ import pytest
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.server.internal_session import SessionManager
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
 from .harness import signing_client
@@ -117,7 +118,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
 
 async def test_srv10_sync_method_callbacks_work_after_a_restart() -> None:
     """Part 4, 5.11.2: a synchronous method callback is still run after the server was stopped and started."""
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager())
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     idx = await server.register_namespace("urn:enginir:opcua:restart-method")

@@ -398,12 +398,6 @@ class Server:
     def allow_plaintext_password(self, allow: bool) -> None:
         self.iserver.allow_plaintext_password = allow
 
-    def allow_remote_admin(self, allow: bool) -> None:
-        """
-        Enable or disable the builtin Admin user from network clients
-        """
-        self.iserver.allow_remote_admin = allow
-
     def set_endpoint(self, url: str) -> None:
         self.endpoint = urlparse(url)
 
@@ -509,7 +503,7 @@ class Server:
         self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode, level: int
     ) -> None:
         idtokens = []
-        tokens = self.iserver.supported_tokens
+        tokens = self.iserver.offered_token_classes()
         if ua.AnonymousIdentityToken in tokens:
             idtoken = ua.UserTokenPolicy()
             idtoken.PolicyId = "anonymous"

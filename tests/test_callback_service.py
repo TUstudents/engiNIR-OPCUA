@@ -4,6 +4,7 @@ import pytest
 
 from enginir_opcua import Client, Server
 from enginir_opcua.common.callback import CallbackType
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
 
@@ -48,7 +49,7 @@ class SubscriptionHandler:
 
 
 async def test_write_callback(mocker):
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager())
     idx = 0
     # get Objects node, this is where we should put our custom stuff
     opc_url = f"opc.tcp://127.0.0.1:{port_num}/enginir-opcua/server/"

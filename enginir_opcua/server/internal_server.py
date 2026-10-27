@@ -26,11 +26,12 @@ from ..crypto.validator import CertificateValidatorMethod
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
+from .identity import TOKEN_TYPES
 from .internal_session import InternalSession, SessionManager
 from .service_dispatch import Dispatcher
 from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
-from .user_managers import PermissiveUserManager, UserManager
+from .user_managers import AnonymousReadOnlyUserManager, UserManager
 
 _logger = logging.getLogger(__name__)
 
@@ -91,7 +92,6 @@ class InternalServer:
         self.callback_service = CallbackService()
         self.endpoints: list[ua.EndpointDescription] = []
         self._channel_id_counter = 5
-        self.allow_remote_admin = True
         self.allow_plaintext_password = False
         self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
@@ -143,8 +143,7 @@ class InternalServer:
         self.subscription_service: SubscriptionService = SubscriptionService(self.aspace, iserver=self)
         self.history_manager = HistoryManager(self)
         if user_manager is None:
-            _logger.info("No user manager specified. Using default permissive manager instead.")
-            user_manager = PermissiveUserManager()
+            user_manager = AnonymousReadOnlyUserManager()
         self.user_manager: UserManager = user_manager
         self.certificate_validator: CertificateValidatorMethod | None = None
         """hook to validate a certificate, raises a ServiceError when not valid"""
@@ -475,6 +474,12 @@ class InternalServer:
         directly read datavalue of the Attribute
         """
         return self.aspace.read_attribute_value(nodeid, attr)
+
+    def offered_token_classes(self) -> tuple[type, ...]:
+        accepted = getattr(self.user_manager, "accepted_token_types", None)
+        if accepted is None:
+            return tuple(self.supported_tokens)
+        return tuple(token for token in self.supported_tokens if TOKEN_TYPES.get(token) in accepted)
 
     def set_user_manager(self, user_manager: UserManager) -> None:
         """

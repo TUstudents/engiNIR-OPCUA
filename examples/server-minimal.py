@@ -3,6 +3,7 @@ import logging
 
 from enginir_opcua import Server, ua
 from enginir_opcua.common.methods import uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 @uamethod
@@ -13,7 +14,7 @@ def func(parent, value):
 async def main():
     _logger = logging.getLogger(__name__)
     # setup our server
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager())
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 

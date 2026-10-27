@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from enginir_opcua import Server, ua, uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 # method to be exposed through server
@@ -54,7 +55,7 @@ async def main():
     # logger.setLevel(logging.DEBUG)
 
     # now set up our server
-    server = Server()
+    server = Server(user_manager=PermissiveUserManager())
     await server.init()
     # server.set_endpoint("opc.tcp://localhost:4840/enginir-opcua/server/")
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")

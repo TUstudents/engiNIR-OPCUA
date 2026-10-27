@@ -8,6 +8,7 @@ import pytest
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.uacrypto import CertProperties
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 from .conftest import find_free_port
 
@@ -39,7 +40,7 @@ class PrivateKeys(Enum):
 
 @pytest.fixture()
 async def _server(request) -> Iterator[None]:
-    srv = Server()
+    srv = Server(user_manager=PermissiveUserManager())
     await srv.init()
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     srv.set_endpoint(uri_crypto)

@@ -9,6 +9,7 @@ from enginir_opcua import ua, uamethod
 from enginir_opcua.client import Client as AsyncClient
 from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.server import Server as AsyncServer
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import (
     Client,
     Server,
@@ -43,6 +44,7 @@ def tloop():
 @pytest.fixture(scope="module")
 def server(tloop):
     s = Server(tloop=tloop)
+    s.aio_obj.iserver.set_user_manager(PermissiveUserManager())
     s.aio_obj.allow_plaintext_password = True
     s.disable_clock(True)
     s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/enginir-opcua/server/")
