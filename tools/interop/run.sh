@@ -69,7 +69,7 @@ for _ in $(seq 1 120); do
 done
 grep -q "Server started" "$server_log" || { echo "the reference server did not start in 60 s" >&2; cat "$server_log" >&2; exit 1; }
 
-export ENGINIR_INTEROP_SERVER_URL="opc.tcp://localhost:$port/Quickstarts/ReferenceServer"
+export ENGINIR_INTEROP_SERVER_URL="opc.tcp://$(hostname):$port/Quickstarts/ReferenceServer"
 export ENGINIR_INTEROP_CLIENT_DLL="$client_dll"
 export ENGINIR_INTEROP_REFERENCE_PKI="$data_home/OPC Foundation/pki"
 export ENGINIR_INTEROP_DOTNET

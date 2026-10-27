@@ -12,7 +12,6 @@ from enginir_opcua import Client, ua
 from enginir_opcua.client.ua_client import UASocketProtocol
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.validator import CertificateValidator, Suppression
 
 NAMESPACE_URI = "http://opcfoundation.org/Quickstarts/ReferenceServer"
 USER_NAME = "user1"
@@ -102,10 +101,7 @@ async def connect(
 ) -> Client:
     client = Client(url, **client_options)
     if identity.server_trust is not None:
-        await identity.server_trust.load()
-        client.certificate_validator = CertificateValidator(
-            identity.server_trust, suppress=[Suppression.HOST_NAME_INVALID]
-        )
+        client.set_trust_store(identity.server_trust)
     if channel_lifetime_ms is not None:
         client.secure_channel_timeout = channel_lifetime_ms
     if case.policy is not None:
