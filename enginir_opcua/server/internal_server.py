@@ -145,6 +145,7 @@ class InternalServer:
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
         self.certificate: Any = None
+        self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
         self.attribute_service = AttributeService(self.aspace)

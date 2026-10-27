@@ -58,17 +58,6 @@ _supervisor_owns_requests: contextvars.ContextVar[bool] = contextvars.ContextVar
 )
 
 
-def _first_cert_from_chain(der: bytes) -> bytes:
-    """Return only the leading certificate's bytes from a (possibly chained) DER blob.
-
-    Servers sometimes hand back the server certificate concatenated with its
-    chain; our crypto layer trips on the chained form, so peel off the first
-    cert by reading the outer SEQUENCE length (bytes 2:4) and slicing.
-    """
-    cert_len = int.from_bytes(der[2:4], byteorder="big", signed=False) + 4
-    return der[:cert_len]
-
-
 class Client:
     """
     High level client to connect to an OPC-UA server.
@@ -315,7 +304,7 @@ class Client:
             self.uaclient.security_policy = new_policy
             endpoints = await self.connect_and_get_server_endpoints()
             endpoint = Client.find_endpoint(endpoints, mode, policy.URI)
-            server_certificate = uacrypto.x509_from_der(_first_cert_from_chain(endpoint.ServerCertificate))
+            server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
             server_certificate = uacrypto.CertProperties(server_certificate)
         if not isinstance(certificate, uacrypto.CertProperties):
@@ -838,8 +827,8 @@ class Client:
         self.security_policy.asymmetric_cryptography.verify(data, response.ServerSignature.Signature)
         self._server_nonce = response.ServerNonce
         server_certificate = None
-        if response.ServerCertificate is not None:
-            server_certificate = _first_cert_from_chain(response.ServerCertificate)
+        if response.ServerCertificate:
+            server_certificate = uacrypto.split_certificate_chain(response.ServerCertificate)[0]
         if not self.security_policy.peer_certificate:
             self.security_policy.peer_certificate = server_certificate
         elif self.security_policy.peer_certificate != server_certificate:

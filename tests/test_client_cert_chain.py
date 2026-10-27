@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 
 from enginir_opcua import Client, Server, ua
+from enginir_opcua.client import client as client_module
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.crypto.uacrypto import CertProperties
@@ -124,3 +126,97 @@ async def test_client_user_cert_with_chain(chain: Chain) -> None:
 
     async with client:
         assert await client.nodes.objects.get_children()
+
+
+@dataclass
+class IssuedServer:
+    certificate: Path
+    key: Path
+    intermediate: Path
+    client_trust: TrustStore
+    server_trust: TrustStore
+
+
+@pytest.fixture(scope="module")
+def intermediate_server(tmp_path_factory: pytest.TempPathFactory, chain: Chain) -> IssuedServer:
+    directory = tmp_path_factory.mktemp("intermediate-server")
+    root = live_ca("Server Root")
+    intermediate = live_ca("Server Intermediate", issuer=root)
+    server = live_identity(
+        "server",
+        issuer=intermediate,
+        uri=SERVER_APPLICATION_URI,
+        ext_key_usage=BOTH_USAGES,
+        dns_names=("localhost",),
+        ip_addresses=("127.0.0.1",),
+    )
+    certificate, key = server.write(directory, "server")
+    return IssuedServer(
+        certificate,
+        key,
+        intermediate.write(directory, "intermediate")[0],
+        TrustStore([write_trust_directory(directory / "client-trusted", root.certificate)], []),
+        TrustStore([chain.trusted], []),
+    )
+
+
+async def run_intermediate_server(issued: IssuedServer, chain: Chain, send_chain: bool) -> Server:
+    srv = Server(allow_no_security=True)
+    await srv.init()
+    srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    await srv.load_certificate(issued.certificate)
+    await srv.load_private_key(issued.key)
+    if send_chain:
+        await srv.load_certificate_chain([issued.intermediate])
+    srv.set_trust_store(issued.server_trust)
+    await srv.start()
+    return srv
+
+
+async def unpinned_client(srv: Server, chain: Chain, issued: IssuedServer) -> Client:
+    client = Client(srv.endpoint.geturl())
+    client.set_trust_store(issued.client_trust)
+    await client.set_security(
+        security_policies.SecurityPolicyBasic256Sha256,
+        chain.client_certificate,
+        chain.client_key,
+        None,
+        None,
+        ua.MessageSecurityMode.SignAndEncrypt,
+        certificate_chain=[chain.inter2, chain.inter1],
+    )
+    return client
+
+
+async def test_cry15_server_sends_its_intermediate_chain(chain: Chain, intermediate_server: IssuedServer) -> None:
+    """Part 6, 6.2.6: an application issued by an intermediate CA sends the chain in every field with its certificate."""
+    srv = await run_intermediate_server(intermediate_server, chain, send_chain=True)
+    try:
+        client = await unpinned_client(srv, chain, intermediate_server)
+        async with client:
+            assert await client.nodes.objects.get_children()
+            assert client.security_policy.peer_certificate == srv.iserver.certificate.public_bytes(
+                serialization.Encoding.DER
+            )
+    finally:
+        await srv.stop()
+
+
+async def test_cry15_without_the_chain_the_client_cannot_build_it(
+    chain: Chain, intermediate_server: IssuedServer
+) -> None:
+    """Part 4, 6.1.3, Table 100: build certificate chain."""
+    srv = await run_intermediate_server(intermediate_server, chain, send_chain=False)
+    try:
+        client = await unpinned_client(srv, chain, intermediate_server)
+        with pytest.raises(ua.uaerrors.BadCertificateChainIncomplete):
+            await client.connect()
+        client.uaclient.disconnect_socket()
+    finally:
+        await srv.stop()
+
+
+def test_cry16_client_has_no_second_chain_parser() -> None:
+    """The client splits certificate chains with the bounded splitter of uacrypto."""
+    assert not hasattr(client_module, "_first_cert_from_chain")

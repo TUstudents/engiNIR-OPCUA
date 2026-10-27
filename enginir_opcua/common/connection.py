@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import secrets
 import time
@@ -13,7 +12,7 @@ from enginir_opcua import ua
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
 from ..crypto.security_policies import SecurityPolicyNone
-from ..crypto.uacrypto import split_certificate_chain
+from ..crypto.uacrypto import certificate_thumbprint, split_certificate_chain
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from .utils import Buffer, NotEnoughData
 
@@ -347,9 +346,9 @@ class MessageChunk:
                 for cert in security_policy.host_certificate_chain:
                     chunk.SecurityHeader.SenderCertificate += cert
             if security_policy.peer_certificate:
-                chunk.SecurityHeader.ReceiverCertificateThumbPrint = hashlib.sha1(
-                    security_policy.peer_certificate, usedforsecurity=False
-                ).digest()
+                chunk.SecurityHeader.ReceiverCertificateThumbPrint = certificate_thumbprint(
+                    security_policy.peer_certificate
+                )
             chunk.MessageHeader.ChannelId = channel_id
             chunk.SequenceHeader.RequestId = request_id
             return [chunk]
@@ -584,7 +583,7 @@ class SecureChannel:
         if policy.URI != SecurityPolicyNone.URI:
             if not security_header.SenderCertificate or not security_header.ReceiverCertificateThumbPrint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Certificate or thumbprint is missing")
-            thumbprint = hashlib.sha1(policy.host_certificate or b"", usedforsecurity=False).digest()
+            thumbprint = certificate_thumbprint(policy.host_certificate or b"")
             if security_header.ReceiverCertificateThumbPrint != thumbprint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
             if self.peer_certificate_check is not None:

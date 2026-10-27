@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, urlparse
 
+from cryptography import x509
+
 from enginir_opcua import ua
 
 from ..client import Client
@@ -273,6 +275,17 @@ class Server:
         """
         self.iserver.certificate = await uacrypto.load_certificate(path_or_content, format)
 
+    async def load_certificate_chain(self, chain: Iterable[str | bytes | Path]) -> None:
+        """
+        load the intermediate CA certificates between the server certificate and its root, leaf side first.
+        Each item is a DER or PEM file (a PEM file may hold several certificates) or the bytes of one.
+        The server sends the chain after its certificate wherever it sends its certificate.
+        """
+        certificates: list[x509.Certificate] = []
+        for item in chain:
+            certificates.extend(await uacrypto.load_certificates(item))
+        self.iserver.certificate_chain = certificates
+
     async def load_private_key(
         self, path_or_content: str | Path | bytes, password: str | bytes | None = None, format: str | None = None
     ) -> None:
@@ -493,6 +506,7 @@ class Server:
                     self.iserver.certificate,
                     self.iserver.private_key,
                     permission_ruleset=self._permission_ruleset,
+                    certificate_chain=self.iserver.certificate_chain,
                 )
             )
 
@@ -573,7 +587,10 @@ class Server:
         edp.EndpointUrl = self.endpoint.geturl()
         edp.Server = appdesc
         if self.iserver.certificate:
-            edp.ServerCertificate = uacrypto.der_from_x509(self.iserver.certificate)
+            edp.ServerCertificate = b"".join(
+                uacrypto.der_from_x509(certificate)
+                for certificate in (self.iserver.certificate, *self.iserver.certificate_chain)
+            )
         edp.SecurityMode = mode
         edp.SecurityPolicyUri = policy.URI
         edp.UserIdentityTokens = idtokens
