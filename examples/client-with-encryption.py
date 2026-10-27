@@ -1,10 +1,11 @@
 """
-A client with encryption that creates its own certificate and trusts one server certificate explicitly.
+A client with encryption that creates its own certificate and trusts the servers in its PKI directory.
 
-The client certificate and private key are generated in examples/certificates/generated on the first run.
-The server certificate that server-with-encryption.py generated in the same directory is passed to set_security,
-which makes it the one certificate this client trusts. The server only accepts this client after its certificate
-was copied into examples/certificates/generated/trusted-clients.
+The client uses a PKI directory, examples/certificates/generated/client-pki. On the first run the folders are
+created and a self-signed client certificate and its private key are generated in own/. The server certificate
+that server-with-encryption.py generated in examples/certificates/generated/server-pki/own/certs has to be copied
+into trusted/certs of this directory; a server certificate that is not trusted is kept in rejected/certs. The
+server only accepts this client after its certificate was moved to the trusted/certs folder of the server.
 """
 
 import asyncio
@@ -13,21 +14,14 @@ import socket
 import sys
 from pathlib import Path
 
-from cryptography.x509.oid import ExtendedKeyUsageOID
-
 sys.path.insert(0, "..")
 from enginir_opcua import Client, ua
-from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
 
-generated = Path(__file__).parent / "certificates" / "generated"
-generated.mkdir(parents=True, exist_ok=True)
-cert = generated / "client-certificate-example.der"
-private_key = generated / "client-private-key-example.pem"
-server_cert = generated / "server-certificate-example.der"
+pki = Path(__file__).parent / "certificates" / "generated" / "client-pki"
 
 
 async def task():
@@ -35,27 +29,10 @@ async def task():
     client_app_uri = f"urn:{host_name}:foobar:myselfsignedclient"
     url = f"opc.tcp://{host_name}:4840/enginir-opcua/server/"
 
-    await setup_self_signed_certificate(
-        private_key,
-        cert,
-        client_app_uri,
-        host_name,
-        [ExtendedKeyUsageOID.CLIENT_AUTH],
-        {
-            "countryName": "CN",
-            "stateOrProvinceName": "AState",
-            "localityName": "Foo",
-            "organizationName": "Bar Ltd",
-        },
-    )
     client = Client(url=url)
     client.application_uri = client_app_uri
-    await client.set_security(
-        SecurityPolicyBasic256Sha256,
-        certificate=str(cert),
-        private_key=str(private_key),
-        server_certificate=str(server_cert),
-    )
+    await client.set_pki_directory(pki)
+    await client.set_security(SecurityPolicyBasic256Sha256)
     try:
         async with client:
             objects = client.nodes.objects
