@@ -38,6 +38,7 @@ METHOD_FALLBACKS: dict[str, int] = {
     "MoveOrCopy": ua.ObjectIds.FileDirectoryType_MoveOrCopy,
 }
 
+TRANSPORT_OVERHEAD = 1024
 _max_byte_string_length: "weakref.WeakKeyDictionary[Any, int | None]" = weakref.WeakKeyDictionary()
 
 
@@ -102,10 +103,7 @@ class _MethodCaller:
     async def _call(self, name: str, *args: Any) -> Any:
         method = await self._resolve(name)
         _logger.debug("Calling %s on %s", name, self._node)
-        if self._timeout is None:
-            return await self._node.call_method(method, *args)
-        async with asyncio.timeout(self._timeout):
-            return await self._node.call_method(method, *args)
+        return await self._node.call_method(method, *args, timeout=self._timeout)
 
 
 class UaFile(_MethodCaller):
@@ -157,8 +155,7 @@ class UaFile(_MethodCaller):
         return self._chunk_size or DEFAULT_CHUNK_SIZE
 
     def _identity(self) -> int | None:
-        token = getattr(self._file_node.session, "authentication_token", None)
-        return None if token is None else hash(str(token))
+        return getattr(self._file_node.session, "session_generation", None)
 
     async def __aenter__(self) -> "UaFile":
         await self.open()
@@ -238,7 +235,7 @@ class UaFile(_MethodCaller):
 
     async def _resolve_chunk_size(self) -> int:
         if self._chunk_size is not None:
-            return self._chunk_size
+            return self._clamp_to_transport(self._chunk_size)
         session = self._file_node.session
         if session not in _max_byte_string_length:
             try:
@@ -250,7 +247,18 @@ class UaFile(_MethodCaller):
             _max_byte_string_length[session] = int(limit) if limit else None
         limit = _max_byte_string_length[session]
         self._chunk_size = min(DEFAULT_CHUNK_SIZE, limit) if limit else DEFAULT_CHUNK_SIZE
-        return self._chunk_size
+        return self._clamp_to_transport(self._chunk_size)
+
+    def _clamp_to_transport(self, size: int) -> int:
+        client = getattr(self._file_node.session, "_client", None)
+        protocol = getattr(client, "protocol", None)
+        if protocol is None:
+            return size
+        limits = protocol._channel.limits
+        for limit in (limits.max_message_size, limits.send_max_message_size):
+            if limit:
+                size = min(size, max(1, limit - TRANSPORT_OVERHEAD))
+        return size
 
     async def _read_chunk(self, handle: int, length: int) -> bytes:
         data = await self._call("Read", Variant(handle, VariantType.UInt32), Variant(length, VariantType.Int32))

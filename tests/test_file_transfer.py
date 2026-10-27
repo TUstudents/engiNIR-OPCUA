@@ -395,3 +395,37 @@ async def test_cli13_old_string_modes(rig: Rig) -> None:
         async with OldUaFile(rig.file_node, "w") as writer:
             await writer.write(b"x")
     assert rig.file.calls_of("Open")[0][0].Value == 2
+
+
+async def test_cli60_handle_is_tied_to_the_session_generation(rig: Rig) -> None:
+    """Part 4, 5.7.4: the handles of a Session end with it; a new Session invalidates them."""
+    remote = UaFile(rig.file_node)
+    await remote.open()
+    rig.client.uaclient.session.session_generation += 1
+    with pytest.raises(ConnectionError):
+        await remote.read_chunk(10)
+
+
+async def test_cli33_method_calls_use_the_per_call_timeout(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The timeout of a file operation is the timeout of the call, not a wrapper around it."""
+    keywords: list[dict[str, Any]] = []
+    original = rig.file_node.call_method
+
+    async def recording(method: Any, *args: Any, **kwargs: Any) -> Any:
+        keywords.append(kwargs)
+        return await original(method, *args, **kwargs)
+
+    monkeypatch.setattr(rig.file_node, "call_method", recording)
+    async with UaFile(rig.file_node, timeout=7) as remote:
+        await remote.read()
+    assert keywords and all(k == {"timeout": 7} for k in keywords)
+
+
+async def test_chunk_size_is_clamped_to_the_transport_limits(rig: Rig) -> None:
+    """OPC 10000-5, C.2: a chunk plus overhead has to fit the message sizes the channel agreed on."""
+    limits = rig.client.uaclient.protocol._channel.limits  # type: ignore[union-attr]
+    limits.send_max_message_size = 5000
+    async with UaFile(rig.file_node, OpenFileMode.Write, chunk_size=60000) as remote:
+        assert await remote._resolve_chunk_size() <= 5000 - 1024
+    async with UaFile(rig.file_node, OpenFileMode.Read) as remote:
+        assert await remote._resolve_chunk_size() <= 5000 - 1024
