@@ -16,6 +16,8 @@ from enginir_opcua import ua
 
 from ..common.utils import ServiceError
 from ..crypto import security_policies, uacrypto
+from ..crypto.uacrypto import split_certificate_chain
+from ..crypto.validator import CertificateValidator
 
 if TYPE_CHECKING:
     from .internal_session import ChannelSecurity
@@ -177,6 +179,80 @@ def user_name_credentials(
     if password is None:
         raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid)
     return user_name, password
+
+
+def token_signature_algorithm(policy_uri: str) -> str:
+    if not policy_uri or policy_uri == security_policies.SecurityPolicyNone.URI:
+        _logger.warning("Rejected an X509 token: its SecurityPolicy is None and cannot carry a proof of possession")
+        raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+    for policy_class in USER_TOKEN_SECURITY_POLICIES:
+        if policy_class.URI == policy_uri:
+            return policy_class.AsymmetricSignatureURI
+    raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
+
+
+def _verify_user_signature(leaf: x509.Certificate, algorithm: str, challenge: bytes, signature: bytes) -> None:
+    if algorithm == "http://www.w3.org/2000/09/xmldsig#rsa-sha1":
+        uacrypto.verify_sha1(leaf, challenge, signature)
+    elif algorithm == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256":
+        uacrypto.verify_sha256(leaf, challenge, signature)
+    elif algorithm == "http://opcfoundation.org/UA/security/rsa-pss-sha2-256":
+        uacrypto.verify_pss_sha256(leaf, challenge, signature)
+    else:
+        raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
+
+
+def x509_user_certificate(
+    matched: MatchedPolicy,
+    token: ua.X509IdentityToken,
+    signature: ua.SignatureData,
+    server_certificate: bytes | None,
+    nonce: bytes,
+    validator: CertificateValidator | None,
+) -> x509.Certificate:
+    """The validated user certificate of an X509 token after its proof of possession, or a ServiceError."""
+    expected = token_signature_algorithm(matched.policy_uri)
+    if (signature.Algorithm or "") != expected:
+        _logger.warning("Rejected an X509 token signed with %r, the policy requires %r", signature.Algorithm, expected)
+        raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
+    data = bytes(token.CertificateData or b"")
+    try:
+        leaf = x509.load_der_x509_certificate(split_certificate_chain(data)[0])
+    except (ValueError, IndexError, ua.UaError):
+        _logger.warning("Rejected an X509 token whose certificate does not parse")
+        raise ServiceError(ua.StatusCodes.BadIdentityTokenInvalid) from None
+    if not signature.Signature:
+        raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid)
+    try:
+        _verify_user_signature(leaf, expected, (server_certificate or b"") + nonce, bytes(signature.Signature))
+    except ServiceError:
+        raise
+    except Exception:
+        raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid) from None
+    if validator is None:
+        _logger.warning("Rejected an X509 token: no user certificate is trusted (set_user_trust_store)")
+        raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+    outcome = validator.validate_user_certificate(data, matched.policy_uri)
+    if not outcome.accepted:
+        _logger.warning(
+            "Rejected the user certificate %s: %s (%s)",
+            outcome.subject,
+            outcome.detail,
+            ua.StatusCode(outcome.status).name,
+        )
+        raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+    return leaf
+
+
+def offers_token_type(
+    endpoints: Iterable[ua.EndpointDescription], security: ChannelSecurity, token_type: ua.UserTokenType
+) -> bool:
+    return any(
+        policy.TokenType == token_type
+        for endpoint in endpoints
+        if endpoint.SecurityPolicyUri == security.policy_uri and endpoint.SecurityMode == security.mode
+        for policy in endpoint.UserIdentityTokens
+    )
 
 
 def certificate_application_uri(der: bytes) -> str | None:

@@ -629,6 +629,8 @@ class Server:
             # Log warnings about the certificate
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
         await self._prepare_certificate_validation()
+        if self.iserver.user_trust_store is not None:
+            await self.iserver.user_trust_store.load()
         await self._setup_server_nodes()
         await self.iserver.start()
         try:
@@ -1048,6 +1050,15 @@ class Server:
         validated against. Without a trust store no client certificate is trusted.
         """
         self.iserver.trust_store = trust_store
+
+    def set_user_trust_store(self, trust_store: TrustStore) -> None:
+        """
+        Set the trusted certificates, issuer certificates and revocation lists that the certificates of X509
+        identity tokens (user certificates) are validated against. They are separate from the application
+        certificates of set_trust_store. Without one, no user certificate is trusted, except the ones of a
+        CertificateUserManager, which are pinned.
+        """
+        self.iserver.user_trust_store = trust_store
 
     def set_certificate_validator(self, validator: CertificateValidator) -> None:
         """

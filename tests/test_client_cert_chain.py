@@ -81,6 +81,7 @@ async def _server(chain: Chain) -> AsyncIterator[None]:
     await srv.load_certificate(chain.server_certificate)
     await srv.load_private_key(chain.server_key)
     srv.set_trust_store(TrustStore([chain.trusted], []))
+    srv.set_user_trust_store(TrustStore([chain.trusted], []))
 
     async with srv:
         yield

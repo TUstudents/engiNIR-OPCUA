@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -61,6 +62,8 @@ DEFAULT_MINIMUM_ROLES: dict[ua.NodeId, UserRole] = {
 class User:
     role: UserRole = UserRole.Anonymous
     name: str | None = None
+    id: str | None = None
+    expires_at: datetime | None = None
 
 
 class PermissionRuleset:

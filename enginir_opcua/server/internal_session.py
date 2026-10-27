@@ -7,7 +7,8 @@ import time
 import weakref
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -18,10 +19,17 @@ from enginir_opcua.crypto.permission_rules import PermissionRuleset, User, UserR
 from ..common.callback import CallbackType, ServerItemCallback
 from ..common.utils import ServiceError, create_nonce
 from ..crypto import uacrypto
-from ..crypto.uacrypto import x509
+from ..crypto.uacrypto import certificate_thumbprint, x509
 from ..crypto.validator import check_application_uri
 from .address_space import AddressSpace
-from .identity import COUNTED_FAILURES, match_token_policy, peer_key, user_name_credentials
+from .identity import (
+    COUNTED_FAILURES,
+    match_token_policy,
+    offers_token_type,
+    peer_key,
+    user_name_credentials,
+    x509_user_certificate,
+)
 from .subscription_service import SubscriptionService
 
 if TYPE_CHECKING:
@@ -242,13 +250,22 @@ class Session:
         username: str | None = None
         password: str | None = None
         certificate: bytes | None = security.certificate
+        user_certificate: x509.Certificate | None = None
         try:
             if isinstance(id_token, ua.UserNameIdentityToken):
                 username, password = user_name_credentials(
                     matched, security, id_token, self.iserver.private_key, self.nonce
                 )
             elif isinstance(id_token, ua.X509IdentityToken):
-                certificate = self.iserver.verify_x509_token(self, id_token, params.UserTokenSignature)
+                user_certificate = x509_user_certificate(
+                    matched,
+                    id_token,
+                    params.UserTokenSignature,
+                    uacrypto.der_from_x509(self.iserver.certificate) if self.iserver.certificate is not None else None,
+                    self.nonce,
+                    self.iserver.user_certificate_validator(),
+                )
+                certificate = uacrypto.der_from_x509(user_certificate)
         except (ServiceError, ua.uaerrors.UaStatusCodeError):
             raise
         except Exception:
@@ -258,6 +275,12 @@ class Session:
         )
         if user is None:
             raise ServiceError(ua.StatusCodes.BadUserAccessDenied)
+        if user_certificate is not None:
+            user = replace(
+                user,
+                id=certificate_thumbprint(certificate).hex() if certificate else None,
+                expires_at=user_certificate.not_valid_after_utc,
+            )
         return user
 
     def get_publish_request(self, subscription_id: int) -> PublishRequestData | None:
@@ -535,11 +558,30 @@ class SessionManager:
             else:
                 session.unbind()
 
+    def _user_certificate_expired(self, session: Session) -> bool:
+        expires_at = session.user.expires_at
+        if expires_at is None:
+            return False
+        grace = timedelta(seconds=self.iserver.user_certificate_grace_seconds)
+        return self.iserver.wall_clock() > expires_at + grace
+
+    async def _drop_expired_user(self, session: Session) -> bool:
+        if offers_token_type(self.iserver.endpoints, session.channel_security, ua.UserTokenType.Anonymous):
+            _logger.info("The user certificate of session %s expired, the session continues as Anonymous", session.name)
+            session.user = User(role=UserRole.Anonymous)
+            session.services.user = session.user
+            return True
+        _logger.info("The user certificate of session %s expired, closing the session", session.name)
+        await session.close(False)
+        return False
+
     async def sweep(self) -> float:
         now = time.monotonic()
         wait = 1.0
         pending_limit = self.iserver.max_pending_activation_seconds
         for session in list(self.sessions.values()):
+            if self._user_certificate_expired(session) and not await self._drop_expired_user(session):
+                continue
             if session.state == SessionState.Created and pending_limit > 0:
                 remaining = pending_limit - (now - session.created_at)
             else:

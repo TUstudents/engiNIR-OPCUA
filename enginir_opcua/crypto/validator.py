@@ -36,6 +36,7 @@ DEFAULT_MAX_CHAIN_LENGTH = 10
 class PeerRole(Enum):
     CLIENT = "client"
     SERVER = "server"
+    USER = "user"
 
 
 class Step(Enum):
@@ -249,6 +250,13 @@ class _Validation:
         leaf = received[0]
         constraints = _extension(leaf, x509.BasicConstraints)
         if constraints is not None and constraints.ca:
+            if self.context.peer_role is PeerRole.USER:
+                raise self.reject(
+                    ua.StatusCodes.BadCertificateInvalid,
+                    Step.STRUCTURE,
+                    leaf,
+                    "The user certificate is marked as a CA (cA TRUE)",
+                )
             self.check_ca_application_certificate(leaf)
 
     def structure_problem(self, certificate: x509.Certificate, is_leaf: bool) -> str | None:
@@ -258,7 +266,7 @@ class _Validation:
             return "The certificate does not hold an RSA public key"
         if _extension(certificate, x509.BasicConstraints) is None:
             return "The certificate has no basic constraints extension"
-        if not is_leaf:
+        if not is_leaf or self.context.peer_role is PeerRole.USER:
             return None
         alternative_names = _extension(certificate, x509.SubjectAlternativeName)
         if alternative_names is None:
@@ -471,6 +479,10 @@ class _Validation:
         if not leaf:
             return [] if key_usage.key_cert_sign else [("The CA certificate may not sign certificates", critical)]
         problems: list[tuple[str, bool]] = []
+        if self.context.peer_role is PeerRole.USER:
+            if not key_usage.digital_signature:
+                problems.append(("The key usage of the certificate lacks digitalSignature", critical))
+            return problems
         for name, allowed in (
             ("digitalSignature", key_usage.digital_signature),
             ("nonRepudiation", key_usage.content_commitment),
@@ -645,6 +657,14 @@ class CertificateValidator:
         except _Rejected as rejection:
             return self._rejected(rejection, tuple(validation.suppressed))
         return Outcome(True, leaf, tuple(validation.suppressed))
+
+    def validate_user_certificate(self, chain: bytes, policy_uri: str | None) -> Outcome:
+        """
+        Validate the certificate of an X509 identity token, followed by any intermediate CA certificates, against
+        the trust store of this validator (the user trust list). The application URI and host name steps are
+        skipped and only digitalSignature is required of the key usage (Part 6, 6.2.3).
+        """
+        return self.validate_application_certificate(chain, ValidationContext(PeerRole.USER, policy_uri))
 
     def check_application_uri(self, certificate: x509.Certificate, application_uri: str) -> Outcome:
         """Check that the certificate holds the ApplicationUri of the application description."""

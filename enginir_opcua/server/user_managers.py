@@ -123,6 +123,9 @@ class CertificateUserManager(UserManager):
             return User(role=UserRole.Anonymous)
         return None
 
+    def pinned_certificates(self) -> list[Any]:
+        return [uacrypto.x509_from_der(entry["certificate"]) for entry in self._trusted_certificates.values()]
+
     async def add_user(self, certificate_path: Path, name: str, format: str | None = None) -> None:
         await self.add_role(certificate_path=certificate_path, user_role=UserRole.User, name=name, format=format)
 

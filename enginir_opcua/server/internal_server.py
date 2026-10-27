@@ -155,6 +155,11 @@ class InternalServer:
         self.user_manager: UserManager = user_manager
         self.trust_store: TrustStore | None = None
         self.certificate_validator: CertificateValidator | None = None
+        self.user_trust_store: TrustStore | None = None
+        self.user_certificate_grace_seconds: float = 60.0
+        self.wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self._user_validator: CertificateValidator | None = None
+        self._pinned_user_validator: tuple[frozenset[bytes], CertificateValidator] | None = None
         self.application_hook: ApplicationHook | None = None
         """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
@@ -503,6 +508,24 @@ class InternalServer:
         """
         return self.aspace.read_attribute_value(nodeid, attr)
 
+    def user_certificate_validator(self) -> CertificateValidator | None:
+        store = self.user_trust_store
+        if store is not None:
+            if self._user_validator is None or self._user_validator.trust_store is not store:
+                self._user_validator = CertificateValidator(store)
+            return self._user_validator
+        pinned = getattr(self.user_manager, "pinned_certificates", None)
+        certificates = pinned() if pinned is not None else []
+        if not certificates:
+            return None
+        key = frozenset(uacrypto.der_from_x509(certificate) for certificate in certificates)
+        if self._pinned_user_validator is None or self._pinned_user_validator[0] != key:
+            pinned_store = TrustStore()
+            for certificate in certificates:
+                pinned_store.pin(certificate)
+            self._pinned_user_validator = (key, CertificateValidator(pinned_store))
+        return self._pinned_user_validator[1]
+
     def offered_token_classes(self) -> tuple[type, ...]:
         accepted = getattr(self.user_manager, "accepted_token_types", None)
         if accepted is None:
@@ -515,37 +538,3 @@ class InternalServer:
         and password as parameters and returns True of user is allowed access, False otherwise.
         """
         self.user_manager = user_manager
-
-    def verify_x509_token(self, isession: Any, token: ua.X509IdentityToken, signature: ua.SignatureData) -> bytes:
-        """
-        verify certificate signature
-        """
-        cert = uacrypto.x509_from_der(token.CertificateData)
-        alg = signature.Algorithm
-        sig = signature.Signature
-
-        # TODO check if algorithm is allowed, throw BadSecurityPolicyRejected if not
-
-        challenge = b""
-        if self.certificate is not None:
-            challenge += uacrypto.der_from_x509(self.certificate)
-        if isession.nonce is not None:
-            challenge += isession.nonce
-
-        if not (alg and sig):
-            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid)
-
-        try:
-            if alg == "http://www.w3.org/2000/09/xmldsig#rsa-sha1":
-                uacrypto.verify_sha1(cert, challenge, sig)
-            elif alg == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256":
-                uacrypto.verify_sha256(cert, challenge, sig)
-            elif alg == "http://opcfoundation.org/UA/security/rsa-pss-sha2-256":
-                uacrypto.verify_pss_sha256(cert, challenge, sig)
-            else:
-                self.logger.warning("Unknown certificate signature algorithm %s", alg)
-                raise ServiceError(ua.StatusCodes.BadSecurityPolicyRejected)
-        except ua.uaerrors.SignatureError:
-            raise ServiceError(ua.StatusCodes.BadUserSignatureInvalid) from None
-
-        return token.CertificateData
