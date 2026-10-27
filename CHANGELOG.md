@@ -67,6 +67,22 @@ Client:
 - A client that took its security from GetEndpoints compares that list with CreateSession's ServerEndpoints and fails
   with `Bad_SecurityChecksFailed` when they differ. Endpoints are no longer re-fetched on reconnect.
 - `HaSecurityConfig` needs a `server_certificate` or a `trust_store` when security is on.
+- Publish requests are pipelined: up to `UaSession.max_outstanding_publish_requests` (default 10) are in flight,
+  sized by the number of Subscriptions and the measured round trip, each with a timeout from the keep-alive time.
+  Acknowledgements are kept until the response to the request that carried them arrives (`max_pending_acks`, 2000),
+  and messages fetched with Republish are acknowledged too. Subscriptions register with `UaSession.register_sink`.
+- A timed-out request is removed from the request table; a late response to it is dropped, a response for an id that
+  was never sent closes the channel. A timed-out OpenSecureChannel no longer blocks every later renewal.
+- `connect()` on a connected client raises; a failure during `connect()` closes the Session it created.
+  `disconnect()` closes the local Subscriptions, and a later `connect()` doesn't bring them back. After a reconnect,
+  Subscriptions are restored before publishing resumes; the stale watchdog keeps running.
+- The client checks the server certificate's ApplicationUri against the endpoint's. `Client(url)` refuses schemes
+  other than `opc.tcp`; a URL without a port uses 4840. A user token type the endpoint doesn't offer raises
+  `ConfigurationError` before anything is sent.
+- `Node.call_method` converts arguments to the method's declared InputArguments types; services take a per-call
+  `timeout`. `UaClient.add_state_listener` is public. `get_keepalive_count` and `get_subscription_revised_params`
+  are removed; use `subscription_parameters`.
+- `HaClient` needs at least two server URLs.
 
 Client subscriptions (OPC 10000-4, 5.13 and 5.14):
 - `subscription_parameters(period, ...)` derives the keep-alive count from a keep-alive time (default 10 s) and the
