@@ -5,13 +5,16 @@ server side implementation of a subscription object
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
+from enginir_opcua.common import utils
 
 from .address_space import AddressSpace
 
@@ -27,6 +30,16 @@ class MonitoredItemLimits:
     max_sampling_interval: float = 3_600_000.0
     max_items_per_subscription: int = 10_000
     max_items: int = 100_000
+    items_in_server: Callable[[], int] = field(default=lambda: 0)
+
+
+OVERFLOW_INFO_BITS = 0x0480
+VALID_TIMESTAMPS = (
+    ua.TimestampsToReturn.Source,
+    ua.TimestampsToReturn.Server,
+    ua.TimestampsToReturn.Both,
+    ua.TimestampsToReturn.Neither,
+)
 
 
 class MonitoredItemData:
@@ -42,6 +55,8 @@ class MonitoredItemData:
         self.queue_size: int = 0
         self.sampling_interval: float = 0.0
         self.discard_oldest: bool = True
+        self.timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both
+        self.held: list[Any] = []
 
 
 class MonitoredItemValues:
@@ -78,18 +93,29 @@ class MonitoredItemService:
     def __str__(self) -> str:
         return f"MonitoredItemService({self.isub.data.SubscriptionId})"
 
+    def item_count(self) -> int:
+        return len(self._monitored_items)
+
     def delete_all_monitored_items(self) -> None:
         self.delete_monitored_items([mdata.monitored_item_id for mdata in self._monitored_items.values()])
+
+    @staticmethod
+    def _check_timestamps(timestamps: ua.TimestampsToReturn) -> None:
+        if timestamps not in VALID_TIMESTAMPS:
+            raise utils.ServiceError(ua.StatusCodes.BadTimestampsToReturnInvalid)
 
     async def create_monitored_items(
         self, params: ua.CreateMonitoredItemsParameters
     ) -> list[ua.MonitoredItemCreateResult]:
+        self._check_timestamps(params.TimestampsToReturn)
         results: list[ua.MonitoredItemCreateResult] = []
         for item in params.ItemsToCreate:
-            if item.ItemToMonitor.AttributeId == ua.AttributeIds.EventNotifier:
-                result = self._create_events_monitored_item(item)
+            if item.MonitoringMode not in tuple(ua.MonitoringMode):
+                result = ua.MonitoredItemCreateResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadMonitoringModeInvalid))
+            elif item.ItemToMonitor.AttributeId == ua.AttributeIds.EventNotifier:
+                result = self._create_events_monitored_item(item, params.TimestampsToReturn)
             else:
-                result = await self._create_data_change_monitored_item(item)
+                result = await self._create_data_change_monitored_item(item, params.TimestampsToReturn)
             results.append(result)
         return results
 
@@ -103,13 +129,13 @@ class MonitoredItemService:
             value = mdata.mvalue.get_current_datavalue()
             if value is None:
                 value = self.aspace.read_attribute_value(read_value_id.NodeId, read_value_id.AttributeId)
-            notification = ua.MonitoredItemNotification(ClientHandle=mdata.client_handle, Value=value)
-            await self.isub.enqueue_datachange_event(mid, notification, mdata.queue_size)
+            self._queue_data(mdata, value)
 
     def modify_monitored_items(self, params: ua.ModifyMonitoredItemsParameters) -> list[ua.MonitoredItemModifyResult]:
+        self._check_timestamps(params.TimestampsToReturn)
         results: list[ua.MonitoredItemModifyResult] = []
         for item in params.ItemsToModify:
-            results.append(self._modify_monitored_item(item))
+            results.append(self._modify_monitored_item(item, params.TimestampsToReturn))
         return results
 
     async def trigger_datachange(self, handle: int, nodeid: ua.NodeId, attr: ua.AttributeIds) -> None:
@@ -117,7 +143,9 @@ class MonitoredItemService:
         dv = self.aspace.read_attribute_value(nodeid, attr)
         await self.datachange_callback(handle, dv)
 
-    def _modify_monitored_item(self, params: ua.MonitoredItemModifyRequest) -> ua.MonitoredItemModifyResult:
+    def _modify_monitored_item(
+        self, params: ua.MonitoredItemModifyRequest, timestamps: ua.TimestampsToReturn
+    ) -> ua.MonitoredItemModifyResult:
         mdata = self._monitored_items.get(params.MonitoredItemId)
         if mdata is None:
             return ua.MonitoredItemModifyResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid))
@@ -128,8 +156,10 @@ class MonitoredItemService:
         mdata.queue_size = self._revise_queue_size(requested.QueueSize, is_event)
         mdata.discard_oldest = requested.DiscardOldest
         mdata.client_handle = requested.ClientHandle
+        mdata.timestamps = timestamps
         if requested.Filter is not None:
             mdata.filter = requested.Filter
+        self._trim(mdata)
         return ua.MonitoredItemModifyResult(
             RevisedSamplingInterval=mdata.sampling_interval, RevisedQueueSize=mdata.queue_size
         )
@@ -142,8 +172,14 @@ class MonitoredItemService:
         if result.StatusCode.is_good():
             self._monitored_items[result.MonitoredItemId] = mdata
 
+    def _at_limit(self) -> bool:
+        limits = self.isub.limits
+        return len(self._monitored_items) >= limits.max_items_per_subscription or (
+            limits.items_in_server() >= limits.max_items
+        )
+
     def _make_monitored_item_common(
-        self, params: ua.MonitoredItemCreateRequest
+        self, params: ua.MonitoredItemCreateRequest, timestamps: ua.TimestampsToReturn
     ) -> tuple[ua.MonitoredItemCreateResult, MonitoredItemData]:
         result = ua.MonitoredItemCreateResult()
         is_event = params.ItemToMonitor.AttributeId == ua.AttributeIds.EventNotifier
@@ -163,15 +199,14 @@ class MonitoredItemService:
         mdata.queue_size = result.RevisedQueueSize
         mdata.sampling_interval = result.RevisedSamplingInterval
         mdata.discard_oldest = requested.DiscardOldest
+        mdata.timestamps = timestamps
         mdata.filter = requested.Filter
         return result, mdata
 
     def _revise_queue_size(self, requested: int, is_event: bool) -> int:
         limits = self.isub.limits
-        if is_event:
-            if requested == 0:
-                return min(limits.default_event_queue_size, limits.max_queue_size)
-            return min(max(int(requested), 1), limits.max_queue_size)
+        if is_event and requested == 0:
+            return min(limits.default_event_queue_size, limits.max_queue_size)
         return min(max(int(requested), 1), limits.max_queue_size)
 
     def _revise_sampling_interval(self, requested: float, node_id: ua.NodeId | None, is_event: bool) -> float:
@@ -195,14 +230,16 @@ class MonitoredItemService:
             return 0.0
         return max(float(dv.Value.Value), 0.0)
 
-    def _create_events_monitored_item(self, params: ua.MonitoredItemCreateRequest) -> ua.MonitoredItemCreateResult:
+    def _create_events_monitored_item(
+        self, params: ua.MonitoredItemCreateRequest, timestamps: ua.TimestampsToReturn
+    ) -> ua.MonitoredItemCreateResult:
         self.logger.info(
             "request to subscribe to events for node %s and attribute %s",
             params.ItemToMonitor.NodeId,
             params.ItemToMonitor.AttributeId,
         )
 
-        result, mdata = self._make_monitored_item_common(params)
+        result, mdata = self._make_monitored_item_common(params, timestamps)
         node_id = params.ItemToMonitor.NodeId
         if node_id is None:
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
@@ -213,6 +250,9 @@ class MonitoredItemService:
         if ev_notify_byte is None or not ua.ua_binary.is_bit_set(ev_notify_byte, ua.EventNotifier.SubscribeToEvents):
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadServiceUnsupported)
             return result
+        if self._at_limit():
+            result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
+            return result
         mdata.where_clause_evaluator = WhereClauseEvaluator(self.logger, self.aspace, mdata.filter.WhereClause)
         self._commit_monitored_item(result, mdata)
         if params.ItemToMonitor.NodeId not in self._monitored_events:
@@ -221,7 +261,7 @@ class MonitoredItemService:
         return result
 
     async def _create_data_change_monitored_item(
-        self, params: ua.MonitoredItemCreateRequest
+        self, params: ua.MonitoredItemCreateRequest, timestamps: ua.TimestampsToReturn
     ) -> ua.MonitoredItemCreateResult:
         self.logger.info(
             "request to subscribe to datachange for node %s and attribute %s",
@@ -229,12 +269,15 @@ class MonitoredItemService:
             params.ItemToMonitor.AttributeId,
         )
 
-        result, mdata = self._make_monitored_item_common(params)
+        result, mdata = self._make_monitored_item_common(params, timestamps)
         result.StatusCode, handle = self.aspace.add_datachange_callback(
             params.ItemToMonitor.NodeId, params.ItemToMonitor.AttributeId, self.datachange_callback
         )
 
         self.logger.debug("adding callback return status %s and handle %s", result.StatusCode, handle)
+        if result.StatusCode.is_good() and self._at_limit():
+            self.aspace.delete_datachange_callback(handle)
+            result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
         mdata.callback_handle = handle
         self._commit_monitored_item(result, mdata)
         if result.StatusCode.is_good():
@@ -245,6 +288,8 @@ class MonitoredItemService:
 
     async def set_monitoring_mode(self, mode: ua.MonitoringMode, ids: list[int]) -> list[ua.StatusCode]:
         self.logger.info("set monitoring mode to %s for items %s", mode, ids)
+        if mode not in tuple(ua.MonitoringMode):
+            raise utils.ServiceError(ua.StatusCodes.BadMonitoringModeInvalid)
         results: list[ua.StatusCode] = []
         for mid in ids:
             results.append(await self._set_monitoring_mode(mode, mid))
@@ -255,17 +300,36 @@ class MonitoredItemService:
         if mdata is None:
             return ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid)
         previous_mode = mdata.mode
-        mdata.mode = mode
-        if (
-            previous_mode == ua.MonitoringMode.Disabled
-            and mode != ua.MonitoringMode.Disabled
-            and mdata.callback_handle is not None
-            and mdata.read_value_id is not None
-        ):
-            await self.trigger_datachange(
-                mdata.callback_handle, mdata.read_value_id.NodeId, mdata.read_value_id.AttributeId
-            )
+        if mode == previous_mode:
+            return ua.StatusCode()
+        is_event = self._is_event_item(mdata)
+        if mode == ua.MonitoringMode.Disabled:
+            self._clear(mdata)
+            mdata.mode = mode
+        elif previous_mode == ua.MonitoringMode.Disabled:
+            mdata.mode = mode
+            if not is_event and mdata.callback_handle is not None and mdata.read_value_id is not None:
+                await self.trigger_datachange(
+                    mdata.callback_handle, mdata.read_value_id.NodeId, mdata.read_value_id.AttributeId
+                )
+        elif mode == ua.MonitoringMode.Reporting:
+            mdata.mode = mode
+            self._release_held(mdata)
+        else:
+            mdata.held = self.isub.take_queue(mid, is_event)
+            mdata.mode = mode
         return ua.StatusCode()
+
+    def _clear(self, mdata: MonitoredItemData) -> None:
+        mdata.held = []
+        mdata.mvalue = MonitoredItemValues()
+        if mdata.monitored_item_id is not None:
+            self.isub.take_queue(mdata.monitored_item_id, self._is_event_item(mdata))
+
+    def _release_held(self, mdata: MonitoredItemData) -> None:
+        held, mdata.held = mdata.held, []
+        for notification in held:
+            self._push(mdata, notification)
 
     def delete_monitored_items(self, ids: list[int]) -> list[ua.StatusCode]:
         self.logger.debug("delete monitored items %s", ids)
@@ -275,7 +339,8 @@ class MonitoredItemService:
         return results
 
     def _delete_monitored_items(self, mid: int) -> ua.StatusCode:
-        if mid not in self._monitored_items:
+        mdata = self._monitored_items.get(mid)
+        if mdata is None:
             return ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid)
         for node_key, mid_list in self._monitored_events.items():
             if mid in mid_list:
@@ -288,6 +353,7 @@ class MonitoredItemService:
                 self.aspace.delete_datachange_callback(handle)
                 self._monitored_datachange.pop(handle)
                 break
+        self._clear(mdata)
         self._monitored_items.pop(mid)
         return ua.StatusCode()
 
@@ -319,6 +385,69 @@ class MonitoredItemService:
 
         return False
 
+    @staticmethod
+    def _with_timestamps(value: ua.DataValue, timestamps: ua.TimestampsToReturn) -> ua.DataValue:
+        keep_source = timestamps in (ua.TimestampsToReturn.Source, ua.TimestampsToReturn.Both)
+        keep_server = timestamps in (ua.TimestampsToReturn.Server, ua.TimestampsToReturn.Both)
+        return dataclasses.replace(
+            value,
+            SourceTimestamp=value.SourceTimestamp if keep_source else None,
+            SourcePicoseconds=value.SourcePicoseconds if keep_source else None,
+            ServerTimestamp=value.ServerTimestamp if keep_server else None,
+            ServerPicoseconds=value.ServerPicoseconds if keep_server else None,
+        )
+
+    def _queue_data(self, mdata: MonitoredItemData, value: ua.DataValue) -> None:
+        notification = ua.MonitoredItemNotification(
+            ClientHandle=mdata.client_handle, Value=self._with_timestamps(copy.deepcopy(value), mdata.timestamps)
+        )
+        self._push(mdata, notification)
+
+    def _active_queue(self, mdata: MonitoredItemData) -> list[Any]:
+        if mdata.mode == ua.MonitoringMode.Reporting and mdata.monitored_item_id is not None:
+            return self.isub.queue_of(mdata.monitored_item_id, self._is_event_item(mdata))
+        return mdata.held
+
+    def _push(self, mdata: MonitoredItemData, notification: Any) -> None:
+        queue = self._active_queue(mdata)
+        size = max(mdata.queue_size, 1)
+        excess = len(queue) - size + 1
+        if excess <= 0:
+            queue.append(notification)
+            return
+        if size == 1:
+            queue[:] = [notification]
+            return
+        if mdata.discard_oldest:
+            del queue[:excess]
+            queue.append(notification)
+            self._flag_overflow(queue[0])
+        else:
+            del queue[len(queue) - excess :]
+            queue.append(notification)
+            self._flag_overflow(queue[-1])
+
+    def _trim(self, mdata: MonitoredItemData) -> None:
+        queue = self._active_queue(mdata)
+        size = max(mdata.queue_size, 1)
+        if len(queue) <= size:
+            return
+        if mdata.discard_oldest:
+            del queue[: len(queue) - size]
+        else:
+            del queue[size:]
+        if size > 1 and queue:
+            self._flag_overflow(queue[0] if mdata.discard_oldest else queue[-1])
+
+    @staticmethod
+    def _flag_overflow(notification: Any) -> None:
+        if not isinstance(notification, ua.MonitoredItemNotification) or notification.Value is None:
+            return
+        code = notification.Value.StatusCode.value if notification.Value.StatusCode is not None else 0
+        notification.Value = dataclasses.replace(
+            notification.Value, StatusCode=ua.StatusCode(code | OVERFLOW_INFO_BITS)
+        )
+
     async def datachange_callback(self, handle: int, value: ua.DataValue, error: ua.StatusCode | None = None) -> None:
         if error:
             self.logger.info(
@@ -326,7 +455,6 @@ class MonitoredItemService:
             )
             await self.trigger_statuschange(error)
         else:
-            event = ua.MonitoredItemNotification()
             mid = self._monitored_datachange[handle]
             mdata = self._monitored_items[mid]
             if mdata.mode == ua.MonitoringMode.Disabled:
@@ -340,9 +468,7 @@ class MonitoredItemService:
                 deadband_flag_pass = self._is_data_changed(mdata.mvalue, ua.DataChangeTrigger.StatusValue)
 
             if deadband_flag_pass:
-                event.ClientHandle = mdata.client_handle
-                event.Value = value
-                await self.isub.enqueue_datachange_event(mid, event, mdata.queue_size)
+                self._queue_data(mdata, value)
 
     def _is_deadband_exceeded(self, values: MonitoredItemValues, flt: ua.DataChangeFilter) -> bool:
         cur = values.get_current_datavalue()
@@ -380,13 +506,15 @@ class MonitoredItemService:
             )
             return
         mdata = self._monitored_items[mid]
+        if mdata.mode == ua.MonitoringMode.Disabled:
+            return
         if mdata.where_clause_evaluator is None or not mdata.where_clause_evaluator.eval(event):
             self.logger.info("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
             return
         fieldlist = ua.EventFieldList()
         fieldlist.ClientHandle = mdata.client_handle
         fieldlist.EventFields = event.to_event_fields(mdata.filter.SelectClauses)
-        await self.isub.enqueue_event(mid, fieldlist, mdata.queue_size)
+        self._push(mdata, fieldlist)
 
     async def trigger_statuschange(self, code: ua.StatusCode) -> None:
         await self.isub.enqueue_statuschange(code)

@@ -128,6 +128,12 @@ class InternalSubscription:
     def next_sequence_number(self) -> int:
         return self._sequence
 
+    def queue_of(self, mid: int, event: bool) -> list[Any]:
+        return (self._triggered_events if event else self._triggered_datachanges).setdefault(mid, [])
+
+    def take_queue(self, mid: int, event: bool) -> list[Any]:
+        return (self._triggered_events if event else self._triggered_datachanges).pop(mid, [])
+
     def has_queued_datachange(self, mid: int) -> bool:
         return bool(self._triggered_datachanges.get(mid))
 
@@ -166,7 +172,9 @@ class InternalSubscription:
         self.reset_lifetime()
 
     def _has_data(self) -> bool:
-        return self._publishing_enabled and bool(self._triggered_datachanges or self._triggered_events)
+        return self._publishing_enabled and (
+            any(self._triggered_datachanges.values()) or any(self._triggered_events.values())
+        )
 
     def _has_notifications(self) -> bool:
         return self._has_data() or bool(self._triggered_statuschanges)

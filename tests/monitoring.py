@@ -99,7 +99,3 @@ async def publish(sub: InternalSubscription, wire: Wire) -> list[Any]:
     wire.clear()
     await sub.timer_expired()
     return wire.data()
-
-
-def int32(value: int) -> ua.DataValue:
-    return ua.DataValue(ua.Variant(value, ua.VariantType.Int32))

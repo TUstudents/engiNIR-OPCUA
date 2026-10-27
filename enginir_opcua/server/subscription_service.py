@@ -109,6 +109,9 @@ class SubscriptionService:
     def _setting(self, name: str, default: float) -> float:
         return getattr(self.iserver, name, default) if self.iserver else default
 
+    def monitored_item_count(self) -> int:
+        return sum(sub.monitored_item_srv.item_count() for sub in self.subscriptions.values())
+
     def _monitored_item_limits(self) -> MonitoredItemLimits:
         defaults = MonitoredItemLimits()
         return MonitoredItemLimits(
@@ -120,6 +123,7 @@ class SubscriptionService:
                 self._setting("max_monitored_items_per_subscription", defaults.max_items_per_subscription)
             ),
             max_items=int(self._setting("max_monitored_items", defaults.max_items)),
+            items_in_server=self.monitored_item_count,
         )
 
     def _revise_max_notifications(self, requested: int) -> int:
