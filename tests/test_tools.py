@@ -22,7 +22,7 @@ def test_cli_tools(running_server):
     write_val = ["val_to_write"]
     rw_opts = default_opts + rw_node
     write_opts = rw_opts + write_val
-    call_opts = default_opts + call_node + write_val
+    call_opts = default_opts + call_node + ["1.5"]
 
     tool_opts = {}
     tool_opts[uaread] = rw_opts

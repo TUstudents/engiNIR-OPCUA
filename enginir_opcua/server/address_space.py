@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator
@@ -38,8 +38,11 @@ from enginir_opcua import ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.ua.numeric_range import IndexRange
 
+from .continuation_points import BrowseCursor, ContinuationPoints
 from .datatype_check import BASE_DATA_TYPE, DataTypeChecker, check_variant
 
+ALL_ELEMENTS_PROCESSED = 0xFFFFFFFF
+HAS_SUBTYPE = ua.NodeId(ua.ObjectIds.HasSubtype)
 HAS_COMPONENT = ua.NodeId(ua.ObjectIds.HasComponent)
 HAS_PROPERTY = ua.NodeId(ua.ObjectIds.HasProperty)
 HAS_TYPE_DEFINITION = ua.NodeId(ua.ObjectIds.HasTypeDefinition)
@@ -121,6 +124,8 @@ class NodeData:
     The class is internal to enginir_opcua and holds all the information about a Node.
     """
 
+    reference_version: int = 0
+
     def __init__(self, nodeid: ua.NodeId) -> None:
         self.nodeid: "ua.NodeId" = nodeid
         self.attributes: "dict[ua.AttributeIds, AttributeValue]" = {}
@@ -168,130 +173,224 @@ class AttributeService:
         ]
 
 
+class BrowseLimits(Protocol):
+    max_browse_references_per_node: int
+    max_translate_matches: int
+
+
+@dataclasses.dataclass
+class DefaultBrowseLimits:
+    max_browse_references_per_node: int = 10_000
+    max_translate_matches: int = 1_000
+
+
 class ViewService:
     """
     This class implements the view service set defined in the opc ua standard.
-    https://reference.opcfoundation.org/v104/Core/docs/Part4/5.8.1/
+    https://reference.opcfoundation.org/v105/Core/docs/Part4/5.9.1/
     """
 
-    def __init__(self, aspace: AddressSpace) -> None:
+    def __init__(self, aspace: AddressSpace, limits: BrowseLimits | None = None) -> None:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
+        self._limits: BrowseLimits = limits if limits is not None else DefaultBrowseLimits()
 
-    def browse(self, params: ua.BrowseParameters) -> list[ua.BrowseResult]:
-        # self.logger.debug("browse %s", params)
-        res: list[ua.BrowseResult] = []
-        for desc in params.NodesToBrowse:
-            res.append(self._browse(desc))
-        return res
+    def browse(self, params: ua.BrowseParameters, points: ContinuationPoints | None = None) -> list[ua.BrowseResult]:
+        if params.View is not None and not params.View.ViewId.is_null():
+            raise ua.uaerrors.BadViewIdUnknown()
+        points = points if points is not None else ContinuationPoints(lambda: 0)
+        limit = self._page_limit(params.RequestedMaxReferencesPerNode)
+        created: set[bytes] = set()
+        return [self._browse_checked(desc, limit, points, created) for desc in params.NodesToBrowse]
 
-    def _browse(self, desc: ua.BrowseDescription) -> ua.BrowseResult:
-        res = ua.BrowseResult()
-        if desc.NodeId not in self._aspace:
-            res.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
-            return res
-        node = self._aspace[desc.NodeId]
-        for ref in node.references:
-            if not self._is_suitable_ref(desc, ref):
+    def _page_limit(self, requested: int) -> int:
+        cap = self._limits.max_browse_references_per_node
+        return min(requested, cap) if requested else cap
+
+    def _browse_checked(
+        self, desc: ua.BrowseDescription, limit: int, points: ContinuationPoints, created: set[bytes]
+    ) -> ua.BrowseResult:
+        try:
+            node = self._aspace.node_for_service(desc.NodeId)
+            if desc.BrowseDirection not in (
+                ua.BrowseDirection.Forward,
+                ua.BrowseDirection.Inverse,
+                ua.BrowseDirection.Both,
+            ):
+                raise ua.uaerrors.BadBrowseDirectionInvalid()
+            if not desc.ReferenceTypeId.is_null() and not self._aspace.is_reference_type(desc.ReferenceTypeId):
+                raise ua.uaerrors.BadReferenceTypeIdInvalid()
+            cursor = BrowseCursor(
+                node.nodeid,
+                desc.BrowseDirection,
+                desc.ReferenceTypeId,
+                desc.IncludeSubtypes,
+                desc.NodeClassMask,
+                desc.ResultMask,
+                limit,
+                0,
+                node.reference_version,
+            )
+            return self._page(node, cursor, points, created, None)
+        except ua.uaerrors.UaStatusCodeError as error:
+            return ua.BrowseResult(StatusCode=status_of_error(error))
+
+    def _page(
+        self,
+        node: NodeData,
+        cursor: BrowseCursor,
+        points: ContinuationPoints,
+        created: set[bytes],
+        token: bytes | None,
+    ) -> ua.BrowseResult:
+        allowed_types = self._allowed_reference_types(cursor)
+        result = ua.BrowseResult()
+        next_position: int | None = None
+        for index in range(cursor.position, len(node.references)):
+            description = self._describe(node.references[index], cursor, allowed_types)
+            if description is None:
                 continue
-            res.References.append(ref)
-        return res
+            if len(result.References) == cursor.page_limit:
+                next_position = index
+                break
+            result.References.append(description)
+        if next_position is None:
+            if token is not None:
+                points.take(token)
+            return result
+        cursor.position = next_position
+        if token is not None:
+            result.ContinuationPoint = points.renew(token)
+            return result
+        if not points.has_room():
+            points.release_oldest(created)
+        if not points.has_room():
+            return ua.BrowseResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadNoContinuationPoints))
+        result.ContinuationPoint = points.add(cursor)
+        created.add(result.ContinuationPoint)
+        return result
 
-    def _is_suitable_ref(self, desc: ua.BrowseDescription, ref: ua.ReferenceDescription) -> bool:
-        if not self._suitable_direction(desc.BrowseDirection, ref.IsForward):
-            # self.logger.debug("%s is not suitable due to direction", ref)
-            return False
-        if not self._suitable_reftype(desc.ReferenceTypeId, ref.ReferenceTypeId, desc.IncludeSubtypes):
-            # self.logger.debug("%s is not suitable due to type", ref)
-            return False
-        if desc.NodeClassMask and ((desc.NodeClassMask & ref.NodeClass) == 0):
-            # self.logger.debug("%s is not suitable due to class", ref)
-            return False
-        # self.logger.debug("%s is a suitable ref for desc %s", ref, desc)
-        return True
+    def _allowed_reference_types(self, cursor: BrowseCursor) -> set[ua.NodeId] | None:
+        if cursor.reference_type.is_null():
+            return None
+        allowed = {cursor.reference_type}
+        if cursor.include_subtypes:
+            allowed.update(self._get_sub_ref(cursor.reference_type))
+        return allowed
 
-    def _suitable_reftype(self, ref1: ua.NodeId, ref2: ua.NodeId, subtypes: bool) -> bool:
-        if ref1 == ua.NodeId(ua.ObjectIds.Null):
-            # If ReferenceTypeId is not specified in the BrowseDescription,
-            # all References are returned and includeSubtypes is ignored.
-            return True
-        if ref1 == ref2:
-            return True
-        if subtypes and ref2 in self._get_sub_ref(ref1):
-            return True
-        return False
+    def _describe(
+        self, ref: ua.ReferenceDescription, cursor: BrowseCursor, allowed_types: set[ua.NodeId] | None
+    ) -> ua.ReferenceDescription | None:
+        symmetric = self._aspace.is_symmetric(ref.ReferenceTypeId)
+        is_forward = ref.IsForward or symmetric
+        if cursor.direction == ua.BrowseDirection.Forward and not is_forward:
+            return None
+        if cursor.direction == ua.BrowseDirection.Inverse and (ref.IsForward or symmetric):
+            return None
+        if allowed_types is not None and ref.ReferenceTypeId not in allowed_types:
+            return None
+        target = self._aspace.get(ref.NodeId)
+        if target is None:
+            return None
+        node_class = self._aspace.node_class_of(target) or ua.NodeClass.Unspecified
+        if cursor.node_class_mask and not cursor.node_class_mask & node_class:
+            return None
+        mask = cursor.result_mask
+        description = ua.ReferenceDescription(NodeId=ref.NodeId)
+        if mask & ua.BrowseResultMask.ReferenceTypeId:
+            description.ReferenceTypeId = ref.ReferenceTypeId
+        if mask & ua.BrowseResultMask.IsForward:
+            description.IsForward = is_forward
+        if mask & ua.BrowseResultMask.NodeClass:
+            description.NodeClass = ua.NodeClass(node_class)
+        if mask & ua.BrowseResultMask.BrowseName:
+            description.BrowseName = self._aspace.browse_name_of(target)
+        if mask & ua.BrowseResultMask.DisplayName:
+            description.DisplayName = self._aspace.display_name_of(target)
+        if mask & ua.BrowseResultMask.TypeDefinition and node_class in (ua.NodeClass.Object, ua.NodeClass.Variable):
+            description.TypeDefinition = self._aspace.type_definition_of(target)
+        return description
+
+    def browse_next(self, params: ua.BrowseNextParameters, points: ContinuationPoints) -> list[ua.BrowseResult]:
+        if params.ReleaseContinuationPoints:
+            for token in params.ContinuationPoints:
+                points.take(token)
+            return []
+        return [self._continue(token, points) for token in params.ContinuationPoints]
+
+    def _continue(self, token: bytes, points: ContinuationPoints) -> ua.BrowseResult:
+        cursor = points.get(token)
+        if cursor is None:
+            return ua.BrowseResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadContinuationPointInvalid))
+        node = self._aspace.get(cursor.node_id)
+        if node is None or node.reference_version != cursor.version:
+            points.take(token)
+            return ua.BrowseResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadContinuationPointInvalid))
+        return self._page(node, cursor, points, set(), token)
 
     def _get_sub_ref(self, ref: ua.NodeId) -> Generator[ua.NodeId, None, None]:
         nodedata = self._aspace.get(ref)
         if nodedata is not None:
             for ref_desc in nodedata.references:
-                if ref_desc.ReferenceTypeId == ua.NodeId(ua.ObjectIds.HasSubtype) and ref_desc.IsForward:
+                if ref_desc.ReferenceTypeId == HAS_SUBTYPE and ref_desc.IsForward:
                     yield ref_desc.NodeId
                     yield from self._get_sub_ref(ref_desc.NodeId)
 
-    def _suitable_direction(self, direction: ua.BrowseDirection, isforward: bool) -> bool:
-        if direction == ua.BrowseDirection.Both:
-            return True
-        if direction == ua.BrowseDirection.Forward and isforward:
-            return True
-        if direction == ua.BrowseDirection.Inverse and not isforward:
-            return True
-        return False
-
     def translate_browsepaths_to_nodeids(self, browsepaths: list[ua.BrowsePath]) -> list[ua.BrowsePathResult]:
-        # self.logger.debug("translate browsepath: %s", browsepaths)
-        results: list[ua.BrowsePathResult] = []
-        for path in browsepaths:
-            results.append(self._translate_browsepath_to_nodeid(path))
-        return results
+        return [self._translate_checked(path) for path in browsepaths]
+
+    def _translate_checked(self, path: ua.BrowsePath) -> ua.BrowsePathResult:
+        try:
+            return self._translate_browsepath_to_nodeid(path)
+        except ua.uaerrors.UaStatusCodeError as error:
+            return ua.BrowsePathResult(StatusCode=status_of_error(error))
 
     def _translate_browsepath_to_nodeid(self, path: ua.BrowsePath) -> ua.BrowsePathResult:
-        # self.logger.debug("looking at path: %s", path)
-        res = ua.BrowsePathResult()
-        if not path.RelativePath.Elements[-1].TargetName:
-            # OPC UA Part 4: Services, 5.8.4 TranslateBrowsePathsToNodeIds
-            # it's unclear if this the check should also handle empty strings
-            res.StatusCode = ua.StatusCode(ua.StatusCodes.BadBrowseNameInvalid)
-            return res
-        if path.StartingNode not in self._aspace:
-            res.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
-            return res
-        target_nodeids = self._navigate(path.StartingNode, path.RelativePath.Elements)
+        self._aspace.node_for_service(path.StartingNode)
+        elements = path.RelativePath.Elements
+        if not elements:
+            raise ua.uaerrors.BadNothingToDo()
+        if any(not element.TargetName or not element.TargetName.Name for element in elements):
+            raise ua.uaerrors.BadBrowseNameInvalid()
+        target_nodeids = self._navigate(path.StartingNode, elements)
         if not target_nodeids:
-            res.StatusCode = ua.StatusCode(ua.StatusCodes.BadNoMatch)
-            return res
+            raise ua.uaerrors.BadNoMatch()
+        res = ua.BrowsePathResult()
         for nodeid in target_nodeids:
-            target = ua.BrowsePathTarget()
-            target.TargetId = nodeid  # FIXME <<<< Type conflict
-            target.RemainingPathIndex = ua.Index(4294967295)  # FIXME: magic number, why not Index.MAX?
-            res.Targets.append(target)
-        # FIXME: might need to order these one way or another
+            res.Targets.append(ua.BrowsePathTarget(TargetId=nodeid, RemainingPathIndex=ALL_ELEMENTS_PROCESSED))
         return res
 
     def _navigate(self, start_nodeid: ua.NodeId, elements: list[ua.RelativePathElement]) -> list[ua.NodeId]:
         current_nodeids = [start_nodeid]
         for el in elements:
-            new_currents = []
+            new_currents: list[ua.NodeId] = []
             for nodeid in current_nodeids:
-                tmp_nodeids = self._find_elements_in_node(el, nodeid)
-                new_currents.extend(tmp_nodeids)
+                for found in self._find_elements_in_node(el, nodeid):
+                    if found not in new_currents:
+                        new_currents.append(found)
+            if len(new_currents) > self._limits.max_translate_matches:
+                raise ua.uaerrors.BadTooManyMatches()
             if not new_currents:
-                self.logger.info("element %s was not found as child of node %s", el, current_nodeids)
                 return []
             current_nodeids = new_currents
         return current_nodeids
 
     def _find_elements_in_node(self, el: ua.RelativePathElement, nodeid: ua.NodeId) -> list[ua.NodeId]:
-        nodedata: NodeData = self._aspace[nodeid]
+        nodedata = self._aspace[nodeid]
+        allowed = None
+        if not el.ReferenceTypeId.is_null():
+            allowed = {el.ReferenceTypeId}
+            if el.IncludeSubtypes:
+                allowed.update(self._get_sub_ref(el.ReferenceTypeId))
         nodeids: list[ua.NodeId] = []
         for ref in nodedata.references:
-            if ref.BrowseName != el.TargetName:
-                continue
             if ref.IsForward == el.IsInverse:
                 continue
-            if not self._suitable_reftype(el.ReferenceTypeId, ref.ReferenceTypeId, el.IncludeSubtypes):
+            if allowed is not None and ref.ReferenceTypeId not in allowed:
                 continue
-            nodeids.append(ref.NodeId)
+            target = self._aspace.get(ref.NodeId)
+            if target is not None and self._aspace.browse_name_of(target) == el.TargetName:
+                nodeids.append(ref.NodeId)
         return nodeids
 
 
@@ -423,6 +522,7 @@ class NodeManagementService:
                 break  # ref already exists
         else:
             nodedata.references.append(desc)
+            nodedata.reference_version += 1
             self._aspace.reference_added(nodedata.nodeid, desc.NodeId)
         return ua.StatusCode()
 
@@ -480,6 +580,7 @@ class NodeManagementService:
                 if sourcedata is None:
                     continue
                 sourcedata.references[:] = [ref for ref in sourcedata.references if ref.NodeId != item.NodeId]
+                sourcedata.reference_version += 1
                 self._aspace.reference_removed(source, item.NodeId)
 
         self._delete_node_callbacks(self._aspace[item.NodeId])
@@ -567,6 +668,7 @@ class NodeManagementService:
             if rdesc.NodeId == target and rdesc.ReferenceTypeId == item.ReferenceTypeId:
                 if rdesc.IsForward == forward:
                     self._aspace[source].references.remove(rdesc)
+                    self._aspace[source].reference_version += 1
                     self._aspace.reference_removed(source, target)
                     return ua.StatusCode()
         return ua.StatusCode(ua.StatusCodes.BadNotFound)
@@ -748,7 +850,7 @@ class MethodService:
 
     def _property_value(self, node: NodeData, name: str) -> Any:
         for ref in node.references:
-            if ref.IsForward and ref.ReferenceTypeId == HAS_PROPERTY and ref.BrowseName.Name == name:
+            if ref.IsForward and ref.ReferenceTypeId == HAS_PROPERTY and self._aspace.has_browse_name(ref.NodeId, name):
                 value = self._aspace.read_attribute_value(ref.NodeId, ua.AttributeIds.Value)
                 return value.Value.Value if value.Value is not None else None
         return None
@@ -758,9 +860,10 @@ class MethodService:
         if len(arguments) > len(expected):
             raise ua.uaerrors.BadTooManyArguments()
         optional = {
-            ref.BrowseName.Name
+            name
             for ref in method_node.references
             if ref.IsForward and ref.ReferenceTypeId == HAS_OPTIONAL_INPUT_ARGUMENT_DESCRIPTION
+            for name in [self._aspace.browse_name_text(ref.NodeId)]
         }
         if any(argument.Name not in optional for argument in expected[len(arguments) :]):
             raise ua.uaerrors.BadArgumentsMissing()
@@ -1061,6 +1164,39 @@ class AddressSpace:
     def node_class_of(self, node: NodeData) -> int | None:
         return self._node_class(node)
 
+    def is_reference_type(self, nodeid: ua.NodeId) -> bool:
+        node = self._nodes.get(nodeid)
+        return node is not None and self._node_class(node) == ua.NodeClass.ReferenceType
+
+    def is_symmetric(self, reference_type: ua.NodeId) -> bool:
+        node = self._nodes.get(reference_type)
+        return node is not None and bool(self.bool_attribute(node, ua.AttributeIds.Symmetric))
+
+    def browse_name_of(self, node: NodeData) -> ua.QualifiedName:
+        attval = node.attributes.get(ua.AttributeIds.BrowseName)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return ua.QualifiedName()
+        return attval.value.Value.Value
+
+    def browse_name_text(self, nodeid: ua.NodeId) -> str:
+        node = self._nodes.get(nodeid)
+        return (self.browse_name_of(node).Name or "") if node is not None else ""
+
+    def has_browse_name(self, nodeid: ua.NodeId, name: str) -> bool:
+        return self.browse_name_text(nodeid) == name
+
+    def display_name_of(self, node: NodeData) -> ua.LocalizedText:
+        attval = node.attributes.get(ua.AttributeIds.DisplayName)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return ua.LocalizedText()
+        return attval.value.Value.Value
+
+    def type_definition_of(self, node: NodeData) -> ua.NodeId:
+        for ref in node.references:
+            if ref.IsForward and ref.ReferenceTypeId == HAS_TYPE_DEFINITION:
+                return ref.NodeId
+        return ua.NodeId()
+
     def bool_attribute(self, node: NodeData, attr: ua.AttributeIds) -> bool | None:
         attval = node.attributes.get(attr)
         if attval is None or attval.value is None or attval.value.Value is None:
@@ -1165,8 +1301,6 @@ class AddressSpace:
             attval.value = value
             if trusted:
                 attval.value_callback = None
-        if attribute in (ua.AttributeIds.BrowseName, ua.AttributeIds.DisplayName):
-            self._sync_reference_names(nodeid, node, attribute, value)
         for handle, callback in list(attval.datachange_callbacks.items()):
             try:
                 await callback(handle, value)
@@ -1284,27 +1418,10 @@ class AddressSpace:
 
     def _allows_nulls(self, node: NodeData) -> bool:
         for ref in node.references:
-            if ref.ReferenceTypeId == ua.NodeId(ua.ObjectIds.HasProperty) and ref.BrowseName.Name == "AllowNulls":
+            if ref.ReferenceTypeId == HAS_PROPERTY and self.has_browse_name(ref.NodeId, "AllowNulls"):
                 value = self.read_attribute_value(ref.NodeId, ua.AttributeIds.Value)
                 return bool(value.Value is not None and value.Value.Value)
         return False
-
-    def _sync_reference_names(
-        self, nodeid: ua.NodeId, node: NodeData, attr: ua.AttributeIds, value: ua.DataValue
-    ) -> None:
-        # ReferenceDescriptions hold a name snapshot taken at creation time; keep the
-        # copies stored on referencing nodes in sync so Browse returns the new name
-        if value.Value is None or value.Value.Value is None:
-            return
-        field = "BrowseName" if attr == ua.AttributeIds.BrowseName else "DisplayName"
-        new_name = value.Value.Value
-        for ref in node.references:
-            neighbor = self._nodes.get(ref.NodeId)
-            if neighbor is None or neighbor is node:
-                continue
-            for back_ref in neighbor.references:
-                if back_ref.NodeId == nodeid and getattr(back_ref, field) != new_name:
-                    setattr(back_ref, field, new_name)
 
     def set_attribute_value_callback(
         self,

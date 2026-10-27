@@ -284,7 +284,7 @@ async def test_delete_nodes_recursive2(opc):
 
 async def test_delete_references(opc):
     newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(
-        0, "HasSuperSecretVariable"
+        0, "HasSuperSecretVariable", symmetric=False, inversename="IsSuperSecretVariableOf"
     )
 
     obj = opc.opc.nodes.objects

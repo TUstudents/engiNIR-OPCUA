@@ -90,6 +90,12 @@ async def browse(ctx: ServiceContext, params: ua.BrowseParameters) -> ua.BrowseR
     return response
 
 
+async def browse_next(ctx: ServiceContext, params: ua.BrowseNextParameters) -> ua.BrowseNextResponse:
+    response = ua.BrowseNextResponse()
+    response.Parameters.Results = await ctx.active_session.services.browse_next(params)
+    return response
+
+
 async def translate_browse_paths(
     ctx: ServiceContext, params: ua.TranslateBrowsePathsToNodeIdsParameters
 ) -> ua.TranslateBrowsePathsToNodeIdsResponse:
@@ -269,6 +275,13 @@ def build_service_table() -> list[ServiceEntry]:
             ua.BrowseParameters,
             browse,
             operations=OperationBound("NodesToBrowse", "max_nodes_per_browse"),
+            permission=Permission.Anonymous,
+        ),
+        entry(
+            "BrowseNext",
+            ua.BrowseNextParameters,
+            browse_next,
+            operations=OperationBound("ContinuationPoints", "max_nodes_per_browse"),
             permission=Permission.Anonymous,
         ),
         entry(

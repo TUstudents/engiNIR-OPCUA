@@ -139,12 +139,15 @@ class InternalServer:
         # CreateSubscription returns BadTooManySubscriptions.
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
+        self.max_browse_continuation_points: int = 10
+        self.max_browse_references_per_node: int = 10_000
+        self.max_translate_matches: int = 1_000
         self.certificate: Any = None
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
         self.attribute_service = AttributeService(self.aspace)
-        self.view_service = ViewService(self.aspace)
+        self.view_service = ViewService(self.aspace, self)
         self.method_service = MethodService(self.aspace)
         self.node_mgt_service = NodeManagementService(self.aspace)
         self.asyncio_transports: list[Any] = []
@@ -221,6 +224,9 @@ class InternalServer:
             )
             params.NodesToWrite.append(attr)
         capabilities = {
+            ua.ObjectIds.Server_ServerCapabilities_MaxBrowseContinuationPoints: ua.Variant(
+                self.max_browse_continuation_points, ua.VariantType.UInt16
+            ),
             ua.ObjectIds.Server_ServerCapabilities_MaxMonitoredItemsQueueSize: ua.Variant(
                 self.max_monitored_item_queue_size, ua.VariantType.UInt32
             ),

@@ -253,10 +253,14 @@ def test_sync_sub(client, server):
 
 
 def test_sync_meth(client, idx):
-    res = client.nodes.objects.call_method(f"{idx}:Divide", 4, 2)
+    res = client.nodes.objects.call_method(
+        f"{idx}:Divide", ua.Variant(4, ua.VariantType.Float), ua.Variant(2, ua.VariantType.Float)
+    )
     assert res == 2
     with pytest.raises(ua.UaError):
-        res = client.nodes.objects.call_method(f"{idx}:Divide", 4, 0)
+        res = client.nodes.objects.call_method(
+            f"{idx}:Divide", ua.Variant(4, ua.VariantType.Float), ua.Variant(0, ua.VariantType.Float)
+        )
 
 
 def test_sync_client_no_tl(client_no_tloop, idx):
@@ -265,7 +269,13 @@ def test_sync_client_no_tl(client_no_tloop, idx):
 
 def test_sync_call_meth(client, idx):
     methodid = client.nodes.objects.get_child(f"{idx}:Divide")
-    res = call_method_full(client.tloop, client.nodes.objects, methodid, 4, 2)
+    res = call_method_full(
+        client.tloop,
+        client.nodes.objects,
+        methodid,
+        ua.Variant(4, ua.VariantType.Float),
+        ua.Variant(2, ua.VariantType.Float),
+    )
     assert res.OutputArguments[0] == 2
 
 
