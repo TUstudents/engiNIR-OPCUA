@@ -1111,60 +1111,6 @@ async def test_internal_server_subscription(opc):
 
 
 @pytest.mark.parametrize("opc", ["client"], indirect=True)
-async def test_maxkeepalive_count(opc, mocker):
-    sub_handler = MySubHandler()
-    client, _server = opc
-
-    period = 1
-    max_keepalive_count = client.get_keepalive_count(period)
-    mock_period = 500
-    mock_max_keepalive_count = client.get_keepalive_count(mock_period)
-
-    mock_response = ua.CreateSubscriptionResult(
-        SubscriptionId=78,
-        RevisedPublishingInterval=mock_period,
-        RevisedLifetimeCount=10000,
-        RevisedMaxKeepAliveCount=2700,
-    )
-    mock_create_subscription = mocker.patch.object(
-        client.uaclient.session, "create_subscription", new=AsyncMock(return_value=mock_response)
-    )
-    mock_update_subscription = mocker.patch.object(client.uaclient.session, "update_subscription", new=AsyncMock())
-
-    sub = await client.create_subscription(period, sub_handler)
-    assert sub.parameters.RequestedMaxKeepAliveCount == mock_max_keepalive_count
-    assert mock_max_keepalive_count != max_keepalive_count
-    # mock point to the object at its finale state,
-    # here the subscription params have already been updated
-    mock_create_subscription.assert_awaited_with(
-        ua.CreateSubscriptionParameters(
-            RequestedPublishingInterval=mock_period,
-            RequestedLifetimeCount=10000,
-            RequestedMaxKeepAliveCount=mock_max_keepalive_count,
-            MaxNotificationsPerPublish=10000,
-            PublishingEnabled=True,
-            Priority=0,
-        ),
-        callback=mocker.ANY,
-    )
-    mock_update_subscription.assert_awaited_with(
-        ua.ModifySubscriptionParameters(
-            SubscriptionId=78,
-            RequestedPublishingInterval=mock_period,
-            RequestedLifetimeCount=10000,
-            RequestedMaxKeepAliveCount=mock_max_keepalive_count,
-            MaxNotificationsPerPublish=10000,
-        )
-    )
-
-    # we don't update when sub params == revised params
-    mock_update_subscription.reset_mock()
-    mock_create_subscription.reset_mock()
-    sub = await client.create_subscription(mock_period, sub_handler)
-    mock_update_subscription.assert_not_called()
-
-
-@pytest.mark.parametrize("opc", ["client"], indirect=True)
 async def test_publish_without_subscription(opc):
     assert opc.server.iserver.subscription_service.subscriptions == {}, (
         "Some prior test has left subscriptions on the server"

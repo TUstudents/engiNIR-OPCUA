@@ -8,6 +8,7 @@ import asyncio
 import collections.abc
 import inspect
 import logging
+import math
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -167,6 +168,59 @@ class StatusChangeEvent:
 SubEvent = DataChangeEvent | OpcEvent | StatusChangeEvent
 
 
+@dataclass(frozen=True)
+class RevisedParameters:
+    """The values the server agreed to for a Subscription (Part 4, 5.14.2.2)."""
+
+    publishing_interval: float
+    lifetime_count: int
+    max_keep_alive_count: int
+
+
+def keep_alive_count_for(period: float, keep_alive_seconds: float) -> int:
+    nominal = period if period > 0 else 1000.0
+    return max(1, math.ceil(keep_alive_seconds * 1000 / nominal))
+
+
+def lifetime_count_for(period: float, lifetime_seconds: float, keep_alive_count: int) -> int:
+    nominal = period if period > 0 else 1000.0
+    return max(3 * keep_alive_count, math.ceil(lifetime_seconds * 1000 / nominal))
+
+
+def subscription_parameters(
+    period: float,
+    publishing: bool = True,
+    *,
+    keep_alive_seconds: float = 10.0,
+    lifetime_seconds: float = 300.0,
+    keep_alive_count: int | None = None,
+    lifetime_count: int | None = None,
+    session_timeout: float | None = None,
+) -> ua.CreateSubscriptionParameters:
+    """
+    Build the parameters of CreateSubscription. The counts follow from times, not from the Session timeout, so a
+    keep-alive arrives about every `keep_alive_seconds` whatever the interval, and the lifetime is at least three
+    times the keep-alive (Part 4, 5.14.2.2). `session_timeout` in milliseconds limits the keep-alive to a quarter of it.
+    :raises ValueError: for explicit counts whose lifetime is below three keep-alives
+    """
+    if session_timeout:
+        keep_alive_seconds = min(keep_alive_seconds, session_timeout / 4000.0)
+    keep_alive = keep_alive_count if keep_alive_count is not None else keep_alive_count_for(period, keep_alive_seconds)
+    lifetime = (
+        lifetime_count if lifetime_count is not None else lifetime_count_for(period, lifetime_seconds, keep_alive)
+    )
+    if lifetime < 3 * keep_alive:
+        raise ValueError(f"lifetime count {lifetime} must be at least three times the keep-alive count {keep_alive}")
+    params = ua.CreateSubscriptionParameters()
+    params.RequestedPublishingInterval = period if period > 0 else 0
+    params.RequestedLifetimeCount = lifetime
+    params.RequestedMaxKeepAliveCount = keep_alive
+    params.MaxNotificationsPerPublish = 0
+    params.PublishingEnabled = publishing
+    params.Priority = 0
+    return params
+
+
 class Subscription:
     """
     Subscription object returned by Server or Client objects.
@@ -212,6 +266,10 @@ class Subscription:
         # going down. `None` means no notification has arrived yet.
         self.last_publish_at: float | None = None
         self.last_sequence_number: int | None = None
+        self.revised: RevisedParameters | None = None
+        self.max_keep_alive_seconds: float = 60.0
+        self.min_stale_seconds: float = 1.0
+        self._created_at: float = time.monotonic()
         # Set while publish_callback is dispatching notifications retrieved via
         # Republish; consumed by _explode_* to tag events with replayed=True.
         self._replaying: bool = False
@@ -242,15 +300,45 @@ class Subscription:
     async def _create(self, event: SubscriptionEvent) -> ua.CreateSubscriptionResult:
         response = await self.server.create_subscription(self.parameters, callback=self.publish_callback)
         self.subscription_id = response.SubscriptionId  # move to data class
+        self._created_at = time.monotonic()
+        self.revised = RevisedParameters(
+            response.RevisedPublishingInterval, response.RevisedLifetimeCount, response.RevisedMaxKeepAliveCount
+        )
         self.logger.info("Subscription created %s", self.subscription_id)
         self._observe(lambda: self.server.observer.on_subscription_event(self.subscription_id, event))
+        await self._correct_revised_values()
         return response
 
+    async def _correct_revised_values(self) -> None:
+        revised = self.revised
+        if revised is None or not self._remote:
+            return
+        keep_alive_seconds = revised.publishing_interval * revised.max_keep_alive_count / 1000.0
+        if (
+            keep_alive_seconds <= self.max_keep_alive_seconds
+            and revised.lifetime_count >= 3 * revised.max_keep_alive_count
+        ):
+            return
+        keep_alive = keep_alive_count_for(revised.publishing_interval, 10.0)
+        params = ua.ModifySubscriptionParameters()
+        copy_dataclass_attr(self.parameters, params)
+        params.SubscriptionId = self.subscription_id
+        params.RequestedPublishingInterval = revised.publishing_interval
+        params.RequestedMaxKeepAliveCount = keep_alive
+        params.RequestedLifetimeCount = lifetime_count_for(revised.publishing_interval, 300.0, keep_alive)
+        self.logger.info("Subscription %s: correcting the revised counts once", self.subscription_id)
+        await self.update(params)
+
     async def update(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
-        response = await self._remote_session("update").update_subscription(params)
+        session = self._remote_session("update")
+        if params.RequestedLifetimeCount < 3 * params.RequestedMaxKeepAliveCount:
+            params.RequestedLifetimeCount = 3 * params.RequestedMaxKeepAliveCount
+        response = await session.update_subscription(params)
         self.logger.info("Subscription updated %s", params.SubscriptionId)
-        # update the self.parameters attr with the updated values
         copy_dataclass_attr(params, self.parameters)
+        self.revised = RevisedParameters(
+            response.RevisedPublishingInterval, response.RevisedLifetimeCount, response.RevisedMaxKeepAliveCount
+        )
         return response
 
     async def publish_callback(self, publish_result: ua.PublishResult) -> None:
@@ -442,12 +530,17 @@ class Subscription:
                 pass
 
     def is_stale(self, margin: float) -> bool:
-        if self._deleted or self.subscription_id is None or self.last_publish_at is None:
+        if self._deleted or self.subscription_id is None:
             return False
-        interval_s = self.parameters.RequestedPublishingInterval / 1000.0
-        keepalive = max(int(self.parameters.RequestedMaxKeepAliveCount or 1), 1)
-        stale_after = max(interval_s * keepalive * margin, 1.0)
-        return (time.monotonic() - self.last_publish_at) >= stale_after
+        if self.revised is not None:
+            interval_s = self.revised.publishing_interval / 1000.0
+            keepalive = max(self.revised.max_keep_alive_count, 1)
+        else:
+            interval_s = self.parameters.RequestedPublishingInterval / 1000.0
+            keepalive = max(int(self.parameters.RequestedMaxKeepAliveCount or 1), 1)
+        stale_after = max(interval_s * keepalive * margin, self.min_stale_seconds)
+        reference = self.last_publish_at if self.last_publish_at is not None else self._created_at
+        return (time.monotonic() - reference) >= stale_after
 
     async def restore(self) -> None:
         if self._deleted or self.subscription_id is None or not isinstance(self.server, UaSession):
@@ -477,7 +570,8 @@ class Subscription:
             self.logger.info("republish could not fill gap for sub %s; recreating", self.subscription_id)
             await self.recreate()
             return
-        self.last_publish_at = time.monotonic()
+        self.last_publish_at = None
+        self._created_at = time.monotonic()
 
     async def _republish_gaps(self, available: list[int]) -> bool:
         if not isinstance(self.server, UaSession) or self.subscription_id is None:
@@ -521,7 +615,7 @@ class Subscription:
         self.subscription_id = None
         # Reset liveness clock so the watchdog doesn't immediately flag the
         # newly-recreated subscription before the first publish arrives.
-        self.last_publish_at = time.monotonic()
+        self.last_publish_at = None
 
         if old_subscription_id is not None and isinstance(self.server, UaSession):
             # Drop the dead callback registration. Server-side delete is best
