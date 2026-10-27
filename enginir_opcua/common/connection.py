@@ -37,6 +37,13 @@ KNOWN_MESSAGE_TYPES = frozenset(
 )
 
 
+def _refuse_unchecked_certificate(_chain: bytes) -> None:
+    raise TransportError(
+        ua.StatusCodes.BadSecurityChecksFailed,
+        "No certificate check is set on the channel, so no peer certificate is trusted",
+    )
+
+
 class TransportError(UaError):
     """A failure that ends the connection and is reported to the peer as an Error message."""
 
@@ -417,7 +424,7 @@ class SecureChannel:
         self._incoming_size = 0
         self.security_policy = security_policy
         self._policies: list[Any] = []
-        self.peer_certificate_check: Callable[[bytes], None] | None = None
+        self.peer_certificate_check: Callable[[bytes], None] = _refuse_unchecked_certificate
         self._open = False
         self.security_token = ua.ChannelSecurityToken()
         self._current: TokenSlot | None = None
@@ -586,8 +593,7 @@ class SecureChannel:
             thumbprint = certificate_thumbprint(policy.host_certificate or b"")
             if security_header.ReceiverCertificateThumbPrint != thumbprint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
-            if self.peer_certificate_check is not None:
-                self.peer_certificate_check(security_header.SenderCertificate)
+            self.peer_certificate_check(security_header.SenderCertificate)
         if params.ClientProtocolVersion != protocol_version:
             raise OpenRequestError(ua.StatusCodes.BadProtocolVersionUnsupported, "Protocol version differs from Hello")
         if renew != self._open:
@@ -621,7 +627,7 @@ class SecureChannel:
         protocol_version: int,
         sender_certificate: bytes | None = None,
     ) -> None:
-        if self.security_policy.URI != SecurityPolicyNone.URI and self.peer_certificate_check is not None:
+        if self.security_policy.URI != SecurityPolicyNone.URI:
             self.peer_certificate_check(self._server_chain(sender_certificate))
         token = response.SecurityToken
         if response.ServerProtocolVersion != protocol_version:
