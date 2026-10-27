@@ -217,3 +217,21 @@ async def test_srv11_expired_last_subscription_answers_the_queued_publish_reques
     assert handler.statuses[0].Status.value == ua.StatusCodes.BadTimeout
     assert sub.subscription_id not in two_sessions.server.iserver.subscription_service.subscriptions
     assert not session.publish_queue
+
+
+async def test_cli55_deleting_the_last_subscription_answers_the_queued_publish_requests(
+    two_sessions: TwoSessions,
+) -> None:
+    """Part 4, 5.14.8: the Publish requests still queued for the Session return Bad_NoSubscription."""
+    handler = Recorder()
+    sub = await two_sessions.alice.create_subscription(3_600_000, handler)
+    assert sub.subscription_id is not None
+    session = server_session(two_sessions, two_sessions.alice)
+    await asyncio.sleep(0.3)
+    assert session.publish_queue
+    two_sessions.alice.uaclient.session.pause_publish()
+    results = await two_sessions.alice.uaclient.delete_subscriptions([sub.subscription_id])
+    assert results[0].is_good()
+    async with asyncio.timeout(3):
+        while session.publish_queue:
+            await asyncio.sleep(0.01)
