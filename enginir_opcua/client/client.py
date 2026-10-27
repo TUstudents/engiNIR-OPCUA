@@ -683,17 +683,13 @@ class Client:
             self.uaclient.certificate_validator = self.certificate_validator
             return
         if self._default_validator is None:
-            store = (
-                TrustStore(
-                    self.trust_store.trust_locations, self.trust_store.crl_locations, self.trust_store.issuer_locations
-                )
-                if self.trust_store
-                else TrustStore()
-            )
+            store = self.trust_store.copy() if self.trust_store else TrustStore()
             if self._pinned_server_certificate is not None:
                 store.pin(self._pinned_server_certificate)
+            await store.load()
             self._default_validator = CertificateValidator(store)
-        await self._default_validator.trust_store.load()
+        else:
+            await self._default_validator.trust_store.load()
         self.uaclient.certificate_validator = self._default_validator
 
     def disconnect_socket(self) -> None:

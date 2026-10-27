@@ -506,7 +506,8 @@ class _Validation:
     ) -> list[x509.CertificateRevocationList]:
         authority_key_id = None
         matches: list[x509.CertificateRevocationList] = []
-        for crl in self.snapshot.crls:
+        scoped = self.snapshot.trusted_crls if self.snapshot.is_trusted(issuer) else self.snapshot.issuer_crls
+        for crl in (*self.snapshot.crls, *scoped):
             if crl.issuer != certificate.issuer or _extension_of_crl(crl, x509.DeltaCRLIndicator) is not None:
                 continue
             authority_key_id = _extension_of_crl(crl, x509.AuthorityKeyIdentifier)
@@ -615,8 +616,9 @@ class CertificateValidator:
         Args:
             trust_store: the trusted, issuer and revocation lists. It has to be loaded before the first validation.
             suppress: errors to accept, by name (see Suppression); asking for any other step is a ConfigurationError.
-            check_revocation: None checks revocation when the trust store has a CRL location, True requires a
-                CRL location, False turns the revocation steps off.
+            check_revocation: None checks revocation when the trust store has a CRL location (for the folders of a
+                PKI directory: when one holds a list), True requires a CRL location, False turns the revocation
+                steps off.
             accept_ca_application_certificates: accept application certificates marked cA TRUE (Part 6, 6.2.2).
             max_chain_length: the longest certificate chain that is accepted.
             clock: the current time in UTC, for tests.
@@ -628,9 +630,9 @@ class CertificateValidator:
             )
         self._trust_store = trust_store
         self.suppressions: frozenset[Suppression] = frozenset(self._suppression(item) for item in suppress)
-        if check_revocation and not trust_store.crl_locations:
+        if check_revocation and not trust_store.has_crl_locations:
             raise ConfigurationError("Revocation checking needs at least one crl location in the trust store")
-        self.revocation_active: bool = bool(trust_store.crl_locations) if check_revocation is None else check_revocation
+        self._check_revocation = check_revocation
         if not self.revocation_active:
             _logger.warning("Revocation of certificates is not checked: no crl location is configured")
         self.accept_ca_application_certificates = accept_ca_application_certificates
@@ -644,6 +646,12 @@ class CertificateValidator:
         except ValueError as exc:
             names = ", ".join(suppression.value for suppression in Suppression)
             raise ConfigurationError(f"The step {item!r} cannot be suppressed; only these can: {names}") from exc
+
+    @property
+    def revocation_active(self) -> bool:
+        if self._check_revocation is None:
+            return self._trust_store.has_revocation_lists
+        return self._check_revocation
 
     @property
     def trust_store(self) -> TrustStore:

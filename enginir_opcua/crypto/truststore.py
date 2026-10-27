@@ -2,14 +2,14 @@
 The stores a certificate validator decides over:
 - trusted certificates (anchors, whether or not they are CA certificates)
 - issuer certificates (CAs needed to build a chain, not anchors by themselves)
-- certificate revocation lists
+- certificate revocation lists, for all CAs or only for the trusted or only for the issuer CAs
 
 A load builds a new immutable snapshot and installs it with one assignment.
 """
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
@@ -36,6 +36,12 @@ class StoreSnapshot:
     issuers: tuple[x509.Certificate, ...] = ()
     crls: tuple[x509.CertificateRevocationList, ...] = ()
     pinned: tuple[x509.Certificate, ...] = ()
+    trusted_crls: tuple[x509.CertificateRevocationList, ...] = ()
+    issuer_crls: tuple[x509.CertificateRevocationList, ...] = ()
+
+    @property
+    def has_revocation_lists(self) -> bool:
+        return bool(self.crls or self.trusted_crls or self.issuer_crls)
 
     @cached_property
     def trusted_der(self) -> frozenset[bytes]:
@@ -58,16 +64,23 @@ class TrustStore:
         trust_locations: Sequence[Path] = (),
         crl_locations: Sequence[Path] = (),
         issuer_locations: Sequence[Path] = (),
+        *,
+        trusted_crl_locations: Sequence[Path] = (),
+        issuer_crl_locations: Sequence[Path] = (),
     ) -> None:
         """
         Args:
             trust_locations: directories with trusted certificates (anchors).
             crl_locations: directories with certificate revocation lists, for trusted and issuer certificates.
             issuer_locations: directories with CA certificates needed for chains, which are not anchors.
+            trusted_crl_locations: directories with revocation lists that only apply to trusted CA certificates.
+            issuer_crl_locations: directories with revocation lists that only apply to issuer CA certificates.
         """
         self._trust_locations: list[Path] = [Path(location) for location in trust_locations]
         self._crl_locations: list[Path] = [Path(location) for location in crl_locations]
         self._issuer_locations: list[Path] = [Path(location) for location in issuer_locations]
+        self._trusted_crl_locations: list[Path] = [Path(location) for location in trusted_crl_locations]
+        self._issuer_crl_locations: list[Path] = [Path(location) for location in issuer_crl_locations]
         self._snapshot = StoreSnapshot()
         self._pinned: tuple[x509.Certificate, ...] = ()
 
@@ -84,6 +97,53 @@ class TrustStore:
         return self._issuer_locations
 
     @property
+    def trusted_crl_locations(self) -> list[Path]:
+        return self._trusted_crl_locations
+
+    @property
+    def issuer_crl_locations(self) -> list[Path]:
+        return self._issuer_crl_locations
+
+    @property
+    def has_crl_locations(self) -> bool:
+        return bool(self._crl_locations or self._trusted_crl_locations or self._issuer_crl_locations)
+
+    @property
+    def has_revocation_lists(self) -> bool:
+        """True when revocation lists are configured explicitly or a PKI directory holds at least one."""
+        return bool(self._crl_locations) or self._snapshot.has_revocation_lists
+
+    @classmethod
+    def from_pki_directory(cls, root: str | Path) -> "TrustStore":
+        """
+        A store over the folders of a PKI directory: trusted/certs and trusted/crl, issuer/certs and issuer/crl.
+        trusted/certs has to exist. The other folders are used when they exist.
+        """
+        base = Path(root)
+        issuer_certs, trusted_crl, issuer_crl = (
+            base / "issuer" / "certs",
+            base / "trusted" / "crl",
+            base / "issuer" / "crl",
+        )
+        return cls(
+            [base / "trusted" / "certs"],
+            [],
+            [issuer_certs] if issuer_certs.is_dir() else [],
+            trusted_crl_locations=[trusted_crl] if trusted_crl.is_dir() else [],
+            issuer_crl_locations=[issuer_crl] if issuer_crl.is_dir() else [],
+        )
+
+    def copy(self) -> "TrustStore":
+        """A store with the same locations and the certificates of none: it has to be loaded."""
+        return TrustStore(
+            self._trust_locations,
+            self._crl_locations,
+            self._issuer_locations,
+            trusted_crl_locations=self._trusted_crl_locations,
+            issuer_crl_locations=self._issuer_crl_locations,
+        )
+
+    @property
     def snapshot(self) -> StoreSnapshot:
         return self._snapshot
 
@@ -92,16 +152,18 @@ class TrustStore:
         if certificate in self._pinned:
             return
         self._pinned = (*self._pinned, certificate)
-        self._snapshot = StoreSnapshot(
-            self._snapshot.trusted, self._snapshot.issuers, self._snapshot.crls, self._pinned
-        )
+        self._snapshot = replace(self._snapshot, pinned=self._pinned)
 
     async def load(self) -> None:
         """(Re)load the certificates and revocation lists, and replace the snapshot when all locations are readable."""
         trusted = await self._load_certificates(self._trust_locations)
         issuers = await self._load_certificates(self._issuer_locations)
         crls = await self._load_crls(self._crl_locations)
-        self._snapshot = StoreSnapshot(tuple(trusted), tuple(issuers), tuple(crls), self._pinned)
+        trusted_crls = await self._load_crls(self._trusted_crl_locations)
+        issuer_crls = await self._load_crls(self._issuer_crl_locations)
+        self._snapshot = StoreSnapshot(
+            tuple(trusted), tuple(issuers), tuple(crls), self._pinned, tuple(trusted_crls), tuple(issuer_crls)
+        )
 
     @staticmethod
     async def _files(location: Path, extensions: frozenset[str]) -> list[Path]:
