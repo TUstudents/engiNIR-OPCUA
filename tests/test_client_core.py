@@ -1,10 +1,14 @@
+import asyncio
+import logging
 from collections.abc import Iterator
 
 import pytest
 
 from enginir_opcua import Client, Server, ua
+from enginir_opcua.client.ua_client import UaClientState
+from enginir_opcua.client.ua_session import SessionState
 
-from .harness import ResponseTampering
+from .harness import ResponseTampering, signing_client
 
 
 @pytest.fixture
@@ -103,3 +107,119 @@ async def test_cli2_register_server_falls_back_only_when_register_server2_is_uns
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await client.register_server(server)
     assert len(calls) == 2
+
+
+async def test_cli25_failed_connect_leaves_no_session_on_the_server(
+    signing_server: Server, tampered_responses: ResponseTampering
+) -> None:
+    """Part 4, 5.7.2.1: a client that rejects the CreateSession response closes the Session it created."""
+
+    def shorten(response: ua.CreateSessionResponse) -> None:
+        response.Parameters.ServerNonce = b"\x01" * 8
+
+    tampered_responses.on(ua.CreateSessionResponse, shorten)
+    client = await signing_client(signing_server)
+    with pytest.raises(ua.uaerrors.BadNonceInvalid):
+        await client.connect()
+    await asyncio.sleep(0.3)
+    assert signing_server.iserver.session_manager.sessions == {}
+    assert client.state is UaClientState.DISCONNECTED
+    assert client.uaclient.session.state is SessionState.CLOSED
+
+
+async def test_cli37_second_connect_raises_and_keeps_the_first_session(server: Server) -> None:
+    """Part 4, 5.7.2.1: one Session per client; a second connect does not open another one."""
+    sessions = server.iserver.session_manager.sessions
+    before = len(sessions)
+    async with Client(server.endpoint.geturl()) as client:
+        assert len(sessions) == before + 1
+        with pytest.raises(ConnectionError, match="already connected"):
+            await client.connect()
+        assert len(sessions) == before + 1
+        assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+
+
+async def test_cli36_url_without_a_port_uses_4840(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 6, 7.1.3: opc.tcp has a registered default port."""
+    client = Client("opc.tcp://example.invalid")
+    connected: list[tuple[str, int]] = []
+
+    async def connect_socket(host: str, port: int) -> None:
+        connected.append((host, port))
+
+    monkeypatch.setattr(client.uaclient, "connect_socket", connect_socket)
+    await client.connect_socket()
+    assert connected == [("example.invalid", 4840)]
+
+
+@pytest.mark.parametrize("url", ["http://example.invalid:4840", "localhost:4840", "example.invalid"])
+def test_cli36_other_schemes_are_a_configuration_error(url: str) -> None:
+    """Only opc.tcp is implemented."""
+    with pytest.raises(ua.uaerrors.ConfigurationError):
+        Client(url)
+
+
+async def test_cli24_session_timeout_warning_names_the_session_timeout(
+    server: Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Part 4, 5.7.2.2: the log line gives the requested and the revised session timeout."""
+    client = Client(server.endpoint.geturl())
+    client.session_timeout = 1_234_567_890
+    client.secure_channel_timeout = 3_600_000
+    with caplog.at_level(logging.WARNING):
+        async with client:
+            pass
+    messages = [r.getMessage() for r in caplog.records if "session timeout" in r.getMessage()]
+    assert len(messages) == 1
+    assert "1234567890ms" in messages[0]
+
+
+async def test_cli27_reconnect_gate_survives_disconnect_and_connect(server: Server) -> None:
+    """Part 4, 6.7: requests wait for the reconnect also on a client that was disconnected and connected again."""
+    client = Client(server.endpoint.geturl(), reconnect_request_timeout=0.3)
+    await client.connect()
+    await client.disconnect()
+    await client.connect()
+    try:
+        assert client.uaclient.pre_request_hook is not None
+        client.uaclient.enter_reconnecting()
+        with pytest.raises(ConnectionError):
+            await client.nodes.server_state.read_value()
+    finally:
+        client.uaclient.mark_disconnected()
+        await client.disconnect()
+
+
+async def test_cli28_disconnect_closes_subscription_objects_and_ends_iterators(server: Server) -> None:
+    """Part 4, 5.7.4.1: closing the Session ends its Subscriptions; the local objects end with them."""
+    client = Client(server.endpoint.geturl())
+    await client.connect()
+    subscription = await client.create_subscription(100)
+    events: list[object] = []
+
+    async def consume() -> None:
+        async for event in subscription:
+            events.append(event)
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)
+    await client.disconnect()
+    await asyncio.wait_for(consumer, 2)
+    assert subscription.is_deleted
+    assert client._subscriptions == []
+
+
+async def test_cli28_connect_after_disconnect_does_not_recreate_old_subscriptions(server: Server) -> None:
+    """Part 4, 5.7.4.1: a Subscription of the closed Session does not come back with the next connect."""
+    service = server.iserver.subscription_service
+    before = len(service.subscriptions)
+    client = Client(server.endpoint.geturl())
+    client._stale_check_margin = 0
+    client._stale_check_interval = 0.05
+    await client.connect()
+    await client.create_subscription(100)
+    await client.disconnect()
+    await client.connect()
+    await asyncio.sleep(0.5)
+    assert len(service.subscriptions) == before
+    await client.disconnect()

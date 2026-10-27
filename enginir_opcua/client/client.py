@@ -47,6 +47,7 @@ _logger = logging.getLogger(__name__)
 
 SESSION_NONCE_MIN_LENGTH = 32
 SESSION_NONCE_MAX_LENGTH = 128
+DEFAULT_PORT = 4840
 RENEW_RETRY_DELAY = 1.0
 RENEW_RETRY_MAX_DELAY = 10.0
 
@@ -103,6 +104,8 @@ class Client:
         self._password: str | None = None
         self.strip_url_credentials: bool = True
         self._server_url = urlparse(url)
+        if self._server_url.scheme != "opc.tcp":
+            raise ConfigurationError(f"Only opc.tcp URLs are supported, got {url!r}")
         userinfo, have_info, _ = self._server_url.netloc.rpartition("@")
         if have_info:
             username, have_password, password = userinfo.partition(":")
@@ -463,6 +466,8 @@ class Client:
 
     async def _with_temp_channel(self, op: Callable[[], Awaitable[_T]]) -> _T:
         """Open a transient socket + SecureChannel, run op, tear it down on exit."""
+        if self.uaclient.state is not UaClientState.DISCONNECTED:
+            raise ConnectionError("already connected")
         await self.connect_socket()
         try:
             await self.send_hello()
@@ -510,6 +515,8 @@ class Client:
             connection to become ready while the supervisor is reconnecting.
         """
         _logger.info("connect (auto_reconnect=%s)", auto_reconnect)
+        if self.uaclient.state is not UaClientState.DISCONNECTED:
+            raise ConnectionError("already connected")
         if auto_reconnect is not None:
             self._auto_reconnect = auto_reconnect
         if reconnect_max_delay is not None:
@@ -551,12 +558,9 @@ class Client:
         """CreateSession + ActivateSession, unwinding the session then the channel on failure."""
         try:
             await self.create_session()
-            try:
-                await self._activate_with_credentials()
-            except Exception:
-                await self._close_session_quiet()
-                raise
+            await self._activate_with_credentials()
         except Exception:
+            await self._close_session_quiet()
             await self._close_secure_channel_quiet()
             raise
 
@@ -619,6 +623,15 @@ class Client:
             _logger.exception("close_secure_channel raised during disconnect; continuing teardown")
         self.disconnect_socket()
         self._clear_persisted_session()
+        self._close_subscriptions()
+
+    def _close_subscriptions(self) -> None:
+        subscriptions, self._subscriptions = self._subscriptions, []
+        for subscription in subscriptions:
+            try:
+                subscription.close(ua.StatusCode(ua.StatusCodes.BadShutdown))
+            except Exception:
+                _logger.exception("Closing subscription %s failed", subscription.subscription_id)
 
     def _try_load_persisted_session(self) -> bool:
         """Load `authentication_token` + `server_nonce` from disk into the live session.
@@ -713,7 +726,7 @@ class Client:
         """
 
         await self._prepare_certificate_validation()
-        await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port)
+        await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port or DEFAULT_PORT)
 
     async def _prepare_certificate_validation(self) -> None:
         if self.certificate_validator is not None:
@@ -888,7 +901,7 @@ class Client:
         if self.session_timeout != response.RevisedSessionTimeout:
             _logger.warning(
                 "Requested session timeout to be %dms, got %dms instead",
-                self.secure_channel_timeout,
+                self.session_timeout,
                 response.RevisedSessionTimeout,
             )
             self.session_timeout = response.RevisedSessionTimeout
@@ -1332,11 +1345,13 @@ class Client:
         self._stale_watchdog_task = None
         await self._cancel_task(self._supervisor_task)
         self._supervisor_task = None
-        # Disable the pre-request hook for the close path so it doesn't block.
-        self.uaclient.pre_request_hook = None
         await self._cancel_task(self._renew_channel_task)
         self._renew_channel_task = None
-        return await self.uaclient.close_session(True)
+        token = _supervisor_owns_requests.set(True)
+        try:
+            return await self.uaclient.close_session(True)
+        finally:
+            _supervisor_owns_requests.reset(token)
 
     @staticmethod
     async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
