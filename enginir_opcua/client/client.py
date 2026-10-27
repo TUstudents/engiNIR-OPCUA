@@ -667,7 +667,7 @@ class Client:
         subscriptions, self._subscriptions = self._subscriptions, []
         for subscription in subscriptions:
             try:
-                subscription.close(ua.StatusCode(ua.StatusCodes.BadShutdown))
+                subscription.close("the client disconnected")
             except Exception:
                 _logger.exception("Closing subscription %s failed", subscription.subscription_id)
 
