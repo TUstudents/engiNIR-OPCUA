@@ -29,6 +29,10 @@ Secure defaults and certificate trust (OPC 10000-4, 6.1.3):
 - It runs at every OpenSecureChannel and renewal, on both server and client. Both sides trust nothing until
   `Server.set_trust_store()` / `Client.set_trust_store()` is called. A server certificate passed to
   `Client.set_security()` is pinned; one fetched over an unsecured GetEndpoints isn't trusted.
+- A PKI directory (`own/`, `trusted/`, `issuer/` with `crl/` folders, `rejected/`) configures the certificate, the key and
+  the trust in one call: `Server.set_pki_directory()`, `Client.set_pki_directory()`, `Server.set_user_pki_directory()`.
+  A peer certificate that fails validation is kept in `rejected/certs` (never trusted); `Server.reload_trust_store()`
+  picks up files moved to `trusted/certs`.
 - The server tells a peer only `Bad_SecurityChecksFailed` and logs the detail; the client raises the detailed code.
 - Certificates are checked for expiry, key usage, key length and signature hash per security policy, the host name
   (client side) and the ApplicationUri. A ClientDescription ApplicationUri that isn't in the client certificate gives
