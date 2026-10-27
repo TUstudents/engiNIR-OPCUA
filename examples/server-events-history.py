@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
             # read event history from sql
             end_time = datetime.now(UTC)
-            server_event_history = server_node.read_event_history(None, end_time, 0)
+            server_event_history = server_node.read_event_history(None, end_time, 100)
 
     finally:
         # close connection, remove subscriptions, etc

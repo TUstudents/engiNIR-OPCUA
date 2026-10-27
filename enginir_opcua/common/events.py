@@ -59,9 +59,12 @@ class Event:
 
     def get_event_props_as_fields_dict(self) -> dict[str, ua.Variant]:
         field_vars: dict[str, ua.Variant] = {}
-        for key, value in vars(self).items():
-            if not key.startswith("__") and key not in self.internal_properties:
-                field_vars[key] = ua.Variant(value, self.data_types[key])
+        for key, datatype in self.data_types.items():
+            value = getattr(self, key, None)
+            try:
+                field_vars[key] = ua.Variant(value, datatype)
+            except ua.UaError:
+                field_vars[key] = ua.Variant(None, ua.VariantType.Null)
         return field_vars
 
     @staticmethod

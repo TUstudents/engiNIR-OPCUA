@@ -168,6 +168,7 @@ class ServerProcess(Process):
         )
         await tools_node.set_writable()
         async with srv:
+            await srv.historize_node_data_change(tools_node, period=None)
             with self.cond:
                 self.cond.notify_all()
             while not self.stop_ev.is_set():
@@ -335,10 +336,10 @@ async def create_srv_events(history_server: HistoryServer):
 
 async def create_var(history_server: HistoryServer):
     o = history_server.srv.nodes.objects
-    history_server.values = [i for i in range(20)]
+    history_server.values = [i for i in range(21)]
     history_server.var = await o.add_variable(3, "history_var", 0)
     await history_server.srv.historize_node_data_change(history_server.var, period=None, count=0)
-    for i in history_server.values:
+    for i in history_server.values[1:]:
         await history_server.var.write_value(i)
     await asyncio.sleep(1)
 

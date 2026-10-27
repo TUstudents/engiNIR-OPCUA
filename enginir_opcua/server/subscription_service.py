@@ -48,6 +48,24 @@ class SubscriptionService:
         self._conditions: dict[ua.NodeId, Any] = {}
         self._background: set[asyncio.Task[None]] = set()
         self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
+        self._event_sinks: dict[int, tuple[ua.NodeId, Callable[[Any], None]]] = {}
+        self._event_sink_counter = 0
+
+    def add_event_sink(self, notifier: ua.NodeId, sink: Callable[[Any], None]) -> int:
+        self._event_sink_counter += 1
+        self._event_sinks[self._event_sink_counter] = (notifier, sink)
+        return self._event_sink_counter
+
+    def remove_event_sink(self, handle: int) -> None:
+        self._event_sinks.pop(handle, None)
+
+    def _deliver_to_sinks(self, event: Any, notifiers: list[ua.NodeId]) -> None:
+        for notifier, sink in list(self._event_sinks.values()):
+            if notifier in notifiers:
+                try:
+                    sink(event)
+                except Exception:
+                    self.logger.exception("Event sink of %s failed", notifier)
 
     async def create_subscription(
         self,
@@ -392,6 +410,8 @@ class SubscriptionService:
             elif event.NodeId in self._conditions:
                 del self._conditions[event.NodeId]
         notifiers = notifiers_of(self.aspace, event.emitting_node)
+        if subscription_id is None:
+            self._deliver_to_sinks(event, notifiers)
         if subscription_id is not None:
             if subscription_id in self.subscriptions:
                 await self.subscriptions[subscription_id].monitored_item_srv.trigger_event(event, notifiers=notifiers)

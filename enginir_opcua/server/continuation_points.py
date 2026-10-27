@@ -24,18 +24,18 @@ class BrowseCursor:
     version: int
 
 
-class ContinuationPoints:
+class ContinuationPoints[T]:
     def __init__(self, limit: Callable[[], int]) -> None:
         self._limit = limit
-        self._entries: dict[bytes, BrowseCursor] = {}
+        self._entries: dict[bytes, T] = {}
 
     def __len__(self) -> int:
         return len(self._entries)
 
-    def get(self, token: bytes | None) -> BrowseCursor | None:
+    def get(self, token: bytes | None) -> T | None:
         return self._entries.get(token) if token else None
 
-    def take(self, token: bytes | None) -> BrowseCursor | None:
+    def take(self, token: bytes | None) -> T | None:
         return self._entries.pop(token, None) if token else None
 
     def has_room(self) -> bool:
@@ -48,7 +48,7 @@ class ContinuationPoints:
                 return True
         return False
 
-    def add(self, cursor: BrowseCursor) -> bytes:
+    def add(self, cursor: T) -> bytes:
         token = secrets.token_bytes(TOKEN_LENGTH)
         self._entries[token] = cursor
         return token

@@ -206,10 +206,12 @@ class ViewService:
         self._aspace: AddressSpace = aspace
         self._limits: BrowseLimits = limits if limits is not None else DefaultBrowseLimits()
 
-    def browse(self, params: ua.BrowseParameters, points: ContinuationPoints | None = None) -> list[ua.BrowseResult]:
+    def browse(
+        self, params: ua.BrowseParameters, points: ContinuationPoints[BrowseCursor] | None = None
+    ) -> list[ua.BrowseResult]:
         if params.View is not None and not params.View.ViewId.is_null():
             raise ua.uaerrors.BadViewIdUnknown()
-        points = points if points is not None else ContinuationPoints(lambda: 0)
+        points = points if points is not None else ContinuationPoints[BrowseCursor](lambda: 0)
         limit = self._page_limit(params.RequestedMaxReferencesPerNode)
         created: set[bytes] = set()
         return [self._browse_checked(desc, limit, points, created) for desc in params.NodesToBrowse]
@@ -219,7 +221,7 @@ class ViewService:
         return min(requested, cap) if requested else cap
 
     def _browse_checked(
-        self, desc: ua.BrowseDescription, limit: int, points: ContinuationPoints, created: set[bytes]
+        self, desc: ua.BrowseDescription, limit: int, points: ContinuationPoints[BrowseCursor], created: set[bytes]
     ) -> ua.BrowseResult:
         try:
             node = self._aspace.node_for_service(desc.NodeId)
@@ -250,7 +252,7 @@ class ViewService:
         self,
         node: NodeData,
         cursor: BrowseCursor,
-        points: ContinuationPoints,
+        points: ContinuationPoints[BrowseCursor],
         created: set[bytes],
         token: bytes | None,
     ) -> ua.BrowseResult:
@@ -322,14 +324,16 @@ class ViewService:
             description.TypeDefinition = self._aspace.type_definition_of(target)
         return description
 
-    def browse_next(self, params: ua.BrowseNextParameters, points: ContinuationPoints) -> list[ua.BrowseResult]:
+    def browse_next(
+        self, params: ua.BrowseNextParameters, points: ContinuationPoints[BrowseCursor]
+    ) -> list[ua.BrowseResult]:
         if params.ReleaseContinuationPoints:
             for token in params.ContinuationPoints:
                 points.take(token)
             return []
         return [self._continue(token, points) for token in params.ContinuationPoints]
 
-    def _continue(self, token: bytes, points: ContinuationPoints) -> ua.BrowseResult:
+    def _continue(self, token: bytes, points: ContinuationPoints[BrowseCursor]) -> ua.BrowseResult:
         cursor = points.get(token)
         if cursor is None:
             return ua.BrowseResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadContinuationPointInvalid))
