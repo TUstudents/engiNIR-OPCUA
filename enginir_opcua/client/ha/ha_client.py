@@ -14,6 +14,7 @@ from enginir_opcua.client.ua_client import UaClientState
 from enginir_opcua.ua.uaerrors import BadSessionClosed, BadSessionNotActivated
 
 from ...crypto.security_policies import SecurityPolicy
+from ...crypto.truststore import TrustStore
 from ...crypto.uacrypto import CertProperties
 from .common import ClientNotFound, event_wait
 from .reconciliator import Reconciliator
@@ -70,10 +71,11 @@ class HaSecurityConfig:
     private_key: CertProperties | None = None
     server_certificate: CertProperties | None = None
     mode: ua.MessageSecurityMode | None = None
+    trust_store: TrustStore | None = None
 
     def __post_init__(self) -> None:
-        if self.policy is not None and self.server_certificate is None:
-            raise ValueError("server_certificate is required when the HaClient uses security")
+        if self.policy is not None and self.server_certificate is None and self.trust_store is None:
+            raise ValueError("server_certificate or trust_store is required when the HaClient uses security")
 
 
 @dataclass(frozen=True, eq=True)
@@ -227,12 +229,14 @@ class HaClient:
         private_key: CertProperties,
         server_certificate: CertProperties | None = None,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
+        trust_store: TrustStore | None = None,
     ) -> None:
         """
-        Set the security of every client. The server certificate is required: it is never fetched from an
-        unsecured GetEndpoints call, neither at start nor on a reconnect.
+        Set the security of every client. Either the server certificate (pinned) or a trust store is required:
+        a certificate fetched from an unsecured GetEndpoints call, at start or on a reconnect, is only used
+        when the trust store validates it.
         """
-        self.security_config = HaSecurityConfig(policy, certificate, private_key, server_certificate, mode)
+        self.security_config = HaSecurityConfig(policy, certificate, private_key, server_certificate, mode, trust_store)
 
     async def create_subscription(self, period: int, handler: TypeSubHandler) -> str:
         async with self._ideal_map_lock:
@@ -304,8 +308,17 @@ class HaClient:
         except Exception:
             pass
         await self.hook_on_reconnect(client=client)
-        if self.security_config.policy:
-            await client.set_security(**self.security_config.__dict__)
+        security = self.security_config
+        if security.policy:
+            if security.trust_store is not None:
+                client.set_trust_store(security.trust_store)
+            await client.set_security(
+                policy=security.policy,
+                certificate=security.certificate,  # type: ignore[arg-type]
+                private_key=security.private_key,  # type: ignore[arg-type]
+                server_certificate=security.server_certificate,
+                mode=security.mode,  # type: ignore[arg-type]
+            )
         await client.connect(
             auto_reconnect=True,
             reconnect_max_delay=self._config.manager_timer,

@@ -661,18 +661,14 @@ async def _uaserver() -> None:
     args = parser.parse_args()
     logging.basicConfig(format="%(levelname)s: %(message)s", level=getattr(logging, args.loglevel))
 
-    server = Server(user_manager=PermissiveUserManager() if args.accept_all_logins else None)
+    server = Server(user_manager=PermissiveUserManager() if args.accept_all_logins else None, allow_no_security=True)
     server.allow_plaintext_password = args.accept_all_logins
     await server.init()
     server.set_endpoint(args.url)
-    policies = [ua.SecurityPolicyType.NoSecurity]
     if args.certificate:
         await server.load_certificate(args.certificate)
     if args.private_key:
         await server.load_private_key(args.private_key)
-    if args.certificate and args.private_key:
-        policies.append(ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt)
-    server.set_security_policy(policies)
     server.disable_clock(args.disable_clock)
     server.set_server_name("engiNIR OPC UA Example Server")
     if args.xml:

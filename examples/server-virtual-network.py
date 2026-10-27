@@ -6,6 +6,7 @@ sys.path.insert(0, "..")
 
 from enginir_opcua import Server
 from enginir_opcua.common.methods import uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 @uamethod
@@ -24,7 +25,7 @@ async def main():
     """
     _logger = logging.getLogger("enginir_opcua")
     # setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://example-endpoint.freeopcua.github.com:32000/enginir-opcua/server/")
 

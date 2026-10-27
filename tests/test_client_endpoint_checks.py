@@ -131,6 +131,44 @@ def test_cli14_ha_security_without_server_certificate_is_a_configuration_error()
         HaClient(config).set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key)
 
 
+def test_cli14_ha_security_with_a_trust_store_is_accepted() -> None:
+    """Part 4, 5.7.2.2: a trust store is an alternative to a pinned server certificate."""
+    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
+    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    store = PKI.trust_store()
+    secured = HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
+    assert secured.trust_store is store
+    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1"])
+    ha = HaClient(config)
+    ha.set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
+    assert ha.security_config.trust_store is store
+
+
+async def test_cli14_ha_reconnect_gives_the_trust_store_to_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.7.2.2: the clients of an HA client validate the server certificate with the configured store."""
+    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
+    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    store = PKI.trust_store()
+    config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1"])
+    ha = HaClient(config)
+    ha.set_security(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
+    (client,) = ha.clients
+    seen: list[object] = []
+
+    async def noop(*arguments: object, **keywords: object) -> None:
+        return None
+
+    async def record_security(**keywords: object) -> None:
+        seen.append(keywords)
+
+    monkeypatch.setattr(client, "disconnect", noop)
+    monkeypatch.setattr(client, "connect", noop)
+    monkeypatch.setattr(client, "set_security", record_security)
+    await ha.reconnect(client)
+    assert client.trust_store is store
+    assert seen and "trust_store" not in seen[0]  # type: ignore[operator]
+
+
 def test_cli14_ha_security_with_server_certificate_and_no_security_are_accepted() -> None:
     """Part 4, 5.7.2.2: a configured server certificate is fine, and so is no security at all."""
     certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")

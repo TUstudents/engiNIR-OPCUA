@@ -7,6 +7,7 @@ import logging
 
 from enginir_opcua import Server, pubsub, ua
 from enginir_opcua.common.node import Node
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua.uatypes import NodeId, VariantType
 
 URL = "opc.udp://239.0.0.1:4840"
@@ -37,7 +38,7 @@ async def create_variables(node: Node, ns: ua.UInt16) -> list[Node]:
 async def main():
     logging.basicConfig(level=logging.INFO)
     # setup our server
-    server = Server(allow_no_security=True)
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 

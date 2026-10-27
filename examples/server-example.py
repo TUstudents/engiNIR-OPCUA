@@ -26,7 +26,7 @@ def multiply(parent, x, y):
 
 
 async def main():
-    server = Server(user_manager=PermissiveUserManager())
+    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     server.allow_plaintext_password = True
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")

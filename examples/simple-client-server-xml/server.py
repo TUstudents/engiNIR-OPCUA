@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from enginir_opcua import Server, ua, uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 
 
 @uamethod
@@ -38,7 +39,7 @@ def say_hello_array(parent, happy):
 
 class HelloServer:
     def __init__(self, endpoint, name, model_filepath):
-        self.server = Server(allow_no_security=True)
+        self.server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
         self.model_filepath = model_filepath
         self.server.set_server_name(name)
         self.server.set_endpoint(endpoint)

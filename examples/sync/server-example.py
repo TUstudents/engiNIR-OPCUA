@@ -21,6 +21,7 @@ except ImportError:
 
 
 from enginir_opcua import ua, uamethod
+from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Server, ThreadLoop
 
 
@@ -56,7 +57,7 @@ class VarUpdater(Thread):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARN)
     with ThreadLoop() as tloop:
-        server = Server(tloop=tloop)
+        server = Server(user_manager=PermissiveUserManager(), allow_no_security=True, tloop=tloop)
         server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
         server.set_server_name("engiNIR OPC UA Example Server")
         server.set_security_policy(

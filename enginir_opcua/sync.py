@@ -22,6 +22,7 @@ from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_
 from enginir_opcua.common.events import Event
 from enginir_opcua.crypto import uacrypto
 from enginir_opcua.crypto.truststore import TrustStore
+from enginir_opcua.server.user_managers import UserManager
 
 _logger = logging.getLogger(__name__)
 
@@ -250,6 +251,7 @@ class Client:
         sync_wrapper_timeout: float | None = 120,
         watchdog_intervall: float = 1.0,
         allow_deprecated_policies: bool = False,
+        user_manager: UserManager | None = None,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -573,6 +575,7 @@ class Server:
         sync_wrapper_timeout: float | None = 120,
         allow_no_security: bool = False,
         allow_deprecated_policies: bool = False,
+        user_manager: UserManager | None = None,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -582,7 +585,9 @@ class Server:
             self.close_tloop = True
         try:
             self.aio_obj: server.Server = server.Server(
-                allow_no_security=allow_no_security, allow_deprecated_policies=allow_deprecated_policies
+                user_manager=user_manager,
+                allow_no_security=allow_no_security,
+                allow_deprecated_policies=allow_deprecated_policies,
             )
             self.tloop.post(self.aio_obj.init(shelf_file))
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.iserver.isession)

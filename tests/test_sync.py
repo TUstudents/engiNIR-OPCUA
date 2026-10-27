@@ -43,8 +43,7 @@ def tloop():
 
 @pytest.fixture(scope="module")
 def server(tloop):
-    s = Server(allow_no_security=True, tloop=tloop)
-    s.aio_obj.iserver.set_user_manager(PermissiveUserManager())
+    s = Server(allow_no_security=True, user_manager=PermissiveUserManager(), tloop=tloop)
     s.aio_obj.allow_plaintext_password = True
     s.disable_clock(True)
     s.set_endpoint(f"opc.tcp://0.0.0.0:{port_num}/enginir-opcua/server/")
