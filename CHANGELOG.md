@@ -68,6 +68,34 @@ Client:
   with `Bad_SecurityChecksFailed` when they differ. Endpoints are no longer re-fetched on reconnect.
 - `HaSecurityConfig` needs a `server_certificate` or a `trust_store` when security is on.
 
+Client subscriptions (OPC 10000-4, 5.13 and 5.14):
+- `subscription_parameters(period, ...)` derives the keep-alive count from a keep-alive time (default 10 s) and the
+  lifetime count from a lifetime (default 300 s), never below three times the keep-alive; `MaxNotificationsPerPublish`
+  is 0. A `Subscription` stores the revised values (`revised`) and corrects a revised keep-alive above 60 s once.
+- The default sampling interval of `subscribe_data_change` is -1 (the publishing interval), not 50 ms.
+  `unsubscribe` skips handles it doesn't know instead of raising; it keeps items the server couldn't delete and raises
+  after removing the others. `modify_monitored_item` raises `ValueError` for an unknown handle and keeps the stored
+  filter, queue size, discard policy and timestamps unless given.
+- Notifications are delivered from a task per Subscription. A full inbox or event queue drops the oldest entry and
+  counts it (`dropped_messages`, `dropped_events`); a slow handler delays only its own Subscription. Handlers may
+  return any awaitable. Duplicate messages are dropped and missing ones are fetched with Republish
+  (`max_republish`, `republish_missing`). `Bad_Timeout` marks the Subscription lost; `Good_SubscriptionTransferred`
+  ends it without recreating. `Subscription.close()` ends it locally; `Subscription.state` is new.
+
+File transfer (OPC 10000-5, Annex C):
+- `UaFile.read()` reads in chunks until an empty ByteString and no longer uses `Size`; `write()` is chunked.
+  `UaFile(node, mode, chunk_size=, timeout=)` validates the open mode, resolves Methods once with a fallback to the
+  FileType Methods, refuses a second `open()` and sends no Close for a closed file. New: `read_chunk`, `iter_chunks`,
+  `adopt`, `get_mime_type`, `FileTransferError`, `InvalidStateError`. `client/ua_file.py` is a deprecated wrapper,
+  removed in 4.0.0.
+
+High availability:
+- `HaClient` keeps a Healthy active server whatever the others report, uses the best Degraded server when none is
+  Healthy, never resets a connected standby for its ServiceLevel, and disconnects a server in maintenance
+  (ServiceLevel 0). Probe and manager default to 5 s and wake each other. A server that reports no Warm or Hot
+  `RedundancySupport` is not used unless `HaConfig(allow_unsupported_redundancy=True)`.
+  `HaSecurityConfig` takes user credentials. Unknown subscription names raise `KeyError`; `HaClient.status()` is new.
+
 Tools:
 - `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. `uaserver` is a demo without security and
   says so; `--accept-all-logins` opts into permissive logins. The sync `Server` takes `user_manager`.
