@@ -17,6 +17,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from enginir_opcua import ua
+from enginir_opcua.common.methods import forget_input_arguments
 from enginir_opcua.common.session_interface import AbstractSession
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.observer import Observer
@@ -190,6 +191,7 @@ class UaSession(AbstractSession):
         if self._client.protocol is None:
             raise ConnectionError("Connection is not open")
         self.logger.info("create_session")
+        forget_input_arguments(self)
         self._set_state(SessionState.CREATING)
         try:
             request = ua.CreateSessionRequest()
