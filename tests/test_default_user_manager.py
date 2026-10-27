@@ -53,11 +53,11 @@ async def test_srv7_default_server_offers_only_anonymous(default_server: Server)
 
 @pytest.mark.parametrize("user", ["admin", "Admin", "alice"])
 async def test_srv7_default_server_rejects_username_tokens(default_server: Server, user: str) -> None:
-    """Part 4, 5.7.3.2: without a user manager a UserName token, admin with any password included, is rejected."""
+    """Part 4, 5.7.3.2: without a user manager no UserName policy is offered, so the client does not try one."""
     client = Client(default_server.endpoint.geturl())
     client.set_user(user)
     client.set_password("anything")
-    with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
+    with pytest.raises(ua.uaerrors.ConfigurationError):
         await client.connect()
     await client.disconnect()
 

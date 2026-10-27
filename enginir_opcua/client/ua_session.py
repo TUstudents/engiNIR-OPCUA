@@ -135,6 +135,7 @@ class UaSession(AbstractSession):
         self._keep_alive_times: dict[int, float] = {}
         self._round_trip: float | None = None
         self._late_tasks: set[asyncio.Task[Any]] = set()
+        self._sleeping_workers: set[asyncio.Task[Any]] = set()
 
     @property
     def observer(self) -> Observer:
@@ -634,6 +635,9 @@ class UaSession(AbstractSession):
         self._publish_wake.set()
         if self._subscription_callbacks:
             self.ensure_publish_loop()
+        else:
+            for worker in list(self._sleeping_workers):
+                worker.cancel()
 
     def ensure_publish_loop(self) -> None:
         if not self._subscription_callbacks:
@@ -721,9 +725,8 @@ class UaSession(AbstractSession):
                 return
             acks = self._take_acks()
             hint, deadline = self._publish_timeout()
-            self._publish_in_flight += 1
             try:
-                response = await self.publish(acks, deadline, hint)
+                response = await self._send_publish(acks, deadline, hint)
             except asyncio.CancelledError:
                 self._return_acks(acks)
                 raise
@@ -760,10 +763,8 @@ class UaSession(AbstractSession):
                     min(error_delay * 2, PUBLISH_ERROR_MAX_DELAY) if error_delay else PUBLISH_ERROR_RETRY_DELAY
                 )
                 self.logger.warning("Publish failed with %s; trying again in %.2fs", error, error_delay)
-                await asyncio.sleep(error_delay)
+                await self._worker_sleep(error_delay)
                 continue
-            finally:
-                self._publish_in_flight -= 1
             decode_failures = 0
             error_delay = 0.0
             if not await self._handle_publish_response(response, acks):
@@ -777,8 +778,26 @@ class UaSession(AbstractSession):
         if not self._subscription_callbacks:
             return False
         delays = NO_SUBSCRIPTION_RETRY_DELAYS
-        await asyncio.sleep(delays[min(count, len(delays) - 1)])
+        await self._worker_sleep(delays[min(count, len(delays) - 1)])
         return bool(self._subscription_callbacks)
+
+    async def _send_publish(
+        self, acks: list[ua.SubscriptionAcknowledgement], deadline: float, hint: float
+    ) -> ua.PublishResponse:
+        self._publish_in_flight += 1
+        try:
+            return await self.publish(acks, deadline, hint)
+        finally:
+            self._publish_in_flight -= 1
+
+    async def _worker_sleep(self, delay: float) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        self._sleeping_workers.add(task)
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            self._sleeping_workers.discard(task)
 
     async def _handle_publish_response(
         self, response: ua.PublishResponse, acks: list[ua.SubscriptionAcknowledgement]

@@ -695,6 +695,8 @@ class UaClient:
     ) -> Buffer:
         if self.protocol is None:
             raise ConnectionError("Connection is not open")
+        if timeout_hint is None:
+            return await self.protocol.send_request(request, timeout, message_type)
         return await self.protocol.send_request(request, timeout, message_type, timeout_hint)
 
     # --- back-compat: properties that previously lived on UaClient ---
