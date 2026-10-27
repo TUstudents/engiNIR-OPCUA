@@ -44,6 +44,11 @@ class SubscriptionItemData:
         self.queuesize: int = 0
         self.monitoring_mode: ua.MonitoringMode = ua.MonitoringMode.Reporting
         self.sampling_interval: ua.Duration = 0.0
+        self.discard_oldest: bool = True
+        self.timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both
+        self.revised_sampling_interval: ua.Duration | None = None
+        self.revised_queuesize: int | None = None
+        self.filter_result: Any = None
 
 
 class DataChangeNotif:
@@ -538,7 +543,7 @@ class Subscription:
             mparams.ClientHandle = item.client_handle
             mparams.SamplingInterval = item.sampling_interval
             mparams.QueueSize = item.queuesize
-            mparams.DiscardOldest = True
+            mparams.DiscardOldest = item.discard_oldest
             if item.mfilter is not None:
                 mparams.Filter = item.mfilter
             mir = ua.MonitoredItemCreateRequest()
@@ -809,10 +814,10 @@ class Subscription:
             data.client_handle = mi.RequestedParameters.ClientHandle
             data.node = Node(self.server, mi.ItemToMonitor.NodeId)
             data.attribute = mi.ItemToMonitor.AttributeId
-            # TODO: Either use the filter from request or from response.
-            #  Here it uses from request, in modify it uses from response
             data.mfilter = mi.RequestedParameters.Filter
             data.queuesize = mi.RequestedParameters.QueueSize
+            data.discard_oldest = mi.RequestedParameters.DiscardOldest
+            data.timestamps = params.TimestampsToReturn
             data.monitoring_mode = mi.MonitoringMode
             data.sampling_interval = mi.RequestedParameters.SamplingInterval
             self._monitored_items[mi.RequestedParameters.ClientHandle] = data
@@ -838,6 +843,9 @@ class Subscription:
                 continue
             data = self._monitored_items[mi.RequestedParameters.ClientHandle]
             data.server_handle = result.MonitoredItemId
+            data.revised_sampling_interval = result.RevisedSamplingInterval
+            data.revised_queuesize = result.RevisedQueueSize
+            data.filter_result = result.FilterResult
             mids.append(result.MonitoredItemId)
         return mids
 
@@ -870,56 +878,70 @@ class Subscription:
                 del self._monitored_items[handle_map[handle]]
 
     async def modify_monitored_item(
-        self, handle: int, new_samp_time: ua.Duration, new_queuesize: int = 0, mod_filter_val: int = -1
+        self,
+        handle: int,
+        new_samp_time: ua.Duration | None = None,
+        new_queuesize: int | None = None,
+        mod_filter_val: int | None = -1,
     ) -> list[ua.MonitoredItemModifyResult]:
         """
-        Modify a monitored item.
+        Modify a monitored item. Parameters that are not given keep the values the item was created with.
         :param handle: Handle returned when originally subscribing
         :param new_samp_time: New wanted sample time
-        :param new_queuesize: New wanted queuesize, default is 0
-        :param mod_filter_val: New deadband filter value
+        :param new_queuesize: New wanted queuesize
+        :param mod_filter_val: -1 keeps the filter, None removes it, 0 or more sets an absolute deadband
         :return: Return a Modify Monitored Item Result
         """
-        # Find the monitored item in the monitored item registry.
-        item_to_change = next(item for item in self._monitored_items.values() if item.server_handle == handle)
-        if not item_to_change:
+        item = next((i for i in self._monitored_items.values() if i.server_handle == handle), None)
+        if item is None:
             raise ValueError("The monitored item was not found.")
-        if mod_filter_val is None:
+        mod_filter: ua.MonitoringFilter | ua.EventFilter | None
+        if isinstance(item.mfilter, ua.EventFilter) or (mod_filter_val is not None and mod_filter_val < 0):
+            mod_filter = item.mfilter
+        elif mod_filter_val is None:
             mod_filter = None
-        elif mod_filter_val < 0:
-            mod_filter = item_to_change.mfilter
         else:
             mod_filter = ua.DataChangeFilter()
-            # send notification when status or value change
             mod_filter.Trigger = ua.DataChangeTrigger(1)
             mod_filter.DeadbandType = 1
-            # absolute float value or from 0 to 100 for percentage deadband
             mod_filter.DeadbandValue = mod_filter_val
+        sampling_interval = item.sampling_interval if new_samp_time is None else new_samp_time
+        queuesize = item.queuesize if new_queuesize is None else new_queuesize
         modif_item = ua.MonitoredItemModifyRequest()
         modif_item.MonitoredItemId = handle
         modif_item.RequestedParameters = self._modify_monitored_item_request(
-            new_queuesize, new_samp_time, mod_filter, item_to_change.client_handle
+            queuesize, sampling_interval, mod_filter, item.client_handle, item.discard_oldest
         )
         params = ua.ModifyMonitoredItemsParameters()
         params.SubscriptionId = self.subscription_id
+        params.TimestampsToReturn = item.timestamps
         params.ItemsToModify.append(modif_item)
         try:
             results = await self.server.modify_monitored_items(params)
         except ServiceError as e:
             raise ua.UaStatusCodeError(e.code)
-        item_to_change.mfilter = results[0].FilterResult
+        result = results[0]
+        result.StatusCode.check()
+        item.sampling_interval = sampling_interval
+        item.queuesize = queuesize
+        item.mfilter = mod_filter
+        item.revised_sampling_interval = result.RevisedSamplingInterval
+        item.revised_queuesize = result.RevisedQueueSize
+        item.filter_result = result.FilterResult
         return results
 
     def _modify_monitored_item_request(
         self,
         new_queuesize: int,
         new_samp_time: ua.Duration,
-        mod_filter: ua.DataChangeFilter | None,
+        mod_filter: ua.MonitoringFilter | ua.EventFilter | None,
         client_handle: ua.IntegerId,
+        discard_oldest: bool = True,
     ) -> ua.MonitoringParameters:
         req_params = ua.MonitoringParameters()
         req_params.ClientHandle = client_handle
         req_params.QueueSize = new_queuesize
+        req_params.DiscardOldest = discard_oldest
         req_params.Filter = mod_filter
         req_params.SamplingInterval = new_samp_time
         return req_params
