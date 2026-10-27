@@ -119,7 +119,9 @@ async def test_srv15_data_encoding_is_ignored(access_rig: AccessRig) -> None:
 
 async def test_srv62_variable_without_value_reads_bad_no_value(access_rig: AccessRig) -> None:
     """Part 4, 7.11.5."""
-    dv = await read_one(access_rig, read_params(ua.NodeId(ua.ObjectIds.HistoryServerCapabilities_MaxReturnDataValues)))
+    dv = await read_one(
+        access_rig, read_params(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxQueryContinuationPoints))
+    )
     assert dv.StatusCode == ua.StatusCode(ua.StatusCodes.BadNoValue)
     assert dv.Value is None or dv.Value.Value is None
 

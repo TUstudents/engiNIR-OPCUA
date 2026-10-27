@@ -168,6 +168,7 @@ class ServerProcess(Process):
         )
         await tools_node.set_writable()
         async with srv:
+            await srv.historize_node_data_change(tools_node, period=None)
             with self.cond:
                 self.cond.notify_all()
             while not self.stop_ev.is_set():
