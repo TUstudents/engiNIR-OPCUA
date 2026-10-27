@@ -11,12 +11,9 @@ from enginir_opcua import Client, ua
 from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
 from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
-
-USE_TRUST_STORE = True
 
 cert_idx = 4
 cert_base = Path(__file__).parent
@@ -51,17 +48,7 @@ async def task(loop):
         server_certificate="certificate-example.der",
     )
 
-    if USE_TRUST_STORE:
-        trust_store = TrustStore([Path("examples") / "certificates" / "trusted" / "certs"], [])
-        await trust_store.load()
-        validator = CertificateValidator(
-            CertificateValidatorOptions.TRUSTED_VALIDATION | CertificateValidatorOptions.PEER_SERVER, trust_store
-        )
-    else:
-        validator = CertificateValidator(
-            CertificateValidatorOptions.EXT_VALIDATION | CertificateValidatorOptions.PEER_SERVER
-        )
-    client.certificate_validator = validator
+    client.set_trust_store(TrustStore([Path("examples") / "certificates" / "trusted" / "certs"], []))
     try:
         async with client:
             objects = client.nodes.objects

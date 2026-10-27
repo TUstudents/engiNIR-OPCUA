@@ -29,7 +29,8 @@ from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, security_policies, uacrypto
-from ..crypto.validator import CertificateValidatorMethod
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import ApplicationHook, CertificateValidator
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
@@ -151,8 +152,10 @@ class Client:
         self._reconnect_request_timeout: float = reconnect_request_timeout
         self._stale_check_margin: float = 1.5
         self._stale_check_interval: float = 0.5
-        self.certificate_validator: CertificateValidatorMethod | None = None
-        """hook to validate a certificate, raises a ServiceError when not valid"""
+        self.trust_store: TrustStore | None = None
+        self.certificate_validator: CertificateValidator | None = None
+        self.application_hook: ApplicationHook | None = None
+        """extra check after the certificate validator accepted the server certificate, raises a ServiceError"""
         # Set before connect() to let a fresh client process resume the existing
         # server-side session via ActivateSession instead of creating a new one
         # (spec Part 4 §6.7) — useful after a client crash.
@@ -241,6 +244,14 @@ class Client:
     def set_max_concurrent_requests(self, max_concurrent_requests: int) -> None:
         """Set the maximum number of requests sent concurrently."""
         self.uaclient.set_max_concurrent_requests(max_concurrent_requests)
+
+    def set_trust_store(self, trust_store: TrustStore) -> None:
+        """
+        Set the trusted certificates, issuer certificates and revocation lists that the server certificate is
+        validated against. Without a trust store only a server certificate passed to set_security is trusted.
+        Call this before connect()
+        """
+        self.trust_store = trust_store
 
     async def set_security_string(self, string: str) -> None:
         """
@@ -799,9 +810,9 @@ class Client:
             raise ua.UaError("Server certificate mismatch")
         ep = Client.find_endpoint(response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI)
 
-        if self.certificate_validator and server_certificate:
+        if self.application_hook and server_certificate:
             try:
-                await self.certificate_validator(x509.load_der_x509_certificate(server_certificate), ep.Server)
+                await self.application_hook(x509.load_der_x509_certificate(server_certificate), ep.Server)
             except ServiceError as exp:
                 status = ua.StatusCode(exp.code)
                 _logger.error("create_session fault response: %s (%s)", status.doc, status.name)

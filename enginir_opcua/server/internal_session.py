@@ -394,8 +394,8 @@ class SessionManager:
             raise ServiceError(ua.StatusCodes.BadNonceInvalid)
         security = channel.security
         self._check_client_certificate(params.ClientCertificate, security)
-        if self.iserver.certificate_validator and params.ClientCertificate:
-            await self.iserver.certificate_validator(
+        if self.iserver.application_hook and params.ClientCertificate:
+            await self.iserver.application_hook(
                 x509.load_der_x509_certificate(params.ClientCertificate), params.ClientDescription
             )
         ep_params = ua.GetEndpointsParameters()

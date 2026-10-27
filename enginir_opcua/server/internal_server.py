@@ -24,7 +24,8 @@ from ..common.connection import ChannelSettings
 from ..common.node import Node
 from ..common.utils import ServiceError
 from ..crypto import security_policies, uacrypto
-from ..crypto.validator import CertificateValidatorMethod
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
 from .history import HistoryManager
@@ -157,8 +158,10 @@ class InternalServer:
             _logger.info("No user manager specified. Using default permissive manager instead.")
             user_manager = PermissiveUserManager()
         self.user_manager = user_manager
-        self.certificate_validator: CertificateValidatorMethod | None = None
-        """hook to validate a certificate, raises a ServiceError when not valid"""
+        self.trust_store: TrustStore | None = None
+        self.certificate_validator: CertificateValidator | None = None
+        self.application_hook: ApplicationHook | None = None
+        """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())

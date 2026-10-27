@@ -169,7 +169,7 @@ async def test_create_session_certificate_must_match_channel(
         validated.append(certificate)
         raise ServiceError(ua.StatusCodes.BadCertificateUntrusted)
 
-    srv.set_certificate_validator(reject_unknown)
+    srv.set_application_hook(reject_unknown)
     client = await _secure_client(url, PEER_1)
     create_session = client.uaclient.create_session
 

@@ -31,6 +31,8 @@ from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import security_policies, uacrypto, validator
 from ..crypto.permission_rules import SimpleRoleRuleset
+from ..crypto.truststore import TrustStore
+from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
@@ -957,19 +959,31 @@ class Server:
         nodeids = [node.nodeid for node in nodes]
         return [self.iserver.read_attribute_value(nodeid, attr) for nodeid in nodeids]
 
-    def set_certificate_validator(self, validator: validator.CertificateValidatorMethod) -> None:
+    def set_trust_store(self, trust_store: TrustStore) -> None:
         """
-        Assign a method to be called when certificate needs to be validated.
+        Set the trusted certificates, issuer certificates and revocation lists that client certificates are
+        validated against. Without a trust store no client certificate is trusted.
+        """
+        self.iserver.trust_store = trust_store
 
-        Function is called with certificate and application description and should raise the correct status code
-        when invalid.
+    def set_certificate_validator(self, validator: CertificateValidator) -> None:
+        """
+        Replace the certificate validator that checks the certificate of every client at OpenSecureChannel.
+        Use set_trust_store to configure the default validator instead.
+        """
+        self.iserver.certificate_validator = validator
 
-            async def example_validation_method(certificate: x509.Certificate, app_description: ua.ApplicationDescription):
-                ...
+    def set_application_hook(self, hook: validator.ApplicationHook) -> None:
+        """
+        Assign a method that is called with the certificate and application description of a client in
+        CreateSession, after the certificate validator accepted the certificate. It can only reject, by raising
+        the correct status code:
+
+            async def example_hook(certificate: x509.Certificate, app_description: ua.ApplicationDescription):
                 if not_valid_condition:
                     raise ServiceError(ua.StatusCodes.BadCertificateInvalid)
         """
-        self.iserver.certificate_validator = validator
+        self.iserver.application_hook = hook
 
     async def get_pubsub(self) -> PubSub:
         """

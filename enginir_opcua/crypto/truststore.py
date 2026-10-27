@@ -1,59 +1,75 @@
 """
-Functionality for checking a certificate based on:
-- trusted (ca) certificates
-- crl
+The stores a certificate validator decides over:
+- trusted certificates (anchors, whether or not they are CA certificates)
+- issuer certificates (CAs needed to build a chain, not anchors by themselves)
+- certificate revocation lists
 
+A load builds a new immutable snapshot and installs it with one assignment.
 """
 
 import logging
-import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import anyio
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
-from enginir_opcua.crypto.uacrypto import get_content, load_certificate
+from enginir_opcua.crypto.uacrypto import get_content
+from enginir_opcua.ua.uaerrors import ConfigurationError
 
 _logger = logging.getLogger(__name__)
 
+CERTIFICATE_EXTENSIONS = frozenset({".der", ".cer", ".crt", ".pem"})
+CRL_EXTENSIONS = frozenset({".crl", ".der", ".pem"})
 
-def basic_ca_validator(_policy: x509.verification.Policy, _cert: x509.Certificate, ext: x509.BasicConstraints) -> None:
-    if not ext.ca:
-        raise ValueError("CA certificate must contain a basicConstraints extension with ca=true")
+
+def _der(certificate: x509.Certificate) -> bytes:
+    return certificate.public_bytes(serialization.Encoding.DER)
+
+
+@dataclass(frozen=True)
+class StoreSnapshot:
+    trusted: tuple[x509.Certificate, ...] = ()
+    issuers: tuple[x509.Certificate, ...] = ()
+    crls: tuple[x509.CertificateRevocationList, ...] = ()
+    pinned: tuple[x509.Certificate, ...] = ()
+
+    @cached_property
+    def trusted_der(self) -> frozenset[bytes]:
+        return frozenset(_der(certificate) for certificate in (*self.trusted, *self.pinned))
+
+    def is_trusted(self, certificate: x509.Certificate) -> bool:
+        return _der(certificate) in self.trusted_der
 
 
 class TrustStore:
     """
-    TrustStore is used to validate certificates in two ways:
-    - Based on being absent in provided certificate revocation lists
-    - The certificate or its issuer being present in a list of trusted certificates
+    Locations of trusted certificates, issuer certificates and revocation lists.
 
-    It doesn't check other content of extensions of the certificate.
+    Each location is a directory. Certificates and lists are DER or PEM files. Files with other
+    extensions are ignored, and a file that does not parse is skipped with a warning.
     """
 
-    def __init__(self, trust_locations: list[Path], crl_locations: list[Path]) -> None:
-        """Constructor of the TrustStore.
-
-        Args:
-            trust_locations (list[Path]): one or multiple locations that contain trusted (ca) certificates.
-                Type should be PEM or DER.
-            crl_locations (list[Path]): one or multiple locations that contain CRL. Type should be PEM or DER.
+    def __init__(
+        self,
+        trust_locations: Sequence[Path] = (),
+        crl_locations: Sequence[Path] = (),
+        issuer_locations: Sequence[Path] = (),
+    ) -> None:
         """
-
-        self._trust_locations: list[Path] = trust_locations
-        self._crl_locations: list[Path] = crl_locations
-
-        self._trust_store: x509.verification.Store | None = None
-        self._revoked_list: list[x509.RevokedCertificate] = []
-
-        self.policy_builder = x509.verification.PolicyBuilder().extension_policies(
-            ca_policy=x509.verification.ExtensionPolicy.permit_all().require_present(
-                x509.BasicConstraints,
-                x509.verification.Criticality.AGNOSTIC,
-                basic_ca_validator,
-            ),
-            ee_policy=x509.verification.ExtensionPolicy.permit_all(),
-        )
+        Args:
+            trust_locations: directories with trusted certificates (anchors).
+            crl_locations: directories with certificate revocation lists, for trusted and issuer certificates.
+            issuer_locations: directories with CA certificates needed for chains, which are not anchors.
+        """
+        self._trust_locations: list[Path] = [Path(location) for location in trust_locations]
+        self._crl_locations: list[Path] = [Path(location) for location in crl_locations]
+        self._issuer_locations: list[Path] = [Path(location) for location in issuer_locations]
+        self._snapshot = StoreSnapshot()
+        self._pinned: tuple[x509.Certificate, ...] = ()
 
     @property
     def trust_locations(self) -> list[Path]:
@@ -63,121 +79,67 @@ class TrustStore:
     def crl_locations(self) -> list[Path]:
         return self._crl_locations
 
+    @property
+    def issuer_locations(self) -> list[Path]:
+        return self._issuer_locations
+
+    @property
+    def snapshot(self) -> StoreSnapshot:
+        return self._snapshot
+
+    def pin(self, certificate: x509.Certificate) -> None:
+        """Trust a certificate given explicitly by the application, in memory only."""
+        if certificate in self._pinned:
+            return
+        self._pinned = (*self._pinned, certificate)
+        self._snapshot = StoreSnapshot(
+            self._snapshot.trusted, self._snapshot.issuers, self._snapshot.crls, self._pinned
+        )
+
     async def load(self) -> None:
-        """(Re)load both the trusted certificates and revocation lists."""
-        await self.load_trust()
-        await self.load_crl()
+        """(Re)load the certificates and revocation lists, and replace the snapshot when all locations are readable."""
+        trusted = await self._load_certificates(self._trust_locations)
+        issuers = await self._load_certificates(self._issuer_locations)
+        crls = await self._load_crls(self._crl_locations)
+        self._snapshot = StoreSnapshot(tuple(trusted), tuple(issuers), tuple(crls), self._pinned)
 
-    async def load_trust(self) -> None:
-        """(Re)load the trusted certificates."""
-        certs: list[x509.Certificate] = []
-        for location in self._trust_locations:
-            certs.extend(await self._load_trust_location(location))
-        self._trust_store = x509.verification.Store(certs) if certs else None
+    @staticmethod
+    async def _files(location: Path, extensions: frozenset[str]) -> list[Path]:
+        if not await anyio.Path(location).is_dir():
+            raise ConfigurationError(f"Trust store location {location} does not exist or is not a directory")
+        names = [Path(entry) async for entry in anyio.Path(location).iterdir()]
+        return sorted(name for name in names if name.suffix.lower() in extensions and name.is_file())
 
-    async def load_crl(self) -> None:
-        """(Re)load the certificate revocation lists."""
-        revoked: list[x509.RevokedCertificate] = []
-        for location in self._crl_locations:
-            revoked.extend(await self._load_crl_location(location))
-        self._revoked_list = revoked
+    async def _load_certificates(self, locations: Sequence[Path]) -> list[x509.Certificate]:
+        certificates: list[x509.Certificate] = []
+        for location in locations:
+            for file_name in await self._files(location, CERTIFICATE_EXTENSIONS):
+                try:
+                    certificates.extend(await self._load_certificate_file(file_name))
+                except (ValueError, OSError) as exc:
+                    _logger.warning("Skipping %s, it does not hold a certificate: %s", file_name, exc)
+        return certificates
 
-    def validate(self, certificate: x509.Certificate) -> bool:
-        """Validates if a certificate is trusted, not revoked and lays in valid date range.
+    async def _load_crls(self, locations: Sequence[Path]) -> list[x509.CertificateRevocationList]:
+        crls: list[x509.CertificateRevocationList] = []
+        for location in locations:
+            for file_name in await self._files(location, CRL_EXTENSIONS):
+                try:
+                    crls.append(await self._load_crl(file_name))
+                except (ValueError, OSError) as exc:
+                    _logger.warning("Skipping %s, it does not hold a revocation list: %s", file_name, exc)
+        return crls
 
-        Args:
-            certificate (x509.Certificate): Certificate to check.
-        """
-
-        return self.is_trusted(certificate) and not self.is_revoked(certificate)
-
-    def is_revoked(self, certificate: x509.Certificate) -> bool:
-        """Check if the certificate is in the revocation lists.
-
-        If no CRL is present, the certificate is not considered revoked.
-
-        Args:
-            certificate (x509.Certificate): Certificate to check.
-        """
-        is_revoked = False
-        for revoked in self._revoked_list:
-            if revoked.serial_number == certificate.serial_number:
-                subject_cn = (
-                    cn[0].value
-                    if (cn := certificate.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME))
-                    else None
-                )
-                _logger.warning('Found revoked serial "%s" [CN=%s]', hex(certificate.serial_number), subject_cn)
-                is_revoked = True
-                break
-        return is_revoked
-
-    def is_trusted(self, certificate: x509.Certificate) -> bool:
-        """Check if the provided certificate is considered trusted.
-
-        For a self-signed to be trusted is must be placed in the trusted location
-
-        Args:
-            certificate (x509.Certificate): Certificate to check
-        """
-        if not self._trust_store:
-            return False
-
-        verifier = self.policy_builder.store(self._trust_store).build_client_verifier()
-        try:
-            verifier.verify(certificate, [])
-            _logger.debug(
-                "Use trusted certificate: [CN=%s]",
-                cn[0].value if (cn := certificate.subject.get_attributes_for_oid(x509.OID_COMMON_NAME)) else None,
-            )
-            return True
-        except x509.verification.VerificationError:
-            _logger.exception(
-                "Not trusted certificate used: [CN=%s]",
-                cn[0].value if (cn := certificate.subject.get_attributes_for_oid(x509.OID_COMMON_NAME)) else None,
-            )
-        return False
-
-    async def _load_trust_location(self, location: Path) -> list[x509.Certificate]:
-        """Load from a single directory location the certificates and return them.
-
-        Args:
-            location (Path): location to scan for certificates.
-        """
-        certs: list[x509.Certificate] = []
-        files = anyio.Path(location).glob("*.*")
-        async for file_name in files:
-            if re.match(".*(der|pem)", file_name.name.lower()):
-                _logger.debug("Add certificate to TrustStore : '%s'", file_name)
-                certs.append(await load_certificate(Path(file_name)))
-        return certs
-
-    async def _load_crl_location(self, location: Path) -> list[x509.RevokedCertificate]:
-        """Load from a single directory location the CRLs and return certificates revoked by them.
-
-        Args:
-            location (Path): location to scan for crls.
-        """
-        revoked: list[x509.RevokedCertificate] = []
-        files = anyio.Path(location).glob("*.*")
-        async for file_name in files:
-            if re.match(".*(der|pem)", file_name.name.lower()):
-                _logger.debug("Add CRL to list : '%s'", file_name)
-                crl = await self._load_crl(Path(file_name))
-                revoked.extend(crl)
-        return revoked
+    @staticmethod
+    async def _load_certificate_file(file_name: Path) -> list[x509.Certificate]:
+        content = await get_content(file_name)
+        if file_name.suffix.lower() == ".pem":
+            return x509.load_pem_x509_certificates(content)
+        return [x509.load_der_x509_certificate(content)]
 
     @staticmethod
     async def _load_crl(crl_file_name: Path) -> x509.CertificateRevocationList:
-        """Load a single CRL from file.
-
-        Args:
-            crl_file_name (Path): file to load
-
-        Returns:
-            x509.CertificateRevocationList: Loaded CRL
-        """
         content = await get_content(crl_file_name)
-        if crl_file_name.suffix.lower() == ".der":
-            return x509.load_der_x509_crl(content)
-        return x509.load_pem_x509_crl(content)
+        if crl_file_name.suffix.lower() == ".pem":
+            return x509.load_pem_x509_crl(content)
+        return x509.load_der_x509_crl(content)

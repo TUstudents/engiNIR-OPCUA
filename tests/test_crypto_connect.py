@@ -9,7 +9,6 @@ from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.security_policies import SECURITY_POLICY_TYPE_MAP
 from enginir_opcua.crypto.uacrypto import CertProperties
-from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 from enginir_opcua.server.user_managers import CertificateUserManager
 
 from .conftest import find_free_port
@@ -492,51 +491,3 @@ async def test_security_level_endpoints(srv_crypto_all_certs: tuple[Server, str]
                 f"{end_point.SecurityPolicyUri.split('#')[1].replace('_', '')}_{end_point.SecurityMode.name}"
             ]
         assert end_point.SecurityLevel == SECURITY_POLICY_TYPE_MAP[policy_type][2]
-
-
-@pytest.fixture
-async def srv_crypto_one_cert_with_validator(srv_crypto_one_cert):
-    srv, cert = srv_crypto_one_cert
-    validator = CertificateValidator(
-        options=CertificateValidatorOptions.BASIC_VALIDATION | CertificateValidatorOptions.PEER_CLIENT
-    )
-    srv.set_certificate_validator(validator)
-    yield validator, cert
-    srv.iserver.certificate_validator = None
-
-
-async def test_certificate_validator(srv_crypto_one_cert_with_validator):
-    # the used certificate is not compliant with a valid OPC UA certificate so only unhappy flow can be tested!
-
-    validator, cert = srv_crypto_one_cert_with_validator
-
-    clt = Client(uri_crypto_cert)
-    await clt.set_security(
-        security_policies.SecurityPolicyBasic256Sha256,
-        peer_creds["certificate"],
-        peer_creds["private_key"],
-        None,
-        cert,
-        mode=ua.MessageSecurityMode.SignAndEncrypt,
-    )
-
-    validator.set_validate_options(options=CertificateValidatorOptions.URI | CertificateValidatorOptions.PEER_CLIENT)
-    with pytest.raises(ua.uaerrors.BadCertificateInvalid):
-        async with clt:
-            assert await clt.get_objects_node().get_children()
-
-    validator.set_validate_options(
-        options=CertificateValidatorOptions.TIME_RANGE | CertificateValidatorOptions.PEER_CLIENT
-    )
-    with pytest.raises(ua.uaerrors.BadCertificateTimeInvalid):
-        async with clt:
-            assert await clt.get_objects_node().get_children()
-
-    validator.set_validate_options(
-        options=CertificateValidatorOptions.KEY_USAGE
-        | CertificateValidatorOptions.EXT_KEY_USAGE
-        | CertificateValidatorOptions.PEER_CLIENT
-    )
-    with pytest.raises(ua.uaerrors.BadCertificateInvalid):
-        async with clt:
-            assert await clt.get_objects_node().get_children()

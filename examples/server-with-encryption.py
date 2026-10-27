@@ -10,13 +10,9 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from enginir_opcua import Server, ua
 from enginir_opcua.crypto.cert_gen import setup_self_signed_certificate
 from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 from enginir_opcua.server.user_managers import CertificateUserManager
 
 logging.basicConfig(level=logging.INFO)
-
-
-USE_TRUST_STORE = False
 
 
 async def main():
@@ -59,18 +55,8 @@ async def main():
     await server.load_certificate(str(server_cert))
     await server.load_private_key(str(server_private_key))
 
-    if USE_TRUST_STORE:
-        trust_store = TrustStore([Path("examples") / "certificates" / "trusted" / "certs"], [])
-        await trust_store.load()
-        validator = CertificateValidator(
-            options=CertificateValidatorOptions.TRUSTED_VALIDATION | CertificateValidatorOptions.PEER_CLIENT,
-            trust_store=trust_store,
-        )
-    else:
-        validator = CertificateValidator(
-            options=CertificateValidatorOptions.EXT_VALIDATION | CertificateValidatorOptions.PEER_CLIENT
-        )
-    server.set_certificate_validator(validator)
+    trust_store = TrustStore([Path("examples") / "certificates" / "trusted" / "certs"], [])
+    server.set_trust_store(trust_store)
 
     idx = 0
 
