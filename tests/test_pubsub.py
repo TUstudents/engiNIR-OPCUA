@@ -10,7 +10,7 @@ from enginir_opcua import pubsub
 from enginir_opcua.common.node import Node
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.pubsub.connection import PubSubConnection
-from enginir_opcua.pubsub.dataset import DataSetMeta, PublishedDataSet
+from enginir_opcua.pubsub.dataset import DataSetMeta, DataSetValue, PublishedDataSet
 from enginir_opcua.pubsub.reader import DataSetReader, ReaderGroup
 from enginir_opcua.pubsub.uadp import (
     UadpDataSetDataValue,
@@ -24,8 +24,10 @@ from enginir_opcua.pubsub.uadp import (
 from enginir_opcua.pubsub.udp import UdpSettings
 from enginir_opcua.pubsub.writer import DataSetWriter
 from enginir_opcua.server.server import Server
+from enginir_opcua.ua.attribute_ids import AttributeIds
 from enginir_opcua.ua.object_ids import ObjectIds
 from enginir_opcua.ua.status_codes import StatusCodes
+from enginir_opcua.ua.uaprotocol_auto import FieldTargetDataType, PubSubState
 from enginir_opcua.ua.uatypes import (
     Byte,
     DataValue,
@@ -423,3 +425,51 @@ async def test_raw_dataset_status_is_status_code():
     values = reader._datavalues_from_raw(raw, header)
     assert isinstance(values[0].StatusCode, StatusCode)
     assert values[0].StatusCode.is_good()
+
+
+async def target_with_ranges(
+    server: Server, name: str, receiver: str | None, write: str | None
+) -> tuple[Node, pubsub.SubScribedTargetVariables, DataSetMeta]:
+    node = await server.nodes.objects.add_variable(
+        NodeId(String(name), Int16(1)), name, [1, 2, 3, 4], VariantType.Int32
+    )
+    dataset = DataSetMeta.Create(String(name))
+    dataset.add_scalar(String("Values"), VariantType.Int32)
+    field = dataset.get_field("Values")
+    config = FieldTargetDataType(
+        DataSetFieldId=field.DataSetFieldId,
+        TargetNodeId=node.nodeid,
+        AttributeId=AttributeIds.Value,
+        ReceiverIndexRange=receiver,
+        WriteIndexRange=write,
+    )
+    target = pubsub.SubScribedTargetVariables(server, [pubsub.FieldTargets(config)])
+    await target.on_state_change(dataset, PubSubState.Operational)
+    return node, target, dataset
+
+
+async def test_pub6_receiver_and_write_index_range_use_numeric_range(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubRanges", "1:2", "0:1")
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([10, 20, 30], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [20, 30, 3, 4]
+
+
+async def test_pub6_write_index_range_alone_replaces_part_of_the_target(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubWriteRange", None, "2:3")
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([7, 8], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [1, 2, 7, 8]
+
+
+async def test_pub6_receiver_range_without_data_leaves_the_target_unchanged(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubNoData", "5:6", None)
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([10, 20], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [1, 2, 3, 4]
