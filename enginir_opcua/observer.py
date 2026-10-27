@@ -46,6 +46,10 @@ class Observer:
 
     def on_notification(self, subscription_id: int | None, event_count: int) -> None: ...
 
+    def on_messages_dropped(self, subscription_id: int | None, count: int) -> None: ...
+
+    def on_messages_lost(self, subscription_id: int | None, count: int) -> None: ...
+
 
 class _NullObserver(Observer):
     def observe_request(self, request: Any) -> AbstractContextManager[None]:

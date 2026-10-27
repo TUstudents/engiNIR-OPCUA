@@ -5,6 +5,7 @@ high level interface to subscriptions
 from __future__ import annotations
 
 import asyncio
+import collections
 import collections.abc
 import inspect
 import logging
@@ -12,16 +13,17 @@ import math
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, cast, overload
 
 from enginir_opcua import ua
-from enginir_opcua.client.ua_session import UaSession
 from enginir_opcua.common.ua_utils import copy_dataclass_attr
 from enginir_opcua.common.utils import ServiceError
-from enginir_opcua.observer import SubscriptionEvent
-from enginir_opcua.ua.uaerrors import BadMessageNotAvailable
+from enginir_opcua.observer import NULL_OBSERVER, Observer, SubscriptionEvent
+from enginir_opcua.ua.uaerrors import BadMessageNotAvailable, BadSubscriptionIdInvalid
 
 if TYPE_CHECKING:
+    from enginir_opcua.client.ua_session import UaSession
     from enginir_opcua.server.internal_session import InternalSession
 
 from .events import Event, get_filter_from_event_type
@@ -221,6 +223,32 @@ def subscription_parameters(
     return params
 
 
+class SubscriptionState(Enum):
+    NEW = "new"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    LOST = "lost"
+    TRANSFERRED = "transferred"
+    DELETED = "deleted"
+
+
+SEQUENCE_MASK = 0xFFFFFFFF
+SEQUENCE_HALF = 0x80000000
+WARNING_INTERVAL = 10.0
+
+
+def next_sequence_number(number: int) -> int:
+    return 1 if number >= SEQUENCE_MASK else number + 1
+
+
+def sequence_distance(start: int, end: int) -> int:
+    return (end - start) & SEQUENCE_MASK
+
+
+def sequence_is_ahead(number: int, expected: int) -> bool:
+    return number != expected and sequence_distance(expected, number) < SEQUENCE_HALF
+
+
 class Subscription:
     """
     Subscription object returned by Server or Client objects.
@@ -237,42 +265,49 @@ class Subscription:
         handler: SubscriptionHandler | None = None,
         *,
         queue_maxsize: int = 1000,
+        inbox_maxsize: int = 1000,
+        max_republish: int = 100,
+        republish_missing: bool = True,
+        delivered_window: int = 1024,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.server: InternalSession | UaSession = server
         self._client_handle = 200
-        # Legacy callback path: events are dispatched to handler methods.
-        # New iterator path: events are pushed into _event_queue and consumed
-        # via `async for ev in sub`. Exactly one path is active at a time —
-        # picking the handler arg vs leaving it None at construction.
         self._handler: SubscriptionHandler | None = handler
-        # Queue is created eagerly in iterator mode so publish_callback can
-        # start filling it before the consumer iterates.
+        self._handler_methods: dict[str, Callable[..., Any] | None] = {}
         self._event_queue: asyncio.Queue[SubEvent | None] | None = (
             None if handler is not None else asyncio.Queue(maxsize=queue_maxsize)
         )
         self._queue_maxsize = queue_maxsize
+        self.inbox_maxsize = inbox_maxsize
+        self.max_republish = max_republish
+        self.republish_missing = republish_missing
         self.parameters: ua.CreateSubscriptionParameters = params  # move to data class
         self._monitored_items: dict[int, SubscriptionItemData] = {}
         self._recreate_count: int = 0
         self.subscription_id: int | None = None
-        # Tracks whether the user explicitly deleted this subscription, so the
-        # auto-reconnect supervisor can skip re-creating dead subscriptions.
-        # Read externally via the is_deleted property.
-        self._deleted: bool = False
-        # Monotonic timestamp of the last publish response we received for this
-        # subscription. Used by the stale-subscription watchdog to detect a
-        # subscription that's gone dead on the server side without the transport
-        # going down. `None` means no notification has arrived yet.
+        self.state: SubscriptionState = SubscriptionState.NEW
         self.last_publish_at: float | None = None
         self.last_sequence_number: int | None = None
         self.revised: RevisedParameters | None = None
         self.max_keep_alive_seconds: float = 60.0
         self.min_stale_seconds: float = 1.0
         self._created_at: float = time.monotonic()
-        # Set while publish_callback is dispatching notifications retrieved via
-        # Republish; consumed by _explode_* to tag events with replayed=True.
-        self._replaying: bool = False
+        self._inbox: collections.deque[tuple[ua.PublishResult, bool]] = collections.deque()
+        self._delivery_task: asyncio.Task[None] | None = None
+        self._process_lock = asyncio.Lock()
+        self._expected: int | None = None
+        self._delivered_window = delivered_window
+        self._delivered: collections.deque[int] = collections.deque()
+        self._delivered_set: set[int] = set()
+        self._last_warning: dict[str, float] = {}
+        self.dropped_messages: int = 0
+        self.dropped_events: int = 0
+        self.unknown_handle_notifications: int = 0
+        self.unmatched_events: int = 0
+        self.duplicates: int = 0
+        self.lost_messages: int = 0
+        self.failed_items: list[tuple[int, ua.StatusCode]] = []
 
     @property
     def _remote(self) -> bool:
@@ -285,14 +320,24 @@ class Subscription:
 
     @property
     def is_deleted(self) -> bool:
-        """True once the user has called delete() (or it failed past a recoverable point)."""
-        return self._deleted
+        """True once the Subscription was deleted or closed."""
+        return self.state is SubscriptionState.DELETED
+
+    @property
+    def _observer(self) -> Observer:
+        return getattr(self.server, "observer", NULL_OBSERVER)
 
     def _observe(self, hook: Callable[[], None]) -> None:
         try:
             hook()
         except Exception:
             self.logger.exception("observer raised")
+
+    def _warn_limited(self, key: str, message: str, *args: Any) -> None:
+        now = time.monotonic()
+        if now - self._last_warning.get(key, -WARNING_INTERVAL) >= WARNING_INTERVAL:
+            self._last_warning[key] = now
+            self.logger.warning(message, *args)
 
     async def init(self) -> ua.CreateSubscriptionResult:
         return await self._create(SubscriptionEvent.CREATED)
@@ -301,11 +346,13 @@ class Subscription:
         response = await self.server.create_subscription(self.parameters, callback=self.publish_callback)
         self.subscription_id = response.SubscriptionId  # move to data class
         self._created_at = time.monotonic()
+        self.last_publish_at = None
+        self.state = SubscriptionState.ACTIVE
         self.revised = RevisedParameters(
             response.RevisedPublishingInterval, response.RevisedLifetimeCount, response.RevisedMaxKeepAliveCount
         )
         self.logger.info("Subscription created %s", self.subscription_id)
-        self._observe(lambda: self.server.observer.on_subscription_event(self.subscription_id, event))
+        self._observe(lambda: self._observer.on_subscription_event(self.subscription_id, event))
         await self._correct_revised_values()
         return response
 
@@ -341,104 +388,272 @@ class Subscription:
         )
         return response
 
+    def _register_sink(self, subscription_id: int) -> None:
+        register = getattr(self.server, "register_sink", None)
+        if register is not None:
+            register(subscription_id, self.publish_callback)
+            return
+        callbacks = getattr(self.server, "_subscription_callbacks", None)
+        if callbacks is not None:
+            callbacks[subscription_id] = self.publish_callback
+
+    def _unregister_sink(self, subscription_id: int | None) -> None:
+        if subscription_id is None:
+            return
+        unregister = getattr(self.server, "unregister_sink", None)
+        if unregister is not None:
+            unregister(subscription_id)
+            return
+        callbacks = getattr(self.server, "_subscription_callbacks", None)
+        if callbacks is not None:
+            callbacks.pop(subscription_id, None)
+
+    def _acknowledge(self, sequence_number: int) -> None:
+        acknowledge = getattr(self.server, "acknowledge", None)
+        if acknowledge is not None and self.subscription_id is not None:
+            acknowledge(self.subscription_id, sequence_number)
+
+    # --- sink: called by the publish pipeline ---------------------------------
+
     async def publish_callback(self, publish_result: ua.PublishResult) -> None:
         """
-        Handle a `PublishResult` from the publish loop.
+        Compatibility entry of the publish pipeline: hands the result to `enqueue`.
         """
-        self.logger.info("Publish callback called with result: %s", publish_result)
-        self.last_publish_at = time.monotonic()
-        if publish_result.NotificationMessage.NotificationData is None:
+        self.enqueue(publish_result)
+
+    def enqueue(self, publish_result: ua.PublishResult, replayed: bool = False) -> None:
+        """
+        Accept a `PublishResult` from the publish pipeline. Never blocks and never raises: the result goes into the
+        inbox of this Subscription, and its own delivery task translates and delivers it.
+        """
+        try:
+            if self.state in (SubscriptionState.DELETED, SubscriptionState.TRANSFERRED):
+                return
+            self.last_publish_at = time.monotonic()
+            if self.state is SubscriptionState.SUSPENDED:
+                self.state = SubscriptionState.ACTIVE
+            self._inbox.append((publish_result, replayed))
+            if len(self._inbox) > self.inbox_maxsize:
+                self._inbox.popleft()
+                self.dropped_messages += 1
+                self._observe(lambda: self._observer.on_messages_dropped(self.subscription_id, 1))
+                self._warn_limited(
+                    "inbox",
+                    "Subscription %s: inbox full, dropped the oldest message (%s dropped so far)",
+                    self.subscription_id,
+                    self.dropped_messages,
+                )
+            self._ensure_delivery_task()
+        except Exception:
+            self.logger.exception("enqueue failed")
+
+    def session_event(self, status: ua.StatusCode) -> None:
+        if status.value == ua.StatusCodes.BadShutdown and self.state is SubscriptionState.ACTIVE:
+            self.state = SubscriptionState.SUSPENDED
+
+    def _ensure_delivery_task(self) -> None:
+        if self._delivery_task is None or self._delivery_task.done():
+            self._delivery_task = asyncio.get_running_loop().create_task(self._delivery_loop())
+
+    async def _delivery_loop(self) -> None:
+        while self._inbox:
+            publish_result, replayed = self._inbox.popleft()
+            try:
+                async with self._process_lock:
+                    await self._process(publish_result, replayed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("Exception processing a publish result of subscription %s", self.subscription_id)
+
+    async def _process(self, publish_result: ua.PublishResult, replayed: bool) -> None:
+        notification_message = publish_result.NotificationMessage
+        number = int(notification_message.SequenceNumber)
+        data = notification_message.NotificationData
+        if number == 0 or not self._remote:
+            await self._deliver_message(notification_message, replayed)
             return
-        self.last_sequence_number = int(publish_result.NotificationMessage.SequenceNumber)
+        available = list(publish_result.AvailableSequenceNumbers or [])
+        if not data:
+            if self._expected is not None and sequence_is_ahead(number, self._expected):
+                await self._fill_gap(self._expected, number, available)
+            self._observe(lambda: self._observer.on_notification(self.subscription_id, 0))
+            return
+        if self._expected is None or number == self._expected:
+            pass
+        elif sequence_is_ahead(number, self._expected):
+            await self._fill_gap(self._expected, number, available)
+        elif number in self._delivered_set:
+            self.duplicates += 1
+            return
+        await self._accept(number, notification_message, replayed)
+
+    async def _accept(self, number: int, notification_message: ua.NotificationMessage, replayed: bool) -> None:
+        if self._expected is None or number == self._expected or sequence_is_ahead(number, self._expected):
+            self._expected = next_sequence_number(number)
+        self._delivered.append(number)
+        self._delivered_set.add(number)
+        if len(self._delivered) > self._delivered_window:
+            self._delivered_set.discard(self._delivered.popleft())
+        self.last_sequence_number = number
+        await self._deliver_message(notification_message, replayed)
+
+    async def _fill_gap(self, start: int, end: int, available: list[int]) -> None:
+        distance = sequence_distance(start, end)
+        candidates = sorted(
+            {n for n in available if sequence_distance(start, n) < distance}, key=lambda n: sequence_distance(start, n)
+        )
+        fetched = 0
+        if self.republish_missing and self.subscription_id is not None:
+            for number in candidates[: self.max_republish]:
+                try:
+                    fetched_message = await cast("UaSession", self.server).republish(self.subscription_id, number)
+                except BadMessageNotAvailable:
+                    continue
+                except Exception:
+                    self.logger.warning(
+                        "republish failed for sub %s seq %s", self.subscription_id, number, exc_info=True
+                    )
+                    continue
+                if not fetched_message.NotificationData:
+                    continue
+                self._acknowledge(number)
+                self._delivered.append(number)
+                self._delivered_set.add(number)
+                if len(self._delivered) > self._delivered_window:
+                    self._delivered_set.discard(self._delivered.popleft())
+                await self._deliver_message(fetched_message, True)
+                fetched += 1
+        lost = distance - fetched
+        self._expected = end
+        if lost:
+            self.lost_messages += lost
+            self.logger.warning("Subscription %s: %s notification messages were lost", self.subscription_id, lost)
+            self._observe(lambda: self._observer.on_messages_lost(self.subscription_id, lost))
+
+    async def _deliver_message(self, notification_message: ua.NotificationMessage, replayed: bool) -> None:
+        notification_data = notification_message.NotificationData
+        if notification_data is None:
+            return
         produced = 0
-        for event in self._explode_notifications(publish_result.NotificationMessage.NotificationData):
+        for event in self._explode_notifications(notification_data, replayed):
             await self._deliver(event)
             produced += 1
-        self._observe(lambda: self.server.observer.on_notification(self.subscription_id, produced))
+            if isinstance(event, StatusChangeEvent):
+                self._apply_status_change(event.notification.Status)
+        self._observe(lambda: self._observer.on_notification(self.subscription_id, produced))
 
-    def _explode_notifications(self, notification_data: Iterable[Any]) -> Iterable[SubEvent]:
+    def _apply_status_change(self, status: ua.StatusCode) -> None:
+        if status.value == ua.StatusCodes.GoodSubscriptionTransferred:
+            self._finish(SubscriptionState.TRANSFERRED)
+        elif status.value == ua.StatusCodes.BadTimeout:
+            if self.state is SubscriptionState.ACTIVE:
+                self.state = SubscriptionState.LOST
+        elif status.value == ua.StatusCodes.BadShutdown and self.state is SubscriptionState.ACTIVE:
+            self.state = SubscriptionState.SUSPENDED
+
+    def _explode_notifications(self, notification_data: Iterable[Any], replayed: bool = False) -> Iterable[SubEvent]:
         """Translate server `NotificationData` items into typed `SubEvent`s."""
         for notif in notification_data:
             if isinstance(notif, ua.DataChangeNotification):
-                yield from self._explode_datachange(notif)
+                yield from self._explode_datachange(notif, replayed)
             elif isinstance(notif, ua.EventNotificationList):
-                yield from self._explode_events(notif)
+                yield from self._explode_events(notif, replayed)
             elif isinstance(notif, ua.StatusChangeNotification):
-                yield StatusChangeEvent(notification=notif, replayed=self._replaying)
+                yield StatusChangeEvent(notification=notif, replayed=replayed)
             else:
-                self.logger.warning("Notification type not supported yet for notification %s", notif)
+                self._warn_limited(
+                    f"type-{type(notif).__name__}", "Notification type not supported yet for notification %s", notif
+                )
 
-    def _explode_datachange(self, datachange: ua.DataChangeNotification) -> Iterable[DataChangeEvent]:
+    def _explode_datachange(
+        self, datachange: ua.DataChangeNotification, replayed: bool = False
+    ) -> Iterable[DataChangeEvent]:
         for item in datachange.MonitoredItems:
             data = self._monitored_items.get(item.ClientHandle)
             if data is None or data.node is None:
-                self.logger.warning("Received a notification for unknown handle: %s", item.ClientHandle)
+                self.unknown_handle_notifications += 1
+                self.logger.debug("Received a notification for unknown handle: %s", item.ClientHandle)
                 continue
             event_data = DataChangeNotif(data, item)
-            # Value can be None on some server responses; preserve the raw behavior of master.
             value: Any = None
             if item.Value is not None and item.Value.Value is not None:
                 value = item.Value.Value.Value
-            yield DataChangeEvent(node=data.node, value=value, data=event_data, replayed=self._replaying)
+            yield DataChangeEvent(node=data.node, value=value, data=event_data, replayed=replayed)
 
-    def _explode_events(self, eventlist: ua.EventNotificationList) -> Iterable[OpcEvent]:
+    def _explode_events(self, eventlist: ua.EventNotificationList, replayed: bool = False) -> Iterable[OpcEvent]:
         for event in eventlist.Events:
             data = self._monitored_items.get(event.ClientHandle)
             if data is None:
-                self.logger.warning("Received event for unknown handle: %s", event.ClientHandle)
+                self.unknown_handle_notifications += 1
+                self.logger.debug("Received event for unknown handle: %s", event.ClientHandle)
                 continue
             if not isinstance(data.mfilter, ua.EventFilter):
-                self.logger.warning(
+                self.unmatched_events += 1
+                self.logger.debug(
                     "Received event notification but monitored item has no event filter: %s", event.ClientHandle
                 )
                 continue
             result = Event.from_event_fields(data.mfilter.SelectClauses, event.EventFields)
             result.server_handle = data.server_handle
-            yield OpcEvent(event=result, replayed=self._replaying)
+            yield OpcEvent(event=result, replayed=replayed)
 
     async def _deliver(self, event: SubEvent) -> None:
         """
-        Deliver one event to either the iterator queue or the legacy handler.
+        Deliver one event to either the iterator queue or the handler.
         """
         if self._event_queue is not None:
-            await self._event_queue.put(event)
+            self._put_event(event)
         else:
             await self._dispatch_to_handler(event)
 
+    def _put_event(self, event: SubEvent | None) -> None:
+        queue = self._event_queue
+        if queue is None:
+            return
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            if event is not None:
+                self.dropped_events += 1
+                self._warn_limited(
+                    "queue",
+                    "Subscription %s: event queue full, dropped the oldest event (%s dropped so far)",
+                    self.subscription_id,
+                    self.dropped_events,
+                )
+        queue.put_nowait(event)
+
+    def _handler_method(self, name: str) -> Callable[..., Any] | None:
+        if name not in self._handler_methods:
+            method = getattr(self._handler, name, None)
+            self._handler_methods[name] = method
+            if method is None:
+                self.logger.error("Subscription handler has no %s method; those events are dropped", name)
+        return self._handler_methods[name]
+
     async def _dispatch_to_handler(self, event: SubEvent) -> None:
-        """Call the right legacy handler method for `event`, in its own task."""
+        """Call the right handler method for `event`, in the delivery task of this Subscription."""
         if self._handler is None:
             return
+        if isinstance(event, DataChangeEvent):
+            method = self._handler_method("datachange_notification")
+            args: tuple[Any, ...] = (event.node, event.value, event.data)
+        elif isinstance(event, OpcEvent):
+            method = self._handler_method("event_notification")
+            args = (event.event,)
+        else:
+            method = self._handler_method("status_change_notification")
+            args = (event.notification,)
+        if method is None:
+            self.dropped_events += 1
+            return
         try:
-            if isinstance(event, DataChangeEvent):
-                method = getattr(self._handler, "datachange_notification", None)
-                if method is None:
-                    self.logger.error(
-                        "DataChange subscription created but handler has no datachange_notification method"
-                    )
-                    return
-                if inspect.iscoroutinefunction(method):
-                    await method(event.node, event.value, event.data)
-                else:
-                    method(event.node, event.value, event.data)
-            elif isinstance(event, OpcEvent):
-                method = getattr(self._handler, "event_notification", None)
-                if method is None:
-                    self.logger.error("Event subscription created but handler has no event_notification method")
-                    return
-                if inspect.iscoroutinefunction(method):
-                    await method(event.event)
-                else:
-                    method(event.event)
-            elif isinstance(event, StatusChangeEvent):
-                method = getattr(self._handler, "status_change_notification", None)
-                if method is None:
-                    self.logger.error("DataChange subscription has no status_change_notification method")
-                    return
-                if inspect.iscoroutinefunction(method):
-                    await method(event.notification)
-                else:
-                    method(event.notification)
+            result = method(*args)
+            if inspect.isawaitable(result):
+                await result
         except Exception:
             self.logger.exception("Exception calling subscription handler")
 
@@ -469,6 +684,7 @@ class Subscription:
             self._event_queue = asyncio.Queue(maxsize=self._queue_maxsize)
         item = await self._event_queue.get()
         if item is None:
+            self._event_queue.put_nowait(None)
             raise StopAsyncIteration
         return item
 
@@ -488,49 +704,64 @@ class Subscription:
         except TimeoutError:
             return None
         if item is None:
+            self._event_queue.put_nowait(None)
             raise StopAsyncIteration
         return item
 
     async def delete(self) -> None:
         """
         Delete subscription on server. This is automatically done by Client and Server classes on exit.
+        A Good result and Bad_SubscriptionIdInvalid both count as deleted; any other Bad status is raised after the
+        local cleanup, which always happens.
         """
-        if self.subscription_id is None:
-            self._deleted = True
-            self._close_iterator()
+        if self.state is SubscriptionState.DELETED:
             return
+        failure: ua.StatusCode | None = None
         try:
-            results = await self.server.delete_subscriptions([self.subscription_id])
-            results[0].check()
-        except (TimeoutError, ConnectionError, OSError):
-            self.logger.info("delete_subscriptions: transport unavailable; local cleanup only")
+            if self.subscription_id is not None and self.state is not SubscriptionState.TRANSFERRED:
+                try:
+                    results = await self.server.delete_subscriptions([self.subscription_id])
+                except (TimeoutError, ConnectionError, OSError):
+                    self.logger.info("delete_subscriptions: transport unavailable; local cleanup only")
+                else:
+                    status = results[0]
+                    if not status.is_good() and status.value != ua.StatusCodes.BadSubscriptionIdInvalid:
+                        failure = status
         finally:
-            self._deleted = True
-            self._close_iterator()
-            self._observe(
-                lambda: self.server.observer.on_subscription_event(self.subscription_id, SubscriptionEvent.DELETED)
-            )
+            self._finish(SubscriptionState.DELETED)
+        if failure is not None:
+            failure.check()
+
+    def close(self, reason: str = "") -> None:
+        """
+        End this Subscription locally: iterators end and the observer hears DELETED, but nothing goes to the server.
+        """
+        self.logger.info("Subscription %s closed: %s", self.subscription_id, reason)
+        self._finish(SubscriptionState.DELETED)
+
+    def _finish(self, state: SubscriptionState) -> None:
+        if self.state is SubscriptionState.DELETED:
+            return
+        previous = self.state
+        self.state = state
+        self._unregister_sink(self.subscription_id)
+        self._inbox.clear()
+        task = self._delivery_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._put_event(None)
+        if state is SubscriptionState.DELETED and previous is not SubscriptionState.DELETED:
+            self._observe(lambda: self._observer.on_subscription_event(self.subscription_id, SubscriptionEvent.DELETED))
 
     def _close_iterator(self) -> None:
-        """Push the sentinel so any active `async for ev in sub` loop ends."""
-        if self._event_queue is None:
-            return
-        try:
-            self._event_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            # Drop the front so the sentinel definitely lands. Any in-flight
-            # events already in the queue are dropped — we're shutting down.
-            try:
-                self._event_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                self._event_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
+        self._put_event(None)
 
     def is_stale(self, margin: float) -> bool:
-        if self._deleted or self.subscription_id is None:
+        if self.subscription_id is None or self.state is SubscriptionState.SUSPENDED:
+            return False
+        if self.state is SubscriptionState.LOST:
+            return True
+        if self.state is not SubscriptionState.ACTIVE:
             return False
         if self.revised is not None:
             interval_s = self.revised.publishing_interval / 1000.0
@@ -542,22 +773,32 @@ class Subscription:
         reference = self.last_publish_at if self.last_publish_at is not None else self._created_at
         return (time.monotonic() - reference) >= stale_after
 
+    def _reset_tracking(self) -> None:
+        self._expected = None
+        self._delivered.clear()
+        self._delivered_set.clear()
+        self.last_sequence_number = None
+
     async def restore(self) -> None:
-        if self._deleted or self.subscription_id is None or not isinstance(self.server, UaSession):
+        if self.state in (SubscriptionState.DELETED, SubscriptionState.TRANSFERRED):
+            return
+        if self.subscription_id is None or not self._remote:
             await self.recreate()
             return
+        session = cast("UaSession", self.server)
         params = ua.TransferSubscriptionsParameters()
         params.SubscriptionIds = [self.subscription_id]
         params.SendInitialValues = False
         try:
-            results = await self.server.transfer_subscriptions(params)
+            results = await session.transfer_subscriptions(params)
         except Exception:
             self.logger.info("transfer_subscriptions failed; falling back to recreate", exc_info=True)
             await self.recreate()
             return
         result = results[0] if results else None
+        available: list[int] = []
         if result is not None and result.StatusCode.value == ua.StatusCodes.BadNothingToDo:
-            result.AvailableSequenceNumbers = []
+            available = []
         elif result is None or not result.StatusCode.is_good():
             self.logger.info(
                 "transfer_subscriptions returned %s; falling back to recreate",
@@ -565,34 +806,46 @@ class Subscription:
             )
             await self.recreate()
             return
-        self.server._subscription_callbacks[self.subscription_id] = self.publish_callback
-        if not await self._republish_gaps(result.AvailableSequenceNumbers):
+        else:
+            available = list(result.AvailableSequenceNumbers or [])
+        self._register_sink(self.subscription_id)
+        if not await self._republish_after_restore(available):
             self.logger.info("republish could not fill gap for sub %s; recreating", self.subscription_id)
             await self.recreate()
             return
         self.last_publish_at = None
         self._created_at = time.monotonic()
+        self.state = SubscriptionState.ACTIVE
 
-    async def _republish_gaps(self, available: list[int]) -> bool:
-        if not isinstance(self.server, UaSession) or self.subscription_id is None:
+    async def _republish_after_restore(self, available: list[int]) -> bool:
+        if self.subscription_id is None:
             return True
-        target = max(available) if available else (self.last_sequence_number or 0)
-        seq = (self.last_sequence_number or 0) + 1
-        self._replaying = True
-        try:
-            while True:
+        session = cast("UaSession", self.server)
+        if self._expected is not None:
+            number = self._expected
+        else:
+            number = min(available) if available else 1
+        start = number
+        async with self._process_lock:
+            for _ in range(self.max_republish):
                 try:
-                    msg = await self.server.republish(self.subscription_id, seq)
+                    fetched = await session.republish(self.subscription_id, number)
                 except BadMessageNotAvailable:
                     break
-                except Exception:
-                    self.logger.warning("republish failed for sub %s seq %s", self.subscription_id, seq, exc_info=True)
+                except BadSubscriptionIdInvalid:
                     return False
-                await self.publish_callback(ua.PublishResult(self.subscription_id, NotificationMessage=msg))
-                seq += 1
-        finally:
-            self._replaying = False
-        return (self.last_sequence_number or 0) >= target
+                except Exception:
+                    self.logger.warning(
+                        "republish failed for sub %s seq %s", self.subscription_id, number, exc_info=True
+                    )
+                    return False
+                if not fetched.NotificationData:
+                    break
+                self._acknowledge(number)
+                await self._accept(number, fetched, True)
+                number = next_sequence_number(number)
+        missing = [n for n in available if n not in self._delivered_set and sequence_distance(start, n) < SEQUENCE_HALF]
+        return not missing
 
     async def recreate(self) -> None:
         """
@@ -604,7 +857,7 @@ class Subscription:
         dropped this subscription). Client handles are preserved so existing
         notification routing keeps working.
         """
-        if self._deleted:
+        if self.state in (SubscriptionState.DELETED, SubscriptionState.TRANSFERRED):
             return
         self._recreate_count += 1
         saved_monitored_items: list[SubscriptionItemData] = [
@@ -612,16 +865,12 @@ class Subscription:
         ]
         old_subscription_id = self.subscription_id
         self._monitored_items.clear()
+        self.failed_items = []
         self.subscription_id = None
-        # Reset liveness clock so the watchdog doesn't immediately flag the
-        # newly-recreated subscription before the first publish arrives.
         self.last_publish_at = None
-
-        if old_subscription_id is not None and isinstance(self.server, UaSession):
-            # Drop the dead callback registration. Server-side delete is best
-            # effort and may fail (BadNoSubscription / BadSessionClosed) — we
-            # don't care, the local cleanup is what matters here.
-            self.server._subscription_callbacks.pop(old_subscription_id, None)
+        self._reset_tracking()
+        self._unregister_sink(old_subscription_id)
+        if old_subscription_id is not None and self._remote:
             try:
                 await self.server.delete_subscriptions([old_subscription_id])
             except Exception:
@@ -652,9 +901,7 @@ class Subscription:
             mir.MonitoringMode = item.monitoring_mode
             mir.RequestedParameters = mparams
             mirs.append(mir)
-            # Restore the entry into _monitored_items so that any notifications
-            # arriving between create_monitored_items and its server response are
-            # still routed correctly.
+            item.server_handle = None
             self._monitored_items[item.client_handle] = item
 
         if not mirs:
@@ -662,7 +909,7 @@ class Subscription:
         params = ua.CreateMonitoredItemsParameters()
         params.SubscriptionId = self.subscription_id
         params.ItemsToCreate = mirs
-        params.TimestampsToReturn = ua.TimestampsToReturn.Both
+        params.TimestampsToReturn = saved_monitored_items[0].timestamps
         try:
             results = await self.server.create_monitored_items(params)
         except ServiceError as e:
@@ -679,9 +926,13 @@ class Subscription:
                     mi.RequestedParameters.ClientHandle,
                     result.StatusCode,
                 )
+                self.failed_items.append((mi.RequestedParameters.ClientHandle, result.StatusCode))
                 del self._monitored_items[mi.RequestedParameters.ClientHandle]
                 continue
             item.server_handle = result.MonitoredItemId
+            item.revised_sampling_interval = result.RevisedSamplingInterval
+            item.revised_queuesize = result.RevisedQueueSize
+            item.filter_result = result.FilterResult
 
     @overload
     async def subscribe_data_change(

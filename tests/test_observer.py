@@ -272,6 +272,7 @@ async def test_a_notification_with_no_items_is_still_reported():
     subscription.subscription_id = 7
 
     await subscription.publish_callback(_publish_result([]))
+    await asyncio.sleep(0.05)
 
     assert observer.notifications == [(7, 0)]
 
