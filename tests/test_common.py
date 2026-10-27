@@ -25,6 +25,8 @@ from enginir_opcua.common.structures104 import new_enum, new_struct, new_struct_
 from enginir_opcua.ua import Int16, NodeId, NodeIdType, String
 from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 
+from .access_rig import declare_writable
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -196,6 +198,7 @@ async def test_add_node_using_builtin(opc):
     obj = opc.opc.nodes.objects
     fold = await obj.add_folder(2, "FolderBuiltin")
     var = await fold.add_variable(2, "VarBuiltin", ua.UInt16(9))
+    await declare_writable(opc, var)
     dv = await var.read_data_value()
     assert dv.Value.VariantType == ua.VariantType.UInt16
     data_type = await var.read_data_type()
@@ -602,6 +605,7 @@ async def test_variant_array_dim(opc):
         [[5.0, 5.0, 5.0, 5.0], [7.0, 8.0, 9.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
     ]
     v = await objects.add_variable(3, "variableWithDims", arry)
+    await declare_writable(opc, v, attributes=(ua.AttributeIds.ArrayDimensions, ua.AttributeIds.ValueRank))
 
     await v.write_array_dimensions([0, 0, 0])
     dim = await v.read_array_dimensions()
@@ -664,6 +668,7 @@ async def test_utf8(opc):
 async def test_null_variable(opc):
     objects = opc.opc.nodes.objects
     var = await objects.add_variable(3, "nullstring", "a string")
+    await declare_writable(opc, var)
     await var.write_value(ua.Variant(None, ua.VariantType.String))
     val = await var.read_value()
     assert val is None
@@ -782,6 +787,7 @@ async def test_add_exception(opc):
 async def test_negative_value(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "VariableNegativeValue", 4.0)
+    await declare_writable(opc, v)
     await v.write_value(-4.54)
     assert -4.54 == await v.read_value()
     await opc.opc.delete_nodes([v])
@@ -823,6 +829,7 @@ async def test_write_value(opc):
     var = ua.Variant(1.98, ua.VariantType.Double)
     dvar = ua.DataValue(var)
     v = await o.add_variable(3, "VariableValue", var)
+    await declare_writable(opc, v)
     await v.write_value(var.Value)
     v1 = await v.read_value()
     assert v1 == var.Value
@@ -840,6 +847,7 @@ async def test_write_value_statuscode_bad(opc):
     var = ua.Variant("Some value that should not be set!")
     dvar = ua.DataValue(None, StatusCode=ua.StatusCode(ua.StatusCodes.BadDeviceFailure))
     v = await o.add_variable(3, "VariableValueBad", var)
+    await declare_writable(opc, v, status=True)
     await v.write_value(dvar)
     with pytest.raises(ua.UaStatusCodeError) as error_read:
         await v.read_data_value()
@@ -857,6 +865,7 @@ async def test_array_value(opc):
 async def test_bool_variable(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "BoolVariable", True)
+    await declare_writable(opc, v)
     dt = await v.read_data_type_as_variant_type()
     assert ua.VariantType.Boolean == dt
     val = await v.read_value()
@@ -870,6 +879,7 @@ async def test_bool_variable(opc):
 async def test_array_size_one_value(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "VariableArrayValue2", [1, 2, 3])
+    await declare_writable(opc, v)
     await v.write_value([1])
     assert [1] == await v.read_value()
     await opc.opc.delete_nodes([v])
@@ -1026,6 +1036,7 @@ async def test_browse_reflects_written_display_name(opc):
     objects = opc.opc.nodes.objects
     f = await objects.add_folder(3, "MyFolder_BrowseRefresh")
     o = await f.add_object(3, "MyObject_BrowseRefresh", ua.ObjectIds.BaseObjectType)
+    await declare_writable(opc, o, attributes=(ua.AttributeIds.DisplayName,))
 
     await o.write_attribute(
         ua.AttributeIds.DisplayName,
@@ -1324,11 +1335,10 @@ async def test_enum(opc):
     # es.write_value_rank(1)
     # instantiate
     o = opc.opc.nodes.objects
-    myvar = await o.add_variable(2, "MyEnumVar", ua.LocalizedText("String1"), datatype=myenum_type.nodeid)
-    # myvar.set_writable(True)
-    # tests
+    myvar = await o.add_variable(2, "MyEnumVar", ua.Variant(1, ua.VariantType.Int32), datatype=myenum_type.nodeid)
+    await declare_writable(opc, myvar)
     assert myenum_type.nodeid == await myvar.read_data_type()
-    await myvar.write_value(ua.LocalizedText("String2"))
+    await myvar.write_value(ua.Variant(2, ua.VariantType.Int32))
     await opc.opc.delete_nodes([es, myvar])
     await opc.opc.delete_nodes([myenum_type])
 
@@ -1422,6 +1432,7 @@ async def test_import_xml_data_type_definition(opc):
     ss.structs.append(s)
 
     var = await opc.opc.nodes.objects.add_variable(2, "MySubStructVar", ss, datatype=ua.MySubstruct.data_type)
+    await declare_writable(opc, var)
 
     s2 = await var.read_value()
     assert s2.structs[1].toto == ss.structs[1].toto == 0.1
@@ -1652,6 +1663,7 @@ async def test_custom_struct_with_optional_fields(opc):
         "my_struct_optional",
         ua.Variant(my_struct_optional, ua.VariantType.ExtensionObject),
     )
+    await declare_writable(opc, var)
 
     val = await var.read_value()
     assert val.MyUInt32 == 45
@@ -1687,6 +1699,7 @@ async def test_custom_struct_union(opc):
     var = await opc.opc.nodes.objects.add_variable(
         idx, "my_union_struct", ua.Variant(my_union, ua.VariantType.ExtensionObject)
     )
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val.MyInt64 == 555
     assert val.MyString is None
@@ -1716,6 +1729,7 @@ async def test_custom_struct_union(opc):
         "my_duplicate_union_struct",
         ua.Variant(my_union, ua.VariantType.ExtensionObject),
     )
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val.MyInt64 == 555
     assert val.MyString is None
@@ -2100,6 +2114,7 @@ async def test_sub_class(opc):
     var = await opc.opc.nodes.objects.add_variable(
         idx, "struct with sub", struct_with_sub, datatype=struct_with_sub.data_type
     )
+    await declare_writable(opc, var)
     await var.write_value(struct_with_sub)
     val = await var.read_value()
     assert val == struct_with_sub
@@ -2152,6 +2167,7 @@ async def test_alias(opc):
 
     v = ua.MyAliasStruct()
     var = await opc.opc.nodes.objects.add_variable(idx, "AliasedStruct", v, datatype=data_type.nodeid)
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val == v
     v.MyStringType = "1234"

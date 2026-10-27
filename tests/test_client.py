@@ -36,15 +36,16 @@ async def test_folder_anonymous(server, admin_client, client):
 async def test_variable_anonymous(server, admin_client, client):
     objects = admin_client.nodes.objects
     v = await objects.add_variable(3, "MyROVariable", 6)
-    await v.write_value(4)  # this should work
     v_ro = client.get_node(v.nodeid)
-    with pytest.raises(ua.UaStatusCodeError):
+    with pytest.raises(ua.uaerrors.BadNotWritable):
+        await v.write_value(4)
+    with pytest.raises(ua.uaerrors.BadNotWritable):
         await v_ro.write_value(2)
-    assert await v_ro.read_value() == 4
-    await v.set_writable(True)
-    await v_ro.write_value(2)  # now it should work
+    assert await v_ro.read_value() == 6
+    await server.get_node(v.nodeid).set_writable(True)
+    await v_ro.write_value(2)
     assert await v_ro.read_value() == 2
-    await v.set_writable(False)
+    await server.get_node(v.nodeid).set_writable(False)
     with pytest.raises(ua.UaStatusCodeError):
         await v_ro.write_value(9)
     assert await v_ro.read_value() == 2
@@ -109,13 +110,13 @@ async def test_multiple_read_and_write_value(server, client):
     ]
     vals = await client.read_values([v1, v2, v3])
     assert vals == [4, 5, 6]
-    with pytest.raises(ua.uaerrors.BadUserAccessDenied):
+    with pytest.raises(ua.uaerrors.BadNotWritable):
         await client.write_values([v1, v2, v_ro], [4, 5, 6])
     rets = await client.write_values([v1, v2, v_ro], [4, 5, 6], raise_on_partial_error=False)
     assert rets == [
         ua.StatusCode(value=ua.StatusCodes.Good),
         ua.StatusCode(ua.StatusCodes.Good),
-        ua.StatusCode(ua.StatusCodes.BadUserAccessDenied),
+        ua.StatusCode(ua.StatusCodes.BadNotWritable),
     ]
 
 

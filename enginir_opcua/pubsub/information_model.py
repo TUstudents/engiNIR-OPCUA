@@ -1,16 +1,33 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from enum import IntEnum
+from typing import TYPE_CHECKING, Any
 
 from ..common.methods import uamethod
 from ..common.node import Node
 from ..ua.status_codes import StatusCodes
 from ..ua.uaerrors import UaStatusCodeError
 from ..ua.uaprotocol_auto import PubSubState
-from ..ua.uatypes import DataValue, QualifiedName, String, Variant
+from ..ua.uatypes import DataValue, QualifiedName, String, Variant, VariantType
 
 if TYPE_CHECKING:
     from ..server import Server
+
+
+async def write_typed(node: Node, value: Any) -> None:
+    """Writes a value as the DataType the node declares, so a plain Python number or enum is stored with its UA type"""
+    variant = value.Value if isinstance(value, DataValue) else value
+    if not isinstance(variant, Variant):
+        variant = Variant(variant)
+    if variant.VariantType != VariantType.Null:
+        declared = await node.read_data_type_as_variant_type()
+        if declared not in (VariantType.ExtensionObject, VariantType.Null) and variant.VariantType != declared:
+            if variant.is_array:
+                items = [int(item) if isinstance(item, IntEnum) else item for item in variant.Value]
+            else:
+                items = int(variant.Value) if isinstance(variant.Value, IntEnum) else variant.Value
+            variant = Variant(items, declared, is_array=variant.is_array)
+    await node.write_value(DataValue(variant))
 
 
 class PubSubInformationModel:
@@ -63,7 +80,7 @@ class PubSubInformationModel:
         """
         if self._node is not None:
             n = await self._node.get_child(path)
-            await n.write_value(DataValue(value))
+            await write_typed(n, value)
 
     async def get_node_value(self, path: str | QualifiedName | list[str] | list[QualifiedName]) -> Variant | None:
         """
@@ -79,7 +96,7 @@ class PubSubInformationModel:
         Internal sets the state of the information model
         """
         if self._state_node is not None:
-            await self._state_node.write_value(DataValue(state))
+            await write_typed(self._state_node, state)
         else:
             self.__state_fallback = state
 

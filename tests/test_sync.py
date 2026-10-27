@@ -55,6 +55,7 @@ def server(tloop):
     s.nodes.objects.add_method(
         ns_idx, "Divide", divide, [ua.VariantType.Float, ua.VariantType.Float], [ua.VariantType.Float]
     )
+    s.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
     with s:
         yield s
 
@@ -171,9 +172,9 @@ def test_sync_read_values(client: Client, idx):
     assert results[0] == 6.7
 
 
-def test_sync_write_values(client: Client):
+def test_sync_write_values(client: Client, server: Server):
     myvar = client.nodes.objects.add_variable(3, "a", 1)
-    myvar.set_writable()
+    server.get_node(myvar.nodeid).set_writable()
     assert isinstance(myvar, SyncNode)
     rets = client.write_values([myvar], [4])
     assert rets == [ua.StatusCode(value=ua.StatusCodes.Good)]
@@ -231,14 +232,15 @@ class MySubHandler:
         self.future.set_result(event)
 
 
-def test_sync_tloop_sub(client_no_tloop):
-    test_sync_sub(client_no_tloop)
+def test_sync_tloop_sub(client_no_tloop, server):
+    test_sync_sub(client_no_tloop, server)
 
 
-def test_sync_sub(client):
+def test_sync_sub(client, server):
     myhandler = MySubHandler()
     sub = client.create_subscription(1, myhandler)
     var = client.nodes.objects.add_variable(3, "SubVar", 0.1)
+    server.get_node(var.nodeid).set_writable()
     sub.subscribe_data_change(var)
     n, v = myhandler.future.result()
     assert v == 0.1

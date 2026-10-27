@@ -12,6 +12,7 @@ from enginir_opcua.common.structures104 import new_enum, new_enum_field, new_str
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua import uaerrors
 
+from .access_rig import declare_writable
 from .conftest import Opc, find_free_port
 
 _logger = logging.getLogger("enginir_opcua.common.xmlimporter")
@@ -79,6 +80,7 @@ async def disposable_opc(request):
     await srv.init()
     port = find_free_port()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    await srv.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
     await srv.start()
     if request.param == "client":
         async with Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10) as clt:
@@ -351,6 +353,7 @@ async def test_xml_string(opc, tmpdir):
 
 async def test_xml_string_with_null_description(opc, tmpdir):
     o = await opc.opc.nodes.objects.add_variable(2, "xmlstring", "mystring")
+    await declare_writable(opc, o, attributes=(ua.AttributeIds.Description,))
     await o.write_attribute(ua.AttributeIds.Description, ua.DataValue(ua.Variant(ua.LocalizedText())))
     o2 = await _test_xml_var_type(opc, tmpdir, o, "string")
     assert await o.read_description() == await o2.read_description()

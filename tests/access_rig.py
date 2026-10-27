@@ -73,3 +73,27 @@ async def make_access_rig() -> AsyncIterator[AccessRig]:
     await user.disconnect()
     await admin.disconnect()
     await server.stop()
+
+
+async def declare_writable(
+    opc: Any,
+    *nodes: Node,
+    attributes: tuple[ua.AttributeIds, ...] = (),
+    status: bool = False,
+    timestamps: bool = False,
+) -> None:
+    for node in nodes:
+        local = opc.server.get_node(node.nodeid)
+        is_variable = await local.read_node_class() == ua.NodeClass.Variable
+        if is_variable:
+            await local.set_writable()
+        for bit, wanted in ((ua.AccessLevel.StatusWrite, status), (ua.AccessLevel.TimestampWrite, timestamps)):
+            if wanted and is_variable:
+                await local.set_attr_bit(ua.AttributeIds.AccessLevel, bit)
+                await local.set_attr_bit(ua.AttributeIds.UserAccessLevel, bit)
+        if attributes:
+            mask = 0
+            for attribute in attributes:
+                mask |= 1 << ua.WriteMask[attribute.name]
+            for mask_attribute in (ua.AttributeIds.WriteMask, ua.AttributeIds.UserWriteMask):
+                await local.write_attribute(mask_attribute, ua.DataValue(ua.Variant(mask, ua.VariantType.UInt32)))

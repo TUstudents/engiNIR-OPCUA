@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Awaitable, Callable, Generator
 
     from enginir_opcua.ua.uaprotocol_auto import (
         DataTypeAttributes,
@@ -38,6 +38,8 @@ from enginir_opcua import ua
 from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.ua.numeric_range import IndexRange
 
+from .datatype_check import BASE_DATA_TYPE, DataTypeChecker, check_variant
+
 _logger = logging.getLogger(__name__)
 
 VALID_TIMESTAMPS_TO_RETURN = (
@@ -46,6 +48,33 @@ VALID_TIMESTAMPS_TO_RETURN = (
     ua.TimestampsToReturn.Both,
     ua.TimestampsToReturn.Neither,
 )
+
+
+ATTRIBUTE_TYPES: dict[ua.AttributeIds, tuple[ua.VariantType, bool]] = {
+    ua.AttributeIds.BrowseName: (ua.VariantType.QualifiedName, False),
+    ua.AttributeIds.DisplayName: (ua.VariantType.LocalizedText, False),
+    ua.AttributeIds.Description: (ua.VariantType.LocalizedText, False),
+    ua.AttributeIds.WriteMask: (ua.VariantType.UInt32, False),
+    ua.AttributeIds.UserWriteMask: (ua.VariantType.UInt32, False),
+    ua.AttributeIds.IsAbstract: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.Symmetric: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.InverseName: (ua.VariantType.LocalizedText, False),
+    ua.AttributeIds.ContainsNoLoops: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.EventNotifier: (ua.VariantType.Byte, False),
+    ua.AttributeIds.DataType: (ua.VariantType.NodeId, False),
+    ua.AttributeIds.ValueRank: (ua.VariantType.Int32, False),
+    ua.AttributeIds.ArrayDimensions: (ua.VariantType.UInt32, True),
+    ua.AttributeIds.AccessLevel: (ua.VariantType.Byte, False),
+    ua.AttributeIds.UserAccessLevel: (ua.VariantType.Byte, False),
+    ua.AttributeIds.MinimumSamplingInterval: (ua.VariantType.Double, False),
+    ua.AttributeIds.Historizing: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.Executable: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.UserExecutable: (ua.VariantType.Boolean, False),
+    ua.AttributeIds.DataTypeDefinition: (ua.VariantType.ExtensionObject, False),
+    ua.AttributeIds.RolePermissions: (ua.VariantType.ExtensionObject, True),
+    ua.AttributeIds.AccessRestrictions: (ua.VariantType.UInt16, False),
+    ua.AttributeIds.AccessLevelEx: (ua.VariantType.UInt32, False),
+}
 
 
 def status_of_error(error: Exception) -> ua.StatusCode:
@@ -71,7 +100,7 @@ class AttributeValue:
     def __init__(self, value: ua.DataValue) -> None:
         self.value: "ua.DataValue | None" = value
         self.value_callback: "Callable[[ua.NodeId, ua.AttributeIds], ua.DataValue] | None" = None
-        self.value_setter: "Callable[[NodeData, ua.AttributeIds, ua.DataValue], None] | None" = None
+        self.value_setter: "Callable[[NodeData, ua.AttributeIds, ua.DataValue], Any] | None" = None
         self.datachange_callbacks: dict[int, "Callable[..., Any]"] = {}
 
     def __str__(self) -> str:
@@ -123,32 +152,13 @@ class AttributeService:
             for item in params.NodesToRead
         ]
 
-    async def write(self, params: ua.WriteParameters, user: User = User(role=UserRole.Admin)) -> list[ua.StatusCode]:
-        # self.logger.debug("write %s as user %s", params, user)
-        res: list[ua.StatusCode] = []
-        for writevalue in params.NodesToWrite:
-            if user.role != UserRole.Admin:
-                if writevalue.AttributeId != ua.AttributeIds.Value:
-                    res.append(ua.StatusCode(ua.StatusCodes.BadUserAccessDenied))
-                    continue
-                al = self._aspace.read_attribute_value(writevalue.NodeId, ua.AttributeIds.AccessLevel)
-                ual = self._aspace.read_attribute_value(writevalue.NodeId, ua.AttributeIds.UserAccessLevel)
-                if (
-                    al.StatusCode is None
-                    or al.Value is None
-                    or ual.Value is None
-                    or not al.StatusCode.is_good()
-                    or not ua.ua_binary.is_bit_set(al.Value.Value, ua.AccessLevel.CurrentWrite)
-                    or not ua.ua_binary.is_bit_set(ual.Value.Value, ua.AccessLevel.CurrentWrite)
-                ):
-                    res.append(ua.StatusCode(ua.StatusCodes.BadUserAccessDenied))
-                    continue
-            if writevalue.AttributeId == ua.AttributeIds.Value and self._aspace.force_server_timestamp:
-                dv = dataclasses.replace(writevalue.Value, ServerTimestamp=datetime.now(UTC), ServerPicoseconds=None)
-            else:
-                dv = writevalue.Value
-            res.append(await self._aspace.write_attribute_value(writevalue.NodeId, writevalue.AttributeId, dv))
-        return res
+    async def write(self, params: ua.WriteParameters, trusted: bool = False) -> list[ua.StatusCode]:
+        return [
+            await self._aspace.write_attribute(
+                item.NodeId, item.AttributeId, item.Value, trusted=trusted, index_range=item.IndexRange
+            )
+            for item in params.NodesToWrite
+        ]
 
 
 class ViewService:
@@ -954,7 +964,7 @@ class AddressSpace:
         return int(attval.value.Value.Value)
 
     @staticmethod
-    def _byte_attribute(node: NodeData, attr: ua.AttributeIds) -> int | None:
+    def _uint_attribute(node: NodeData, attr: ua.AttributeIds) -> int | None:
         attval = node.attributes.get(attr)
         if attval is None or attval.value is None or attval.value.Value is None:
             return None
@@ -964,12 +974,12 @@ class AddressSpace:
     def _check_readable(self, node: NodeData) -> None:
         if self._node_class(node) != ua.NodeClass.Variable:
             return
-        access = self._byte_attribute(node, ua.AttributeIds.AccessLevel)
+        access = self._uint_attribute(node, ua.AttributeIds.AccessLevel)
         if access is None:
             access = 1 << ua.AccessLevel.CurrentRead
         if not ua.ua_binary.is_bit_set(access, ua.AccessLevel.CurrentRead):
             raise ua.uaerrors.BadNotReadable()
-        user_access = self._byte_attribute(node, ua.AttributeIds.UserAccessLevel)
+        user_access = self._uint_attribute(node, ua.AttributeIds.UserAccessLevel)
         if user_access is None:
             user_access = access
         if not ua.ua_binary.is_bit_set(user_access, ua.AccessLevel.CurrentRead):
@@ -994,37 +1004,179 @@ class AddressSpace:
     async def write_attribute_value(
         self, nodeid: ua.NodeId, attr: ua.AttributeIds, value: ua.DataValue
     ) -> ua.StatusCode:
-        # self.logger.debug("set attr val: %s %s %s", nodeid, attr, value)
-        node = self._nodes.get(nodeid, None)
-        if node is None:
-            return ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)
-        attval = node.attributes.get(attr, None)
-        if attval is None:
-            return ua.StatusCode(ua.StatusCodes.BadAttributeIdInvalid)
-        if value.StatusCode is not None and value.StatusCode.is_bad():
-            # https://reference.opcfoundation.org/v104/Core/docs/Part4/7.7.1/
-            # If the StatusCode indicates an error then the value is to be ignored and the Server shall set it to null.
-            value = dataclasses.replace(value, Value=ua.Variant(None, ua.VariantType.Null))
-        elif not self._is_expected_variant_type(value, attval, node):
-            # Only check datatype if no bad StatusCode is set
-            return ua.StatusCode(ua.StatusCodes.BadTypeMismatch)
+        return await self.write_attribute(nodeid, attr, value, trusted=True)
 
+    async def write_attribute(
+        self,
+        nodeid: ua.NodeId,
+        attr: int,
+        value: ua.DataValue,
+        *,
+        trusted: bool = False,
+        index_range: str | None = None,
+    ) -> ua.StatusCode:
+        try:
+            return await self._write_attribute(nodeid, attr, value, trusted, index_range)
+        except Exception as error:
+            status = status_of_error(error)
+            if status.value == ua.StatusCodes.BadInternalError:
+                _logger.exception("Error while writing attribute %s of %s", attr, nodeid)
+            return status
+
+    async def _write_attribute(
+        self, nodeid: ua.NodeId, attr: int, value: ua.DataValue, trusted: bool, index_range: str | None
+    ) -> ua.StatusCode:
+        node = self._node_for_service(nodeid)
+        attval = node.attributes.get(attr)  # type: ignore[call-overload]
+        if attval is None:
+            raise ua.uaerrors.BadAttributeIdInvalid()
+        attribute = ua.AttributeIds(attr)
+        if not trusted:
+            self._check_write_access(node, attribute)
+            if attval.value_callback is not None and attval.value_setter is None:
+                raise ua.uaerrors.BadNotWritable()
+        parsed_range = IndexRange.parse(index_range)
+        if attribute == ua.AttributeIds.Value:
+            value = self._value_to_store(node, value, trusted)
+        is_bad = value.StatusCode is not None and value.StatusCode.is_bad()
+        if not is_bad:
+            value = self._checked_variant(node, attribute, attval, value, parsed_range)
+        result = ua.StatusCode()
         if attval.value_setter is not None:
-            attval.value_setter(node, attr, value)
+            outcome = attval.value_setter(node, attribute, value)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+            if isinstance(outcome, ua.StatusCode):
+                if outcome.is_bad():
+                    return outcome
+                result = outcome
         else:
             attval.value = value
-            attval.value_callback = None
-
-        if attr in (ua.AttributeIds.BrowseName, ua.AttributeIds.DisplayName):
-            self._sync_reference_names(nodeid, node, attr, value)
-
-        for k, v in attval.datachange_callbacks.items():
+            if trusted:
+                attval.value_callback = None
+        if attribute in (ua.AttributeIds.BrowseName, ua.AttributeIds.DisplayName):
+            self._sync_reference_names(nodeid, node, attribute, value)
+        for handle, callback in list(attval.datachange_callbacks.items()):
             try:
-                await v(k, value)
-            except Exception as ex:
-                self.logger.exception("Error calling datachange callback %s, %s, %s", k, v, ex)
+                await callback(handle, value)
+            except Exception:
+                _logger.exception("Error calling datachange callback %s, %s", handle, callback)
+        return result
 
-        return ua.StatusCode()
+    def _check_write_access(self, node: NodeData, attribute: ua.AttributeIds) -> None:
+        if attribute == ua.AttributeIds.Value and self._node_class(node) == ua.NodeClass.Variable:
+            access = self._uint_attribute(node, ua.AttributeIds.AccessLevel)
+            if access is None or not ua.ua_binary.is_bit_set(access, ua.AccessLevel.CurrentWrite):
+                raise ua.uaerrors.BadNotWritable()
+            user_access = self._uint_attribute(node, ua.AttributeIds.UserAccessLevel)
+            if user_access is None:
+                user_access = access
+            if not ua.ua_binary.is_bit_set(user_access, ua.AccessLevel.CurrentWrite):
+                raise ua.uaerrors.BadUserAccessDenied()
+            return
+        if attribute in (ua.AttributeIds.NodeId, ua.AttributeIds.NodeClass):
+            raise ua.uaerrors.BadNotWritable()
+        bit_name = "ValueForVariableType" if attribute == ua.AttributeIds.Value else attribute.name
+        bit = ua.WriteMask.__members__.get(bit_name)
+        mask = self._uint_attribute(node, ua.AttributeIds.WriteMask)
+        if bit is None or mask is None or not ua.ua_binary.is_bit_set(mask, bit):
+            raise ua.uaerrors.BadNotWritable()
+        user_mask = self._uint_attribute(node, ua.AttributeIds.UserWriteMask)
+        if user_mask is None:
+            user_mask = mask
+        if not ua.ua_binary.is_bit_set(user_mask, bit):
+            raise ua.uaerrors.BadUserAccessDenied()
+
+    def _value_to_store(self, node: NodeData, value: ua.DataValue, trusted: bool) -> ua.DataValue:
+        stored = dataclasses.replace(value)
+        if not trusted:
+            access = self._uint_attribute(node, ua.AttributeIds.AccessLevel) or 0
+            if stored.StatusCode is not None and not stored.StatusCode.is_good():
+                if not ua.ua_binary.is_bit_set(access, ua.AccessLevel.StatusWrite):
+                    raise ua.uaerrors.BadWriteNotSupported()
+            if stored.SourceTimestamp is not None or stored.ServerTimestamp is not None:
+                if not ua.ua_binary.is_bit_set(access, ua.AccessLevel.TimestampWrite):
+                    raise ua.uaerrors.BadWriteNotSupported()
+        now = datetime.now(UTC)
+        if stored.ServerTimestamp is None and self.force_server_timestamp:
+            stored.ServerTimestamp = now
+            stored.ServerPicoseconds = None
+        if stored.SourceTimestamp is None:
+            stored.SourceTimestamp = now
+            stored.SourcePicoseconds = None
+        if stored.StatusCode is not None and stored.StatusCode.is_bad():
+            stored.Value = ua.Variant(None, ua.VariantType.Null)
+        return stored
+
+    def _checked_variant(
+        self,
+        node: NodeData,
+        attribute: ua.AttributeIds,
+        attval: AttributeValue,
+        value: ua.DataValue,
+        parsed_range: IndexRange | None,
+    ) -> ua.DataValue:
+        variant = value.Value
+        if variant is None:
+            raise ua.uaerrors.BadTypeMismatch()
+        if parsed_range is None:
+            self._check_variant_type(node, attribute, variant, whole=True)
+            return value
+        if attribute == ua.AttributeIds.Value:
+            self._check_variant_type(node, attribute, variant, whole=False)
+        current = attval.value.Value if attval.value is not None else None
+        if current is None:
+            raise ua.uaerrors.BadIndexRangeNoData()
+        composed = parsed_range.compose(current, variant)
+        if attribute != ua.AttributeIds.Value:
+            self._check_variant_type(node, attribute, composed, whole=True)
+        return dataclasses.replace(value, Value=composed)
+
+    def _check_variant_type(self, node: NodeData, attribute: ua.AttributeIds, variant: ua.Variant, whole: bool) -> None:
+        if attribute != ua.AttributeIds.Value:
+            expected = ATTRIBUTE_TYPES.get(attribute)
+            if expected is not None and (variant.VariantType, bool(variant.is_array)) != expected:
+                raise ua.uaerrors.BadTypeMismatch()
+            return
+        datatype = self._node_id_attribute(node, ua.AttributeIds.DataType) or BASE_DATA_TYPE
+        value_rank = self._int_attribute(node, ua.AttributeIds.ValueRank, ua.ValueRank.Any)
+        array_dimensions = self._array_attribute(node, ua.AttributeIds.ArrayDimensions) if whole else []
+        ok = check_variant(
+            DataTypeChecker(self._nodes),
+            variant,
+            datatype,
+            value_rank if whole else ua.ValueRank.Any,
+            array_dimensions,
+            self._allows_nulls(node),
+        )
+        if not ok:
+            _logger.warning("Write refused: %s does not match data type %s of %s", variant, datatype, node.nodeid)
+            raise ua.uaerrors.BadTypeMismatch()
+
+    def _node_id_attribute(self, node: NodeData, attr: ua.AttributeIds) -> ua.NodeId | None:
+        attval = node.attributes.get(attr)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return None
+        value = attval.value.Value.Value
+        return value if isinstance(value, ua.NodeId) else None
+
+    def _int_attribute(self, node: NodeData, attr: ua.AttributeIds, default: int) -> int:
+        value = self._uint_attribute(node, attr)
+        return default if value is None else value
+
+    def _array_attribute(self, node: NodeData, attr: ua.AttributeIds) -> list[int]:
+        attval = node.attributes.get(attr)
+        if attval is None or attval.value is None or attval.value.Value is None:
+            return []
+        value = attval.value.Value.Value
+        return [int(v) for v in value] if isinstance(value, list | tuple) else []
+
+    def _allows_nulls(self, node: NodeData) -> bool:
+        for ref in node.references:
+            if ref.ReferenceTypeId == ua.NodeId(ua.ObjectIds.HasProperty) and ref.BrowseName.Name == "AllowNulls":
+                value = self.read_attribute_value(ref.NodeId, ua.AttributeIds.Value)
+                return bool(value.Value is not None and value.Value.Value)
+        return False
 
     def _sync_reference_names(
         self, nodeid: ua.NodeId, node: NodeData, attr: ua.AttributeIds, value: ua.DataValue
@@ -1042,42 +1194,6 @@ class AddressSpace:
             for back_ref in neighbor.references:
                 if back_ref.NodeId == nodeid and getattr(back_ref, field) != new_name:
                     setattr(back_ref, field, new_name)
-
-    def _is_expected_variant_type(self, value: ua.DataValue, attval: AttributeValue, node: NodeData) -> bool:
-        if attval.value is None or attval.value.Value is None:
-            return True  # None data value can be overwritten anytime.
-
-        vtype = attval.value.Value.VariantType
-        if vtype == ua.VariantType.Null:
-            # Node had a null value, many nodes are initialized with that value
-            # we should check what the real type is
-            dtype_av = node.attributes.get(ua.AttributeIds.DataType)
-            if dtype_av is None:
-                return True
-            dtype_attr = dtype_av.value
-            if dtype_attr is None or dtype_attr.Value is None:
-                return True
-            dtype = dtype_attr.Value.Value
-            if (
-                isinstance(dtype, ua.NodeId)
-                and dtype.NamespaceIndex == 0
-                and isinstance(dtype.Identifier, int)
-                and dtype.Identifier <= 25
-            ):
-                vtype = ua.VariantType(dtype.Identifier)
-            else:
-                # FIXME: should find the correct variant type given data type but
-                # this is a bit complicated so trusting the first write
-                return True
-        if value.Value is None or value.Value.VariantType == vtype:
-            return True
-        _logger.warning(
-            "Write refused: Variant: %s with type %s does not have expected type: %s",
-            value.Value,
-            value.Value.VariantType,
-            vtype,
-        )
-        return False
 
     def set_attribute_value_callback(
         self,
@@ -1103,7 +1219,7 @@ class AddressSpace:
         self,
         nodeid: ua.NodeId,
         attr: ua.AttributeIds,
-        setter: Callable[[NodeData, ua.AttributeIds], ua.DataValue],
+        setter: Callable[[NodeData, ua.AttributeIds, ua.DataValue], ua.StatusCode | Awaitable[Any] | None],
     ) -> ua.StatusCode:
         node = self._nodes.get(nodeid, None)
         if node is None:

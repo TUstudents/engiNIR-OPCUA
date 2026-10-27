@@ -680,7 +680,7 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreWrite, ServerItemCallback(params, None, user, self.external)
         )
-        write_result = await self.iserver.attribute_service.write(params, user=user)
+        write_result = await self.iserver.attribute_service.write(params, trusted=not self.external)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostWrite, ServerItemCallback(params, write_result, user, self.external)
         )

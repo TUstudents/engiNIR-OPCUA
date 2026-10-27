@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from copy import copy
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
@@ -485,10 +485,11 @@ class InternalServer:
         self, nodeid: ua.NodeId, datavalue: ua.DataValue, attr: ua.AttributeIds = ua.AttributeIds.Value
     ) -> None:
         """
-        directly write datavalue to the Attribute, bypassing some checks and structure creation,
-        so it is a little faster
+        directly write datavalue to the Attribute as the application itself: the access bits are not checked, the
+        type, shape and range are. Raises the error of a bad result
         """
-        await self.aspace.write_attribute_value(nodeid, attr, datavalue)
+        status = await self.aspace.write_attribute_value(nodeid, attr, datavalue)
+        status.check()
 
     def set_attribute_value_callback(
         self,
@@ -505,14 +506,14 @@ class InternalServer:
     def set_attribute_value_setter(
         self,
         nodeid: ua.NodeId,
-        setter: Callable[[NodeData, ua.AttributeIds, ua.DataValue], None],
+        setter: Callable[[NodeData, ua.AttributeIds, ua.DataValue], ua.StatusCode | Awaitable[Any] | None],
         attr: ua.AttributeIds = ua.AttributeIds.Value,
     ) -> None:
         """
-        Set a setter function for the Attribute. This setter will be called when a new value is set using
-        write_attribute_value() instead of directly writing the value. This is useful, for example, if you want to
-        intercept writes to certain attributes to perform some kind of validation of the value to be written and return
-        appropriate status codes to the client.
+        Set a setter function for the Attribute. This setter will be called when a new value is written, instead of
+        storing it, and has to store the value itself. Its returned StatusCode is the result of the write (nothing
+        returned is Good); a bad result, or a raised status-coded error, means nothing was written and the data change
+        callbacks are not called.
         """
         self.aspace.set_attribute_value_setter(nodeid, attr, setter)
 

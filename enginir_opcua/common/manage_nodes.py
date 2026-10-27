@@ -407,8 +407,8 @@ async def create_data_type(
     else:
         attrs.Description = ua.LocalizedText(description)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
-    attrs.WriteMask = 0
-    attrs.UserWriteMask = 0
+    attrs.WriteMask = 1 << ua.WriteMask.DataTypeDefinition
+    attrs.UserWriteMask = 1 << ua.WriteMask.DataTypeDefinition
     attrs.IsAbstract = False  # True mean they cannot be instantiated
     addnode.NodeAttributes = attrs
     results = await parent.session.add_nodes([addnode])
