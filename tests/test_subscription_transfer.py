@@ -78,7 +78,7 @@ async def test_srv4_transfer_to_the_owner_is_nothing_to_do(two_sessions: TwoSess
 
 async def test_srv4_anonymous_transfer_over_an_unsecured_channel_is_denied() -> None:
     """Part 4, 5.14.7.2: an anonymous client needs the same client certificate to take a subscription over."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()

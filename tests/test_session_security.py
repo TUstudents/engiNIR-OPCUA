@@ -34,7 +34,7 @@ class PasswordUserManager(UserManager):
 
 async def _start_server(secure: bool) -> tuple[Server, str]:
     url = f"opc.tcp://127.0.0.1:{find_free_port()}"
-    srv = Server(user_manager=PasswordUserManager())
+    srv = Server(allow_no_security=True, user_manager=PasswordUserManager())
     await srv.init()
     srv.set_endpoint(url)
     if secure:

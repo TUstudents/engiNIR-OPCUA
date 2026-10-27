@@ -37,6 +37,7 @@ from ..ua.uaerrors import (
     BadSecurityChecksFailed,
     BadSecurityPolicyRejected,
     BadSessionIdInvalid,
+    ConfigurationError,
 )
 from .ua_client import StateSubscription, UaClient, UaClientState
 
@@ -86,6 +87,7 @@ class Client:
         auto_reconnect: bool = False,
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
+        allow_deprecated_policies: bool = False,
     ) -> None:
         """
         :param url: url of the server.
@@ -102,6 +104,7 @@ class Client:
         :param reconnect_max_delay: exponential backoff cap for reconnect attempts (seconds).
         :param reconnect_request_timeout: how long requests block waiting for the
             connection to become ready while the supervisor is reconnecting.
+        :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
 
         Some other client parameters can be changed by setting
         attributes on the constructed object:
@@ -154,6 +157,7 @@ class Client:
         self._stale_check_interval: float = 0.5
         self.trust_store: TrustStore | None = None
         self.certificate_validator: CertificateValidator | None = None
+        self.allow_deprecated_policies: bool = allow_deprecated_policies
         self.application_hook: ApplicationHook | None = None
         self._default_validator: CertificateValidator | None = None
         self._pinned_server_certificate: x509.Certificate | None = None
@@ -299,6 +303,10 @@ class Client:
         Set SecureChannel mode.
         Call this before connect()
         """
+        if getattr(policy, "deprecated", False) and not self.allow_deprecated_policies:
+            raise ConfigurationError(
+                f"{policy.__name__} is deprecated and is only available with Client(allow_deprecated_policies=True)"
+            )
         pin_server_certificate = server_certificate is not None
         if server_certificate is None:
             # Force unencrypted/unsigned SecureChannel to list the endpoints

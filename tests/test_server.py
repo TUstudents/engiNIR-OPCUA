@@ -574,7 +574,7 @@ async def test_context_manager():
         state[0] += 1
 
     # create server and replace instance methods with dummy methods
-    server = Server()
+    server = Server(allow_no_security=True)
     server.start = increment_state.__get__(server)
     server.stop = increment_state.__get__(server)
     assert state[0] == 0
@@ -882,7 +882,7 @@ async def test_loading_shelf(tmp_path: Path):
     demo_shelf_file: Path = tmp_path / "some_shelf"
 
     # create cache file
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init(shelf_file=demo_shelf_file)
     del server
 
@@ -896,7 +896,7 @@ async def test_loading_shelf(tmp_path: Path):
     sh.close()
 
     # ensure that we are actually loading from the cache
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init(shelf_file=demo_shelf_file)
     sh2 = shelve.open(str(demo_shelf_file), "w", writeback=False)
     nod2 = sh2[id.to_string()].attributes[ua.AttributeIds.Value]
@@ -924,7 +924,7 @@ async def test_null_auth(server):
 
 
 async def test_start_server_when_port_is_in_use(server: Server):
-    server2 = Server()
+    server2 = Server(allow_no_security=True)
     await server2.init()
     url = server.endpoint.geturl()
     server2.set_endpoint(url)  # try to bind on the same endpoint as an already running server
@@ -1034,7 +1034,7 @@ async def test_protocol_rejects_a_repeated_hello_and_closes_the_connection() -> 
 
 
 async def test_default_application_identity_is_enginir() -> None:
-    srv = Server()
+    srv = Server(allow_no_security=True)
     clt = Client("opc.tcp://127.0.0.1:4840")
     assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
     assert srv.get_application_uri() == "urn:enginir:opcua:server"

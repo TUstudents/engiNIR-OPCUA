@@ -34,6 +34,7 @@ from ..crypto.permission_rules import SimpleRoleRuleset
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
+from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
 from .event_generator import EventGenerator
@@ -97,7 +98,14 @@ class Server:
         server listens on some internal IP.
     """
 
-    def __init__(self, iserver: InternalServer | None = None, user_manager: UserManager | None = None) -> None:
+    def __init__(
+        self,
+        iserver: InternalServer | None = None,
+        user_manager: UserManager | None = None,
+        *,
+        allow_no_security: bool = False,
+        allow_deprecated_policies: bool = False,
+    ) -> None:
         self.endpoint: ParseResult = urlparse("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
         self._application_uri: str = "urn:enginir:opcua:server"
         self.product_uri: str = "urn:enginir:opcua"
@@ -114,9 +122,10 @@ class Server:
         self._policies: list[security_policies.SecurityPolicyFactory] = []
         self._default_validator: CertificateValidator | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
-        # enable all endpoints by default
+        self.allow_deprecated_policies: bool = allow_deprecated_policies
+        # the secure endpoints are enabled by default, the None endpoint only when asked for
         self._security_policy: list[ua.SecurityPolicyType] = [
-            ua.SecurityPolicyType.NoSecurity,
+            *([ua.SecurityPolicyType.NoSecurity] if allow_no_security else []),
             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
             ua.SecurityPolicyType.Basic256Sha256_Sign,
             ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
@@ -413,20 +422,26 @@ class Server:
         """
         Method setting up the security policies for connections
         to the server, where security_policy is a list of integers.
-        During server initialization, all endpoints are enabled:
+        During server initialization, all secure endpoints are enabled. The None endpoint is only
+        enabled with Server(allow_no_security=True) or by listing ua.SecurityPolicyType.NoSecurity here.
+        The deprecated Basic128Rsa15 and Basic256 policies need Server(allow_deprecated_policies=True).
 
-                security_policy = [
-                            ua.SecurityPolicyType.NoSecurity,
-                            ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
-                            ua.SecurityPolicyType.Basic256Sha256_Sign
-                                ]
-
-        E.g. to limit the number of endpoints and disable no encryption:
+        E.g. to limit the number of endpoints:
 
                 set_security_policy([
                             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
 
         """
+        deprecated = [
+            policy_type.name
+            for policy_type in security_policy
+            if getattr(security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0], "deprecated", False)
+        ]
+        if deprecated and not self.allow_deprecated_policies:
+            raise ConfigurationError(
+                f"The deprecated policies {', '.join(deprecated)} are only available with "
+                "Server(allow_deprecated_policies=True)"
+            )
         self._security_policy = security_policy
         if permission_ruleset is not None:
             self._permission_ruleset = permission_ruleset
@@ -468,6 +483,8 @@ class Server:
             ):
                 no_cert = True
                 continue
+            if getattr(policy, "deprecated", False):
+                _logger.warning("The deprecated policy %s is offered, do not use it anymore", policy_type.name)
             self._set_endpoints(policy, mode, level)
             self._policies.append(
                 security_policies.SecurityPolicyFactory(
@@ -481,6 +498,11 @@ class Server:
 
         if no_cert:
             _logger.warning("Endpoints other than open requested but private key and certificate are not set.")
+        if not self.iserver.endpoints:
+            raise ConfigurationError(
+                "The server has no endpoint: load a certificate and a private key for the secure policies, or "
+                "enable the None policy with Server(allow_no_security=True)"
+            )
 
     def _set_endpoints(
         self, policy: type[security_policies.SecurityPolicy], mode: ua.MessageSecurityMode, level: int

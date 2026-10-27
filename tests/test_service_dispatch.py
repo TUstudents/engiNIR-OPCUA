@@ -24,7 +24,7 @@ class RolelessUserManager:
 
 
 async def _server(user_manager: Any = None) -> Server:
-    srv = Server(user_manager=user_manager)
+    srv = Server(allow_no_security=True, user_manager=user_manager)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await srv.start()

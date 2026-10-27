@@ -146,7 +146,7 @@ class ServerProcess(Process):
         self.stop_ev = Event()
 
     async def run_server(self, url):
-        srv = Server()
+        srv = Server(allow_no_security=True)
         srv.set_endpoint(url)
         await srv.init()
         await add_server_methods(srv)
@@ -191,7 +191,7 @@ async def running_server(request):
 @pytest.fixture(scope="module")
 async def server():
     # start our own server
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
     await add_server_methods(srv)
@@ -205,7 +205,7 @@ async def server():
 @pytest.fixture(scope="module")
 async def discovery_server():
     # start our own server
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     await srv.set_application_uri("urn:enginir:opcua:discovery")
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_discovery}")
@@ -243,7 +243,7 @@ async def opc(request):
     :return:
     """
     if request.param == "client":
-        srv = Server()
+        srv = Server(allow_no_security=True)
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num}")
         await add_server_methods(srv)
@@ -257,7 +257,7 @@ async def opc(request):
         await srv.stop()
     elif request.param == "server":
         # start our own server
-        srv = Server()
+        srv = Server(allow_no_security=True)
         await srv.init()
         srv.set_endpoint(f"opc.tcp://127.0.0.1:{port_num1}")
         await add_server_methods(srv)
@@ -285,7 +285,7 @@ async def history(request):
 
 class HistoryServer:
     def __init__(self):
-        self.srv = Server()
+        self.srv = Server(allow_no_security=True)
         self.srv_node = None
         self.ev_values = None
         self.var = None
@@ -379,7 +379,7 @@ async def ha_servers(server_key_and_cert):
     key, cert = server_key_and_cert
 
     async def create_srv(port, key, cert):
-        srv = Server()
+        srv = Server(allow_no_security=True)
         srvs.append(srv)
         await srv.init()
         await srv.set_application_uri("urn:enginir:opcua:discovery")
@@ -561,7 +561,7 @@ def tampered_responses(monkeypatch: pytest.MonkeyPatch) -> ResponseTampering:
 @pytest.fixture
 async def two_sessions() -> AsyncIterator[TwoSessions]:
     port = find_free_port()
-    srv = Server(user_manager=TwoUserManager())
+    srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
@@ -577,7 +577,7 @@ async def two_sessions() -> AsyncIterator[TwoSessions]:
 
 @pytest.fixture
 async def signing_server() -> AsyncIterator[Server]:
-    srv = Server(user_manager=TwoUserManager())
+    srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_Sign])

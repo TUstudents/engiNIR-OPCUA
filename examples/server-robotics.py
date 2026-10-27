@@ -9,7 +9,7 @@ from enginir_opcua import Server
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     # import some nodes from xml
     nodes1 = await server.import_xml("../nodeset/DI/Opc.Ua.Di.NodeSet2.xml")

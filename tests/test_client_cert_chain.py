@@ -71,7 +71,7 @@ def chain(tmp_path_factory: pytest.TempPathFactory) -> Chain:
 
 @pytest.fixture()
 async def _server(chain: Chain) -> AsyncIterator[None]:
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
     srv.set_endpoint(uri_crypto)

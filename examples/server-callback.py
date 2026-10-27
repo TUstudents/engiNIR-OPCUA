@@ -49,7 +49,7 @@ async def main():
     logger.setLevel(logging.DEBUG)
 
     # now setup our server
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     # await server.disable_clock()
     # server.set_endpoint("opc.tcp://localhost:4840/enginir-opcua/server/")

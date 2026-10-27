@@ -38,7 +38,7 @@ def say_hello_array(parent, happy):
 
 class HelloServer:
     def __init__(self, endpoint, name, model_filepath):
-        self.server = Server()
+        self.server = Server(allow_no_security=True)
         self.model_filepath = model_filepath
         self.server.set_server_name(name)
         self.server.set_endpoint(endpoint)

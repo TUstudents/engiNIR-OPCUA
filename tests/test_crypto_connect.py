@@ -48,7 +48,7 @@ async def srv_crypto_encrypted_key_one_cert(request):
     key, cert = request.param
     await user_manager.add_admin(peer_certificate, "test1")
 
-    srv = Server(user_manager=user_manager)
+    srv = Server(allow_no_security=True, user_manager=user_manager)
 
     await srv.init()
     srv.set_endpoint(uri_crypto_encrypted_key)
@@ -65,7 +65,7 @@ async def srv_crypto_encrypted_key_one_cert(request):
 @pytest.fixture(scope="module", params=srv_crypto_params)
 async def srv_crypto_all_certs(request):
     # start our own server
-    srv = Server()
+    srv = Server(allow_no_security=True)
     key, cert = request.param
     await srv.init()
     srv.set_endpoint(uri_crypto)
@@ -85,7 +85,7 @@ async def srv_crypto_one_cert(request):
     key, cert = request.param
     await user_manager.add_admin(peer_certificate, "test1")
 
-    srv = Server(user_manager=user_manager)
+    srv = Server(allow_no_security=True, user_manager=user_manager)
 
     await srv.init()
     srv.set_endpoint(uri_crypto_cert)
@@ -102,7 +102,7 @@ async def srv_crypto_one_cert(request):
 @pytest.fixture(scope="module", params=srv_crypto_params[:1])
 async def srv_crypto_all_cert_basic128rsa15(request):
     # start our own server
-    srv = Server()
+    srv = Server(allow_deprecated_policies=True)
     key, cert = request.param
     await srv.init()
     srv.set_endpoint(uri_crypto_basic128rsa15)
@@ -119,7 +119,7 @@ async def srv_crypto_all_cert_basic128rsa15(request):
 @pytest.fixture(scope="module")
 async def srv_no_crypto():
     # start our own server
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(uri_no_crypto)
     await srv.start()
@@ -156,7 +156,7 @@ async def test_basic256(srv_crypto_all_certs):
 
 async def test_basic128rsa15(srv_crypto_all_cert_basic128rsa15):
     _, cert = srv_crypto_all_cert_basic128rsa15
-    clt = Client(uri_crypto_basic128rsa15)
+    clt = Client(uri_crypto_basic128rsa15, allow_deprecated_policies=True)
     print(await clt.connect_and_get_server_endpoints())
     await clt.set_security_string(f"Basic128Rsa15,Sign,{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
     async with clt:
@@ -396,7 +396,7 @@ async def test_always_catch_new_cert_on_set_security():
     client instance (i.e HaClient).
     """
     # Client connecting with encryption to server
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(uri_crypto_standalone)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
@@ -416,7 +416,7 @@ async def test_always_catch_new_cert_on_set_security():
     await srv.stop()
 
     # Simulation of a server cert renewal
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     srv.set_endpoint(uri_crypto_standalone)
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
@@ -448,7 +448,7 @@ async def test_anonymous_rejection():
     key, cert = srv_crypto_params[0]
     await user_manager.add_admin(peer_certificate, "test1")
 
-    srv = Server(user_manager=user_manager)
+    srv = Server(allow_no_security=True, user_manager=user_manager)
 
     await srv.init()
     srv.set_endpoint(uri_crypto_standalone)

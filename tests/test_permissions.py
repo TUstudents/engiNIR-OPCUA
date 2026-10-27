@@ -31,7 +31,7 @@ async def srv_crypto_one_cert(request):
     await cert_user_manager.add_admin(admin_peer_certificate, name="Admin")
     await cert_user_manager.add_user(user_peer_certificate, name="User")
     await cert_user_manager.add_role(anonymous_peer_certificate, name="Anonymous", user_role=UserRole.Anonymous)
-    srv = Server(user_manager=cert_user_manager)
+    srv = Server(allow_no_security=True, user_manager=cert_user_manager)
 
     srv.set_endpoint(uri_crypto_cert)
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity, ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])

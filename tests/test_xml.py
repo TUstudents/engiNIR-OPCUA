@@ -73,7 +73,7 @@ async def test_xml_import(opc):
 
 @pytest.fixture(params=["client", "server"])
 async def disposable_opc(request):
-    srv = Server()
+    srv = Server(allow_no_security=True)
     await srv.init()
     port = find_free_port()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
