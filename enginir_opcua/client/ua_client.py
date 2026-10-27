@@ -413,7 +413,7 @@ class StateSubscription:
         self._unsubscribe: Callable[[], None] | None = None
 
     async def __aenter__(self) -> StateSubscription:
-        self._unsubscribe = self._client._add_state_listener(self._queue.put_nowait)
+        self._unsubscribe = self._client.add_state_listener(self._queue.put_nowait)
         return self
 
     async def __aexit__(
@@ -519,7 +519,7 @@ class UaClient:
             except Exception:
                 self.logger.exception("state listener raised")
 
-    def _add_state_listener(self, callback: Callable[[UaClientState], None]) -> Callable[[], None]:
+    def add_state_listener(self, callback: Callable[[UaClientState], None]) -> Callable[[], None]:
         """Register a raw state-change callback; returns an unsubscribe callable.
 
         Internal helper. External code should use the `subscribe_state()`
@@ -535,6 +535,14 @@ class UaClient:
                 pass
 
         return unsubscribe
+
+    _add_state_listener = add_state_listener
+
+    def remove_state_listener(self, callback: Callable[[UaClientState], None]) -> None:
+        try:
+            self._state_listeners.remove(callback)
+        except ValueError:
+            pass
 
     def subscribe_state(self) -> StateSubscription:
         """Subscribe to state transitions; use as an async context manager.

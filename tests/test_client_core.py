@@ -223,3 +223,30 @@ async def test_cli28_connect_after_disconnect_does_not_recreate_old_subscription
     await asyncio.sleep(0.5)
     assert len(service.subscriptions) == before
     await client.disconnect()
+
+
+async def test_session_generation_increases_with_every_new_session(server: Server) -> None:
+    """File handles and other per-Session state are invalidated by a new Session."""
+    client = Client(server.endpoint.geturl())
+    session = client.uaclient.session
+    assert session.session_generation == 0
+    await client.connect()
+    assert session.session_generation == 1
+    await client.disconnect()
+    await client.connect()
+    assert session.session_generation == 2
+    await client.disconnect()
+
+
+async def test_state_listeners_can_be_added_and_removed(server: Server) -> None:
+    """The state listener API is public."""
+    client = Client(server.endpoint.geturl())
+    seen: list[UaClientState] = []
+    unsubscribe = client.uaclient.add_state_listener(seen.append)
+    await client.connect()
+    client.uaclient.remove_state_listener(seen.append)
+    unsubscribe()
+    count = len(seen)
+    await client.disconnect()
+    assert count > 0
+    assert len(seen) == count

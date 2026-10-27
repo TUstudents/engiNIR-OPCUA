@@ -120,6 +120,7 @@ class UaSession(AbstractSession):
         self._client = client
         self.authentication_token: ua.NodeId = ua.NodeId()
         self._state: SessionState = SessionState.NEW
+        self.session_generation = 0
         self.max_outstanding_publish_requests = 10
         self.max_publish_timeout = 3600.0
         self.max_pending_acks = 2000
@@ -205,6 +206,7 @@ class UaSession(AbstractSession):
             self._set_state(SessionState.NEW)
             raise
         self.restore_authentication_token(response.Parameters.AuthenticationToken)
+        self.session_generation += 1
         self._set_state(SessionState.CREATED)
         return response.Parameters
 
@@ -534,9 +536,8 @@ class UaSession(AbstractSession):
         if len(response.Results) != len(ids):
             raise ua.UaError(f"DeleteSubscriptions answered {len(response.Results)} results for {len(ids)} ids")
         for sid, status in zip(ids, response.Results):
-            if status.is_good() or status.value == ua.StatusCodes.BadSubscriptionIdInvalid:
-                self._subscription_callbacks.pop(sid, None)
-            else:
+            self._subscription_callbacks.pop(sid, None)
+            if not status.is_good() and status.value != ua.StatusCodes.BadSubscriptionIdInvalid:
                 self.logger.warning("delete_subscriptions failed for %s: %s", sid, status)
         return response.Results
 
