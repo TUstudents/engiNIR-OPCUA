@@ -62,6 +62,11 @@ ROUND_TRIP_REQUESTS = (
 )
 
 
+def check_result_count(requested: int, received: int) -> None:
+    if requested != received:
+        raise ua.UaError(f"The server answered {received} results for {requested} request items")
+
+
 class Sink(Protocol):
     def enqueue(self, result: ua.PublishResult) -> None: ...
 
@@ -363,6 +368,7 @@ class UaSession(AbstractSession):
         data = await self._send_request(request)
         response = struct_from_binary(ua.ReadResponse, data)
         response.ResponseHeader.ServiceResult.check()
+        check_result_count(len(request.Parameters.NodesToRead), len(response.Results))
         return response.Results
 
     async def write_attributes(
@@ -373,15 +379,20 @@ class UaSession(AbstractSession):
     ) -> list[ua.StatusCode]:
         self.logger.info("write_attributes of several nodes")
         request = ua.WriteRequest()
-        for idx, nodeid in enumerate(nodeids):
+        nodeids = list(nodeids)
+        datavalues = list(datavalues)
+        if len(nodeids) != len(datavalues):
+            raise ValueError(f"{len(nodeids)} nodes and {len(datavalues)} values")
+        for nodeid, datavalue in zip(nodeids, datavalues):
             attr = ua.WriteValue()
             attr.NodeId = nodeid
             attr.AttributeId = attributeid
-            attr.Value = datavalues[idx]
+            attr.Value = datavalue
             request.Parameters.NodesToWrite.append(attr)
         data = await self._send_request(request)
         response = struct_from_binary(ua.WriteResponse, data)
         response.ResponseHeader.ServiceResult.check()
+        check_result_count(len(nodeids), len(response.Results))
         return response.Results
 
     # --- NodeManagement Service Set ---

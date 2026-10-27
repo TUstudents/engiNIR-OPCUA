@@ -41,6 +41,7 @@ from ..ua.uaerrors import (
     ConfigurationError,
 )
 from .ua_client import StateSubscription, UaClient, UaClientState
+from .ua_session import check_result_count
 
 _logger = logging.getLogger(__name__)
 
@@ -51,11 +52,7 @@ RENEW_RETRY_MAX_DELAY = 10.0
 
 _T = TypeVar("_T")
 
-# Task-scoped flag: when True, the pre-request hook bypasses its RECONNECTING
-# gate. The supervisor sets this around its own teardown/connect-sequence work
-# so requests it issues itself don't block waiting for the reconnect we're
-# currently performing. Because contextvars are scoped to the running task,
-# this does NOT leak into concurrent user requests on other tasks.
+
 _supervisor_owns_requests: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "enginir_opcua.supervisor_owns_requests", default=False
 )
@@ -1556,19 +1553,20 @@ class Client:
         Rmw: This call modifies the nodeid of the nodes, the original nodeid is
         available as node.basenodeid
         """
-        nodeids = [node.nodeid for node in nodes]
-        nodeids = await self.uaclient.register_nodes(nodeids)
-        for node, nodeid in zip(nodes, nodeids):
+        nodes = list(nodes)
+        registered = await self.uaclient.register_nodes([node.nodeid for node in nodes])
+        check_result_count(len(nodes), len(registered))
+        for node, nodeid in zip(nodes, registered):
             node.basenodeid = node.nodeid
             node.nodeid = nodeid
-        return list(nodes)
+        return nodes
 
     async def unregister_nodes(self, nodes: Iterable[Node]) -> None:
         """
         Unregister nodes
         """
-        nodeids = [node.nodeid for node in nodes]
-        await self.uaclient.unregister_nodes(nodeids)
+        nodes = list(nodes)
+        await self.uaclient.unregister_nodes([node.nodeid for node in nodes])
         for node in nodes:
             if not node.basenodeid:
                 continue
@@ -1581,8 +1579,7 @@ class Client:
         """
         Read the attributes of multiple nodes.
         """
-        nodeids = [node.nodeid for node in nodes]
-        return await self.uaclient.read_attributes(nodeids, attr)
+        return await self.uaclient.read_attributes([node.nodeid for node in nodes], attr)
 
     async def read_values(self, nodes: Iterable[Node]) -> list[Any]:
         """
@@ -1599,6 +1596,8 @@ class Client:
         """
         nodeids = [node.nodeid for node in nodes]
         dvs = [value_to_datavalue(val) for val in values]
+        if len(nodeids) != len(dvs):
+            raise ValueError(f"{len(nodeids)} nodes and {len(dvs)} values")
         results = await self.uaclient.write_attributes(nodeids, dvs, ua.AttributeIds.Value)
         if raise_on_partial_error:
             for result in results:
@@ -1613,6 +1612,7 @@ class Client:
         Browses multiple nodes in one ua call
         returns a List of Tuples(Node, BrowseResult)
         """
+        nodes = list(nodes)
         nodestobrowse = []
         for node in nodes:
             desc = ua.BrowseDescription()
@@ -1624,6 +1624,7 @@ class Client:
         parameters.RequestedMaxReferencesPerNode = 0
         parameters.NodesToBrowse = nodestobrowse
         results = await self.uaclient.browse(parameters)
+        check_result_count(len(nodes), len(results))
         return list(zip(nodes, results))
 
     async def translate_browsepaths(
