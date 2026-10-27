@@ -1188,7 +1188,7 @@ async def test_too_many_publish(opc, mocker):
         requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(11)]
         while True:
             done, pending = await asyncio.wait(requests, timeout=5, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            for task in [task for task in requests if task in done]:
                 exception = task.exception()
                 if exception is None:
                     requests.remove(task)

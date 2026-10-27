@@ -210,6 +210,8 @@ class Subscription:
         # Set while publish_callback is dispatching notifications retrieved via
         # Republish; consumed by _explode_* to tag events with replayed=True.
         self._replaying: bool = False
+        self._inbox: asyncio.Queue[ua.PublishResult] = asyncio.Queue()
+        self._inbox_task: asyncio.Task[None] | None = None
 
     @property
     def is_deleted(self) -> bool:
@@ -226,7 +228,9 @@ class Subscription:
         return await self._create(SubscriptionEvent.CREATED)
 
     async def _create(self, event: SubscriptionEvent) -> ua.CreateSubscriptionResult:
-        response = await self.server.create_subscription(self.parameters, callback=self.publish_callback)
+        response = await self.server.create_subscription(
+            self.parameters, callback=self if isinstance(self.server, UaSession) else self.publish_callback
+        )
         self.subscription_id = response.SubscriptionId  # move to data class
         self.logger.info("Subscription created %s", self.subscription_id)
         self._observe(lambda: self.server.observer.on_subscription_event(self.subscription_id, event))
@@ -240,6 +244,31 @@ class Subscription:
         # update the self.parameters attr with the updated values
         copy_dataclass_attr(params, self.parameters)
         return response
+
+    def enqueue(self, publish_result: ua.PublishResult) -> None:
+        self._inbox.put_nowait(publish_result)
+        if self._inbox_task is None or self._inbox_task.done():
+            self._inbox_task = asyncio.get_running_loop().create_task(self._drain_inbox())
+
+    async def _drain_inbox(self) -> None:
+        while not self._inbox.empty():
+            publish_result = self._inbox.get_nowait()
+            try:
+                await self.publish_callback(publish_result)
+            except Exception:
+                self.logger.exception("Exception while calling user callback")
+
+    def close(self, reason: ua.StatusCode | None = None) -> None:
+        if self._inbox_task is not None:
+            self._inbox_task.cancel()
+        self._inbox = asyncio.Queue()
+        if self._deleted:
+            return
+        self._deleted = True
+        self._close_iterator()
+        self._observe(
+            lambda: self.server.observer.on_subscription_event(self.subscription_id, SubscriptionEvent.DELETED)
+        )
 
     async def publish_callback(self, publish_result: ua.PublishResult) -> None:
         """
@@ -460,7 +489,7 @@ class Subscription:
             )
             await self.recreate()
             return
-        self.server._subscription_callbacks[self.subscription_id] = self.publish_callback
+        self.server._subscription_callbacks[self.subscription_id] = self
         if not await self._republish_gaps(result.AvailableSequenceNumbers):
             self.logger.info("republish could not fill gap for sub %s; recreating", self.subscription_id)
             await self.recreate()
