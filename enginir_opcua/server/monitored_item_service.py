@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
+from dataclasses import dataclass
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +17,16 @@ from .address_space import AddressSpace
 
 if TYPE_CHECKING:
     from .internal_subscription import InternalSubscription
+
+
+@dataclass
+class MonitoredItemLimits:
+    max_queue_size: int = 1000
+    default_event_queue_size: int = 100
+    min_sampling_interval: float = 10.0
+    max_sampling_interval: float = 3_600_000.0
+    max_items_per_subscription: int = 10_000
+    max_items: int = 100_000
 
 
 class MonitoredItemData:
@@ -28,6 +40,8 @@ class MonitoredItemData:
         self.mvalue = MonitoredItemValues()
         self.where_clause_evaluator: WhereClauseEvaluator | None = None
         self.queue_size: int = 0
+        self.sampling_interval: float = 0.0
+        self.discard_oldest: bool = True
 
 
 class MonitoredItemValues:
@@ -104,18 +118,25 @@ class MonitoredItemService:
         await self.datachange_callback(handle, dv)
 
     def _modify_monitored_item(self, params: ua.MonitoredItemModifyRequest) -> ua.MonitoredItemModifyResult:
-        for mdata in self._monitored_items.values():
-            result = ua.MonitoredItemModifyResult()
-            if mdata.monitored_item_id == params.MonitoredItemId:
-                result.RevisedSamplingInterval = params.RequestedParameters.SamplingInterval
-                result.RevisedQueueSize = params.RequestedParameters.QueueSize
-                if params.RequestedParameters.Filter is not None:
-                    mdata.filter = params.RequestedParameters.Filter
-                mdata.queue_size = params.RequestedParameters.QueueSize
-                return result
-        result = ua.MonitoredItemModifyResult()
-        result.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid)
-        return result
+        mdata = self._monitored_items.get(params.MonitoredItemId)
+        if mdata is None:
+            return ua.MonitoredItemModifyResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid))
+        requested = params.RequestedParameters
+        is_event = self._is_event_item(mdata)
+        node_id = mdata.read_value_id.NodeId if mdata.read_value_id is not None else None
+        mdata.sampling_interval = self._revise_sampling_interval(requested.SamplingInterval, node_id, is_event)
+        mdata.queue_size = self._revise_queue_size(requested.QueueSize, is_event)
+        mdata.discard_oldest = requested.DiscardOldest
+        mdata.client_handle = requested.ClientHandle
+        if requested.Filter is not None:
+            mdata.filter = requested.Filter
+        return ua.MonitoredItemModifyResult(
+            RevisedSamplingInterval=mdata.sampling_interval, RevisedQueueSize=mdata.queue_size
+        )
+
+    @staticmethod
+    def _is_event_item(mdata: MonitoredItemData) -> bool:
+        return mdata.read_value_id is not None and mdata.read_value_id.AttributeId == ua.AttributeIds.EventNotifier
 
     def _commit_monitored_item(self, result: ua.MonitoredItemCreateResult, mdata: MonitoredItemData) -> None:
         if result.StatusCode.is_good():
@@ -125,25 +146,54 @@ class MonitoredItemService:
         self, params: ua.MonitoredItemCreateRequest
     ) -> tuple[ua.MonitoredItemCreateResult, MonitoredItemData]:
         result = ua.MonitoredItemCreateResult()
-        result.RevisedSamplingInterval = self.isub.data.RevisedPublishingInterval
-        result.RevisedQueueSize = self._revise_queue_size(params.RequestedParameters.QueueSize)
+        is_event = params.ItemToMonitor.AttributeId == ua.AttributeIds.EventNotifier
+        requested = params.RequestedParameters
+        result.RevisedSamplingInterval = self._revise_sampling_interval(
+            requested.SamplingInterval, params.ItemToMonitor.NodeId, is_event
+        )
+        result.RevisedQueueSize = self._revise_queue_size(requested.QueueSize, is_event)
         self._monitored_item_counter += 1
         result.MonitoredItemId = self._monitored_item_counter
         self.logger.debug("Creating MonitoredItem with id %s", result.MonitoredItemId)
         mdata = MonitoredItemData()
         mdata.mode = params.MonitoringMode
         mdata.read_value_id = params.ItemToMonitor
-        mdata.client_handle = params.RequestedParameters.ClientHandle
+        mdata.client_handle = requested.ClientHandle
         mdata.monitored_item_id = result.MonitoredItemId
         mdata.queue_size = result.RevisedQueueSize
-        mdata.filter = params.RequestedParameters.Filter
+        mdata.sampling_interval = result.RevisedSamplingInterval
+        mdata.discard_oldest = requested.DiscardOldest
+        mdata.filter = requested.Filter
         return result, mdata
 
-    def _revise_queue_size(self, requested: int) -> int:
-        cap = self.isub.max_queue_size
-        if requested == 0:
-            return cap
-        return min(int(requested), cap)
+    def _revise_queue_size(self, requested: int, is_event: bool) -> int:
+        limits = self.isub.limits
+        if is_event:
+            if requested == 0:
+                return min(limits.default_event_queue_size, limits.max_queue_size)
+            return min(max(int(requested), 1), limits.max_queue_size)
+        return min(max(int(requested), 1), limits.max_queue_size)
+
+    def _revise_sampling_interval(self, requested: float, node_id: ua.NodeId | None, is_event: bool) -> float:
+        if is_event:
+            return 0.0
+        limits = self.isub.limits
+        if math.isnan(requested) or requested < 0:
+            interval = self.isub.data.RevisedPublishingInterval
+        else:
+            interval = requested
+        interval = max(interval, limits.min_sampling_interval, self._node_minimum_sampling_interval(node_id))
+        return min(interval, limits.max_sampling_interval)
+
+    def _node_minimum_sampling_interval(self, node_id: ua.NodeId | None) -> float:
+        if node_id is None:
+            return 0.0
+        dv = self.aspace.read_attribute_value(node_id, ua.AttributeIds.MinimumSamplingInterval)
+        if dv.Value is None or (dv.StatusCode is not None and dv.StatusCode.is_bad()):
+            return 0.0
+        if not isinstance(dv.Value.Value, int | float):
+            return 0.0
+        return max(float(dv.Value.Value), 0.0)
 
     def _create_events_monitored_item(self, params: ua.MonitoredItemCreateRequest) -> ua.MonitoredItemCreateResult:
         self.logger.info(

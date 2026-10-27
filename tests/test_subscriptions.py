@@ -131,7 +131,7 @@ async def test_subscription_count(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter", 0.1)
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     nb = 100
     for i in range(nb):
         val = await var.read_value()
@@ -148,7 +148,7 @@ async def test_subscription_count_list(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter1", [0.1, 0.2])
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     nb = 12
     for i in range(nb):
         val = await var.read_value()
@@ -185,7 +185,7 @@ async def test_subscription_count_empty(opc, handler_class):
     sub = await opc.opc.create_subscription(1, myhandler)
     o = opc.opc.nodes.objects
     var = await o.add_variable(3, "SubVarCounter3", [0.1, 0.2, 0.3])
-    await sub.subscribe_data_change(var)
+    await sub.subscribe_data_change(var, queuesize=1000)
     while True:
         val = await var.read_value()
         # we do not want to modify object in our db, we need a copy in order to generate event
@@ -1093,7 +1093,7 @@ async def test_internal_server_subscription(opc):
     sub_var = await sub_obj.add_variable(idx, "SubTestVariable", 0)
     sub = await opc.server.create_subscription(1, sub_handler)
     # Server subscribes to own variable data changes
-    await sub.subscribe_data_change([sub_var])
+    await sub.subscribe_data_change([sub_var], queuesize=100)
     client_var = await opc.opc.nodes.objects.get_child([f"{idx}:SubTestObject", f"{idx}:SubTestVariable"])
     for i in range(10):
         await client_var.write_value(i)

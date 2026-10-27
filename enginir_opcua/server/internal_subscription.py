@@ -18,7 +18,7 @@ from enginir_opcua.common import utils
 from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
-from .monitored_item_service import MonitoredItemService
+from .monitored_item_service import MonitoredItemLimits, MonitoredItemService
 
 if TYPE_CHECKING:
     from enginir_opcua.server.uaprocessor import PublishRequestData
@@ -54,7 +54,7 @@ class InternalSubscription:
         delete_callback: DeleteCallback | None = None,
         expire_callback: ExpireCallback | None = None,
         no_acks_limit: int = 500,
-        max_queue_size: int = 10_000,
+        limits: MonitoredItemLimits | None = None,
         publishing_enabled: bool = True,
         max_notifications_per_publish: int = 10_000,
         priority: int = 0,
@@ -77,6 +77,7 @@ class InternalSubscription:
         self.data: ua.CreateSubscriptionResult = data
         self.pub_result_callback: PublishResultCallback = callback
         self.pub_request_callback: PublishRequestCallback | None = request_callback
+        self.limits: MonitoredItemLimits = limits if limits is not None else MonitoredItemLimits()
         self.monitored_item_srv = MonitoredItemService(self, aspace)
         self.delete_callback: DeleteCallback | None = delete_callback
         self.expire_callback: ExpireCallback | None = expire_callback
@@ -86,7 +87,6 @@ class InternalSubscription:
         self._triggered_statuschanges: list[ua.StatusCode] = []
         self._sequence = 1
         self._no_acks_limit = no_acks_limit
-        self.max_queue_size = max_queue_size
         self.max_notifications_per_publish: int = max_notifications_per_publish
         self.priority: int = priority
         self.owner_user: User | None = None

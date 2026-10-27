@@ -15,6 +15,7 @@ from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
 from .internal_subscription import InternalSubscription, SubscriptionState
+from .monitored_item_service import MonitoredItemLimits
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
@@ -71,7 +72,6 @@ class SubscriptionService:
         self._sub_id_counter += 1
         result.SubscriptionId = self._sub_id_counter
         no_acks_limit = self.iserver.max_unacked_messages_per_subscription if self.iserver else 5000
-        max_queue_size = self.iserver.max_monitored_item_queue_size if self.iserver else 10_000
         internal_sub = InternalSubscription(
             result,
             self.aspace,
@@ -81,7 +81,7 @@ class SubscriptionService:
             delete_callback=lambda: self.subscriptions.pop(result.SubscriptionId, None),
             expire_callback=self._on_expired if request_callback is not None else None,
             no_acks_limit=no_acks_limit,
-            max_queue_size=max_queue_size,
+            limits=self._monitored_item_limits(),
             publishing_enabled=params.PublishingEnabled,
             max_notifications_per_publish=self._revise_max_notifications(params.MaxNotificationsPerPublish),
             priority=params.Priority,
@@ -108,6 +108,19 @@ class SubscriptionService:
 
     def _setting(self, name: str, default: float) -> float:
         return getattr(self.iserver, name, default) if self.iserver else default
+
+    def _monitored_item_limits(self) -> MonitoredItemLimits:
+        defaults = MonitoredItemLimits()
+        return MonitoredItemLimits(
+            max_queue_size=int(self._setting("max_monitored_item_queue_size", defaults.max_queue_size)),
+            default_event_queue_size=int(self._setting("default_event_queue_size", defaults.default_event_queue_size)),
+            min_sampling_interval=self._setting("min_sampling_interval_ms", defaults.min_sampling_interval),
+            max_sampling_interval=self._setting("max_sampling_interval_ms", defaults.max_sampling_interval),
+            max_items_per_subscription=int(
+                self._setting("max_monitored_items_per_subscription", defaults.max_items_per_subscription)
+            ),
+            max_items=int(self._setting("max_monitored_items", defaults.max_items)),
+        )
 
     def _revise_max_notifications(self, requested: int) -> int:
         cap = int(self._setting("max_notifications_per_publish", 10_000))
