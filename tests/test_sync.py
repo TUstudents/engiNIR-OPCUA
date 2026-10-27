@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import uuid
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def server(tloop):
     s.nodes.objects.add_method(
         ns_idx, "Divide", divide, [ua.VariantType.Float, ua.VariantType.Float], [ua.VariantType.Float]
     )
+    s.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
     with s:
         yield s
 
@@ -171,9 +173,9 @@ def test_sync_read_values(client: Client, idx):
     assert results[0] == 6.7
 
 
-def test_sync_write_values(client: Client):
+def test_sync_write_values(client: Client, server: Server):
     myvar = client.nodes.objects.add_variable(3, "a", 1)
-    myvar.set_writable()
+    server.get_node(myvar.nodeid).set_writable()
     assert isinstance(myvar, SyncNode)
     rets = client.write_values([myvar], [4])
     assert rets == [ua.StatusCode(value=ua.StatusCodes.Good)]
@@ -231,14 +233,15 @@ class MySubHandler:
         self.future.set_result(event)
 
 
-def test_sync_tloop_sub(client_no_tloop):
-    test_sync_sub(client_no_tloop)
+def test_sync_tloop_sub(client_no_tloop, server):
+    test_sync_sub(client_no_tloop, server)
 
 
-def test_sync_sub(client):
+def test_sync_sub(client, server):
     myhandler = MySubHandler()
     sub = client.create_subscription(1, myhandler)
-    var = client.nodes.objects.add_variable(3, "SubVar", 0.1)
+    var = client.nodes.objects.add_variable(3, f"SubVar{uuid.uuid4().hex}", 0.1)
+    server.get_node(var.nodeid).set_writable()
     sub.subscribe_data_change(var)
     n, v = myhandler.future.result()
     assert v == 0.1
@@ -251,10 +254,14 @@ def test_sync_sub(client):
 
 
 def test_sync_meth(client, idx):
-    res = client.nodes.objects.call_method(f"{idx}:Divide", 4, 2)
+    res = client.nodes.objects.call_method(
+        f"{idx}:Divide", ua.Variant(4, ua.VariantType.Float), ua.Variant(2, ua.VariantType.Float)
+    )
     assert res == 2
     with pytest.raises(ua.UaError):
-        res = client.nodes.objects.call_method(f"{idx}:Divide", 4, 0)
+        res = client.nodes.objects.call_method(
+            f"{idx}:Divide", ua.Variant(4, ua.VariantType.Float), ua.Variant(0, ua.VariantType.Float)
+        )
 
 
 def test_sync_client_no_tl(client_no_tloop, idx):
@@ -263,7 +270,13 @@ def test_sync_client_no_tl(client_no_tloop, idx):
 
 def test_sync_call_meth(client, idx):
     methodid = client.nodes.objects.get_child(f"{idx}:Divide")
-    res = call_method_full(client.tloop, client.nodes.objects, methodid, 4, 2)
+    res = call_method_full(
+        client.tloop,
+        client.nodes.objects,
+        methodid,
+        ua.Variant(4, ua.VariantType.Float),
+        ua.Variant(2, ua.VariantType.Float),
+    )
     assert res.OutputArguments[0] == 2
 
 
@@ -309,7 +322,7 @@ def test_create_enum_sync_client(client):
 
     client.load_data_type_definitions()
 
-    var = client.nodes.objects.add_variable(idx, "my_enum", ua.MyCustEnum2.toto)
+    var = client.nodes.objects.add_variable(idx, "my_enum_client", ua.MyCustEnum2.toto)
     val = var.read_value()
     assert val == 1
 
@@ -351,7 +364,7 @@ def test_create_struct_sync_client(client):
     client.load_data_type_definitions()
     mystruct = ua.MyMyStructClient()
     mystruct.MyUInt32 = [78, 79]
-    var = client.nodes.objects.add_variable(idx, "my_struct", mystruct)
+    var = client.nodes.objects.add_variable(idx, "my_struct_client", mystruct)
     val = var.read_value()
     assert val.MyUInt32 == [78, 79]
 

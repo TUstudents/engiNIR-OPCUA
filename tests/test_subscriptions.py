@@ -1093,6 +1093,7 @@ async def test_internal_server_subscription(opc):
     objects = opc.server.nodes.objects
     sub_obj = await objects.add_object(idx, "SubTestObject")
     sub_var = await sub_obj.add_variable(idx, "SubTestVariable", 0)
+    await sub_var.set_writable()
     sub = await opc.server.create_subscription(1, sub_handler)
     # Server subscribes to own variable data changes
     await sub.subscribe_data_change([sub_var], queuesize=100)

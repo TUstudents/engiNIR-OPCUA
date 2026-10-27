@@ -395,11 +395,6 @@ class PublishedDataSet(PubSubInformationModel):
             )
         else:
             raise RuntimeError("self._node is not initialized")
-        await self._node.add_variable(
-            NodeId(NamespaceIndex=Int16(1)),
-            "0:DataSetClassId",
-            self.dataset._meta.DataSetClassId,
-        )
         # @TODO ExtensionFields
         # @TODO fill method
         # await self.set_node_value("0:PublishedData", self._pubdata)

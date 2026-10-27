@@ -25,6 +25,8 @@ from enginir_opcua.common.structures104 import new_enum, new_struct, new_struct_
 from enginir_opcua.ua import Int16, NodeId, NodeIdType, String
 from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 
+from .access_rig import declare_writable
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -38,8 +40,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethod", 2),
         ua.QualifiedName("ServerMethod", 2),
         func,
-        [ua.Int64],
-        [ua.Int64],
+        [ua.VariantType.Double],
+        [ua.VariantType.Double],
     )
 
     @uamethod
@@ -72,8 +74,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethodArray", 2),
         ua.QualifiedName("ServerMethodArray", 2),
         func2,
-        [ua.VariantType.String, ua.VariantType.Int64],
-        [ua.VariantType.Int64],
+        [ua.VariantType.String, ua.VariantType.Double],
+        [ua.VariantType.Double],
     )
 
     @uamethod
@@ -85,8 +87,8 @@ async def add_server_methods(srv):
         ua.NodeId("ServerMethodArray2", 2),
         ua.QualifiedName("ServerMethodArray2", 2),
         func3,
-        [ua.VariantType.Int64],
-        [ua.Int64],
+        [[ua.VariantType.Double]],
+        [[ua.VariantType.Double]],
     )
 
     @uamethod
@@ -196,6 +198,7 @@ async def test_add_node_using_builtin(opc):
     obj = opc.opc.nodes.objects
     fold = await obj.add_folder(2, "FolderBuiltin")
     var = await fold.add_variable(2, "VarBuiltin", ua.UInt16(9))
+    await declare_writable(opc, var)
     dv = await var.read_data_value()
     assert dv.Value.VariantType == ua.VariantType.UInt16
     data_type = await var.read_data_type()
@@ -281,7 +284,7 @@ async def test_delete_nodes_recursive2(opc):
 
 async def test_delete_references(opc):
     newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(
-        0, "HasSuperSecretVariable"
+        ua.NodeId(NamespaceIndex=2), "0:HasSuperSecretVariable", symmetric=False, inversename="IsSuperSecretVariableOf"
     )
 
     obj = opc.opc.nodes.objects
@@ -369,7 +372,9 @@ async def test_reference_with_nodeid_reftype(opc):
     where the type annotation enforced int, but _to_nodeid() already supports
     Node, ua.NodeId, str, and int at runtime.
     """
-    newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(0, "HasNodeIdRefType")
+    newtype = await opc.opc.get_node(ua.ObjectIds.HierarchicalReferences).add_reference_type(
+        ua.NodeId(NamespaceIndex=2), "0:HasNodeIdRefType"
+    )
     reftype_nodeid = newtype.nodeid  # ua.NodeId, not int
 
     obj = opc.opc.nodes.objects
@@ -602,6 +607,7 @@ async def test_variant_array_dim(opc):
         [[5.0, 5.0, 5.0, 5.0], [7.0, 8.0, 9.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
     ]
     v = await objects.add_variable(3, "variableWithDims", arry)
+    await declare_writable(opc, v, attributes=(ua.AttributeIds.ArrayDimensions, ua.AttributeIds.ValueRank))
 
     await v.write_array_dimensions([0, 0, 0])
     dim = await v.read_array_dimensions()
@@ -664,6 +670,7 @@ async def test_utf8(opc):
 async def test_null_variable(opc):
     objects = opc.opc.nodes.objects
     var = await objects.add_variable(3, "nullstring", "a string")
+    await declare_writable(opc, var)
     await var.write_value(ua.Variant(None, ua.VariantType.String))
     val = await var.read_value()
     assert val is None
@@ -731,7 +738,22 @@ async def test_same_browse_name(opc):
     f = await objects.add_folder("ns=2;i=201;", "2:MyBNameFolder")
     o = await f.add_object("ns=2;i=202;", "2:MyBName")
     v = await o.add_variable("ns=2;i=203;", "2:MyBNameTarget", 2.0)
-    o2 = await f.add_object("ns=2;i=204;", "2:MyBName")
+    if opc.opc is not opc.server:
+        with pytest.raises(ua.uaerrors.BadBrowseNameDuplicated):
+            await f.add_object("ns=2;i=206;", "2:MyBName")
+    attrs = ua.ObjectAttributes()
+    attrs.DisplayName = ua.LocalizedText("MyBName")
+    item = ua.AddNodesItem(
+        ParentNodeId=f.nodeid,
+        ReferenceTypeId=ua.NodeId(ua.ObjectIds.HasComponent),
+        RequestedNewNodeId=ua.NodeId.from_string("ns=2;i=204;"),
+        BrowseName=ua.QualifiedName("MyBName", 2),
+        NodeClass=ua.NodeClass.Object,
+        NodeAttributes=attrs,
+        TypeDefinition=ua.NodeId(ua.ObjectIds.BaseObjectType),
+    )
+    (await f.session.add_nodes([item]))[0].StatusCode.check()
+    o2 = opc.opc.get_node(item.RequestedNewNodeId)
     v2 = await o2.add_variable("ns=2;i=205;", "2:MyBNameTarget", 2.0)
     nodes = await objects.get_child("/2:MyBNameFolder/2:MyBName/2:MyBNameTarget", return_all=True)
     assert len(nodes) == 2
@@ -782,6 +804,7 @@ async def test_add_exception(opc):
 async def test_negative_value(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "VariableNegativeValue", 4.0)
+    await declare_writable(opc, v)
     await v.write_value(-4.54)
     assert -4.54 == await v.read_value()
     await opc.opc.delete_nodes([v])
@@ -823,6 +846,7 @@ async def test_write_value(opc):
     var = ua.Variant(1.98, ua.VariantType.Double)
     dvar = ua.DataValue(var)
     v = await o.add_variable(3, "VariableValue", var)
+    await declare_writable(opc, v)
     await v.write_value(var.Value)
     v1 = await v.read_value()
     assert v1 == var.Value
@@ -840,6 +864,7 @@ async def test_write_value_statuscode_bad(opc):
     var = ua.Variant("Some value that should not be set!")
     dvar = ua.DataValue(None, StatusCode=ua.StatusCode(ua.StatusCodes.BadDeviceFailure))
     v = await o.add_variable(3, "VariableValueBad", var)
+    await declare_writable(opc, v, status=True)
     await v.write_value(dvar)
     with pytest.raises(ua.UaStatusCodeError) as error_read:
         await v.read_data_value()
@@ -857,6 +882,7 @@ async def test_array_value(opc):
 async def test_bool_variable(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "BoolVariable", True)
+    await declare_writable(opc, v)
     dt = await v.read_data_type_as_variant_type()
     assert ua.VariantType.Boolean == dt
     val = await v.read_value()
@@ -870,6 +896,7 @@ async def test_bool_variable(opc):
 async def test_array_size_one_value(opc):
     o = opc.opc.nodes.objects
     v = await o.add_variable(3, "VariableArrayValue2", [1, 2, 3])
+    await declare_writable(opc, v)
     await v.write_value([1])
     assert [1] == await v.read_value()
     await opc.opc.delete_nodes([v])
@@ -958,7 +985,9 @@ async def test_method_async(opc):
 async def test_method_byte_array(opc):
     o = opc.opc.nodes.objects
     m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(m, 1, (2, 3, 4))
+    val, mybytes = await o.call_method(
+        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant((2, 3, 4), ua.VariantType.Byte)
+    )
     assert val == 1
     assert mybytes == [2, 3]
 
@@ -966,7 +995,9 @@ async def test_method_byte_array(opc):
 async def test_method_byte_array_better(opc):
     o = opc.opc.nodes.objects
     m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(m, 1, (ua.Variant((2, 3, 4), ua.VariantType.Byte)))
+    val, mybytes = await o.call_method(
+        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant(b"\x02\x03\x04", ua.VariantType.ByteString)
+    )
     assert val == 1
     assert mybytes == [2, 3]
 
@@ -1026,6 +1057,7 @@ async def test_browse_reflects_written_display_name(opc):
     objects = opc.opc.nodes.objects
     f = await objects.add_folder(3, "MyFolder_BrowseRefresh")
     o = await f.add_object(3, "MyObject_BrowseRefresh", ua.ObjectIds.BaseObjectType)
+    await declare_writable(opc, o, attributes=(ua.AttributeIds.DisplayName,))
 
     await o.write_attribute(
         ua.AttributeIds.DisplayName,
@@ -1145,7 +1177,7 @@ async def test_path_string(opc):
 
 
 async def test_path(opc):
-    of = await opc.opc.nodes.objects.add_folder(1, "titif")
+    of = await opc.opc.nodes.objects.add_folder(1, "titifpath")
     op = await of.add_object(3, "opath")
     path = await op.get_path()
     assert [opc.opc.nodes.root, opc.opc.nodes.objects, of, op] == path
@@ -1171,15 +1203,15 @@ async def test_get_endpoints(opc):
 
 
 async def test_copy_node(opc):
-    dev_t = await opc.opc.nodes.base_structure_type.add_object_type(0, "MyDevice")
-    _ = await dev_t.add_variable(0, "sensor", 1.0)
-    _ = await dev_t.add_property(0, "sensor_id", "0340")
-    ctrl_t = await dev_t.add_object(0, "controller")
-    prop_t = await ctrl_t.add_property(0, "state", "Running")
+    dev_t = await opc.opc.nodes.base_structure_type.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyDevice")
+    _ = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:sensor", 1.0)
+    _ = await dev_t.add_property(ua.NodeId(NamespaceIndex=2), "0:sensor_id", "0340")
+    ctrl_t = await dev_t.add_object(ua.NodeId(NamespaceIndex=2), "0:controller")
+    prop_t = await ctrl_t.add_property(ua.NodeId(NamespaceIndex=2), "0:state", "Running")
     # Create device sutype
-    devd_t = await dev_t.add_object_type(0, "MyDeviceDerived")
-    _ = await devd_t.add_variable(0, "childparam", 1.0)
-    _ = await devd_t.add_property(0, "sensorx_id", "0340")
+    devd_t = await dev_t.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyDeviceDerived")
+    _ = await devd_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:childparam", 1.0)
+    _ = await devd_t.add_property(ua.NodeId(NamespaceIndex=2), "0:sensorx_id", "0340")
     nodes = await copy_node(opc.opc.nodes.objects, dev_t)
     mydevice = nodes[0]
     assert ua.NodeClass.ObjectType == await mydevice.read_node_class()
@@ -1193,30 +1225,30 @@ async def test_copy_node(opc):
 
 async def test_instantiate_1(opc):
     # Create device type
-    dev_t = await opc.opc.nodes.base_object_type.add_object_type(0, "MyDevice")
-    v_t = await dev_t.add_variable(0, "sensor", 1.0)
+    dev_t = await opc.opc.nodes.base_object_type.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyDevice")
+    v_t = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:sensor", 1.0)
     await v_t.set_modelling_rule(True)
-    p_t = await dev_t.add_property(0, "sensor_id", "0340")
+    p_t = await dev_t.add_property(ua.NodeId(NamespaceIndex=2), "0:sensor_id", "0340")
     await p_t.set_modelling_rule(True)
-    ctrl_t = await dev_t.add_object(0, "controller")
+    ctrl_t = await dev_t.add_object(ua.NodeId(NamespaceIndex=2), "0:controller")
     await ctrl_t.set_modelling_rule(True)
-    v_opt_t = await dev_t.add_variable(0, "vendor", 1.0)
+    v_opt_t = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:vendor", 1.0)
     await v_opt_t.set_modelling_rule(False)
-    v_none_t = await dev_t.add_variable(0, "model", 1.0)
+    v_none_t = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:model", 1.0)
     await v_none_t.set_modelling_rule(None)
-    prop_t = await ctrl_t.add_property(0, "state", "Running")
+    prop_t = await ctrl_t.add_property(ua.NodeId(NamespaceIndex=2), "0:state", "Running")
     await prop_t.set_modelling_rule(True)
     assert await prop_t.read_value() == "Running"
 
     # Create device sutype
-    devd_t = await dev_t.add_object_type(0, "MyDeviceDerived")
-    v_t = await devd_t.add_variable(0, "childparam", 1.0)
+    devd_t = await dev_t.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyDeviceDerived")
+    v_t = await devd_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:childparam", 1.0)
     await v_t.set_modelling_rule(True)
-    p_t = await devd_t.add_property(0, "sensorx_id", "0340")
+    p_t = await devd_t.add_property(ua.NodeId(NamespaceIndex=2), "0:sensorx_id", "0340")
     await p_t.set_modelling_rule(True)
 
     # instanciate device
-    nodes = await instantiate(opc.opc.nodes.objects, dev_t, bname="2:Device0001")
+    nodes = await instantiate(opc.opc.nodes.objects, dev_t, bname="2:Device0001", idx=2)
     mydevice = nodes[0]
 
     assert ua.NodeClass.Object == await mydevice.read_node_class()
@@ -1234,7 +1266,7 @@ async def test_instantiate_1(opc):
     assert prop.nodeid != prop_t.nodeid
 
     # instanciate device subtype
-    nodes = await instantiate(opc.opc.nodes.objects, devd_t, bname="2:Device0002")
+    nodes = await instantiate(opc.opc.nodes.objects, devd_t, bname="2:Device0002", idx=2)
     mydevicederived = nodes[0]
     _ = await mydevicederived.get_child(["0:sensorx_id"])
     _ = await mydevicederived.get_child(["0:childparam"])
@@ -1245,14 +1277,14 @@ async def test_instantiate_1(opc):
 
 async def test_instantiate_string_nodeid(opc):
     # Create device type
-    dev_t = await opc.opc.nodes.base_object_type.add_object_type(0, "MyDevice2")
-    v_t = await dev_t.add_variable(0, "sensor", 1.0)
+    dev_t = await opc.opc.nodes.base_object_type.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyDevice2")
+    v_t = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:sensor", 1.0)
     await v_t.set_modelling_rule(True)
-    p_t = await dev_t.add_property(0, "sensor_id", "0340")
+    p_t = await dev_t.add_property(ua.NodeId(NamespaceIndex=2), "0:sensor_id", "0340")
     await p_t.set_modelling_rule(True)
-    ctrl_t = await dev_t.add_object(0, "controller")
+    ctrl_t = await dev_t.add_object(ua.NodeId(NamespaceIndex=2), "0:controller")
     await ctrl_t.set_modelling_rule(True)
-    prop_t = await ctrl_t.add_property(0, "state", "Running")
+    prop_t = await ctrl_t.add_property(ua.NodeId(NamespaceIndex=2), "0:state", "Running")
     await prop_t.set_modelling_rule(True)
 
     # instanciate device
@@ -1310,10 +1342,10 @@ async def test_variable_with_datatype(opc):
 async def test_enum(opc):
     # create enum type
     enums = await opc.opc.nodes.root.get_child(["0:Types", "0:DataTypes", "0:BaseDataType", "0:Enumeration"])
-    myenum_type = await enums.add_data_type(0, "MyEnum")
+    myenum_type = await enums.add_data_type(ua.NodeId(NamespaceIndex=2), "0:MyEnum")
     es = await myenum_type.add_variable(
-        0,
-        "EnumStrings",
+        ua.NodeId(NamespaceIndex=2),
+        "0:EnumStrings",
         [
             ua.LocalizedText("String0"),
             ua.LocalizedText("String1"),
@@ -1324,11 +1356,10 @@ async def test_enum(opc):
     # es.write_value_rank(1)
     # instantiate
     o = opc.opc.nodes.objects
-    myvar = await o.add_variable(2, "MyEnumVar", ua.LocalizedText("String1"), datatype=myenum_type.nodeid)
-    # myvar.set_writable(True)
-    # tests
+    myvar = await o.add_variable(2, "MyEnumVar", ua.Variant(1, ua.VariantType.Int32), datatype=myenum_type.nodeid)
+    await declare_writable(opc, myvar)
     assert myenum_type.nodeid == await myvar.read_data_type()
-    await myvar.write_value(ua.LocalizedText("String2"))
+    await myvar.write_value(ua.Variant(2, ua.VariantType.Int32))
     await opc.opc.delete_nodes([es, myvar])
     await opc.opc.delete_nodes([myenum_type])
 
@@ -1343,11 +1374,11 @@ async def test_supertypes(opc):
     assert opc.opc.get_node(ua.ObjectIds.Integer) == nodes[0]
 
     # test custom
-    dtype = await nint32.add_data_type(0, "MyCustomDataType")
+    dtype = await nint32.add_data_type(ua.NodeId(NamespaceIndex=2), "0:MyCustomDataType")
     node = await ua_utils.get_node_supertype(dtype)
     assert nint32 == node
 
-    dtype2 = await dtype.add_data_type(0, "MyCustomDataType2")
+    dtype2 = await dtype.add_data_type(ua.NodeId(NamespaceIndex=2), "0:MyCustomDataType2")
     node = await ua_utils.get_node_supertype(dtype2)
     assert dtype == node
     await opc.opc.delete_nodes([dtype, dtype2])
@@ -1355,12 +1386,12 @@ async def test_supertypes(opc):
 
 async def test_base_data_type(opc):
     nint32 = opc.opc.get_node(ua.ObjectIds.Int32)
-    dtype = await nint32.add_data_type(0, "MyCustomDataType")
-    dtype2 = await dtype.add_data_type(0, "MyCustomDataType2")
+    dtype = await nint32.add_data_type(ua.NodeId(NamespaceIndex=2), "0:MyCustomDataType")
+    dtype2 = await dtype.add_data_type(ua.NodeId(NamespaceIndex=2), "0:MyCustomDataType2")
     assert nint32 == await ua_utils.get_base_data_type(dtype)
     assert nint32 == await ua_utils.get_base_data_type(dtype2)
 
-    ext = await opc.opc.nodes.objects.add_variable(0, "MyExtensionObject", ua.Argument())
+    ext = await opc.opc.nodes.objects.add_variable(ua.NodeId(NamespaceIndex=2), "0:MyExtensionObject", ua.Argument())
     d = await ext.read_data_type()
     d = opc.opc.get_node(d)
     assert opc.opc.get_node(ua.ObjectIds.Structure) == await ua_utils.get_base_data_type(d)
@@ -1422,6 +1453,7 @@ async def test_import_xml_data_type_definition(opc):
     ss.structs.append(s)
 
     var = await opc.opc.nodes.objects.add_variable(2, "MySubStructVar", ss, datatype=ua.MySubstruct.data_type)
+    await declare_writable(opc, var)
 
     s2 = await var.read_value()
     assert s2.structs[1].toto == ss.structs[1].toto == 0.1
@@ -1546,9 +1578,18 @@ async def test_custom_struct_with_null_browsename_sibling(opc, caplog):
     )
 
     # A struct DataType node with a null BrowseName.Name, as reported by some servers.
-    dtype = await opc.opc.nodes.base_structure_type.add_data_type(
-        ua.NodeId("MyBadStructType", idx), ua.QualifiedName(None, idx)
+    bad_attributes = ua.DataTypeAttributes()
+    bad_attributes.DisplayName = ua.LocalizedText("MyBadStructType")
+    bad_item = ua.AddNodesItem(
+        ParentNodeId=ua.NodeId(ua.ObjectIds.Structure),
+        ReferenceTypeId=ua.NodeId(ua.ObjectIds.HasSubtype),
+        RequestedNewNodeId=ua.NodeId("MyBadStructType", idx),
+        BrowseName=ua.QualifiedName(None, idx),
+        NodeClass=ua.NodeClass.DataType,
+        NodeAttributes=bad_attributes,
     )
+    assert not list(opc.server.iserver.node_mgt_service.try_add_nodes([bad_item], check=False))
+    dtype = opc.server.get_node(bad_item.RequestedNewNodeId)
     sdef = ua.StructureDefinition()
     sdef.StructureType = ua.StructureType.Structure
     sdef.Fields = [new_struct_field("MyInt32", ua.VariantType.Int32)]
@@ -1568,12 +1609,13 @@ async def test_custom_struct_with_null_browsename_sibling(opc, caplog):
 
 async def test_custom_option_set(opc):
     idx = 4
-    await new_enum(opc.opc, idx, "MyOptionSet", ["tata", "titi", "toto", "None"], True)
+    option_set = await new_enum(opc.opc, idx, "MyOptionSet", ["tata", "titi", "toto", "None"], True)
     await opc.opc.load_data_type_definitions()
     assert ua.MyOptionSet.toto | ua.MyOptionSet.titi == ua.MyOptionSet((1 << 2) | (1 << 1))
     var = await opc.opc.nodes.objects.add_variable(idx, "my_option", ua.MyOptionSet.toto | ua.MyOptionSet.titi)
     val = await var.read_value()
     assert val == (1 << 2) | (1 << 1)
+    await opc.opc.delete_nodes([var, option_set])
 
 
 async def test_custom_option_set_as_structure_definition(opc):
@@ -1652,6 +1694,7 @@ async def test_custom_struct_with_optional_fields(opc):
         "my_struct_optional",
         ua.Variant(my_struct_optional, ua.VariantType.ExtensionObject),
     )
+    await declare_writable(opc, var)
 
     val = await var.read_value()
     assert val.MyUInt32 == 45
@@ -1687,6 +1730,7 @@ async def test_custom_struct_union(opc):
     var = await opc.opc.nodes.objects.add_variable(
         idx, "my_union_struct", ua.Variant(my_union, ua.VariantType.ExtensionObject)
     )
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val.MyInt64 == 555
     assert val.MyString is None
@@ -1716,6 +1760,7 @@ async def test_custom_struct_union(opc):
         "my_duplicate_union_struct",
         ua.Variant(my_union, ua.VariantType.ExtensionObject),
     )
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val.MyInt64 == 555
     assert val.MyString is None
@@ -2100,6 +2145,7 @@ async def test_sub_class(opc):
     var = await opc.opc.nodes.objects.add_variable(
         idx, "struct with sub", struct_with_sub, datatype=struct_with_sub.data_type
     )
+    await declare_writable(opc, var)
     await var.write_value(struct_with_sub)
     val = await var.read_value()
     assert val == struct_with_sub
@@ -2152,6 +2198,7 @@ async def test_alias(opc):
 
     v = ua.MyAliasStruct()
     var = await opc.opc.nodes.objects.add_variable(idx, "AliasedStruct", v, datatype=data_type.nodeid)
+    await declare_writable(opc, var)
     val = await var.read_value()
     assert val == v
     v.MyStringType = "1234"

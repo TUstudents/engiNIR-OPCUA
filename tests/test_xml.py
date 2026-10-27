@@ -12,6 +12,7 @@ from enginir_opcua.common.structures104 import new_enum, new_enum_field, new_str
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua import uaerrors
 
+from .access_rig import declare_writable
 from .conftest import Opc, find_free_port
 
 _logger = logging.getLogger("enginir_opcua.common.xmlimporter")
@@ -79,6 +80,7 @@ async def disposable_opc(request):
     await srv.init()
     port = find_free_port()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    await srv.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
     await srv.start()
     if request.param == "client":
         async with Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10) as clt:
@@ -90,6 +92,8 @@ async def disposable_opc(request):
 
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
+    if opc.opc is not opc.server:
+        pytest.skip("AddNodes of a Session needs a hierarchical parent reference, the nodesets use ConnectsTo")
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
     nodes = await opc.opc.import_xml(NODESET_DI)
     nodes += await opc.opc.import_xml(NODESET_IA)
@@ -225,13 +229,14 @@ async def test_xml_ns(opc, tmpdir):
     ref_ns = await opc.opc.register_namespace("ref_namespace")
     new_ns = await opc.opc.register_namespace("my_new_namespace")
     bname_ns = await opc.opc.register_namespace("bname_namespace")
-    o = await opc.opc.nodes.objects.add_object(0, "xmlns0")
     onew = await opc.opc.nodes.objects.add_object(new_ns, "xmlns_new")
     vnew = await onew.add_variable(new_ns, "xmlns_new_var", 9.99)
     o_no_export = await opc.opc.nodes.objects.add_object(ref_ns, "xmlns_parent")
     v_no_parent = await o_no_export.add_variable(new_ns, "xmlns_new_var_no_parent", 9.99)
     o_bname = await onew.add_object(f"ns={new_ns};i=4000", f"{bname_ns}:BNAME")
-    nodes = [o, onew, vnew, v_no_parent, o_bname]
+    nodes = [onew, vnew, v_no_parent, o_bname]
+    if opc.opc is opc.server:
+        nodes.insert(0, await opc.opc.nodes.objects.add_object(0, "xmlns0"))
     tmp_path = tmpdir.join("tmp_test_export-ns.xml").strpath
     await opc.opc.export_xml(nodes, tmp_path, export_values=True)
     # delete node and change index og new_ns before re-importing
@@ -351,6 +356,7 @@ async def test_xml_string(opc, tmpdir):
 
 async def test_xml_string_with_null_description(opc, tmpdir):
     o = await opc.opc.nodes.objects.add_variable(2, "xmlstring", "mystring")
+    await declare_writable(opc, o, attributes=(ua.AttributeIds.Description,))
     await o.write_attribute(ua.AttributeIds.Description, ua.DataValue(ua.Variant(ua.LocalizedText())))
     o2 = await _test_xml_var_type(opc, tmpdir, o, "string")
     assert await o.read_description() == await o2.read_description()
@@ -575,7 +581,7 @@ async def test_xml_enum_fields(opc, tmpdir):
     my_enum = await new_enum(
         opc.opc,
         idx,
-        "MyEnum",
+        "MyEnumFields",
         [
             field_0,
             "titi",

@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
 from enginir_opcua.common import utils
+from enginir_opcua.ua.numeric_range import select_index_range
 
 from ..common import event_objects
 from .address_space import AddressSpace
 from .content_filter import MAX_FILTER_ELEMENTS, EventFilterChecker, WhereClauseEvaluator
 from .data_change import data_change_passes
-from .index_range import select_index_range
 from .node_walk import is_subtype
 
 if TYPE_CHECKING:

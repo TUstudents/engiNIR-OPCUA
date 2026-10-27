@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import fields
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum, IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
@@ -31,8 +31,8 @@ def value_to_datavalue(val: Any, varianttype: ua.VariantType | None = None) -> u
     if isinstance(val, ua.DataValue):
         return val
     if isinstance(val, ua.Variant):
-        return ua.DataValue(val, SourceTimestamp=datetime.now(UTC))
-    return ua.DataValue(ua.Variant(val, varianttype), SourceTimestamp=datetime.now(UTC))
+        return ua.DataValue(val)
+    return ua.DataValue(ua.Variant(val, varianttype))
 
 
 def val_to_string(val: Any, truncate: bool = False) -> str:

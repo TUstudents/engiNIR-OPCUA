@@ -260,8 +260,8 @@ def test_srv67_select_clauses_apply_type_definition_and_index_range(server: Serv
     """Part 4, 7.22.3: the select clause operand carries a TypeDefinitionId and an IndexRange."""
     event = sample_event(Name=("hello", STR), Number=(3, I32))
     event.add_property("EventType", BASE_EVENT, ua.VariantType.NodeId)
-    from enginir_opcua.server.index_range import select_index_range
     from enginir_opcua.server.node_walk import is_subtype
+    from enginir_opcua.ua.numeric_range import select_index_range
 
     def subtype(candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:
         return is_subtype(server.iserver.aspace, candidate, ancestor)

@@ -7,9 +7,10 @@ from logging import Logger
 from typing import Any
 
 from enginir_opcua import ua
+from enginir_opcua.ua.numeric_range import IndexRange, select_index_range
+from enginir_opcua.ua.uaerrors import BadIndexRangeInvalid
 
 from .address_space import AddressSpace
-from .index_range import parse_index_range, select_index_range
 from .node_walk import is_subtype
 
 VT = ua.VariantType
@@ -618,7 +619,9 @@ class EventFilterChecker:
     def _index_range_code(self, clause: ua.SimpleAttributeOperand, field: ua.NodeId) -> int:
         if not clause.IndexRange:
             return ua.StatusCodes.Good
-        if parse_index_range(clause.IndexRange) is None:
+        try:
+            IndexRange.parse(clause.IndexRange)
+        except BadIndexRangeInvalid:
             return ua.StatusCodes.BadIndexRangeInvalid
         rank = self._aspace.read_attribute_value(field, ua.AttributeIds.ValueRank)
         data_type = self._aspace.read_attribute_value(field, ua.AttributeIds.DataType)

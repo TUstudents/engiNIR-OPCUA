@@ -210,6 +210,8 @@ class DataTypeDictionaryBuilder:
             # add reverse link to dictionary
             _reference_generator(description_node_id, self.dict_id, ua.NodeId(ua.ObjectIds.HasComponent, 0), False),
         ]
+        for ref in refs:
+            ref.TargetNodeClass = ua.NodeClass.Unspecified
         await self._session_server.add_references(refs)
 
     async def _create_data_type(

@@ -5,11 +5,14 @@ Links PubSub received DataSets to the AddressSpace
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..common.node import Node
 from ..ua import SubscribedDataSetMirrorDataType, TargetVariablesDataType
 from ..ua.attribute_ids import AttributeIds
+from ..ua.numeric_range import IndexRange
+from ..ua.uaerrors import UaStatusCodeError
 from ..ua.uaprotocol_auto import (
     FieldMetaData,
     FieldTargetDataType,
@@ -109,9 +112,15 @@ class SubScribedTargetVariables:
                         # Set errorcode
                         await node.write_attribute(AttributeIds.Value, field.Value)
                 else:
-                    await node.write_value(field.Value)
+                    value = field.Value
+                    receiver_range = IndexRange.parse(cfg._cfg.ReceiverIndexRange)
+                    if receiver_range is not None and value.Value is not None:
+                        value = replace(value, Value=receiver_range.select(value.Value))
+                    await node.write_attribute(AttributeIds.Value, value, indexrange=cfg._cfg.WriteIndexRange or None)
             except KeyError:
                 pass
+            except UaStatusCodeError as error:
+                logger.warning("Field %s was not written to its target: %s", field.Name, error)
 
     async def on_state_change(self, meta: DataSetMeta, state: PubSubState) -> None:
         """Called when a DataSet state changes"""

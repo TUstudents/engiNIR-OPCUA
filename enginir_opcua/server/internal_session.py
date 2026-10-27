@@ -22,6 +22,7 @@ from ..crypto import uacrypto
 from ..crypto.uacrypto import certificate_thumbprint, x509
 from ..crypto.validator import check_application_uri
 from .address_space import AddressSpace
+from .continuation_points import ContinuationPoints
 from .identity import (
     COUNTED_FAILURES,
     match_token_policy,
@@ -156,6 +157,7 @@ class Session:
         self._channel: weakref.ref[SessionChannel] | None = weakref.ref(channel)
         self.publish_queue: deque[PublishRequestData] = deque()
         self.in_flight = 0
+        self.continuation_points = ContinuationPoints(lambda: self.iserver.max_browse_continuation_points)
         self.services = InternalSession(
             self.iserver,
             self.iserver.aspace,
@@ -164,6 +166,7 @@ class Session:
             user=self.user,
             external=True,
             session_id=session_id,
+            continuation_points=self.continuation_points,
         )
         self.services.publish_callback = self.forward_publish_response
         self.services.publish_request_callback = self.get_publish_request
@@ -333,6 +336,7 @@ class Session:
             return
         _logger.info("close session %s", self.name)
         self.state = SessionState.Closed
+        self.continuation_points.clear()
         self.manager.forget(self)
         self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
         self.iserver.subscription_service.drop_pending_notices(self.id)
@@ -630,10 +634,16 @@ class InternalSession(AbstractSession):
         user: User = User(role=UserRole.Anonymous),
         external: bool = False,
         session_id: ua.NodeId | None = None,
+        continuation_points: ContinuationPoints | None = None,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.iserver: InternalServer = internal_server
         self.external = external
+        self.continuation_points: ContinuationPoints = (
+            continuation_points
+            if continuation_points is not None
+            else ContinuationPoints(lambda: internal_server.max_browse_continuation_points)
+        )
         self.aspace: AddressSpace = aspace
         self.subscription_service: SubscriptionService = submgr
         self.name: str = name
@@ -660,7 +670,7 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
-        results = self.iserver.attribute_service.read(params)
+        results = self.iserver.attribute_service.read(params, trusted=not self.external)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostRead, ServerItemCallback(params, results, user, self.external)
         )
@@ -680,21 +690,17 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreWrite, ServerItemCallback(params, None, user, self.external)
         )
-        write_result = await self.iserver.attribute_service.write(params, user=user)
+        write_result = await self.iserver.attribute_service.write(params, trusted=not self.external)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostWrite, ServerItemCallback(params, write_result, user, self.external)
         )
         return write_result
 
     async def browse(self, params: ua.BrowseParameters) -> list[ua.BrowseResult]:
-        return self.iserver.view_service.browse(params)
+        return self.iserver.view_service.browse(params, self.continuation_points)
 
     async def browse_next(self, parameters: ua.BrowseNextParameters) -> list[ua.BrowseResult]:
-        # TODO
-        # ContinuationPoint: https://reference.opcfoundation.org/v104/Core/docs/Part4/7.6/
-        # Add "ContinuationPoints" and some form of management for them to current sessionimplementation
-        # BrowseNext: https://reference.opcfoundation.org/Core/Part4/v104/5.8.3/
-        raise NotImplementedError
+        return self.iserver.view_service.browse_next(parameters, self.continuation_points)
 
     async def register_nodes(self, nodes: list[ua.NodeId]) -> list[ua.NodeId]:
         self.logger.info("Node registration not implemented")
@@ -707,23 +713,23 @@ class InternalSession(AbstractSession):
         return self.iserver.view_service.translate_browsepaths_to_nodeids(params)
 
     async def add_nodes(self, params: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
-        return self.iserver.node_mgt_service.add_nodes(params, self.user)
+        return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        return await self.iserver.node_mgt_service.delete_nodes(params, self.user)
+        return await self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
 
     async def add_references(self, params: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.add_references(params, self.user)
+        return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
 
     async def delete_references(self, params: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.delete_references(params, self.user)
+        return self.iserver.node_mgt_service.delete_references(params, trusted=not self.external)
 
     def add_method_callback(self, methodid: ua.NodeId, callback: Callable[..., Any]) -> ua.StatusCode:
         return self.aspace.add_method_callback(methodid, callback)
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         """COROUTINE"""
-        return await self.iserver.method_service.call(params)
+        return await self.iserver.method_service.call(params, trusted=not self.external)
 
     async def create_subscription(
         self,
