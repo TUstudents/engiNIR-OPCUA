@@ -222,7 +222,7 @@ class HaClient:
                 self.manager.wake()
             prev = state
 
-        unsub = client.uaclient._add_state_listener(on_state_change)
+        unsub = client.uaclient.add_state_listener(on_state_change)
         self._state_listener_unsubs.append(unsub)
 
     async def stop(self) -> None:

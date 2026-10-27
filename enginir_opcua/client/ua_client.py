@@ -536,8 +536,6 @@ class UaClient:
 
         return unsubscribe
 
-    _add_state_listener = add_state_listener
-
     def remove_state_listener(self, callback: Callable[[UaClientState], None]) -> None:
         try:
             self._state_listeners.remove(callback)

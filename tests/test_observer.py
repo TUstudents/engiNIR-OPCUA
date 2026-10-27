@@ -155,7 +155,7 @@ def test_a_broken_state_listener_does_not_break_the_transition():
         raise RuntimeError("listener is broken")
 
     client = UaClient()
-    client._add_state_listener(broken)
+    client.add_state_listener(broken)
 
     client._set_state(UaClientState.CONNECTED)
 
