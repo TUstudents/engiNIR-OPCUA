@@ -4,12 +4,14 @@ server side implementation of a subscription object
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
 import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
@@ -65,6 +67,7 @@ class MonitoredItemData:
         self.discard_oldest: bool = True
         self.timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both
         self.held: list[Any] = []
+        self.sampler: asyncio.Task[None] | None = None
 
 
 class MonitoredItemService:
@@ -119,7 +122,9 @@ class MonitoredItemService:
                 continue
             value = mdata.last_sample
             if value is None:
-                value = self.aspace.read_attribute_value(read_value_id.NodeId, read_value_id.AttributeId)
+                value = self._readable(
+                    mdata, self.aspace.read_attribute_value(read_value_id.NodeId, read_value_id.AttributeId)
+                )
             self._queue_data(mdata, value)
 
     def modify_monitored_items(self, params: ua.ModifyMonitoredItemsParameters) -> list[ua.MonitoredItemModifyResult]:
@@ -303,6 +308,7 @@ class MonitoredItemService:
             self._monitored_datachange[handle] = result.MonitoredItemId
             if mdata.mode != ua.MonitoringMode.Disabled:
                 await self.trigger_datachange(handle, params.ItemToMonitor.NodeId, params.ItemToMonitor.AttributeId)
+                self._start_sampler(mdata)
         return result
 
     async def set_monitoring_mode(self, mode: ua.MonitoringMode, ids: list[int]) -> list[ua.StatusCode]:
@@ -324,9 +330,11 @@ class MonitoredItemService:
         is_event = self._is_event_item(mdata)
         if mode == ua.MonitoringMode.Disabled:
             self._clear(mdata)
+            self._stop_sampler(mdata)
             mdata.mode = mode
         elif previous_mode == ua.MonitoringMode.Disabled:
             mdata.mode = mode
+            self._start_sampler(mdata)
             if not is_event and mdata.callback_handle is not None and mdata.read_value_id is not None:
                 await self.trigger_datachange(
                     mdata.callback_handle, mdata.read_value_id.NodeId, mdata.read_value_id.AttributeId
@@ -374,6 +382,7 @@ class MonitoredItemService:
                 self._monitored_datachange.pop(handle)
                 break
         self._clear(mdata)
+        self._stop_sampler(mdata)
         self._monitored_items.pop(mid)
         return ua.StatusCode()
 
@@ -440,25 +449,75 @@ class MonitoredItemService:
             notification.Value, StatusCode=ua.StatusCode(code | OVERFLOW_INFO_BITS)
         )
 
-    async def datachange_callback(self, handle: int, value: ua.DataValue, error: ua.StatusCode | None = None) -> None:
-        if error:
-            self.logger.info(
-                "subscription %s: datachange callback called with handle '%s' and error '%s'", self, handle, error
-            )
-            await self.trigger_statuschange(error)
-        else:
-            mid = self._monitored_datachange[handle]
-            mdata = self._monitored_items[mid]
-            if mdata.mode == ua.MonitoringMode.Disabled:
-                return
-            mdata.last_sample = copy.deepcopy(value)
-            flt = mdata.filter if isinstance(mdata.filter, ua.uaprotocol_auto.DataChangeFilter) else None
-            eu_range = None
-            if flt is not None and flt.DeadbandType == ua.DeadbandType.Percent and mdata.read_value_id is not None:
-                eu_range = self._eu_range(mdata.read_value_id.NodeId)
-            if data_change_passes(mdata.last_reported, value, flt, eu_range):
-                mdata.last_reported = mdata.last_sample
-                self._queue_data(mdata, value)
+    async def datachange_callback(
+        self, handle: int, value: ua.DataValue | None, error: ua.StatusCode | None = None
+    ) -> None:
+        mid = self._monitored_datachange.get(handle)
+        mdata = self._monitored_items.get(mid) if mid is not None else None
+        if mdata is None:
+            return
+        if error is not None and value is None:
+            self.logger.info("subscription %s: handle '%s' reports error '%s'", self, handle, error)
+            self._sample(mdata, ua.DataValue(StatusCode=error, ServerTimestamp=datetime.now(UTC)), check_access=False)
+        elif value is not None:
+            self._sample(mdata, value)
+
+    def _sample(self, mdata: MonitoredItemData, value: ua.DataValue, check_access: bool = True) -> None:
+        if mdata.mode == ua.MonitoringMode.Disabled:
+            return
+        if check_access:
+            value = self._readable(mdata, value)
+        mdata.last_sample = copy.deepcopy(value)
+        flt = mdata.filter if isinstance(mdata.filter, ua.uaprotocol_auto.DataChangeFilter) else None
+        eu_range = None
+        if flt is not None and flt.DeadbandType == ua.DeadbandType.Percent and mdata.read_value_id is not None:
+            eu_range = self._eu_range(mdata.read_value_id.NodeId)
+        if data_change_passes(mdata.last_reported, value, flt, eu_range):
+            mdata.last_reported = mdata.last_sample
+            self._queue_data(mdata, value)
+
+    def _readable(self, mdata: MonitoredItemData, value: ua.DataValue) -> ua.DataValue:
+        item = mdata.read_value_id
+        if self.isub.owner_user is None or item is None or item.AttributeId != ua.AttributeIds.Value:
+            return value
+        denied = self._access_denied(item.NodeId)
+        if denied is None:
+            return value
+        return ua.DataValue(StatusCode=ua.StatusCode(denied), ServerTimestamp=datetime.now(UTC))
+
+    def _access_denied(self, node_id: ua.NodeId) -> int | None:
+        access = self.aspace.read_attribute_value(node_id, ua.AttributeIds.AccessLevel)
+        if access.Value is not None and not ua.ua_binary.is_bit_set(access.Value.Value, ua.AccessLevel.CurrentRead):
+            return ua.StatusCodes.BadNotReadable
+        user_access = self.aspace.read_attribute_value(node_id, ua.AttributeIds.UserAccessLevel)
+        if user_access.Value is not None and not ua.ua_binary.is_bit_set(
+            user_access.Value.Value, ua.AccessLevel.CurrentRead
+        ):
+            return ua.StatusCodes.BadUserAccessDenied
+        return None
+
+    def _start_sampler(self, mdata: MonitoredItemData) -> None:
+        item = mdata.read_value_id
+        if mdata.sampler is not None or item is None or item.AttributeId != ua.AttributeIds.Value:
+            return
+        node = self.aspace.get(item.NodeId)
+        attribute = node.attributes.get(ua.AttributeIds.Value) if node is not None else None
+        if attribute is None or attribute.value_callback is None:
+            return
+        mdata.sampler = asyncio.get_running_loop().create_task(self._poll(mdata, item))
+
+    def _stop_sampler(self, mdata: MonitoredItemData) -> None:
+        if mdata.sampler is not None:
+            mdata.sampler.cancel()
+            mdata.sampler = None
+
+    async def _poll(self, mdata: MonitoredItemData, item: ua.ReadValueId) -> None:
+        while True:
+            await asyncio.sleep(max(mdata.sampling_interval, 1.0) / 1000.0)
+            try:
+                self._sample(mdata, self.aspace.read_attribute_value(item.NodeId, item.AttributeId))
+            except Exception:
+                self.logger.exception("Sampling %s of monitored item %s failed", item.NodeId, mdata.monitored_item_id)
 
     def _eu_range(self, node_id: ua.NodeId) -> tuple[float, float] | None:
         data = self.aspace.get(node_id)
@@ -575,6 +634,3 @@ class MonitoredItemService:
 
     def _is_subtype(self, candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:
         return is_subtype(self.aspace, candidate, ancestor)
-
-    async def trigger_statuschange(self, code: ua.StatusCode) -> None:
-        await self.isub.enqueue_statuschange(code)

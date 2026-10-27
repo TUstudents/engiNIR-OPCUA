@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 
 from enginir_opcua import Server, ua
 from enginir_opcua.common import utils
+from enginir_opcua.crypto.permission_rules import User, UserRole
 
 from .monitoring import SLOW, create_items, item_request, make_server, modify_items, open_subscription, publish
 
@@ -306,3 +308,104 @@ async def test_srv57_items_per_server_are_limited() -> None:
     await create_items(server, first, item_request(nodeid), item_request(nodeid))
     results = await create_items(server, second, item_request(nodeid), item_request(nodeid))
     assert [r.StatusCode.value for r in results] == [ua.StatusCodes.Good, ua.StatusCodes.BadTooManyMonitoredItems]
+
+
+async def test_srv50_deleting_the_monitored_node_delivers_bad_node_id_unknown(server: Server) -> None:
+    """Part 4, 5.13.1.6 and 5.8.4: the item reports Bad_NodeIdUnknown, it is not deleted."""
+    node = await server.nodes.objects.add_variable(2, "DeletedWhileMonitored", 1)
+    sub, wire = await open_subscription(server)
+    [created] = await create_items(server, sub, item_request(node.nodeid, queue=5))
+    await publish(sub, wire)
+    await node.delete()
+    notifications = await publish(sub, wire)
+    assert [n.Value.StatusCode.value for n in notifications] == [ua.StatusCodes.BadNodeIdUnknown]
+    assert notifications[0].Value.Value.Value is None
+    assert created.MonitoredItemId in sub.monitored_item_srv._monitored_items
+    assert await publish(sub, wire) == []
+
+
+async def test_srv52_a_node_with_a_value_callback_is_sampled_at_the_sampling_interval(server: Server) -> None:
+    """Part 4, 5.13.1.2: the server samples a value that changes without a write."""
+    node = await server.nodes.objects.add_variable(2, "CallbackNode", 0)
+    counter = {"value": 0}
+
+    def current(_nodeid: ua.NodeId, _attribute: ua.AttributeIds) -> ua.DataValue:
+        counter["value"] += 1
+        return ua.DataValue(ua.Variant(counter["value"], ua.VariantType.Int64))
+
+    server.iserver.aspace.set_attribute_value_callback(node.nodeid, ua.AttributeIds.Value, current)
+    sub, wire = await open_subscription(server)
+    await create_items(server, sub, item_request(node.nodeid, queue=50, sampling=20))
+    await asyncio.sleep(0.3)
+    notifications = await publish(sub, wire)
+    assert len(notifications) >= 3
+    assert values_of(notifications) == sorted(set(values_of(notifications)))
+    await sub.stop()
+
+
+async def test_srv52_the_sampler_stops_when_the_item_is_disabled_or_deleted(server: Server) -> None:
+    """Part 4, 5.13.1.3."""
+    node = await server.nodes.objects.add_variable(2, "CallbackStops", 0)
+    calls = {"count": 0}
+
+    def current(_nodeid: ua.NodeId, _attribute: ua.AttributeIds) -> ua.DataValue:
+        calls["count"] += 1
+        return ua.DataValue(ua.Variant(calls["count"], ua.VariantType.Int64))
+
+    server.iserver.aspace.set_attribute_value_callback(node.nodeid, ua.AttributeIds.Value, current)
+    sub, _ = await open_subscription(server)
+    [created] = await create_items(server, sub, item_request(node.nodeid, queue=50, sampling=20))
+    await sub.monitored_item_srv.set_monitoring_mode(ua.MonitoringMode.Disabled, [created.MonitoredItemId])
+    count = calls["count"]
+    await asyncio.sleep(0.15)
+    assert calls["count"] == count
+    await sub.monitored_item_srv.set_monitoring_mode(ua.MonitoringMode.Reporting, [created.MonitoredItemId])
+    await asyncio.sleep(0.15)
+    assert calls["count"] > count + 2
+    sub.monitored_item_srv.delete_monitored_items([created.MonitoredItemId])
+    count = calls["count"]
+    await asyncio.sleep(0.15)
+    assert calls["count"] == count
+
+
+@pytest.mark.parametrize(
+    "bit, status",
+    [(ua.AccessLevel.CurrentRead, ua.StatusCodes.BadNotReadable)],
+)
+async def test_srv51_an_item_of_a_node_the_access_level_forbids_reading_delivers_a_bad_status(
+    server: Server, bit: ua.AccessLevel, status: int
+) -> None:
+    """Part 4, 5.13.2.1 and 5.10.2.4: the sample carries Bad_NotReadable and no value."""
+    node = await server.nodes.objects.add_variable(2, "NotReadableForItems", 5)
+    await node.unset_attr_bit(ua.AttributeIds.AccessLevel, bit)
+    sub, wire = await open_subscription(server)
+    sub.owner_user = User(role=UserRole.User, name="alice")
+    [created] = await create_items(server, sub, item_request(node.nodeid, queue=5))
+    assert created.StatusCode.is_good()
+    [notification] = await publish(sub, wire)
+    assert notification.Value.StatusCode.value == status
+    assert notification.Value.Value.Value is None
+    await node.set_attr_bit(ua.AttributeIds.AccessLevel, bit)
+    await write(server, node.nodeid, 6)
+    [notification] = await publish(sub, wire)
+    assert notification.Value.Value.Value == 6
+
+
+async def test_srv51_the_user_access_level_is_checked_for_the_subscriptions_user(server: Server) -> None:
+    """Part 4, 5.13.2.1 and 5.10.2.4: Bad_UserAccessDenied."""
+    node = await server.nodes.objects.add_variable(2, "UserDeniedForItems", 5)
+    await node.unset_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.CurrentRead)
+    sub, wire = await open_subscription(server)
+    sub.owner_user = User(role=UserRole.Admin, name="root")
+    await create_items(server, sub, item_request(node.nodeid, queue=5))
+    [notification] = await publish(sub, wire)
+    assert notification.Value.StatusCode.value == ua.StatusCodes.BadUserAccessDenied
+
+
+async def test_srv51_the_in_process_subscription_is_trusted(server: Server) -> None:
+    """Part 4, 5.13.2.1: the server's own subscription reads what it needs."""
+    node = await server.nodes.objects.add_variable(2, "TrustedItems", 5)
+    await node.unset_attr_bit(ua.AttributeIds.AccessLevel, ua.AccessLevel.CurrentRead)
+    sub, wire = await open_subscription(server)
+    await create_items(server, sub, item_request(node.nodeid, queue=5))
+    assert values_of(await publish(sub, wire)) == [5]
