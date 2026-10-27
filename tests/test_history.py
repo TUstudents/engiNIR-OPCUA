@@ -5,42 +5,42 @@ import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.common.node import Node
+from enginir_opcua.server.history import TimeDomain
 
 pytestmark = pytest.mark.asyncio
 
 
+def future() -> datetime:
+    return datetime.now(UTC) + timedelta(days=1)
+
+
 async def test_history_var_read_one(history_server):
-    """
-    no start and no end is not defined by spec, return reverse order
-    Spec says that at least two parameters should be provided, so this one is out of spec
-    """
-    res = await history_server.var.read_raw_history(None, None, 1)
+    """only an end time and a count: newest first"""
+    res = await history_server.var.read_raw_history(None, future(), 1)
     assert 1 == len(res)
     assert res[0].Value.Value == history_server.values[-1]
 
 
-async def test_history_var_read_none(history_server):
-    """no start and no end is not defined by spec, return reverse order"""
-    res = await history_server.var.read_raw_history(None, None, 0)
-    assert 20 == len(res)
-    assert res[0].Value.Value == history_server.values[-1]
-    assert res[-1].Value.Value == history_server.values[0]
-
-
 async def test_history_var_read_last_3(history_server):
-    """no start and no end is not defined by spec, return reverse order"""
-    res = await history_server.var.read_raw_history(None, None, 3)
+    res = await history_server.var.read_raw_history(None, future(), 3)
     assert 3 == len(res)
     assert res[-1].Value.Value == history_server.values[-3]
     assert res[0].Value.Value == history_server.values[-1]
 
 
 async def test_history_var_read_all2(history_server):
-    """no start and no end is not defined by spec, return reverse order"""
-    res = await history_server.var.read_raw_history(None, None, 9999)
-    assert 20 == len(res)
+    res = await history_server.var.read_raw_history(None, future(), 9999)
+    assert len(history_server.values) == len(res)
     assert res[-1].Value.Value == history_server.values[0]
     assert res[0].Value.Value == history_server.values[-1]
+
+
+async def test_srv20_fewer_than_two_of_start_end_count_is_invalid_argument(history_server):
+    """Part 11, 6.5.3.1: two of startTime, endTime and numValuesPerNode shall be specified."""
+    old = datetime.now(UTC) - timedelta(days=6)
+    for start, end, count in ((None, None, 0), (None, None, 5), (old, None, 0), (None, future(), 0)):
+        with pytest.raises(ua.uaerrors.BadInvalidArgument):
+            await history_server.var.read_raw_history(start, end, count)
 
 
 async def test_history_var_read_2_with_end(history_server):
@@ -57,7 +57,7 @@ async def test_history_var_read_all(history_server):
     old = now - timedelta(days=6)
 
     res = await history_server.var.read_raw_history(old, now, 0)
-    assert 20 == len(res)
+    assert len(history_server.values) == len(res)
     assert res[-1].Value.Value == history_server.values[-1]
     assert res[0].Value.Value == history_server.values[0]
 
@@ -91,25 +91,6 @@ async def test_history_var_read_6_with_start(history_server):
     assert 6 == len(res)
     assert res[-1].Value.Value == history_server.values[5]
     assert res[0].Value.Value == history_server.values[0]
-
-
-async def test_history_var_read_all_with_start(history_server):
-    """only start return original order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-    res = await history_server.var.read_raw_history(old, None, 0)
-    assert 20 == len(res)
-    assert res[-1].Value.Value == history_server.values[-1]
-    assert res[0].Value.Value == history_server.values[0]
-
-
-async def test_history_var_read_all_with_end(history_server):
-    """only end return reversed order"""
-    end = datetime.now(UTC) + timedelta(days=6)
-    res = await history_server.var.read_raw_history(None, end, 0)
-    assert 20 == len(res)
-    assert res[-1].Value.Value == history_server.values[0]
-    assert res[0].Value.Value == history_server.values[-1]
 
 
 async def test_history_var_read_3_with_end(history_server):
@@ -160,6 +141,6 @@ async def test_srv54_history_keeps_every_value_written_within_one_publish_cycle(
     for value in range(1, 101):
         await var.write_value(value)
     await asyncio.sleep(0.3)
-    values = await srv.iserver.history_manager.storage.read_node_history(var.nodeid, None, None, 0)
-    assert len(values[0]) == 101
-    await srv.iserver.history_manager._sub.delete()
+    page = await srv.iserver.history_manager.storage.read_node_history(var.nodeid, TimeDomain(None, None, 1000))
+    assert len(page.entries) == 101
+    await srv.stop()

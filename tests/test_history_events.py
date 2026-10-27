@@ -59,7 +59,7 @@ async def test_history_ev_read_all_with_start(history_server):
     """only start return original order"""
     now = datetime.now(UTC)
     old = now - timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(old, None, 0)
+    res = await history_server.srv_node.read_event_history(old, None, 100)
     assert 20 == len(res)
     assert res[-1].Severity == history_server.ev_values[-1]
     assert res[0].Severity == history_server.ev_values[0]
@@ -68,7 +68,7 @@ async def test_history_ev_read_all_with_start(history_server):
 async def test_history_ev_read_all_with_end(history_server):
     """only end return reversed order"""
     end = datetime.now(UTC) + timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(None, end, 0)
+    res = await history_server.srv_node.read_event_history(None, end, 100)
     assert 20 == len(res)
     assert res[-1].Severity == history_server.ev_values[0]
     assert res[0].Severity == history_server.ev_values[-1]
@@ -87,7 +87,7 @@ async def test_history_ev_read_all_filter_order_reversed(history_server):
     """reverse event filter select clauses and test that results match the filter order"""
     now = datetime.now(UTC)
     old = now - timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(old, None, 0)
+    res = await history_server.srv_node.read_event_history(old, None, 100)
     assert 20 == len(res)
     assert res[-1].Severity == history_server.ev_values[-1]
     assert res[0].Severity == history_server.ev_values[0]

@@ -112,6 +112,9 @@ class InternalServer:
         self.max_monitored_item_queue_size: int = 1_000
         self.default_event_queue_size: int = 100
         self.min_sampling_interval_ms: float = 10.0
+        self.history_sampling_interval_ms: float = 0.0
+        self.max_history_data_response_size: int = 10_000
+        self.max_history_continuation_points: int = 10
         self.max_sampling_interval_ms: float = 3_600_000.0
         self.max_monitored_items_per_subscription: int = 10_000
         self.max_monitored_items: int = 100_000
@@ -445,18 +448,12 @@ class InternalServer:
         """
         Set attribute Historizing of node to True and start storing data for history
         """
-        await node.write_attribute(ua.AttributeIds.Historizing, ua.DataValue(True))
-        await node.set_attr_bit(ua.AttributeIds.AccessLevel, ua.AccessLevel.HistoryRead)
-        await node.set_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.HistoryRead)
         await self.history_manager.historize_data_change(node, period, count)
 
     async def disable_history_data_change(self, node: Node) -> None:
         """
         Set attribute Historizing of node to False and stop storing data for history
         """
-        await node.write_attribute(ua.AttributeIds.Historizing, ua.DataValue(False))
-        await node.unset_attr_bit(ua.AttributeIds.AccessLevel, ua.AccessLevel.HistoryRead)
-        await node.unset_attr_bit(ua.AttributeIds.UserAccessLevel, ua.AccessLevel.HistoryRead)
         await self.history_manager.dehistorize(node)
 
     async def enable_history_event(
@@ -465,19 +462,12 @@ class InternalServer:
         """
         Set attribute History Read of object events to True and start storing data for history
         """
-        event_notifier = await source.read_event_notifier()
-        if ua.EventNotifier.SubscribeToEvents not in event_notifier:
-            raise ua.UaError("Node does not generate events", event_notifier)
-        if ua.EventNotifier.HistoryRead not in event_notifier:
-            event_notifier.add(ua.EventNotifier.HistoryRead)
-            await source.set_event_notifier(event_notifier)
         await self.history_manager.historize_event(source, period, count)
 
     async def disable_history_event(self, source: Node) -> None:
         """
         Set attribute History Read of node to False and stop storing data for history
         """
-        await source.unset_attr_bit(ua.AttributeIds.EventNotifier, ua.EventNotifier.HistoryRead)
         await self.history_manager.dehistorize(source)
 
     def subscribe_server_callback(self, event: str, handle: Callable[..., Any]) -> None:

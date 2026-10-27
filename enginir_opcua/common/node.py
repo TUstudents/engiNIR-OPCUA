@@ -678,7 +678,7 @@ class Node:
         starttime: datetime | None = None,
         endtime: datetime | None = None,
         numvalues: int = 0,
-        return_bounds: bool = True,
+        return_bounds: bool = False,
     ) -> list[ua.DataValue]:
         """
         Read raw history of a node

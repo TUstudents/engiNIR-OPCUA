@@ -20,7 +20,6 @@ from enginir_opcua.common import ua_utils
 from enginir_opcua.common.copy_node_util import copy_node
 from enginir_opcua.common.instantiate_util import instantiate
 from enginir_opcua.common.methods import call_method_full
-from enginir_opcua.common.sql_injection import SqlInjectionError, validate_table_name
 from enginir_opcua.common.structures104 import new_enum, new_struct, new_struct_field
 from enginir_opcua.ua import Int16, NodeId, NodeIdType, String
 from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
@@ -2229,23 +2228,6 @@ async def test_custom_struct_with_strange_chars(opc):
     )
     val = await var.read_value()
     assert val.My_UInt32 == [78, 79]
-
-
-async def test_sql_injection():
-    table = "myTable"
-    validate_table_name(table)
-    table = "my table"
-    with pytest.raises(SqlInjectionError) as _:
-        validate_table_name(table)
-    table = "user;SELECT true"
-    with pytest.raises(SqlInjectionError) as _:
-        validate_table_name(table)
-    table = 'user"'
-    with pytest.raises(SqlInjectionError) as _:
-        validate_table_name(table)
-    table = "user'"
-    with pytest.raises(SqlInjectionError) as _:
-        validate_table_name(table)
 
 
 async def test_parse_nodeid_name_contains_multiple_dividers():

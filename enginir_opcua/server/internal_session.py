@@ -22,7 +22,8 @@ from ..crypto import uacrypto
 from ..crypto.uacrypto import certificate_thumbprint, x509
 from ..crypto.validator import check_application_uri
 from .address_space import AddressSpace
-from .continuation_points import ContinuationPoints
+from .continuation_points import BrowseCursor, ContinuationPoints
+from .history_read import HistoryCursor
 from .identity import (
     COUNTED_FAILURES,
     match_token_policy,
@@ -157,7 +158,8 @@ class Session:
         self._channel: weakref.ref[SessionChannel] | None = weakref.ref(channel)
         self.publish_queue: deque[PublishRequestData] = deque()
         self.in_flight = 0
-        self.continuation_points = ContinuationPoints(lambda: self.iserver.max_browse_continuation_points)
+        self.continuation_points = ContinuationPoints[BrowseCursor](lambda: self.iserver.max_browse_continuation_points)
+        self.history_points = ContinuationPoints[HistoryCursor](lambda: self.iserver.max_history_continuation_points)
         self.services = InternalSession(
             self.iserver,
             self.iserver.aspace,
@@ -167,6 +169,7 @@ class Session:
             external=True,
             session_id=session_id,
             continuation_points=self.continuation_points,
+            history_points=self.history_points,
         )
         self.services.publish_callback = self.forward_publish_response
         self.services.publish_request_callback = self.get_publish_request
@@ -337,6 +340,7 @@ class Session:
         _logger.info("close session %s", self.name)
         self.state = SessionState.Closed
         self.continuation_points.clear()
+        self.history_points.clear()
         self.manager.forget(self)
         self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
         self.iserver.subscription_service.drop_pending_notices(self.id)
@@ -634,15 +638,21 @@ class InternalSession(AbstractSession):
         user: User = User(role=UserRole.Anonymous),
         external: bool = False,
         session_id: ua.NodeId | None = None,
-        continuation_points: ContinuationPoints | None = None,
+        continuation_points: ContinuationPoints[BrowseCursor] | None = None,
+        history_points: ContinuationPoints[HistoryCursor] | None = None,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.iserver: InternalServer = internal_server
         self.external = external
-        self.continuation_points: ContinuationPoints = (
+        self.continuation_points: ContinuationPoints[BrowseCursor] = (
             continuation_points
             if continuation_points is not None
-            else ContinuationPoints(lambda: internal_server.max_browse_continuation_points)
+            else ContinuationPoints[BrowseCursor](lambda: internal_server.max_browse_continuation_points)
+        )
+        self.history_points: ContinuationPoints[HistoryCursor] = (
+            history_points
+            if history_points is not None
+            else ContinuationPoints[HistoryCursor](lambda: internal_server.max_history_continuation_points)
         )
         self.aspace: AddressSpace = aspace
         self.subscription_service: SubscriptionService = submgr
@@ -677,10 +687,10 @@ class InternalSession(AbstractSession):
         return results
 
     async def history_read(self, params: ua.HistoryReadParameters) -> list[ua.HistoryReadResult]:
-        return await self.iserver.history_manager.read_history(params)
+        return await self.iserver.history_manager.read_history(params, self.history_points, not self.external)
 
     async def history_update(self, params: ua.HistoryUpdateParameters) -> list[ua.HistoryUpdateResult]:
-        return self.iserver.history_manager.update_history(params)
+        raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
 
     async def write(self, params: ua.WriteParameters) -> list[ua.StatusCode]:
         if self.user is None:

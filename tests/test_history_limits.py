@@ -3,14 +3,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from enginir_opcua import ua
+from enginir_opcua.server.history import TimeDomain
 
 pytestmark = pytest.mark.asyncio
 NODE_ID = ua.NodeId(123)
 
 
 async def result_count(history):
-    results, _cont = await history.read_node_history(NODE_ID, None, None, None)
-    return len(results)
+    page = await history.read_node_history(NODE_ID, TimeDomain(None, None, 1000))
+    return len(page.entries)
 
 
 def add_value(history, age):
