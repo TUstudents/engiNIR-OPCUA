@@ -17,6 +17,8 @@ from enginir_opcua import ua
 from enginir_opcua.common import utils
 
 from .address_space import AddressSpace
+from .data_change import data_change_passes
+from .node_walk import is_subtype
 
 if TYPE_CHECKING:
     from .internal_subscription import InternalSubscription
@@ -34,6 +36,9 @@ class MonitoredItemLimits:
 
 
 OVERFLOW_INFO_BITS = 0x0480
+HAS_PROPERTY = ua.NodeId(ua.ObjectIds.HasProperty)
+BASE_DATA_TYPE = ua.NodeId(ua.ObjectIds.BaseDataType)
+NUMBER = ua.NodeId(ua.ObjectIds.Number)
 VALID_TIMESTAMPS = (
     ua.TimestampsToReturn.Source,
     ua.TimestampsToReturn.Server,
@@ -50,30 +55,14 @@ class MonitoredItemData:
         self.mode: ua.MonitoringMode | None = None
         self.read_value_id: ua.ReadValueId | None = None
         self.filter: Any = None
-        self.mvalue = MonitoredItemValues()
+        self.last_sample: ua.DataValue | None = None
+        self.last_reported: ua.DataValue | None = None
         self.where_clause_evaluator: WhereClauseEvaluator | None = None
         self.queue_size: int = 0
         self.sampling_interval: float = 0.0
         self.discard_oldest: bool = True
         self.timestamps: ua.TimestampsToReturn = ua.TimestampsToReturn.Both
         self.held: list[Any] = []
-
-
-class MonitoredItemValues:
-    def __init__(self) -> None:
-        self.current_dvalue: ua.DataValue | None = None
-        self.old_dvalue: ua.DataValue | None = None
-
-    def set_current_datavalue(self, cur_val: ua.DataValue) -> None:
-        self.old_dvalue = self.current_dvalue
-        # We need to clone the value, to prevent referencing the inner value
-        self.current_dvalue = copy.deepcopy(cur_val)
-
-    def get_current_datavalue(self) -> ua.DataValue | None:
-        return self.current_dvalue
-
-    def get_old_datavalue(self) -> ua.DataValue | None:
-        return self.old_dvalue
 
 
 class MonitoredItemService:
@@ -126,7 +115,7 @@ class MonitoredItemService:
                 continue
             if read_value_id.AttributeId == ua.AttributeIds.EventNotifier or self.isub.has_queued_datachange(mid):
                 continue
-            value = mdata.mvalue.get_current_datavalue()
+            value = mdata.last_sample
             if value is None:
                 value = self.aspace.read_attribute_value(read_value_id.NodeId, read_value_id.AttributeId)
             self._queue_data(mdata, value)
@@ -152,13 +141,16 @@ class MonitoredItemService:
         requested = params.RequestedParameters
         is_event = self._is_event_item(mdata)
         node_id = mdata.read_value_id.NodeId if mdata.read_value_id is not None else None
+        new_filter = self._normalise_filter(requested.Filter)
+        status = self._check_filter(mdata.read_value_id, new_filter)
+        if not status.is_good():
+            return ua.MonitoredItemModifyResult(StatusCode=status)
+        mdata.filter = new_filter
         mdata.sampling_interval = self._revise_sampling_interval(requested.SamplingInterval, node_id, is_event)
         mdata.queue_size = self._revise_queue_size(requested.QueueSize, is_event)
         mdata.discard_oldest = requested.DiscardOldest
         mdata.client_handle = requested.ClientHandle
         mdata.timestamps = timestamps
-        if requested.Filter is not None:
-            mdata.filter = requested.Filter
         self._trim(mdata)
         return ua.MonitoredItemModifyResult(
             RevisedSamplingInterval=mdata.sampling_interval, RevisedQueueSize=mdata.queue_size
@@ -245,10 +237,17 @@ class MonitoredItemService:
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
             return result
         dv = self.aspace.read_attribute_value(node_id, ua.AttributeIds.EventNotifier)
+        if dv.StatusCode is not None and dv.StatusCode.is_bad():
+            result.StatusCode = dv.StatusCode
+            return result
         ev_notify_byte = dv.Value.Value if dv.Value is not None else None
-
         if ev_notify_byte is None or not ua.ua_binary.is_bit_set(ev_notify_byte, ua.EventNotifier.SubscribeToEvents):
-            result.StatusCode = ua.StatusCode(ua.StatusCodes.BadServiceUnsupported)
+            result.StatusCode = ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
+            return result
+        mdata.filter = self._normalise_filter(mdata.filter)
+        status = self._check_filter(params.ItemToMonitor, mdata.filter)
+        if not status.is_good():
+            result.StatusCode = status
             return result
         if self._at_limit():
             result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
@@ -275,9 +274,15 @@ class MonitoredItemService:
         )
 
         self.logger.debug("adding callback return status %s and handle %s", result.StatusCode, handle)
-        if result.StatusCode.is_good() and self._at_limit():
-            self.aspace.delete_datachange_callback(handle)
-            result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
+        if result.StatusCode.is_good():
+            mdata.filter = self._normalise_filter(mdata.filter)
+            status = self._check_filter(params.ItemToMonitor, mdata.filter)
+            if not status.is_good():
+                self.aspace.delete_datachange_callback(handle)
+                result.StatusCode = status
+            elif self._at_limit():
+                self.aspace.delete_datachange_callback(handle)
+                result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManyMonitoredItems)
         mdata.callback_handle = handle
         self._commit_monitored_item(result, mdata)
         if result.StatusCode.is_good():
@@ -322,7 +327,8 @@ class MonitoredItemService:
 
     def _clear(self, mdata: MonitoredItemData) -> None:
         mdata.held = []
-        mdata.mvalue = MonitoredItemValues()
+        mdata.last_sample = None
+        mdata.last_reported = None
         if mdata.monitored_item_id is not None:
             self.isub.take_queue(mdata.monitored_item_id, self._is_event_item(mdata))
 
@@ -356,34 +362,6 @@ class MonitoredItemService:
         self._clear(mdata)
         self._monitored_items.pop(mid)
         return ua.StatusCode()
-
-    @staticmethod
-    def _is_data_changed(values: MonitoredItemValues, trg: ua.DataChangeTrigger) -> bool:
-        old = values.get_old_datavalue()
-        current = values.get_current_datavalue()
-        if old is None and current is None:
-            return False
-        if (old is None) != (current is None):
-            return True
-        if old is None or current is None:
-            # This should never happen with the above logic, adding this check for mypy
-            raise ValueError("This is an implementation error")
-
-        if old.StatusCode != current.StatusCode:
-            return True
-
-        if (
-            trg in [ua.DataChangeTrigger.StatusValue, ua.DataChangeTrigger.StatusValueTimestamp]
-            and old.Value != current.Value
-        ):
-            return True
-
-        if trg == ua.DataChangeTrigger.StatusValueTimestamp and (
-            old.SourceTimestamp != current.SourceTimestamp or old.SourcePicoseconds != current.SourcePicoseconds
-        ):
-            return True
-
-        return False
 
     @staticmethod
     def _with_timestamps(value: ua.DataValue, timestamps: ua.TimestampsToReturn) -> ua.DataValue:
@@ -459,31 +437,84 @@ class MonitoredItemService:
             mdata = self._monitored_items[mid]
             if mdata.mode == ua.MonitoringMode.Disabled:
                 return
-            mdata.mvalue.set_current_datavalue(value)
-            if mdata.filter:
-                deadband_flag_pass = self._is_data_changed(
-                    mdata.mvalue, mdata.filter.Trigger
-                ) and self._is_deadband_exceeded(mdata.mvalue, mdata.filter)
-            else:
-                deadband_flag_pass = self._is_data_changed(mdata.mvalue, ua.DataChangeTrigger.StatusValue)
-
-            if deadband_flag_pass:
+            mdata.last_sample = copy.deepcopy(value)
+            flt = mdata.filter if isinstance(mdata.filter, ua.uaprotocol_auto.DataChangeFilter) else None
+            eu_range = None
+            if flt is not None and flt.DeadbandType == ua.DeadbandType.Percent and mdata.read_value_id is not None:
+                eu_range = self._eu_range(mdata.read_value_id.NodeId)
+            if data_change_passes(mdata.last_reported, value, flt, eu_range):
+                mdata.last_reported = mdata.last_sample
                 self._queue_data(mdata, value)
 
-    def _is_deadband_exceeded(self, values: MonitoredItemValues, flt: ua.DataChangeFilter) -> bool:
-        cur = values.get_current_datavalue()
-        old = values.get_old_datavalue()
-        if flt.DeadbandType == ua.DeadbandType.None_ or old is None:
-            return True
-        if cur is None or cur.Value is None or old.Value is None:
-            return True
-        delta = cur.Value.Value - old.Value.Value
-        if flt.DeadbandType == ua.DeadbandType.Absolute and ((abs(delta)) > flt.DeadbandValue):
-            return True
+    def _eu_range(self, node_id: ua.NodeId) -> tuple[float, float] | None:
+        data = self.aspace.get(node_id)
+        if data is None:
+            return None
+        for ref in data.references:
+            if ref.IsForward and ref.ReferenceTypeId == HAS_PROPERTY and ref.BrowseName.Name == "EURange":
+                dv = self.aspace.read_attribute_value(ref.NodeId, ua.AttributeIds.Value)
+                value = dv.Value.Value if dv.Value is not None else None
+                if isinstance(value, ua.Range):
+                    return float(value.Low), float(value.High)
+        return None
+
+    @staticmethod
+    def _normalise_filter(flt: Any) -> Any:
+        if isinstance(flt, ua.ExtensionObject) and (flt.Body is None or flt.TypeId.is_null()):
+            return None
+        return flt
+
+    def _check_filter(self, item: ua.ReadValueId | None, flt: Any) -> ua.StatusCode:
+        code = self._filter_status(item, flt)
+        return ua.StatusCode(code)
+
+    def _filter_status(self, item: ua.ReadValueId | None, flt: Any) -> int:
+        if item is None:
+            return ua.StatusCodes.BadInternalError
+        if item.AttributeId == ua.AttributeIds.EventNotifier:
+            return self._event_filter_status(flt)
+        if flt is None:
+            return ua.StatusCodes.Good
+        if item.AttributeId != ua.AttributeIds.Value or isinstance(flt, ua.uaprotocol_auto.EventFilter):
+            return ua.StatusCodes.BadFilterNotAllowed
+        if isinstance(flt, ua.uaprotocol_auto.AggregateFilter):
+            return ua.StatusCodes.BadMonitoredItemFilterUnsupported
+        if not isinstance(flt, ua.uaprotocol_auto.DataChangeFilter):
+            return ua.StatusCodes.BadMonitoredItemFilterInvalid
+        return self._data_change_filter_status(item.NodeId, flt)
+
+    @staticmethod
+    def _event_filter_status(flt: Any) -> int:
+        if isinstance(flt, ua.uaprotocol_auto.EventFilter):
+            return ua.StatusCodes.Good
+        if isinstance(flt, ua.uaprotocol_auto.DataChangeFilter):
+            return ua.StatusCodes.BadFilterNotAllowed
+        if isinstance(flt, ua.uaprotocol_auto.AggregateFilter):
+            return ua.StatusCodes.BadMonitoredItemFilterUnsupported
+        return ua.StatusCodes.BadMonitoredItemFilterInvalid
+
+    def _data_change_filter_status(self, node_id: ua.NodeId, flt: ua.DataChangeFilter) -> int:
+        if flt.Trigger not in tuple(ua.DataChangeTrigger):
+            return ua.StatusCodes.BadMonitoredItemFilterInvalid
+        if flt.DeadbandType not in tuple(ua.DeadbandType):
+            return ua.StatusCodes.BadMonitoredItemFilterInvalid
+        if flt.DeadbandType == ua.DeadbandType.None_:
+            return ua.StatusCodes.Good
+        if not self._holds_numbers(node_id):
+            return ua.StatusCodes.BadFilterNotAllowed
+        if math.isnan(flt.DeadbandValue) or flt.DeadbandValue < 0:
+            return ua.StatusCodes.BadDeadbandFilterInvalid
         if flt.DeadbandType == ua.DeadbandType.Percent:
-            self.logger.warning("DeadbandType Percent is not implemented !")
+            if flt.DeadbandValue > 100 or self._eu_range(node_id) is None:
+                return ua.StatusCodes.BadDeadbandFilterInvalid
+        return ua.StatusCodes.Good
+
+    def _holds_numbers(self, node_id: ua.NodeId) -> bool:
+        dv = self.aspace.read_attribute_value(node_id, ua.AttributeIds.DataType)
+        data_type = dv.Value.Value if dv.Value is not None else None
+        if not isinstance(data_type, ua.NodeId):
             return True
-        return False
+        return data_type == BASE_DATA_TYPE or is_subtype(self.aspace, data_type, NUMBER)
 
     async def trigger_event(self, event: Any, mid: int | None = None) -> bool:
         if event.emitting_node not in self._monitored_events:
