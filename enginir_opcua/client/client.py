@@ -155,6 +155,8 @@ class Client:
         self.trust_store: TrustStore | None = None
         self.certificate_validator: CertificateValidator | None = None
         self.application_hook: ApplicationHook | None = None
+        self._default_validator: CertificateValidator | None = None
+        self._pinned_server_certificate: x509.Certificate | None = None
         """extra check after the certificate validator accepted the server certificate, raises a ServiceError"""
         # Set before connect() to let a fresh client process resume the existing
         # server-side session via ActivateSession instead of creating a new one
@@ -252,6 +254,7 @@ class Client:
         Call this before connect()
         """
         self.trust_store = trust_store
+        self._default_validator = None
 
     async def set_security_string(self, string: str) -> None:
         """
@@ -296,6 +299,7 @@ class Client:
         Set SecureChannel mode.
         Call this before connect()
         """
+        pin_server_certificate = server_certificate is not None
         if server_certificate is None:
             # Force unencrypted/unsigned SecureChannel to list the endpoints
             new_policy = security_policies.SecurityPolicyNone()
@@ -315,7 +319,9 @@ class Client:
         ]
         if not isinstance(private_key, uacrypto.CertProperties):
             private_key = uacrypto.CertProperties(private_key, password=private_key_password)
-        return await self._set_security(policy, certificate, private_key, server_certificate, mode, chain)
+        return await self._set_security(
+            policy, certificate, private_key, server_certificate, mode, chain, pin_server_certificate
+        )
 
     async def _set_security(
         self,
@@ -325,9 +331,12 @@ class Client:
         server_cert: uacrypto.CertProperties,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
         certificate_chain: Sequence[uacrypto.CertProperties] | None = None,
+        pin_server_certificate: bool = False,
     ) -> None:
         if isinstance(server_cert, uacrypto.CertProperties):
             server_cert = await uacrypto.load_certificate(server_cert.path_or_content, server_cert.extension)
+        self._pinned_server_certificate = server_cert if pin_server_certificate else None
+        self._default_validator = None
         cert = await uacrypto.load_certificate(certificate.path_or_content, certificate.extension)
         certificate_chain = certificate_chain or []
         chain = await asyncio.gather(
@@ -662,7 +671,26 @@ class Client:
         connect to socket defined in url
         """
 
+        await self._prepare_certificate_validation()
         await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port)
+
+    async def _prepare_certificate_validation(self) -> None:
+        if self.certificate_validator is not None:
+            self.uaclient.certificate_validator = self.certificate_validator
+            return
+        if self._default_validator is None:
+            store = (
+                TrustStore(
+                    self.trust_store.trust_locations, self.trust_store.crl_locations, self.trust_store.issuer_locations
+                )
+                if self.trust_store
+                else TrustStore()
+            )
+            if self._pinned_server_certificate is not None:
+                store.pin(self._pinned_server_certificate)
+            self._default_validator = CertificateValidator(store)
+        await self._default_validator.trust_store.load()
+        self.uaclient.certificate_validator = self._default_validator
 
     def disconnect_socket(self) -> None:
         if self.uaclient:

@@ -562,6 +562,25 @@ def check_uri(leaf: x509.Certificate, application_uri: str) -> None:
         )
 
 
+def _rejected(rejection: _Rejected, suppressed: tuple[SuppressedError, ...]) -> Outcome:
+    _logger.warning(
+        "Rejected certificate %s: %s at step %s: %s",
+        rejection.subject or "(unparsed)",
+        ua.StatusCode(rejection.status).name,
+        rejection.step.value,
+        rejection.detail,
+    )
+    return Outcome(False, None, suppressed, rejection.status, rejection.step, rejection.subject, rejection.detail)
+
+
+def check_application_uri(certificate: x509.Certificate, application_uri: str) -> Outcome:
+    try:
+        check_uri(certificate, application_uri)
+    except _Rejected as rejection:
+        return _rejected(rejection, ())
+    return Outcome(True, certificate)
+
+
 class CertificateValidator:
     """
     Validates the certificate chain of a peer against a trust store, as Table 100 of OPC 10000-4, 6.1.3 prescribes.
@@ -629,19 +648,8 @@ class CertificateValidator:
 
     def check_application_uri(self, certificate: x509.Certificate, application_uri: str) -> Outcome:
         """Check that the certificate holds the ApplicationUri of the application description."""
-        try:
-            check_uri(certificate, application_uri)
-        except _Rejected as rejection:
-            return self._rejected(rejection, ())
-        return Outcome(True, certificate)
+        return check_application_uri(certificate, application_uri)
 
     @staticmethod
     def _rejected(rejection: _Rejected, suppressed: tuple[SuppressedError, ...]) -> Outcome:
-        _logger.warning(
-            "Rejected certificate %s: %s at step %s: %s",
-            rejection.subject or "(unparsed)",
-            ua.StatusCode(rejection.status).name,
-            rejection.step.value,
-            rejection.detail,
-        )
-        return Outcome(False, None, suppressed, rejection.status, rejection.step, rejection.subject, rejection.detail)
+        return _rejected(rejection, suppressed)

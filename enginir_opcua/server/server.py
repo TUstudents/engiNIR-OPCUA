@@ -112,6 +112,7 @@ class Server:
         self._discovery_period: int = 60
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
+        self._default_validator: CertificateValidator | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
         # enable all endpoints by default
         self._security_policy: list[ua.SecurityPolicyType] = [
@@ -568,6 +569,7 @@ class Server:
         if self.iserver.certificate is not None:
             # Log warnings about the certificate
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
+        await self._prepare_certificate_validation()
         await self._setup_server_nodes()
         await self.iserver.start()
         try:
@@ -581,6 +583,28 @@ class Server:
             raise exp
         else:
             _logger.debug("%s server started", self)
+
+    async def _prepare_certificate_validation(self) -> None:
+        current = self.iserver.certificate_validator
+        if current is not None and current is not self._default_validator:
+            _logger.warning(
+                "A custom certificate validator is in use; it decides which client certificates are trusted"
+            )
+            return
+        trust_store = self.iserver.trust_store or TrustStore()
+        await trust_store.load()
+        self._default_validator = CertificateValidator(trust_store)
+        self.iserver.certificate_validator = self._default_validator
+        has_secure_policy = any(
+            security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0] is not security_policies.SecurityPolicyNone
+            for policy_type in self._security_policy
+        )
+        snapshot = trust_store.snapshot
+        if has_secure_policy and not (snapshot.trusted or snapshot.pinned):
+            _logger.warning(
+                "No client certificate is trusted, so no client can connect with security: "
+                "configure the trusted certificates with set_trust_store"
+            )
 
     def _get_bind_socket_info(self) -> tuple[str | None, int | None]:
         if self.socket_address is not None:

@@ -10,20 +10,15 @@ from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.server.user_managers import UserManager
 
 from .conftest import find_free_port
+from .pki import generated_pki
 
 pytestmark = pytest.mark.asyncio
 
-EXAMPLE_PATH = Path(__file__).parent.parent / "examples"
-SERVER_CERT = EXAMPLE_PATH / "certificate-example.der"
-SERVER_KEY = EXAMPLE_PATH / "private-key-example.pem"
-PEER_1 = (
-    EXAMPLE_PATH / "certificates" / "peer-certificate-example-1.der",
-    EXAMPLE_PATH / "certificates" / "peer-private-key-example-1.pem",
-)
-PEER_2 = (
-    EXAMPLE_PATH / "certificates" / "peer-certificate-example-2.der",
-    EXAMPLE_PATH / "certificates" / "peer-private-key-example-2.pem",
-)
+PKI = generated_pki()
+SERVER_CERT = PKI.server.certificate
+SERVER_KEY = PKI.server.key
+PEER_1 = (PKI.peer1.certificate, PKI.peer1.key)
+PEER_2 = (PKI.peer2.certificate, PKI.peer2.key)
 
 
 class PasswordUserManager(UserManager):
@@ -46,6 +41,7 @@ async def _start_server(secure: bool) -> tuple[Server, str]:
         srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
         await srv.load_certificate(SERVER_CERT)
         await srv.load_private_key(SERVER_KEY)
+        srv.set_trust_store(PKI.trust_store())
     else:
         srv.set_security_policy([ua.SecurityPolicyType.NoSecurity])
     await srv.start()
@@ -68,6 +64,7 @@ async def secure_server() -> AsyncIterator[tuple[Server, str]]:
 
 async def _secure_client(url: str, peer: tuple[Path, Path]) -> Client:
     client = Client(url)
+    client.set_trust_store(PKI.trust_store())
     await client.set_security_string(f"Basic256Sha256,SignAndEncrypt,{peer[0]},{peer[1]}")
     return client
 

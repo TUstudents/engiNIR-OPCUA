@@ -13,6 +13,7 @@ from enginir_opcua import ua
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
 from ..crypto.security_policies import SecurityPolicyNone
+from ..crypto.uacrypto import split_certificate_chain
 from ..ua.ua_binary import header_from_binary, header_to_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from .utils import Buffer, NotEnoughData
 
@@ -417,6 +418,7 @@ class SecureChannel:
         self._incoming_size = 0
         self.security_policy = security_policy
         self._policies: list[Any] = []
+        self.peer_certificate_check: Callable[[bytes], None] | None = None
         self._open = False
         self.security_token = ua.ChannelSecurityToken()
         self._current: TokenSlot | None = None
@@ -585,6 +587,8 @@ class SecureChannel:
             thumbprint = hashlib.sha1(policy.host_certificate or b"", usedforsecurity=False).digest()
             if security_header.ReceiverCertificateThumbPrint != thumbprint:
                 raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, "Thumbprint is not ours")
+            if self.peer_certificate_check is not None:
+                self.peer_certificate_check(security_header.SenderCertificate)
         if params.ClientProtocolVersion != protocol_version:
             raise OpenRequestError(ua.StatusCodes.BadProtocolVersionUnsupported, "Protocol version differs from Hello")
         if renew != self._open:
@@ -616,7 +620,10 @@ class SecureChannel:
         response: ua.OpenSecureChannelResult,
         params: ua.OpenSecureChannelParameters,
         protocol_version: int,
+        sender_certificate: bytes | None = None,
     ) -> None:
+        if self.security_policy.URI != SecurityPolicyNone.URI and self.peer_certificate_check is not None:
+            self.peer_certificate_check(self._server_chain(sender_certificate))
         token = response.SecurityToken
         if response.ServerProtocolVersion != protocol_version:
             raise ua.uaerrors.BadProtocolVersionUnsupported()
@@ -626,6 +633,16 @@ class SecureChannel:
             nonce = response.ServerNonce or b""
             if len(nonce) != self.security_policy.secure_channel_nonce_length or nonce == params.ClientNonce:
                 raise ua.uaerrors.BadNonceInvalid()
+
+    def _server_chain(self, sender_certificate: bytes | None) -> bytes:
+        leaf = self.security_policy.peer_certificate or b""
+        try:
+            pieces = split_certificate_chain(sender_certificate) if sender_certificate else []
+        except UaError:
+            return leaf
+        if pieces and pieces[0] == leaf:
+            return leaf + b"".join(pieces[1:])
+        return leaf
 
     def message_to_binary(
         self, message: bytes, message_type: ua.MessageType = ua.MessageType.SecureMessage, request_id: int = 0

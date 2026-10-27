@@ -20,7 +20,7 @@ from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 
-from .harness import EXAMPLES, TWO_SESSION_USERS, RawPeer, RawServer, ResponseTampering, TwoSessions, TwoUserManager
+from .harness import PKI, TWO_SESSION_USERS, RawPeer, RawServer, ResponseTampering, TwoSessions, TwoUserManager
 from .test_common import add_server_methods
 from .util_enum_struct import add_server_custom_enum_struct
 
@@ -342,20 +342,12 @@ async def history_server(request):
 
 @pytest.fixture(scope="session")
 def client_key_and_cert(request):
-    base_dir = Path(__file__).parent.parent
-    cert_dir = base_dir / "examples/certificates"
-    key = cert_dir / "peer-private-key-example-1.pem"
-    cert = cert_dir / "peer-certificate-example-1.der"
-    return key, cert
+    return PKI.peer1.key, PKI.peer1.certificate
 
 
 @pytest.fixture(scope="session")
 def server_key_and_cert(request):
-    base_dir = Path(__file__).parent.parent
-    cert_dir = base_dir / "examples"
-    key = cert_dir / "private-key-example.pem"
-    cert = cert_dir / "certificate-example.der"
-    return key, cert
+    return PKI.server.key, PKI.server.certificate
 
 
 @pytest.fixture(scope="function")
@@ -400,6 +392,7 @@ async def ha_servers(server_key_and_cert):
         )
         await srv.load_certificate(cert)
         await srv.load_private_key(key)
+        srv.set_trust_store(PKI.trust_store())
         await srv.start()
         # default the service level to 255 once started
         slevel = srv.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
@@ -589,8 +582,9 @@ async def signing_server() -> AsyncIterator[Server]:
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     srv.set_security_policy([ua.SecurityPolicyType.Basic256Sha256_Sign])
     srv.set_identity_tokens([ua.UserNameIdentityToken])
-    await srv.load_certificate(EXAMPLES / "certificate-example.der")
-    await srv.load_private_key(EXAMPLES / "private-key-example.pem")
+    await srv.load_certificate(PKI.server.certificate)
+    await srv.load_private_key(PKI.server.key)
+    srv.set_trust_store(PKI.trust_store())
     await srv.start()
     yield srv
     await srv.stop()

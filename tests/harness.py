@@ -21,8 +21,11 @@ from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256,
 from enginir_opcua.server.internal_server import InternalServer
 from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 
+from .pki import generated_pki
+
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
 EXAMPLES = Path(__file__).parent.parent / "examples"
+PKI = generated_pki()
 
 
 class RawPeer:
@@ -380,10 +383,10 @@ async def signing_client(server: Server, user: str = "alice") -> Client:
     client = Client(server.endpoint.geturl())
     await client.set_security(
         SecurityPolicyBasic256Sha256,
-        str(EXAMPLES / "certificates" / "peer-certificate-example-1.der"),
-        str(EXAMPLES / "certificates" / "peer-private-key-example-1.pem"),
+        PKI.peer1.certificate,
+        PKI.peer1.key,
         None,
-        str(EXAMPLES / "certificate-example.der"),
+        PKI.server.certificate,
         ua.MessageSecurityMode.Sign,
     )
     client.set_user(user)
