@@ -16,6 +16,7 @@ from enginir_opcua.crypto.permission_rules import User
 from .address_space import AddressSpace
 from .internal_subscription import InternalSubscription, SubscriptionState
 from .monitored_item_service import MonitoredItemLimits
+from .node_walk import notifiers_of
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
@@ -390,12 +391,13 @@ class SubscriptionService:
                 self._conditions[event.NodeId] = event
             elif event.NodeId in self._conditions:
                 del self._conditions[event.NodeId]
+        notifiers = notifiers_of(self.aspace, event.emitting_node)
         if subscription_id is not None:
             if subscription_id in self.subscriptions:
-                await self.subscriptions[subscription_id].monitored_item_srv.trigger_event(event)
+                await self.subscriptions[subscription_id].monitored_item_srv.trigger_event(event, notifiers=notifiers)
         else:
-            for sub in self.subscriptions.values():
-                await sub.monitored_item_srv.trigger_event(event)
+            for sub in list(self.subscriptions.values()):
+                await sub.monitored_item_srv.trigger_event(event, notifiers=notifiers)
 
     @uamethod
     async def condition_refresh(
@@ -409,7 +411,7 @@ class SubscriptionService:
         if ua.ObjectIds.RefreshStartEventType in self.standard_events:
             await self.standard_events[ua.ObjectIds.RefreshStartEventType].trigger(subscription_id=subscription_id)
         for event in self._conditions.values():
-            await sub.monitored_item_srv.trigger_event(event, mid)
+            await sub.monitored_item_srv.trigger_event(event, mid, notifiers_of(self.aspace, event.emitting_node))
         if ua.ObjectIds.RefreshEndEventType in self.standard_events:
             await self.standard_events[ua.ObjectIds.RefreshEndEventType].trigger(subscription_id=subscription_id)
         return None  # FIXME: really not sure this is correct, but this is the original behaviour

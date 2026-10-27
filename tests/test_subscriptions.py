@@ -1,5 +1,5 @@
 import asyncio
-from asyncio import Future, TimeoutError, sleep, wait_for
+from asyncio import Future, sleep, wait_for
 from copy import copy
 from datetime import UTC, datetime, timedelta
 
@@ -818,7 +818,8 @@ async def test_events_MyObject(opc):
     await opc.opc.delete_nodes([o])
 
 
-async def test_events_wrong_source(opc):
+async def test_srv23_events_of_any_source_reach_the_server_object(opc):
+    """Part 3, 7.17: the Server Object has an implied HasEventSource to every source."""
     objects = opc.server.nodes.objects
     o = await objects.add_object(3, "MyObject")
     evgen = await opc.server.get_event_generator(emitting_node=o)
@@ -828,8 +829,9 @@ async def test_events_wrong_source(opc):
     tid = datetime.now(UTC)
     msg = "this is my msg "
     await evgen.trigger(tid, msg)
-    with pytest.raises(TimeoutError):  # we should not receive event
-        _ = await myhandler.result()
+    ev = await myhandler.result()
+    assert ev.Message.Text == msg
+    assert ev.SourceName == "MyObject"
     await sub.unsubscribe(handle)
     await sub.delete()
     await opc.opc.delete_nodes([o])

@@ -692,18 +692,17 @@ class MonitoredItemService:
             return True
         return data_type == BASE_DATA_TYPE or is_subtype(self.aspace, data_type, NUMBER)
 
-    async def trigger_event(self, event: Any, mid: int | None = None) -> bool:
-        if event.emitting_node not in self._monitored_events:
+    async def trigger_event(self, event: Any, mid: int | None = None, notifiers: list[ua.NodeId] | None = None) -> bool:
+        nodes = notifiers if notifiers is not None else [event.emitting_node]
+        mids = [item for node in nodes for item in self._monitored_events.get(node, [])]
+        if mid is not None:
+            mids = [item for item in mids if item == mid]
+        if not mids:
             self.logger.debug("%s has NO subscription for events %s from node: %s", self, event, event.emitting_node)
             return False
-
         self.logger.debug("%s has subscription for events %s from node: %s", self, event, event.emitting_node)
-        if mid is not None:
-            await self._trigger_event(event, mid)
-        else:
-            mids = self._monitored_events[event.emitting_node]
-            for mid in mids:
-                await self._trigger_event(event, mid)
+        for item in list(mids):
+            await self._trigger_event(event, item)
         return True
 
     async def _trigger_event(self, event: Any, mid: int) -> None:
