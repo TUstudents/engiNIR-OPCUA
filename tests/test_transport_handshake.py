@@ -310,7 +310,7 @@ async def test_srv25_client_ignores_an_error_reason_over_4096_bytes(raw_server: 
 
 async def test_srv27_oldest_unused_channel_is_closed_at_the_limit() -> None:
     """Part 4, 5.6.2.1: at the limit the oldest channel without a session makes room for the new connection."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()

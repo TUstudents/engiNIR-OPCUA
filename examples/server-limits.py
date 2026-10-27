@@ -13,7 +13,7 @@ def func(parent, value):
 async def main():
     _logger = logging.getLogger("enginir_opcua")
     # setup our server
-    server = Server()
+    server = Server(allow_no_security=True)
 
     # set some hard connection limits
     # server.limits.max_recv_buffer = 1024

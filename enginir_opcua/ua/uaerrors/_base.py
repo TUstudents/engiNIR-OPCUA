@@ -13,6 +13,10 @@ class SignatureError(UaError):
     pass
 
 
+class ConfigurationError(UaError):
+    pass
+
+
 class DecryptionError(UaError):
     pass
 
@@ -62,16 +66,18 @@ class UaStatusCodeError(UaError):
 
         return UaError.__new__(cls, *args)
 
-    def __init__(self, code: int | str | None = None) -> None:
+    def __init__(self, code: int | str | None = None, detail: str | None = None) -> None:
         """
         :param code: The code of the exception. Only needed when not instanciating
                      a concrete subclass such as BadInternalError.
+        :param detail: Optional text that says why the status was raised.
         """
         if code is None:
             if type(self)._class_code is None:
                 raise TypeError("UaStatusCodeError(code) cannot be instantiated without a status code.")
             code = type(self)._class_code
         UaError.__init__(self, code)
+        self.detail = detail
 
     def __str__(self) -> str:
         import enginir_opcua.ua.status_codes as status_codes
@@ -79,7 +85,8 @@ class UaStatusCodeError(UaError):
         code = self.code
         if not isinstance(code, int):
             return str(code)
-        return "{1}({0})".format(*status_codes.get_name_and_doc(code & 0xFFFF0000))
+        text = "{1}({0})".format(*status_codes.get_name_and_doc(code & 0xFFFF0000))
+        return f"{text}: {self.detail}" if self.detail else text
 
     code = _StatusCodeAttribute()
 

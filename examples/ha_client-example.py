@@ -42,7 +42,7 @@ async def start_servers():
     loop = asyncio.get_event_loop()
     tasks = []
     for port in ports:
-        server = Server()
+        server = Server(allow_no_security=True)
         await server.init()
         url = f"opc.tcp://0.0.0.0:{port}/enginir-opcua/server/"
         urls.append(url)

@@ -24,6 +24,7 @@ from .conftest import (
     wait_node_in_real_map,
     wait_sub_in_real_map,
 )
+from .harness import PKI
 from .test_subscriptions import MySubHandler
 
 pytestmark = pytest.mark.slow("enginir_opcua/client", "enginir_opcua/common/subscription.py")
@@ -247,11 +248,12 @@ class TestHaClient:
         security_policy = security_policies.SecurityPolicyBasic256Sha256
         user_key = CertProperties(key, "PEM")
         user_cert = CertProperties(cert, "DER")
+        server_cert = CertProperties(PKI.server.certificate, "DER")
         security_mode = ua.MessageSecurityMode.SignAndEncrypt
-        ha_c1.set_security(security_policy, user_cert, user_key, mode=security_mode)
+        ha_c1.set_security(security_policy, user_cert, user_key, server_cert, mode=security_mode)
         ha_clients.append(ha_c1)
 
-        ha_security = HaSecurityConfig(security_policy, user_cert, user_key, mode=security_mode)
+        ha_security = HaSecurityConfig(security_policy, user_cert, user_key, server_cert, mode=security_mode)
         ha_clients.append(HaClient(ha_config, ha_security))
 
         for ha_client in ha_clients:

@@ -17,7 +17,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def srv() -> AsyncIterator[Server]:
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()

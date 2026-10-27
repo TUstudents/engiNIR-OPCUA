@@ -1,231 +1,101 @@
 """test certificate truststore"""
 
 import datetime
-import shutil
-import socket
 from pathlib import Path
 
-import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding
-from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-from enginir_opcua.crypto.cert_gen import (
-    dump_private_key_as_pem,
-    generate_app_certificate_signing_request,
-    generate_private_key,
-    generate_self_signed_app_certificate,
-    sign_certificate_request,
-)
+from enginir_opcua import ua
+from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
 from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.uacrypto import load_certificate
+from enginir_opcua.crypto.validator import CertificateValidator, PeerRole, ValidationContext
 
-# pylint: disable=redefined-outer-name,missing-function-docstring, missing-module-docstring, missing-class-docstring
+from .pki import NOW, make_ca, make_crl, make_identity, write_crl_directory, write_trust_directory
 
-CA_CERT_FILE = "ca_cert.der"
-SERVER_CERT_FILE = "myserver_cert.der"
-SERVER_CERT_SELF_SIGNED_FILE = "myserver_cert_selfsigned.der"
+CONTEXT = ValidationContext(PeerRole.CLIENT, SecurityPolicyBasic256Sha256.URI)
 
 
-@pytest.fixture(scope="session")
-def cert_files(tmp_path_factory) -> Path:
-    """session based fixure to generate certifcates to test"""
-    tmp_path_factory.mktemp("data")
+def validator_for(store: TrustStore, when: datetime.datetime = NOW) -> CertificateValidator:
+    return CertificateValidator(store, clock=lambda: when)
 
-    store_base: Path = tmp_path_factory.mktemp("pkistore")
-    trusted_cert: Path = store_base / "trusted" / "certs"
-    trusted_crl: Path = store_base / "trusted" / "crl"
 
-    own_certs: Path = store_base / "own" / "certs"
-    own_private: Path = store_base / "own" / "private"
+async def test_selfsigned_not_in_trust_store(tmp_path: Path) -> None:
+    peer = make_identity()
+    store = TrustStore([write_trust_directory(tmp_path / "trusted")], [])
+    await store.load()
+    outcome = validator_for(store).validate_application_certificate(peer.der, CONTEXT)
+    assert outcome.status == ua.StatusCodes.BadCertificateUntrusted
 
-    trusted_cert.mkdir(parents=True, exist_ok=True)
-    trusted_crl.mkdir(parents=True, exist_ok=True)
-    own_certs.mkdir(parents=True, exist_ok=True)
-    own_private.mkdir(parents=True, exist_ok=True)
 
-    hostname: str = socket.gethostname()
+async def test_selfsigned_in_trust_store(tmp_path: Path) -> None:
+    peer = make_identity()
+    store = TrustStore([write_trust_directory(tmp_path / "trusted", peer.certificate)], [])
+    await store.load()
+    assert validator_for(store).validate_application_certificate(peer.der, CONTEXT).accepted
 
-    names = {
-        "countryName": "NL",
-        "stateOrProvinceName": "ZH",
-        "localityName": "Foo",
-        "organizationName": "Bar Ltd",
-    }
-    subject_alt_names: list[x509.GeneralName] = [
-        x509.UniformResourceIdentifier(f"urn:{hostname}:foobar:myserver"),
-        x509.DNSName(f"{hostname}"),
-    ]
 
-    extended = [ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.SERVER_AUTH]
+async def test_ca_not_in_trust_store(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore([write_trust_directory(tmp_path / "trusted")], [])
+    await store.load()
+    assert not validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted
 
-    # gen CA
-    key_ca: RSAPrivateKey = generate_private_key()
-    issuer: x509.Certificate = generate_self_signed_app_certificate(
-        key_ca,
-        "Application CA",
-        names,
-        subject_alt_names,
-        extended=[],  # keep this one empty when generating an application CA
-        days=365,
+
+async def test_ca_in_trust_store(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
+    await store.load()
+    assert validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted
+
+
+async def test_cert_expired(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
+    await store.load()
+    outcome = validator_for(store, NOW + datetime.timedelta(days=20 * 365)).validate_application_certificate(
+        leaf.der, CONTEXT
     )
+    assert outcome.status == ua.StatusCodes.BadCertificateTimeInvalid
 
-    # gen server private key
-    server_key: RSAPrivateKey = generate_private_key()
 
-    # gen server self signed cert
-    cert_self_signed: x509.Certificate = generate_self_signed_app_certificate(
-        server_key,
-        f"myserver@{hostname}",
-        names,
-        subject_alt_names,
-        extended=[],  # keep this one empty when generating an application CA
-        days=365,
+async def test_cert_not_yet_valid(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
+    await store.load()
+    outcome = validator_for(store, NOW - datetime.timedelta(days=20 * 365)).validate_application_certificate(
+        leaf.der, CONTEXT
     )
+    assert outcome.status == ua.StatusCodes.BadCertificateTimeInvalid
 
-    # gen server CSR
-    csr: x509.CertificateSigningRequest = generate_app_certificate_signing_request(
-        server_key, f"myserver@{hostname}", names, subject_alt_names, extended=extended
+
+async def test_empty_crl(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore(
+        [write_trust_directory(tmp_path / "trusted", ca.certificate)],
+        [write_crl_directory(tmp_path / "crl", make_crl(ca))],
     )
+    await store.load()
+    assert validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted
 
-    # sign CSR
-    cert: x509.Certificate = sign_certificate_request(csr, issuer, key_ca, days=30)
 
-    (own_private / "ca_key.pem").write_bytes(dump_private_key_as_pem(key_ca))
-    (own_certs / CA_CERT_FILE).write_bytes(issuer.public_bytes(encoding=Encoding.DER))
-
-    (own_private / "myserver_key.pem").write_bytes(dump_private_key_as_pem(server_key))
-    (own_certs / SERVER_CERT_FILE).write_bytes(cert.public_bytes(encoding=Encoding.DER))
-    (own_certs / SERVER_CERT_SELF_SIGNED_FILE).write_bytes(cert_self_signed.public_bytes(encoding=Encoding.DER))
-
-    one_day = datetime.timedelta(1, 0, 0)
-
-    builder = x509.CertificateRevocationListBuilder()
-    builder = builder.issuer_name(
-        x509.Name(
-            [
-                x509.NameAttribute(NameOID.COMMON_NAME, "Application CA"),
-            ]
-        )
+async def test_cert_in_crl(tmp_path: Path) -> None:
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    store = TrustStore(
+        [write_trust_directory(tmp_path / "trusted", ca.certificate)],
+        [write_crl_directory(tmp_path / "crl", make_crl(ca, revoked=(leaf.certificate.serial_number,)))],
     )
-    builder = builder.last_update(datetime.datetime.today())
-    builder = builder.next_update(datetime.datetime.today() + one_day)
-
-    crl_empty = builder.sign(
-        private_key=key_ca,
-        algorithm=hashes.SHA256(),
-    )
-
-    (own_certs / "ca_empty_crl.der").write_bytes(crl_empty.public_bytes(encoding=Encoding.DER))
-
-    revoked_cert = (
-        x509.RevokedCertificateBuilder()
-        .serial_number(cert.serial_number)
-        .revocation_date(datetime.datetime.today())
-        .build()
-    )
-    builder = builder.add_revoked_certificate(revoked_cert)
-    crl = builder.sign(
-        private_key=key_ca,
-        algorithm=hashes.SHA256(),
-    )
-    (own_certs / "ca_crl.der").write_bytes(crl.public_bytes(encoding=Encoding.DER))
-
-    return own_certs
+    await store.load()
+    outcome = validator_for(store).validate_application_certificate(leaf.der, CONTEXT)
+    assert outcome.status == ua.StatusCodes.BadCertificateRevoked
 
 
-@pytest.fixture
-def trust_store(tmp_path) -> TrustStore:
-    """fixture to generate clean trust store per test"""
-    base_trust_store: Path = tmp_path / "truststore"
-    trusted_certs: Path = base_trust_store / "certs"
-    trusted_crls: Path = base_trust_store / "crl"
-
-    trusted_certs.mkdir(parents=True, exist_ok=True)
-    trusted_crls.mkdir(parents=True, exist_ok=True)
-
-    _trust_store = TrustStore([trusted_certs], [trusted_crls])
-    return _trust_store
-
-
-async def test_selfsigned_not_in_trust_store(cert_files, trust_store) -> None:
-    cert_self_signed: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_SELF_SIGNED_FILE)
-    assert trust_store.is_trusted(cert_self_signed) is False
-
-
-async def test_selfsigned_in_trust_store(cert_files, trust_store) -> None:
-    shutil.copyfile(
-        cert_files / SERVER_CERT_SELF_SIGNED_FILE, trust_store.trust_locations[0] / SERVER_CERT_SELF_SIGNED_FILE
-    )
-    await trust_store.load()
-
-    cert_self_signed: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_SELF_SIGNED_FILE)
-    assert trust_store.is_trusted(cert_self_signed) is True
-
-
-async def test_ca_not_in_trust_store(cert_files, trust_store) -> None:
-    cert_self_signed: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_SELF_SIGNED_FILE)
-    assert trust_store.is_trusted(cert_self_signed) is False
-
-
-async def test_ca_in_trust_store(cert_files, trust_store) -> None:
-    shutil.copyfile(cert_files / CA_CERT_FILE, trust_store.trust_locations[0] / CA_CERT_FILE)
-    await trust_store.load()
-
-    cert_server: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_FILE)
-    assert trust_store.is_trusted(cert_server)
-
-
-async def test_cert_expired(cert_files: Path, trust_store: TrustStore) -> None:
-    shutil.copyfile(cert_files / CA_CERT_FILE, trust_store.trust_locations[0] / CA_CERT_FILE)
-    trust_store.policy_builder = trust_store.policy_builder.time(
-        datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=20 * 365)  # ~20 years
-    )
-
-    cert_server: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_FILE)
-    assert not trust_store.is_trusted(cert_server)
-
-
-async def test_cert_not_yet_valid(cert_files: Path, trust_store: TrustStore) -> None:
-    shutil.copyfile(cert_files / CA_CERT_FILE, trust_store.trust_locations[0] / CA_CERT_FILE)
-    trust_store.policy_builder = trust_store.policy_builder.time(
-        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=20 * 365)  # ~20 years
-    )
-
-    cert_server: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_FILE)
-    assert not trust_store.is_trusted(cert_server)
-
-
-async def test_empty_crl(cert_files, trust_store) -> None:
-    shutil.copyfile(cert_files / CA_CERT_FILE, trust_store.trust_locations[0] / CA_CERT_FILE)
-    shutil.copyfile(cert_files / "ca_empty_crl.der", trust_store.crl_locations[0] / "ca_empty_crl.der")
-    await trust_store.load()
-
-    cert_server: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_FILE)
-
-    assert trust_store.is_trusted(cert_server)
-    assert not trust_store.is_revoked(cert_server)
-    assert trust_store.validate(cert_server)
-
-
-async def test_cert_in_crl(cert_files, trust_store) -> None:
-    shutil.copyfile(cert_files / CA_CERT_FILE, trust_store.trust_locations[0] / CA_CERT_FILE)
-    shutil.copyfile(cert_files / "ca_crl.der", trust_store.crl_locations[0] / "ca_crl.der")
-    await trust_store.load()
-
-    cert_server: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_FILE)
-
-    assert trust_store.is_trusted(cert_server)
-    assert trust_store.is_revoked(cert_server)
-
-    assert not trust_store.validate(cert_server)
-
-
-async def test_cry_empty_trust_location_loads_and_trusts_nothing(cert_files: Path, tmp_path: Path) -> None:
+async def test_cry_empty_trust_location_loads_and_trusts_nothing(tmp_path: Path) -> None:
     """Part 4, 6.1.3: with an empty list of trusted certificates, no certificate is trusted."""
-    trust_store = TrustStore([tmp_path], [])
-    await trust_store.load()
-    cert_self_signed: x509.Certificate = await load_certificate(cert_files / SERVER_CERT_SELF_SIGNED_FILE)
-    assert trust_store.is_trusted(cert_self_signed) is False
+    peer = make_identity()
+    store = TrustStore([tmp_path], [])
+    await store.load()
+    assert not validator_for(store).validate_application_certificate(peer.der, CONTEXT).accepted

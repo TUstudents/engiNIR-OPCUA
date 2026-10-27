@@ -17,7 +17,7 @@ from enginir_opcua.common.structures104 import new_struct, new_struct_field
 
 
 async def main():
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
 

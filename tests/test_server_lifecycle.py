@@ -23,7 +23,7 @@ def _renewal_tasks() -> list[asyncio.Task[Any]]:
 
 @pytest.fixture
 async def discovery() -> AsyncIterator[Server]:
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     await server.set_application_uri("urn:enginir:opcua:lifecycle-discovery")
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
@@ -50,7 +50,7 @@ async def test_srv10_restart_gives_the_same_endpoints_and_policy_factories(signi
 
 async def test_srv10_registering_twice_keeps_one_renewal_task_and_stop_cancels_it(discovery: Server) -> None:
     """Part 4, 5.5.5.1: one task renews every registration; stop() ends it."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
@@ -64,12 +64,12 @@ async def test_srv10_registering_twice_keeps_one_renewal_task_and_stop_cancels_i
 
 async def test_srv10_default_timeout_is_gone() -> None:
     """Server.default_timeout was never used."""
-    assert not hasattr(Server(), "default_timeout")
+    assert not hasattr(Server(allow_no_security=True), "default_timeout")
 
 
 async def test_srv34_unregistering_an_unknown_url_is_a_ua_error() -> None:
     """Part 4, 5.5.5: unregistering a discovery server that was never registered fails cleanly."""
-    server = Server()
+    server = Server(allow_no_security=True)
     with pytest.raises(ua.UaError):
         await server.unregister_from_discovery("opc.tcp://127.0.0.1:1")
 
@@ -78,7 +78,7 @@ async def test_srv34_stop_sets_shutdown_before_it_closes_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Part 5, 12.6: ServerState is Shutdown while the server is going down."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
@@ -97,7 +97,7 @@ async def test_srv34_stop_sets_shutdown_before_it_closes_sessions(
 
 async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(discovery: Server) -> None:
     """Part 4, 5.7.4: after stop() nothing of the server is left running."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
@@ -117,7 +117,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
 
 async def test_srv10_sync_method_callbacks_work_after_a_restart() -> None:
     """Part 4, 5.11.2: a synchronous method callback is still run after the server was stopped and started."""
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     idx = await server.register_namespace("urn:enginir:opcua:restart-method")

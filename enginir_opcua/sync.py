@@ -21,6 +21,7 @@ from enginir_opcua import client, common, server, ua
 from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_builder, xmlexporter
 from enginir_opcua.common.events import Event
 from enginir_opcua.crypto import uacrypto
+from enginir_opcua.crypto.truststore import TrustStore
 
 _logger = logging.getLogger(__name__)
 
@@ -248,6 +249,7 @@ class Client:
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
         watchdog_intervall: float = 1.0,
+        allow_deprecated_policies: bool = False,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -256,7 +258,9 @@ class Client:
             self.tloop.start()
             self.close_tloop = True
         try:
-            self.aio_obj: client.Client = client.Client(url, timeout, watchdog_intervall)
+            self.aio_obj: client.Client = client.Client(
+                url, timeout, watchdog_intervall, allow_deprecated_policies=allow_deprecated_policies
+            )
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.uaclient)
         except Exception:
             self._stop_own_tloop()
@@ -349,6 +353,9 @@ class Client:
 
     @syncmethod
     def get_namespace_array(self) -> list[str]: ...
+
+    def set_trust_store(self, trust_store: TrustStore) -> None:
+        self.aio_obj.set_trust_store(trust_store)
 
     @syncmethod
     def set_security(self) -> None: ...
@@ -564,6 +571,8 @@ class Server:
         shelf_file: Path | None = None,
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
+        allow_no_security: bool = False,
+        allow_deprecated_policies: bool = False,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -572,7 +581,9 @@ class Server:
             self.tloop.start()
             self.close_tloop = True
         try:
-            self.aio_obj: server.Server = server.Server()
+            self.aio_obj: server.Server = server.Server(
+                allow_no_security=allow_no_security, allow_deprecated_policies=allow_deprecated_policies
+            )
             self.tloop.post(self.aio_obj.init(shelf_file))
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.iserver.isession)
         except Exception:
@@ -624,6 +635,9 @@ class Server:
 
     def set_security_IDs(self, policy_ids: list[str]) -> None:
         return self.aio_obj.set_security_IDs(policy_ids)
+
+    def set_trust_store(self, trust_store: TrustStore) -> None:
+        return self.aio_obj.set_trust_store(trust_store)
 
     def set_identity_tokens(self, tokens: list[type]) -> None:
         return self.aio_obj.set_identity_tokens(tokens)

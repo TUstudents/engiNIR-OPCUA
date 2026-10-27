@@ -19,6 +19,7 @@ from ..common.callback import CallbackType, ServerItemCallback
 from ..common.utils import ServiceError, create_nonce
 from ..crypto import uacrypto
 from ..crypto.uacrypto import x509
+from ..crypto.validator import check_application_uri
 from .address_space import AddressSpace
 from .subscription_service import SubscriptionService
 
@@ -376,6 +377,17 @@ class SessionManager:
             _logger.warning("CreateSession certificate does not match the SecureChannel certificate")
             raise ServiceError(ua.StatusCodes.BadSecurityChecksFailed)
 
+    @staticmethod
+    def _check_client_application_uri(params: ua.CreateSessionParameters, security: ChannelSecurity) -> None:
+        if security.mode == ua.MessageSecurityMode.None_:
+            return
+        certificate = uacrypto.x509_from_der(params.ClientCertificate)
+        if certificate is None:
+            return
+        outcome = check_application_uri(certificate, params.ClientDescription.ApplicationUri)
+        if not outcome.accepted:
+            raise ServiceError(outcome.status)
+
     async def _make_room(self) -> None:
         if len(self.sessions) < self.max_sessions:
             return
@@ -394,8 +406,9 @@ class SessionManager:
             raise ServiceError(ua.StatusCodes.BadNonceInvalid)
         security = channel.security
         self._check_client_certificate(params.ClientCertificate, security)
-        if self.iserver.certificate_validator and params.ClientCertificate:
-            await self.iserver.certificate_validator(
+        self._check_client_application_uri(params, security)
+        if self.iserver.application_hook and params.ClientCertificate:
+            await self.iserver.application_hook(
                 x509.load_der_x509_certificate(params.ClientCertificate), params.ClientDescription
             )
         ep_params = ua.GetEndpointsParameters()

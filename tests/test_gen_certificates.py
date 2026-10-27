@@ -1,8 +1,14 @@
 """Several tests for certificate /signing request generation"""
 
+import logging
+import os
 import socket
+import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import anyio
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
@@ -14,13 +20,14 @@ from enginir_opcua.crypto.cert_gen import (
     generate_app_certificate_signing_request,
     generate_private_key,
     generate_self_signed_app_certificate,
+    setup_self_signed_certificate,
     sign_certificate_request,
 )
 from enginir_opcua.crypto.uacrypto import check_certificate, load_certificate, load_private_key
 
 
 async def test_create_self_signed_app_certificate() -> None:
-    """Checks if the self signed certificate complies to OPC 10000-6 6.2.2"""
+    """Part 6, 6.2.2: an application certificate has cA FALSE; a self-signed one keeps keyCertSign (CRY-11)"""
 
     hostname = socket.gethostname()
 
@@ -98,7 +105,7 @@ async def test_create_self_signed_app_certificate() -> None:
         == f"urn:{hostname}:foobar:myserver"
     )
 
-    assert cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is True
+    assert cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
 
     assert cert.extensions.get_extension_for_class(x509.KeyUsage).value == x509.KeyUsage(
         digital_signature=True,
@@ -414,3 +421,105 @@ async def test_check_certificate_hostname_is_case_insensitive() -> None:
     assert check_certificate(cert, app_uri, "myhostname") == []
     assert check_certificate(cert, app_uri, "MYHOSTNAME") == []
     assert len(check_certificate(cert, app_uri, "otherhost")) == 1
+
+
+APP_URI = "urn:test:generated"
+HOST = "generated.example.org"
+SUBJECT = {"organizationName": "Bar Ltd"}
+CLIENT_USE = [ExtendedKeyUsageOID.CLIENT_AUTH]
+
+
+async def test_cry11_ca_certificate_stays_a_ca() -> None:
+    """Part 6, 6.2.2: only an empty usage list makes the certificate a CA, and it is a different kind of certificate."""
+    cert = generate_self_signed_app_certificate(generate_private_key(), "CA", SUBJECT, [], extended=[])
+    constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert constraints.ca is True
+    assert constraints.path_length == 0
+    assert usage.key_cert_sign is True
+    assert usage.crl_sign is True
+
+
+async def test_cry11_setup_never_overwrites_a_certificate_issued_by_a_ca(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Part 6, 6.2.2: an installed certificate from a CA is never replaced, its problems are logged."""
+    ca_key = generate_private_key()
+    ca = generate_self_signed_app_certificate(ca_key, "CA", SUBJECT, [], extended=[])
+    key = generate_private_key()
+    csr = generate_app_certificate_signing_request(
+        key, APP_URI, SUBJECT, [x509.UniformResourceIdentifier(APP_URI), x509.DNSName("other.example.org")], CLIENT_USE
+    )
+    issued = sign_certificate_request(csr, ca, ca_key)
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    key_file.write_bytes(dump_private_key_as_pem(key))
+    cert_file.write_bytes(issued.public_bytes(serialization.Encoding.DER))
+    before = cert_file.read_bytes()
+    with caplog.at_level(logging.WARNING):
+        await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    assert cert_file.read_bytes() == before
+    assert HOST in caplog.text
+
+
+async def test_cry11_setup_never_overwrites_a_self_signed_certificate_it_did_not_generate(tmp_path: Path) -> None:
+    """Part 6, 6.2.2: only certificates this function generated are replaced."""
+    key = generate_private_key()
+    foreign = generate_self_signed_app_certificate(
+        key, "somebody's own name", SUBJECT, [x509.UniformResourceIdentifier(APP_URI)], extended=CLIENT_USE
+    )
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    key_file.write_bytes(dump_private_key_as_pem(key))
+    cert_file.write_bytes(foreign.public_bytes(serialization.Encoding.DER))
+    before = cert_file.read_bytes()
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    assert cert_file.read_bytes() == before
+
+
+async def test_cry11_setup_with_a_missing_key_and_a_foreign_certificate_generates_nothing(tmp_path: Path) -> None:
+    """Part 6, 6.2.2: a new key would orphan the installed certificate."""
+    foreign = generate_self_signed_app_certificate(
+        generate_private_key(), "somebody's own name", SUBJECT, [], extended=CLIENT_USE
+    )
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    cert_file.write_bytes(foreign.public_bytes(serialization.Encoding.DER))
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    assert not key_file.exists()
+    assert cert_file.read_bytes() == foreign.public_bytes(serialization.Encoding.DER)
+
+
+async def test_cry11_setup_replaces_its_own_certificate_when_it_has_problems(tmp_path: Path) -> None:
+    """Part 6, 6.2.2: a certificate this function generated is renewed when it no longer fits."""
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, "first.example.org", CLIENT_USE, SUBJECT)
+    first = cert_file.read_bytes()
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, "second.example.org", CLIENT_USE, SUBJECT)
+    assert cert_file.read_bytes() != first
+    cert = await load_certificate(cert_file)
+    assert cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
+
+
+async def test_cry11_setup_keeps_a_fitting_certificate(tmp_path: Path) -> None:
+    """Part 6, 6.2.2: nothing changes when the certificate matches the URI and host name."""
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    before = (key_file.read_bytes(), cert_file.read_bytes())
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    assert (key_file.read_bytes(), cert_file.read_bytes()) == before
+
+
+async def test_cry11_key_file_mode_is_0600_whatever_the_umask(tmp_path: Path) -> None:
+    """The private key is readable by its owner only."""
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    previous = os.umask(0o022)
+    try:
+        await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+
+
+async def test_cry11_setup_leaves_no_temporary_files(tmp_path: Path) -> None:
+    """The key and the certificate are written to a temporary name and renamed."""
+    key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
+    await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
+    assert sorted([path.name async for path in anyio.Path(tmp_path).iterdir()]) == ["cert.der", "key.pem"]

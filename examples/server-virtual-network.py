@@ -24,7 +24,7 @@ async def main():
     """
     _logger = logging.getLogger("enginir_opcua")
     # setup our server
-    server = Server()
+    server = Server(allow_no_security=True)
     await server.init()
     server.set_endpoint("opc.tcp://example-endpoint.freeopcua.github.com:32000/enginir-opcua/server/")
 

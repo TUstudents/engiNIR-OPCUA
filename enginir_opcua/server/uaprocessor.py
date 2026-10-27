@@ -19,6 +19,7 @@ from ..common.connection import (
 from ..common.utils import Buffer, ServiceError
 from ..crypto.permission_rules import PermissionRuleset
 from ..crypto.security_policies import SecurityPolicyNone
+from ..crypto.validator import PeerRole, ValidationContext
 from ..ua.ua_binary import struct_from_binary, struct_to_binary, uatcp_to_binary
 from .internal_server import InternalServer
 from .internal_session import ChannelSecurity
@@ -40,9 +41,26 @@ class UaProcessor:
         self._request_tasks: set[asyncio.Task[None]] = set()
         self._limits = copy.deepcopy(limits)  # Copy limits because they get overriden
         self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
+        self._channel.peer_certificate_check = self._check_client_certificate
         self._hello_received: bool = False
         self._hello_protocol_version = 0
         self.on_token_window: Callable[[float], None] | None = None
+
+    def _check_client_certificate(self, chain: bytes) -> None:
+        validator = self.iserver.certificate_validator
+        if validator is None:
+            raise TransportError(
+                ua.StatusCodes.BadSecurityChecksFailed,
+                "No certificate validator is configured, so no client certificate is trusted; "
+                "configure the trust store of the server (set_trust_store)",
+            )
+        context = ValidationContext(PeerRole.CLIENT, self._channel.security_policy.URI)
+        outcome = validator.validate_application_certificate(chain, context)
+        if not outcome.accepted:
+            status = ua.StatusCode(outcome.status).name
+            raise TransportError(
+                ua.StatusCodes.BadSecurityChecksFailed, f"Client certificate rejected: {status}: {outcome.detail}"
+            )
 
     @property
     def last_used(self) -> float:
