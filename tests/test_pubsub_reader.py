@@ -317,6 +317,7 @@ async def test_pub19_readers_from_a_configuration_get_a_subscribed_dataset(serve
     node = await server.nodes.objects.add_variable(
         NodeId(String("Pub19Var"), ua.Int16(1)), "Pub19Var", 0, VariantType.Int32
     )
+    await node.set_writable()
     meta = _meta("a")
     field = meta.get_field("a")
     assert field is not None

@@ -419,6 +419,7 @@ async def target_with_ranges(
     node = await server.nodes.objects.add_variable(
         NodeId(String(name), Int16(1)), name, [1, 2, 3, 4], VariantType.Int32
     )
+    await node.set_writable()
     dataset = DataSetMeta.Create(String(name))
     dataset.add_scalar(String("Values"), VariantType.Int32)
     field = dataset.get_field("Values")
