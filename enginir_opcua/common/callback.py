@@ -3,7 +3,6 @@ server side implementation of callback event
 """
 
 import inspect
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any
@@ -13,8 +12,8 @@ class CallbackType(Enum):
     """
     The possible types of a Callback type.
 
-    :ivar Null:
-    :ivar MonitoredItem:
+    Members: Null, ItemSubscriptionCreated, ItemSubscriptionModified, ItemSubscriptionDeleted,
+    PreWrite, PostWrite, PreRead, PostRead.
 
     """
 
@@ -58,7 +57,8 @@ Listener = Callable[[Callback, "CallbackService"], Awaitable[None] | None]
 
 class CallbackService:
     def __init__(self) -> None:
-        self._listeners: dict[str, OrderedDict[int, Listener]] = {}
+        self._listeners: dict[str, list[tuple[int, int, Listener]]] = {}
+        self._sequence = 0
 
     async def dispatch(self, eventName: str, event: Callback | None = None) -> Callback:
         if event is None:
@@ -66,35 +66,28 @@ class CallbackService:
         elif not isinstance(event, Callback):
             raise ValueError("Unexpected event type given")
         event.setName(eventName)
-        if eventName not in self._listeners:
-            return event
-        for listener in self._listeners[eventName].values():
+        for _, _, listener in list(self._listeners.get(eventName, [])):
             await self.call_listener(event, listener)
-
         return event
 
     async def call_listener(self, event: Callback, listener: Listener) -> None:
-        if inspect.iscoroutinefunction(listener):
-            await listener(event, self)
-        else:
-            listener(event, self)
+        result = listener(event, self)
+        if inspect.isawaitable(result):
+            await result
 
     def addListener(self, eventName: str, listener: Listener, priority: int = 0) -> None:
-        if eventName not in self._listeners:
-            self._listeners[eventName] = OrderedDict()
-        self._listeners[eventName][priority] = listener
-        self._listeners[eventName] = OrderedDict(sorted(self._listeners[eventName].items(), key=lambda item: item[0]))
+        self._sequence += 1
+        entries = [*self._listeners.get(eventName, []), (priority, self._sequence, listener)]
+        entries.sort(key=lambda entry: entry[:2])
+        self._listeners[eventName] = entries
 
     def removeListener(self, eventName: str, listener: Listener | None = None) -> None:
         if eventName not in self._listeners:
             return
-        if not listener:
+        if listener is None:
             del self._listeners[eventName]
         else:
-            for name, mylistener in self._listeners[eventName].items():
-                if mylistener is listener:
-                    self._listeners[eventName].pop(name)
-                    return
+            self._listeners[eventName] = [entry for entry in self._listeners[eventName] if entry[2] is not listener]
 
     def addSubscriber(self, subscriber: CallbackSubscriberInterface) -> None:
         if not isinstance(subscriber, CallbackSubscriberInterface):
