@@ -1231,9 +1231,7 @@ class Subscription:
                 failed.append((h, status))
         if failed:
             detail = ", ".join(f"{h}: {status}" for h, status in failed)
-            error = ua.UaStatusCodeError(failed[0][1].value)
-            error.detail = f"unsubscribe failed for handles {detail}"
-            raise error
+            raise ua.UaStatusCodeError(failed[0][1].value, detail=f"unsubscribe failed for handles {detail}")
 
     async def modify_monitored_item(
         self,
