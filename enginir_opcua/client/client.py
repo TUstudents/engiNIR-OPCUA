@@ -1674,6 +1674,7 @@ class Client:
         for node in nodes:
             desc = ua.BrowseDescription()
             desc.NodeId = node.nodeid
+            desc.IncludeSubtypes = True
             desc.ResultMask = ua.BrowseResultMask.All
             nodestobrowse.append(desc)
         parameters = ua.BrowseParameters()

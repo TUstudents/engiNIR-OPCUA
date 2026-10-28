@@ -149,7 +149,8 @@ Synchronous interface (`enginir_opcua.sync`):
 
 Observer:
 - `Client(observer=...)` and `client.observer` set an `Observer`. The module and its hooks are documented
-  (`on_messages_dropped` and `on_messages_lost` are new since 2.x).
+  (`on_messages_dropped` and `on_messages_lost` are new since 2.x). `on_messages_dropped` also reports events dropped
+  from the iterator queue of a Subscription and events for a handler that lacks the method.
 
 Documentation:
 - Spec references in docstrings are citations such as `OPC 10000-4 v1.05, 5.9.2`, not links. The section numbers were
@@ -190,6 +191,9 @@ Variant and defaults:
   back flat.
 - `get_default_value()` returns the null values: DateTime 1601-01-01 UTC and the all-zero Guid instead of the current
   time and a random Guid.
+- Boolean fields of generated structures default to `False` instead of `True` (OPC 10000-6, 5.1.2), so
+  `ua.ReadRawModifiedDetails()` no longer asks for modified values and bounds, and `ua.MonitoringParameters()` no
+  longer discards the oldest value. Code that built these structures without setting the field must set it.
 - `WriteMask` has the members for bits 22 to 25.
 
 Encoding and decoding:
@@ -365,6 +369,16 @@ Custom types:
 - `new_struct_field(array=True)` has `ArrayDimensions = [0]`; `new_enum` keeps the `Value` of an `EnumField`;
   enumeration members whose names clean to the same identifier raise; `Server.load_data_type_definitions()` takes
   `overwrite_existing`, which now reloads changed definitions; generated defaults no longer use random or current values.
+- Structure fields with ValueRank 2 or more are nested lists, encoded as inline matrices (OPC 10000-6, 5.2.5), and
+  `UnionWithSubtypedValues` definitions are built. Option sets are found below Byte, UInt16, UInt32 and UInt64 and use
+  the width of their base type instead of always 32 bits. An enumeration without DataTypeDefinition is built from its
+  `EnumValues` or `EnumStrings` Property.
+- The legacy loader for DataTypeDictionaries (`Client.load_type_definitions()`) finds arrays by the `LengthField`
+  attribute of the dictionary, not by field names starting with `NoOf`, `__...Length` or `#`, and a generated file
+  registers only structures that have a type id.
+- The legacy loaders (`load_type_definitions()`, `load_enums()`) register their classes in the type registry of the
+  client or server, not in the process-wide registry, and `StructGenerator.get_python_classes()` without an
+  environment returns a new dictionary instead of writing into `ua`.
 - `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
 - `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 

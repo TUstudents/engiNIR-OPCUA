@@ -18,6 +18,7 @@ from enginir_opcua.common.structures104 import (
     load_basetype_alias_xml_import,
     load_custom_struct_xml_import,
     load_enum_xml_import,
+    option_set_base_name,
 )
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.ua_binary import get_safe_type_hints, struct_from_binary
@@ -115,7 +116,7 @@ class XmlImporter:
         self._added: list[ua.NodeId] = []
         self._browsenames: dict[ua.NodeId, ua.QualifiedName] = {}
         self._definitions: dict[ua.NodeId, Any] = {}
-        self._type_loads: list[tuple[str, ua.NodeId, str, Any, bool]] = []
+        self._type_loads: list[tuple[str, ua.NodeId, str, Any, str]] = []
         self._hierarchical: dict[ua.NodeId, bool] = {}
         self._supertypes: dict[ua.NodeId, ua.NodeId] = {}
 
@@ -901,9 +902,9 @@ class XmlImporter:
                 ua.AttributeIds.WriteMask, ua.DataValue(ua.Variant(file_write_mask, ua.VariantType.UInt32))
             )
             self._definitions[added] = definition
-            self._type_loads.append((kind, added, name, definition, kind == "option_set"))
+            self._type_loads.append((kind, added, name, definition, option_set_base_name(obj.parent)))
         elif obj.parent != STRUCTURE and obj.parent != UNION and obj.parent is not None:
-            self._type_loads.append(("alias", added, name, obj.parent, False))
+            self._type_loads.append(("alias", added, name, obj.parent, "UInt32"))
         return added
 
     async def _load_types(self, final: bool = True) -> None:
@@ -913,12 +914,12 @@ class XmlImporter:
         for attempt in range(3 if final else 1):
             failed = []
             for entry in self._type_loads:
-                kind, nodeid, name, payload, is_option_set = entry
+                kind, nodeid, name, payload, option_set_base = entry
                 try:
                     if kind == "struct":
                         await load_custom_struct_xml_import(types, nodeid, name, payload)
                     elif kind in ("enum", "option_set"):
-                        await load_enum_xml_import(types, nodeid, name, payload, is_option_set)
+                        await load_enum_xml_import(types, nodeid, name, payload, kind == "option_set", option_set_base)
                     else:
                         await load_basetype_alias_xml_import(self.session, name, nodeid, payload)
                 except Exception:

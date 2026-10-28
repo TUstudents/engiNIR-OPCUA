@@ -228,7 +228,7 @@ class CodeGenerator:
         if dtype in ("ByteString", "CharArray", "Char"):
             return None
         if dtype == "Boolean":
-            return "True"
+            return "False"
         if dtype == "Guid":
             return "Guid(int=0)"
         if dtype == "DateTime":

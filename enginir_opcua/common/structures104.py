@@ -262,11 +262,16 @@ def make_structure(
         ua.StructureType.StructureWithOptionalFields,
         ua.StructureType.Union,
         ua.StructureType.StructureWithSubtypedValues,
+        ua.StructureType.UnionWithSubtypedValues,
     ):
         raise NotImplementedError(
             f"Only StructureType implemented, not {ua.StructureType(sdef.StructureType).name} for node {struct_name} with DataTypeDefinition {sdef}"
         )
-    is_union = sdef.StructureType == ua.StructureType.Union
+    is_union = sdef.StructureType in (ua.StructureType.Union, ua.StructureType.UnionWithSubtypedValues)
+    allows_subtypes = sdef.StructureType in (
+        ua.StructureType.StructureWithSubtypedValues,
+        ua.StructureType.UnionWithSubtypedValues,
+    )
     bases = (ua.UaUnion,) if is_union else ()
 
     fields = []
@@ -321,24 +326,31 @@ def make_structure(
             element_type = "ua.String"
             union_resolved_element = ua.String
 
-        if sfield.ValueRank >= 1 or sfield.ArrayDimensions:
-            uatype = f"list[{element_type}]"
-            resolved_for_union: Any = list  # crude; only used for cls._union_types entries
-        else:
-            uatype = element_type
-            resolved_for_union = union_resolved_element
+        rank = max(sfield.ValueRank, 1) if sfield.ValueRank >= 1 or sfield.ArrayDimensions else 0
+        uatype = "list[" * rank + element_type + "]" * rank
+        resolved_for_union: Any = union_resolved_element
+        if resolved_for_union is not None:
+            for _ in range(rank):
+                resolved_for_union = list[resolved_for_union]
+        elif rank:
+            resolved_for_union = list
 
+        subtyped = allows_subtypes and sfield.IsOptional
         prop_uatype = uatype
         if sfield.IsOptional or is_union:
-            if sdef.StructureType is ua.StructureType.StructureWithSubtypedValues:
+            if subtyped:
                 prop_uatype = f"typing.Annotated[{uatype}, 'AllowSubtypes']"
             else:
                 prop_uatype = f"typing.Optional[{uatype}]"
 
         if is_union:
             union_field_names.append((fname, idx, prop_uatype))
-            union_type_hints.append(uatype)
-            union_resolved_types.append(resolved_for_union)
+            union_type_hints.append(prop_uatype if subtyped else uatype)
+            union_resolved_types.append(
+                typing.Annotated[resolved_for_union, "AllowSubtypes"]
+                if subtyped and resolved_for_union is not None
+                else resolved_for_union
+            )
             continue
 
         if sfield.ValueRank >= 0 and not sfield.IsOptional:
@@ -402,6 +414,7 @@ def _generate_object(
     option_set: bool = False,
     log_fail: bool = True,
     types: ua.TypeRegistry | None = None,
+    option_set_base: str = "UInt32",
 ) -> dict[str, Any]:
     """
     generate Python class
@@ -410,7 +423,7 @@ def _generate_object(
     if env is None:
         env = {}
     if enum:
-        env.update(make_enum(name, sdef, option_set))
+        env.update(make_enum(name, sdef, option_set, option_set_base))
     else:
         env.update(make_structure(data_type, name, sdef, log_error=log_fail, types=types))
     return env
@@ -467,10 +480,27 @@ def _topological_sort_dtypes(dtypes: list[DataTypeInfo]) -> list[DataTypeInfo]:
     return result
 
 
+async def _all_subtype_descriptions(server: Server | Client, base_node: Node) -> list[ua.ReferenceDescription]:
+    found: list[ua.ReferenceDescription] = []
+    seen = {base_node.nodeid}
+    pending = [base_node]
+    while pending:
+        node = pending.pop(0)
+        for desc in await node.get_children_descriptions(refs=ua.ObjectIds.HasSubtype):
+            if desc.NodeId not in seen:
+                seen.add(desc.NodeId)
+                found.append(desc)
+                pending.append(server.get_node(desc.NodeId))
+    return found
+
+
 async def get_children_descriptions_type_definitions(
-    server: Server | Client, base_node: Node, overwrite_existing: bool = False
+    server: Server | Client, base_node: Node, overwrite_existing: bool = False, recursive: bool = False
 ) -> tuple[list[ua.ReferenceDescription], list[Any]]:
-    descs = await base_node.get_children_descriptions(refs=ua.ObjectIds.HasSubtype)
+    if recursive:
+        descs = await _all_subtype_descriptions(server, base_node)
+    else:
+        descs = await base_node.get_children_descriptions(refs=ua.ObjectIds.HasSubtype)
     nodes = []
     idxs = []
     for idx, desc in enumerate(descs):
@@ -681,15 +711,18 @@ async def load_data_type_definitions(
     on server and generate Python objects in ua namespace to be used to talk with server
     """
     await server.get_namespace_array()
-    new_objects = await _load_base_datatypes(server)  # we need to load all basedatatypes alias first
-
-    # Load enums and option sets in parallel - they are independent of each other
-    enum_results, optionset_results = await asyncio.gather(
-        load_enums(server, overwrite_existing=overwrite_existing),
+    option_set_loads = [
         load_enums(server, server.nodes.option_set_type, True, overwrite_existing),
-    )
-    new_objects.update(enum_results)
-    new_objects.update(optionset_results)
+        *(
+            load_enums(server, server.get_node(ua.NodeId(base_id)), True, overwrite_existing, base_name, True)
+            for base_id, base_name in _OPTION_SET_BASES.items()
+        ),
+    ]
+    option_set_results = await asyncio.gather(*option_set_loads)
+    new_objects = await _load_base_datatypes(server)  # we need to load all basedatatypes alias first
+    for option_sets in option_set_results:
+        new_objects.update(option_sets)
+    new_objects.update(await load_enums(server, overwrite_existing=overwrite_existing))
 
     if base_node is None:
         base_node = server.nodes.base_structure_type
@@ -726,7 +759,21 @@ async def load_data_type_definitions(
     return new_objects
 
 
-def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool) -> dict[str, type]:
+_OPTION_SET_BASES: dict[int, str] = {
+    ua.ObjectIds.Byte: "Byte",
+    ua.ObjectIds.UInt16: "UInt16",
+    ua.ObjectIds.UInt32: "UInt32",
+    ua.ObjectIds.UInt64: "UInt64",
+}
+
+
+def option_set_base_name(parent: ua.NodeId | None) -> str:
+    if parent is not None and parent.NamespaceIndex == 0:
+        return _OPTION_SET_BASES.get(parent.Identifier, "UInt32")  # type: ignore[call-overload]
+    return "UInt32"
+
+
+def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool, base_type: str = "UInt32") -> dict[str, type]:
     """
     if node has a DataTypeDefinition attribute, generate enum code
     """
@@ -737,6 +784,8 @@ def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool) -> dict[str,
         _logger.error("Enum %s (NodeId: unknown): Failed to generate class from UA datatype", name)
         cls = typing.cast(Any, enum_type)(name, members)
         cls.__doc__ = f"{name} {'IntFlag' if option_set else 'IntEnum'} (empty) autogenerated"
+        if option_set:
+            cls.datatype = staticmethod(lambda: base_type)
         return {name: cls}
     for n, sfield in enumerate(edef.Fields):
         fieldname = clean_name(sfield.Name)
@@ -760,16 +809,51 @@ def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool) -> dict[str,
         members[fieldname] = value
     cls = typing.cast(Any, enum_type)(name, members)
     cls.__doc__ = f"{name} {'IntFlag' if option_set else 'IntEnum'} autogenerated from EnumDefinition"
+    if option_set:
+        cls.datatype = staticmethod(lambda: base_type)
     return {name: cls}
 
 
+async def _read_enum_property(node: Node, name: str) -> list[Any] | None:
+    try:
+        child = await node.get_child(f"0:{name}")
+        value = await child.read_value()
+    except ua.UaError:
+        return None
+    return list(value) if value else None
+
+
+async def _enum_definition_from_properties(server: Server | Client, nodeid: ua.NodeId) -> ua.EnumDefinition | None:
+    """The EnumValues and EnumStrings Properties of an enumeration without DataTypeDefinition (OPC 10000-3, 8.14)."""
+    node = server.get_node(nodeid)
+    definition = ua.EnumDefinition()
+    values = await _read_enum_property(node, "EnumValues")
+    if values:
+        for item in values:
+            entry = ua.EnumField(Value=item.Value, DisplayName=item.DisplayName, Description=item.Description)
+            entry.Name = item.DisplayName.Text or ""
+            definition.Fields.append(entry)
+        return definition
+    strings = await _read_enum_property(node, "EnumStrings")
+    if strings:
+        for position, text in enumerate(strings):
+            definition.Fields.append(ua.EnumField(Value=position, DisplayName=text, Name=text.Text or ""))
+        return definition
+    return None
+
+
 async def load_enums(
-    server: Server | Client, base_node: Node | None = None, option_set: bool = False, overwrite_existing: bool = False
+    server: Server | Client,
+    base_node: Node | None = None,
+    option_set: bool = False,
+    overwrite_existing: bool = False,
+    option_set_base: str = "UInt32",
+    recursive: bool = False,
 ) -> dict[str, type]:
     typename = "OptionSet" if option_set else "Enum"
     if base_node is None:
         base_node = server.nodes.enum_data_type
-    descs, sdefs = await get_children_descriptions_type_definitions(server, base_node, overwrite_existing)
+    descs, sdefs = await get_children_descriptions_type_definitions(server, base_node, overwrite_existing, recursive)
     new_enums = {}
     for idx, desc in enumerate(descs):
         name = clean_name(desc.BrowseName.Name)
@@ -777,10 +861,14 @@ async def load_enums(
             continue
         _logger.info("Registering %s %s %s", typename, desc.NodeId, name)
         edef = sdefs[idx]
+        if not edef and not option_set:
+            edef = await _enum_definition_from_properties(server, desc.NodeId)
         if not edef:
             continue
         try:
-            env = _generate_object(name, edef, enum=True, option_set=option_set, log_fail=False)
+            env = _generate_object(
+                name, edef, enum=True, option_set=option_set, log_fail=False, option_set_base=option_set_base
+            )
         except Exception:
             _logger.exception(
                 "%s %s (NodeId: %s): Failed to generate class from UA datatype", typename, name, desc.NodeId
@@ -793,7 +881,12 @@ async def load_enums(
 
 
 async def load_enum_xml_import(
-    types: ua.TypeRegistry, node_id: ua.NodeId, name: str, edef: ua.EnumDefinition, option_set: bool
+    types: ua.TypeRegistry,
+    node_id: ua.NodeId,
+    name: str,
+    edef: ua.EnumDefinition,
+    option_set: bool,
+    option_set_base: str = "UInt32",
 ) -> Any:
     """
     This function is used to load enums from xmlimporter
@@ -802,7 +895,7 @@ async def load_enum_xml_import(
     existing = types.find_own(node_id)
     if existing is not None:
         return existing
-    env = _generate_object(name, edef, enum=True, option_set=option_set)
+    env = _generate_object(name, edef, enum=True, option_set=option_set, option_set_base=option_set_base)
     cls = env[name]
     types.register_enum(node_id, cls, name)
     return cls

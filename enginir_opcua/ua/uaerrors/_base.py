@@ -49,7 +49,7 @@ class UaStatusCodeError(UaError):
             del cls.code
             cls._subclasses[class_code & 0xFFFF0000] = cls
 
-    def __new__(cls, *args: Any) -> "UaStatusCodeError":
+    def __new__(cls, *args: Any, **kwargs: Any) -> "UaStatusCodeError":
         """
         Creates a new UaStatusCodeError but returns a more specific subclass
         if possible, e.g.

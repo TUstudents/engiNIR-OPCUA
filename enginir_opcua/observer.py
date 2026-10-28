@@ -71,7 +71,7 @@ class Observer:
         """A message was processed; ``event_count`` events were passed on, 0 for a keep-alive."""
 
     def on_messages_dropped(self, subscription_id: int | None, count: int) -> None:
-        """The client dropped ``count`` received messages because the application was too slow."""
+        """The client dropped ``count`` messages or events because the application was too slow or had no handler."""
 
     def on_messages_lost(self, subscription_id: int | None, count: int) -> None:
         """``count`` messages are missing and could not be fetched again; data was lost between server and client."""
