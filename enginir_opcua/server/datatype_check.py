@@ -1,4 +1,4 @@
-"""Checks of a Variant against a DataType, ValueRank and ArrayDimensions (Part 4, 5.11.4; Part 3, 5.6.2)."""
+"""Checks of a Variant against a DataType, ValueRank and ArrayDimensions (OPC 10000-4 v1.05, 5.11.4; OPC 10000-3 v1.05, 5.6.2)."""
 
 from __future__ import annotations
 

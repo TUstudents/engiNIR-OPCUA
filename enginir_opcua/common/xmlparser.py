@@ -38,7 +38,7 @@ NULL_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
 def xs_boolean(text: str) -> bool:
     """
-    Parse an xs:boolean: true, false, 1 or 0 (Part 6, 5.3.1.2). Anything else raises ValueError.
+    Parse an xs:boolean: true, false, 1 or 0 (OPC 10000-6 v1.05, 5.3.1.2). Anything else raises ValueError.
     """
     value = text.strip()
     if value in ("true", "1"):
@@ -68,7 +68,7 @@ def xs_float(text: str) -> float:
 def xs_datetime(text: str) -> datetime:
     """
     Parse an xs:dateTime. A value without a time zone is UTC. The earliest representable value is the null DateTime
-    (Part 6, 5.3.1.6).
+    (OPC 10000-6 v1.05, 5.3.1.6).
     """
     value = text.strip()
     if value.endswith("Z"):
@@ -84,7 +84,7 @@ def xs_datetime(text: str) -> datetime:
 
 def parse_scalar(text: str, type_name: str | type) -> Any:
     """
-    Convert the text of an XML element to the Python value of a built-in type or enumeration (Part 6, 5.3.1, 5.3.3).
+    Convert the text of an XML element to the Python value of a built-in type or enumeration (OPC 10000-6 v1.05, 5.3.1, 5.3.3).
     """
     if isinstance(type_name, type) and issubclass(type_name, Enum):
         value = text.strip()

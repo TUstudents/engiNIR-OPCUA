@@ -1,5 +1,6 @@
 """
-Helpers to expose a state machine of Part 5, Annex B (StateMachineType, FiniteStateMachineType) in the
+Helpers to expose a state machine of OPC 10000-16 (State Machines; Annex B of OPC 10000-5 in v1.04:
+StateMachineType, FiniteStateMachineType) in the
 address space of a local server, keep CurrentState and LastTransition current and raise TransitionEvents.
 Sub state machines and the specialised state machines of other parts are not implemented.
 """

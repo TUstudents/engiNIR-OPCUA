@@ -415,7 +415,7 @@ class StatusCode:
 
     def is_bad(self) -> bool:
         """
-        Part 4, 7.38.1:
+        OPC 10000-4 v1.05, 7.38.1:
         11   Reserved for future use. All Clients should treat a StatusCode with this severity as “Bad”.
 
         return True if status is Bad (10) or (11).
@@ -493,7 +493,7 @@ class NodeId:
         node_id_type(NodeIdType): The type of the nodeid if it cannot be guessed, or you want something
         special like twobyte nodeid or fourbytenodeid
 
-    The string form is the one of Part 6, 5.1.12, for example ``ns=2;s=Name``.
+    The string form is the one of OPC 10000-6 v1.05, 5.1.12, for example ``ns=2;s=Name``.
 
     :ivar Identifier: int, str, bytes or uuid.UUID
     :vartype Identifier: UInt32, String, Guid or ByteString
@@ -788,9 +788,9 @@ class ExpandedNodeId(NodeId):
 @dataclass(init=False, order=True, slots=True)
 class QualifiedName:
     """
-    A name qualified with a namespace index (Part 3, 8.3; Part 6, 5.2.2.13).
+    A name qualified with a namespace index (OPC 10000-3 v1.05, 8.3; OPC 10000-6 v1.05, 5.2.2.13).
 
-    The string form is the one of Part 6, 5.1.12, Table 7: the bare name for namespace 0 and
+    The string form is the one of OPC 10000-6 v1.05, 5.1.12, Table 7: the bare name for namespace 0 and
     ``<index>:<name>`` otherwise.
     """
 
@@ -839,7 +839,7 @@ class QualifiedName:
 @dataclass(frozen=False)
 class RelativePathElement:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
+    OPC 10000-4 v1.05, 7.30
 
     :ivar ReferenceTypeId:
     :vartype ReferenceTypeId: NodeId
@@ -862,7 +862,7 @@ class RelativePathElement:
 @dataclass(frozen=False)
 class RelativePath:
     """
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/7.30
+    OPC 10000-4 v1.05, 7.30
 
     :ivar Elements:
     :vartype Elements: RelativePathElement
@@ -888,7 +888,7 @@ class RelativePath:
 @dataclass(init=False, slots=True)
 class LocalizedText:
     """
-    Human readable text with an optional locale identifier (Part 6, 5.2.2.14).
+    Human readable text with an optional locale identifier (OPC 10000-6 v1.05, 5.2.2.14).
 
     The string form is specific to this library and reads back exactly.
     """
@@ -1114,7 +1114,7 @@ class Variant:
                     raise ValueError("VariantType argument must be an instance of VariantType")
 
         if self.VariantType == VariantType.DiagnosticInfo:
-            raise UaError("A Variant cannot contain a DiagnosticInfo (Part 6, 5.1.9)")
+            raise UaError("A Variant cannot contain a DiagnosticInfo (OPC 10000-6 v1.05, 5.1.9)")
 
         if self.Value is None and not self.is_array:
             if self.VariantType in _NULLABLE_VARIANT_TYPES:

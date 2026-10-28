@@ -2,10 +2,7 @@
 Client side of OPC UA File Transfer: reading and writing the content of a FileType Object in chunks, and driving a
 FileDirectoryType Object.
 
-See also:
-OPC 10000-5: OPC Unified Architecture V1.04
-Part 5: Information Model - Annex C (normative) File Transfer
-https://reference.opcfoundation.org/Core/docs/Part5/C.1/
+See also OPC 10000-20 (File Transfer; Annex C of OPC 10000-5 in v1.04).
 """
 
 import asyncio
