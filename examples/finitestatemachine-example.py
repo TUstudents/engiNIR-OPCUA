@@ -22,18 +22,18 @@ if __name__ == "__main__":
 
         # the FiniteStateMachine provides helperclasses for states and transition each class is a representation of the state- and transition-variabletype
         # if the state node already exist for example from xml model you can assign it here: node=<StateNode>
-        state1 = State("State-Id-1", "Idle", 1, node=None)
+        state1 = State(None, "Idle", 1, node=None)
         # adds the state (StateType) to the statemachine childs - this is mandatory for the FiniteStateMachine!
         await mystatemachine.add_state(
             state1, state_type=ua.NodeId(2309, 0)
         )  # this is a init state -> InitialStateType: ua.NodeId(2309, 0)
-        state2 = State("State-Id-2", "Loading", 2)
+        state2 = State(None, "Loading", 2)
         await mystatemachine.add_state(state2)
-        state3 = State("State-Id-3", "Initializing", 3)
+        state3 = State(None, "Initializing", 3)
         await mystatemachine.add_state(state3)
-        state4 = State("State-Id-4", "Processing", 4)
+        state4 = State(None, "Processing", 4)
         await mystatemachine.add_state(state4)
-        state5 = State("State-Id-5", "Finished", 5)
+        state5 = State(None, "Finished", 5)
         await mystatemachine.add_state(state5)
 
         # sets the avalible states of the FiniteStateMachine
@@ -44,17 +44,17 @@ if __name__ == "__main__":
 
         # setup your transition helperclass
         # if the transition node already exist for example from xml model you can assign it here: node=<TransitionNode>
-        trans1 = Transition("Transition-Id-1", "to Idle", 1)
+        trans1 = Transition(None, "to Idle", 1)
         # adds the transition (TransitionType) to the statemachine childs - this is optional for the FiniteStateMachine
-        await mystatemachine.add_transition(trans1)
-        trans2 = Transition("Transition-Id-2", "to Loading", 2)
-        await mystatemachine.add_transition(trans2)
-        trans3 = Transition("Transition-Id-3", "to Initializing", 3)
-        await mystatemachine.add_transition(trans3)
-        trans4 = Transition("Transition-Id-4", "to Processing", 4)
-        await mystatemachine.add_transition(trans4)
-        trans5 = Transition("Transition-Id-5", "to Finished", 5)
-        await mystatemachine.add_transition(trans5)
+        await mystatemachine.add_transition(trans1, from_state=state5, to_state=state1)
+        trans2 = Transition(None, "to Loading", 2)
+        await mystatemachine.add_transition(trans2, from_state=state1, to_state=state2)
+        trans3 = Transition(None, "to Initializing", 3)
+        await mystatemachine.add_transition(trans3, from_state=state2, to_state=state3)
+        trans4 = Transition(None, "to Processing", 4)
+        await mystatemachine.add_transition(trans4, from_state=state3, to_state=state4)
+        trans5 = Transition(None, "to Finished", 5)
+        await mystatemachine.add_transition(trans5, from_state=state4, to_state=state5)
 
         # this is optional for the FiniteStateMachine
         await mystatemachine.set_available_transitions(
@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
         # initialise the FiniteStateMachine by call change_state() with the InitialState
         # if the statechange should trigger an TransitionEvent the Message can be assigned here
-        # if event_msg is None no event will be triggered
+        # every state change triggers a TransitionEvent; without event_msg its Message is "<from> to <to>"
         await mystatemachine.change_state(state1, trans1, f"{mystatemachine._name}: Idle", 300)
 
         async with server:
