@@ -371,3 +371,44 @@ Node helpers:
   `ExclusiveLimitStateMachine`, `FileTransferStateMachine`, `ProgramStateMachine` and `ShelvedStateMachine` are removed.
 - `get_node_supertypes` returns the nearest supertype first; `get_nodes_of_namespace` can return namespace 0 and raises
   `UaError` for an unknown URI; `get_node_children` and `get_node_subtypes` list each node once.
+
+PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
+- A PublisherId is encoded with the type of its Variant (UInt64 uses type bits 011), so ids that were read from a file
+  or built as `Variant(5, VariantType.UInt16)` keep their type. `UadpHeader` refuses a PublisherId that is a plain `int`:
+  wrap it in `Byte`, `UInt16`, `UInt32`, `UInt64` or `String`. `OpcUdp.get_publisher_id()` returns a typed value.
+- UADP messages: the Valid flag, the PromotedFields size (bytes), Event DataSetMessages, header-only heartbeat key
+  frames, DataSetMessage sizes (padding no longer shifts the next message), the chunk layout and the discovery headers
+  follow Part 14. A receiver skips messages with an unknown version or reserved values (`UadpSkip`, counted by reason);
+  `UadpNetworkMessage.from_binary` raises `UadpSkip` for them, `decode_network_message` returns it. The classes
+  `UadpDiscoveryRequest`, `UadpDiscoveryResponse`, `UadpDataSetDeltaRaw` and the three `Uadp*Resp` classes are gone;
+  `UadpDiscoveryProbe` and `UadpDiscoveryAnnouncement` keep the headers and the body as bytes.
+- RawData fields are padded to `MaxStringLength` and `ArrayDimensions`; fields that can't be sent as RawData make the
+  DataSetMessage invalid (logged once). `PubSubDataSource.get_raw(fields)` takes the field metadata and no longer drops
+  fields without a value.
+- Sequence numbers start at 0 and roll over from 65535 to 0 (they used to skip 0 and 65535).
+- `MessageReceiveTimeout` is in milliseconds and restarts with every message; a reader is `PreOperational` until its
+  first key frame. DataSetMessages with a different major configuration version, a wrong number of fields, an
+  out-of-range delta index, a duplicate or older sequence number, or `Valid = false` are dropped and counted.
+  A null reader PublisherId matches every publisher. `ReaderGroup.set_name(name)` sets the name and
+  `ReaderGroup(cfg)` keeps `cfg`.
+- `Enabled` is honoured at every level, groups start in order of their `Priority`, publishing runs on a fixed
+  schedule, an interval of 0 or less is refused, `KeepAliveTime` and `MaxNetworkMessageSize` are applied (a message
+  above it isn't sent; a warning is logged once). `WriterGroup.new_uadp(priority=, address=)` sets the Priority and the
+  unicast destination.
+- UDP: loopback is applied for both values, a multicast subscriber joins the group on its `NetworkInterface` (an IP
+  address or an interface name) and binds to the group address, IPv6 URLs keep their brackets. A unicast subscriber binds
+  to its interface, to the URL's IP address or to loopback; it listens on all interfaces only with an explicit `0.0.0.0` or
+  `::`. A connection without readers opens no receive address. Datagrams are queued (256) and handled by one task;
+  malformed datagrams give a rate-limited warning on the module logger.
+- `PubSub.start()` raises the first startup error and leaves nothing running; `stop()` is repeatable and never raises
+  a cancellation; connections and datasets appear once in the address space, whatever their number; the remove methods
+  await the deletion of the right node, stop what runs and update the configuration; `load_binary_file` raises
+  `UaStatusCodeError(Bad_InvalidArgument)` for other files and `save_binary_file` writes a file it can load again.
+- `SubScribedTargetVariables` writes only to variables whose AccessLevel allows it (the write is counted and logged
+  once), applies `OverrideValueHandling` as in Part 14 Table 80 (also when the reader leaves Operational) and
+  counts fields without a target. Readers built from a configuration get their sinks from the server. The
+  AddReaderGroup, AddWriterGroup and RemoveGroup methods answer `Bad_NotImplemented`.
+- A Bad field is sent as a Variant holding its StatusCode, an Uncertain one as a Variant holding its DataValue.
+  `DataSetMeta.add_array` creates an array field, `remove_field` removes it, versions follow the changes, and
+  `PublishedDataItems.Create` no longer inverts the promoted flag. `DataSetField.get_datatype_name(types)` looks the type up
+  in the given registry.

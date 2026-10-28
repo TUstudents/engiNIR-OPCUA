@@ -310,10 +310,9 @@ async def test_datasource_and_subscribed_dataset(
 
 
 async def test_dataset_writer_seq_no_wraps_at_uint16_max():
-    """Test that DataSetWriter sequence number wraps around at UInt16 max (65535).
+    """Part 14, 7.2.3: a sequence number starts at 0 and rolls over from 65535 to 0.
 
     Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1953
-    The sequence number must stay in range [1, 65535] and wrap back to 1.
     """
     writer = DataSetWriter.new_uadp(
         name=String("TestWriter"),
@@ -321,29 +320,16 @@ async def test_dataset_writer_seq_no_wraps_at_uint16_max():
         dataset_name=String("Test"),
         datavalue=True,
     )
-    # Simulate reaching near the overflow boundary
     writer._seq_no = 65534
 
-    # Generate two datasets to cross the boundary
     dataset = DataSetMeta.Create(String("Test"))
     dataset.add_field(pubsub.DataSetField.CreateScalar(String("Val"), VariantType.Int32))
     pds = pubsub.PublishedDataSet.Create(String("Test"), dataset)
     source = pds.get_source()
     source.datasources["Test"] = {"Val": DataValue(Variant(Int32(42)))}
 
-    msg1 = await writer.generate_uadp_dataset(pds)
-    assert writer._seq_no == 65535
-    assert msg1.Header.SequenceNo == UInt16(65535)
-
-    # This should wrap around to 1, not overflow
-    msg2 = await writer.generate_uadp_dataset(pds)
-    assert writer._seq_no == 1
-    assert msg2.Header.SequenceNo == UInt16(1)
-
-    # Continue incrementing normally
-    msg3 = await writer.generate_uadp_dataset(pds)
-    assert writer._seq_no == 2
-    assert msg3.Header.SequenceNo == UInt16(2)
+    numbers = [(await writer.generate_uadp_dataset(pds)).Header.SequenceNo for _ in range(4)]
+    assert numbers == [65534, 65535, 0, 1]
 
 
 async def test_load_save_ua_binary_publisher(server: Server, tmpdir_factory):
@@ -433,9 +419,11 @@ async def target_with_ranges(
     node = await server.nodes.objects.add_variable(
         NodeId(String(name), Int16(1)), name, [1, 2, 3, 4], VariantType.Int32
     )
+    await node.set_writable()
     dataset = DataSetMeta.Create(String(name))
     dataset.add_scalar(String("Values"), VariantType.Int32)
     field = dataset.get_field("Values")
+    assert field is not None
     config = FieldTargetDataType(
         DataSetFieldId=field.DataSetFieldId,
         TargetNodeId=node.nodeid,

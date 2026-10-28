@@ -68,7 +68,7 @@ async def init_pubsub_connection(server: Server, nodes: list[Node]) -> pubsub.Pu
 
 async def create_variables(node: Node, ns: ua.UInt16) -> list[Node]:
     folder = await node.add_folder(ua.NodeId("SubscriberDemo", ns), "PublisherDemoNodes")
-    return [
+    variables = [
         await folder.add_variable(ua.NodeId("SubInt32", ns), "Int32", 1, ua.VariantType.Int32),
         await folder.add_variable(ua.NodeId("SubString", ns), "String", "DemoString"),
         await folder.add_variable(ua.NodeId("SubBool", ns), "Bool", True, ua.VariantType.Boolean),
@@ -79,6 +79,9 @@ async def create_variables(node: Node, ns: ua.UInt16) -> list[Node]:
             ua.VariantType.Int16,
         ),
     ]
+    for variable in variables:
+        await variable.set_writable()
+    return variables
 
 
 async def main():
