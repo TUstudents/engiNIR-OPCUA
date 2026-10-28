@@ -5,6 +5,8 @@ implement ua datatypes
 from __future__ import annotations
 
 import ast
+import contextlib
+import contextvars
 import functools
 import itertools
 import logging
@@ -12,8 +14,9 @@ import operator
 import re
 import types
 import uuid
+import weakref
 from base64 import b64decode, b64encode
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum
@@ -1367,6 +1370,243 @@ def get_default_value(vtype: VariantType) -> Any:
 
 basetype_by_datatype: dict[NodeId, str] = {}
 basetype_datatypes: dict[type, NodeId] = {}
+enums_by_datatype: dict[NodeId, type] = {}
+enums_datatypes: dict[type, NodeId] = {}
+extension_objects_by_datatype: dict[NodeId, type] = {}
+extension_objects_by_typeid: dict[NodeId, type] = {}
+datatype_by_extension_object: dict[type, NodeId] = {}
+typeid_by_extension_objects: dict[type, NodeId] = {}
+
+TypeKey = Any
+
+
+class TypeRegistry:
+    """
+    The classes of structures, unions, enumerations and aliases that one session knows, and the ExtensionObject
+    encoding ids that belong to them. Entries are keyed by namespace URI and identifier, so they stay valid when the
+    namespace array of the server changes; a registry without a namespace table keys by NodeId as given.
+    A registry falls back to its parents, which end in the shared registry of namespace 0.
+    """
+
+    def __init__(
+        self,
+        namespaces: Callable[[], Sequence[str]] | None = None,
+        parents: tuple[TypeRegistry, ...] = (),
+        base_tables: bool = False,
+    ) -> None:
+        self._namespaces = namespaces
+        self._parents = parents
+        self._is_base = base_tables
+        self._datatypes: dict[TypeKey, type] = {}
+        self._class_datatype: dict[type, TypeKey] = {}
+        self._encodings: dict[TypeKey, type] = {}
+        self._class_encoding: dict[type, TypeKey] = {}
+        self._names: dict[str, type] = {}
+        self._named: dict[tuple[str, str], type] = {}
+        self._qualified: dict[type, str] = {}
+        if base_tables:
+            self._datatypes = extension_objects_by_datatype  # type: ignore[assignment]
+            self._class_datatype = datatype_by_extension_object  # type: ignore[assignment]
+            self._encodings = extension_objects_by_typeid  # type: ignore[assignment]
+            self._class_encoding = typeid_by_extension_objects  # type: ignore[assignment]
+
+    def _key(self, nodeid: NodeId) -> TypeKey | None:
+        if self._namespaces is None or nodeid.NamespaceIndex == 0:
+            return nodeid
+        table = self._namespaces()
+        if nodeid.NamespaceIndex >= len(table):
+            return nodeid
+        return (table[nodeid.NamespaceIndex], type(nodeid.Identifier), nodeid.Identifier)
+
+    def _nodeid(self, key: TypeKey) -> NodeId:
+        if isinstance(key, NodeId):
+            return key
+        uri, _, identifier = key
+        assert self._namespaces is not None
+        return NodeId(identifier, list(self._namespaces()).index(uri))
+
+    def _required_key(self, nodeid: NodeId) -> TypeKey:
+        key = self._key(nodeid)
+        if self._namespaces is not None and nodeid.NamespaceIndex == 0:
+            raise UaError(f"{nodeid} is in namespace 0, whose types are fixed")
+        return key
+
+    def _own(self, table: dict[TypeKey, type], nodeid: NodeId) -> type | None:
+        key = self._key(nodeid)
+        return None if key is None else table.get(key)
+
+    def _lookup(self, table_name: str, nodeid: NodeId) -> type | None:
+        found = self._own(getattr(self, table_name), nodeid)
+        if found is not None:
+            return found
+        for parent in self._parents:
+            found = parent._lookup(table_name, nodeid)
+            if found is not None:
+                return found
+        return None
+
+    def _bind(self, name: str, cls: type, nodeid: NodeId | None) -> None:
+        self._names.setdefault(name, cls)
+        if not self._is_base:
+            _set_ua_attribute(name, cls, nodeid)
+        if nodeid is not None and self._namespaces is not None and nodeid.NamespaceIndex != 0:
+            table = self._namespaces()
+            if nodeid.NamespaceIndex < len(table):
+                self._named.setdefault((table[nodeid.NamespaceIndex], name), cls)
+
+    def register_struct(self, data_type: NodeId | None, encoding_id: NodeId | None, cls: type, name: str) -> None:
+        if data_type is not None and not data_type.is_null():
+            key = self._required_key(data_type)
+            self._claim(self._datatypes, key, cls, data_type)
+            self._class_datatype[cls] = key
+        if encoding_id is not None and not encoding_id.is_null():
+            key = self._required_key(encoding_id)
+            self._claim(self._encodings, key, cls, encoding_id)
+            self._class_encoding[cls] = key
+        cls.__ua_registry__ = weakref.ref(self)  # type: ignore[attr-defined]
+        if not self._is_base:
+            if data_type is not None and not data_type.is_null():
+                datatype_by_extension_object[cls] = data_type
+            if encoding_id is not None and not encoding_id.is_null():
+                typeid_by_extension_objects[cls] = encoding_id
+        self._bind(name, cls, data_type or encoding_id)
+
+    def register_enum(self, data_type: NodeId, cls: type, name: str) -> None:
+        key = self._required_key(data_type)
+        self._claim(self._datatypes, key, cls, data_type)
+        self._class_datatype[cls] = key
+        if not self._is_base:
+            enums_datatypes[cls] = data_type
+        cls.data_type = data_type  # type: ignore[attr-defined]
+        self._bind(name, cls, data_type)
+
+    def register_alias(self, data_type: NodeId, base_cls: type, name: str) -> None:
+        key = self._required_key(data_type)
+        self._claim(self._datatypes, key, base_cls, data_type)
+        self._bind(name, base_cls, data_type)
+
+    def _claim(self, table: dict[TypeKey, type], key: TypeKey, cls: type, nodeid: NodeId) -> None:
+        existing = table.get(key)
+        if existing is not None and existing is not cls:
+            _logger.info("%s is registered again, the previous class is replaced", nodeid)
+        table[key] = cls
+
+    def find_own(self, data_type: NodeId) -> type | None:
+        return self._own(self._datatypes, data_type)
+
+    def find(self, data_type: NodeId) -> type | None:
+        return self._lookup("_datatypes", data_type)
+
+    def get(self, data_type: NodeId) -> type:
+        found = self.find(data_type)
+        if found is None:
+            raise KeyError(f"No registered type for DataType {data_type}")
+        return found
+
+    def class_for_encoding(self, encoding_id: NodeId) -> type | None:
+        return self._lookup("_encodings", encoding_id)
+
+    def _reverse(self, table_name: str, cls: type) -> NodeId | None:
+        key = getattr(self, table_name).get(cls)
+        if key is not None:
+            return self._nodeid(key) if not isinstance(key, NodeId) else key
+        for parent in self._parents:
+            found = parent._reverse(table_name, cls)
+            if found is not None:
+                return found
+        return None
+
+    def encoding_id_of(self, cls: type) -> NodeId:
+        found = self._reverse("_class_encoding", cls)
+        if found is None:
+            raise KeyError(f"No registered encoding for class {cls}")
+        return found
+
+    def data_type_of(self, cls: type) -> NodeId:
+        found = self._reverse("_class_datatype", cls)
+        if found is None:
+            raise KeyError(f"No registered DataType for class {cls}")
+        return found
+
+    def by_name(self, name: str, namespace_uri: str | None = None) -> type:
+        if namespace_uri is not None:
+            found = self._named.get((namespace_uri, name))
+            if found is not None:
+                return found
+            raise KeyError(f"No registered type {name} in {namespace_uri}")
+        if name in self._names:
+            return self._names[name]
+        for parent in self._parents:
+            try:
+                return parent.by_name(name)
+            except KeyError:
+                continue
+        raise KeyError(f"No registered type named {name}")
+
+    def names(self) -> dict[str, type]:
+        return dict(self._names)
+
+    def includes(self, other: TypeRegistry) -> bool:
+        return other is self or any(parent.includes(other) for parent in self._parents)
+
+    def snapshot(self) -> tuple[Any, ...]:
+        return tuple(
+            dict(table)
+            for table in (
+                self._datatypes,
+                self._class_datatype,
+                self._encodings,
+                self._class_encoding,
+                self._names,
+                self._named,
+            )
+        )
+
+    def restore(self, saved: tuple[Any, ...]) -> None:
+        for table, content in zip(
+            (self._datatypes, self._class_datatype, self._encodings, self._class_encoding, self._names, self._named),
+            saved,
+        ):
+            table.clear()
+            table.update(content)
+
+    @contextlib.contextmanager
+    def encoding(self) -> Iterator[None]:
+        token = _encoding_registry.set(self)
+        try:
+            yield
+        finally:
+            _encoding_registry.reset(token)
+
+
+_encoding_registry: contextvars.ContextVar[TypeRegistry | None] = contextvars.ContextVar(
+    "encoding_registry", default=None
+)
+
+base_types = TypeRegistry(base_tables=True)
+default_types = base_types
+
+
+def encoding_id_for_class(cls: type) -> NodeId | None:
+    """
+    The ExtensionObject encoding id of a class, or None if no registry knows it. A class built for a session is
+    encoded with the namespace array of that session; sending it through another session raises.
+    """
+    owner_ref = cls.__dict__.get("__ua_registry__")
+    owner = owner_ref() if owner_ref is not None else None
+    if owner is None or owner._is_base:
+        found = typeid_by_extension_objects.get(cls)
+        if found is not None:
+            return found
+    if owner is not None:
+        current = _encoding_registry.get()
+        if current is not None and not current.includes(owner):
+            raise UaError(f"{cls.__name__} belongs to the type registry of another session")
+        return owner.encoding_id_of(cls)
+    try:
+        return default_types.encoding_id_of(cls)
+    except KeyError:
+        return None
 
 
 def _set_ua_attribute(name: str, class_type: type, data_type: NodeId | None) -> None:
@@ -1382,93 +1622,49 @@ def _set_ua_attribute(name: str, class_type: type, data_type: NodeId | None) -> 
     if existing_dt is not None and data_type is not None and existing_dt == data_type:
         return
     _logger.warning(
-        "Browsename collision: ua.%s is already bound (data_type=%s); new class with data_type=%s "
-        "is registered only in the NodeId-keyed lookup dicts. Use ua.get_type(node_id) or "
-        "ua.extension_objects_by_datatype[node_id] to access it.",
+        "Browsename collision: ua.%s is already bound (data_type=%s); the new class with data_type=%s "
+        "is registered only in its type registry. Use session.types.get(node_id) to access it.",
         name,
         existing_dt,
         data_type,
     )
 
 
-# register of alias of basetypes
 def register_basetype(name: str, nodeid: NodeId, class_type: type) -> None:
     """
-    Register a new alias of basetypes for automatic decoding and make them available in ua module
+    Deprecated: register an alias of a built-in type in the process-wide default registry.
     """
-    _logger.info("registering new basetype alias: %s %s %s", name, nodeid, class_type)
-    basetype_by_datatype[nodeid] = name
-    basetype_datatypes[class_type] = nodeid
+    default_types.register_alias(nodeid, class_type, name)
     _set_ua_attribute(name, class_type, None)
-
-
-# register of custom enums (Those loaded with load_enums())
-enums_by_datatype: dict[NodeId, type] = {}
-enums_datatypes: dict[type, NodeId] = {}
 
 
 def register_enum(name: str, nodeid: NodeId, class_type: type) -> None:
     """
-    Register a new enum for automatic decoding and make them available in ua module
+    Deprecated: register an enum in the process-wide default registry. Sessions register in their own registry.
     """
-    _logger.info("registering new enum: %s %s %s", name, nodeid, class_type)
-    enums_by_datatype[nodeid] = class_type
-    enums_datatypes[class_type] = nodeid
-    class_type.data_type = nodeid  # type: ignore[attr-defined]
+    default_types.register_enum(nodeid, class_type, name)
     _set_ua_attribute(name, class_type, nodeid)
-
-
-# These dictionaries are used to register extensions classes for automatic
-# decoding and encoding
-extension_objects_by_datatype: dict[NodeId, type] = {}
-extension_objects_by_typeid: dict[NodeId, type] = {}
-datatype_by_extension_object: dict[type, NodeId] = {}
-typeid_by_extension_objects: dict[type, NodeId] = {}
 
 
 def register_extension_object(
     name: str, encoding_nodeid: NodeId, class_type: type, datatype_nodeid: NodeId | None = None
 ) -> None:
     """
-    Register a new extension object for automatic decoding and make them available in ua module
+    Deprecated: register a structure in the process-wide default registry. Sessions register in their own registry.
     """
-    _logger.info(
-        "registering new extension object: %s %s %s %s",
-        name,
-        encoding_nodeid,
-        class_type,
-        datatype_nodeid,
-    )
-    if datatype_nodeid:
-        extension_objects_by_datatype[datatype_nodeid] = class_type
-        datatype_by_extension_object[class_type] = datatype_nodeid
-    extension_objects_by_typeid[encoding_nodeid] = class_type
-    typeid_by_extension_objects[class_type] = encoding_nodeid
+    default_types.register_struct(datatype_nodeid, encoding_nodeid, class_type, name)
     _set_ua_attribute(name, class_type, datatype_nodeid)
 
 
 def get_type(node_id: NodeId) -> type:
     """
-    Resolve a DataType NodeId to its registered Python class.
-
-    Checks struct, enum, and basetype registries. This is the authoritative lookup
-    when browsenames collide across namespaces.
+    Deprecated: resolve a DataType NodeId in the default registry. Use the types of a Client or Server.
     """
-    if node_id in extension_objects_by_datatype:
-        return extension_objects_by_datatype[node_id]
-    if node_id in enums_by_datatype:
-        return enums_by_datatype[node_id]
-    if node_id in basetype_by_datatype:
-        import enginir_opcua.ua as _ua
-
-        return getattr(_ua, basetype_by_datatype[node_id])
-    raise KeyError(f"No registered type for DataType {node_id}")
+    return default_types.get(node_id)
 
 
 def get_extensionobject_class_type(typeid: NodeId) -> type | None:
     """
-    Returns the registered class type for typid of an extension object
+    Deprecated: the class registered for an ExtensionObject encoding id in the default registry.
     """
-    if typeid in extension_objects_by_typeid:
-        return extension_objects_by_typeid[typeid]
-    return None
+    return default_types.class_for_encoding(typeid)

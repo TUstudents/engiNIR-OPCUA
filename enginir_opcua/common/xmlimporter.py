@@ -486,14 +486,20 @@ class XmlImporter:
         return res[0].AddedNodeId
 
     def _get_ext_class(self, name: str):
-        if hasattr(ua, name):
-            return getattr(ua, name)
-        if name in self.aliases.keys():
+        types = self.session.types
+        if name in self.aliases:
             nodeid = self.aliases[name]
-            class_type = ua.uatypes.get_extensionobject_class_type(nodeid)
+            class_type = types.find(nodeid) or types.class_for_encoding(nodeid)
             if class_type:
                 return class_type
-            raise Exception("Error no extension class registered ", name, nodeid)
+        try:
+            return types.by_name(name)
+        except KeyError:
+            pass
+        if hasattr(ua, name):
+            return getattr(ua, name)
+        if name in self.aliases:
+            raise Exception("Error no extension class registered ", name, self.aliases[name])
         raise Exception("Error no alias found for extension class", name)
 
     async def _make_ext_obj(self, obj):
@@ -731,9 +737,20 @@ class XmlImporter:
         await self._add_refs(obj)
         if self.auto_load_definitions:
             if is_struct:
-                await load_custom_struct_xml_import(node.RequestedNewNodeId, attrs)
+                await load_custom_struct_xml_import(
+                    self.session.types,
+                    node.RequestedNewNodeId,
+                    node.BrowseName.Name,
+                    attrs.DataTypeDefinition,  # type: ignore[attr-defined]
+                )
             if is_enum:
-                await load_enum_xml_import(node.RequestedNewNodeId, attrs, is_option_set)
+                await load_enum_xml_import(
+                    self.session.types,
+                    node.RequestedNewNodeId,
+                    node.BrowseName.Name,
+                    attrs.DataTypeDefinition,  # type: ignore[attr-defined]
+                    is_option_set,
+                )
             if is_alias:
                 if node.ParentNodeId != ua.NodeId(ua.ObjectIds.Structure):
                     await load_basetype_alias_xml_import(

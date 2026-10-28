@@ -431,7 +431,10 @@ class XmlExporter:
                     enc_node = (
                         await dtype_node.get_referenced_nodes(ua.ObjectIds.HasEncoding, ua.BrowseDirection.Forward)
                     )[0]
-                    type_name = ua.extension_objects_by_typeid[enc_node.nodeid].__name__
+                    encoded_class = self.server.types.class_for_encoding(enc_node.nodeid)
+                    if encoded_class is None:
+                        raise UaError(f"No class is registered for the encoding {enc_node.nodeid}")
+                    type_name = encoded_class.__name__
 
                 await self._value_to_etree(member_el, type_name, dtype, v)
         else:
@@ -523,15 +526,13 @@ class XmlExporter:
 
     async def _extobj_to_etree(self, val_el: Et.Element, name: str, dtype: ua.NodeId, val: Any) -> None:
         if "=" in name:
-            try:
-                name = ua.extension_objects_by_datatype[dtype].__name__
-            except KeyError:
-                try:
-                    name = ua.enums_by_datatype[dtype].__name__
-                except KeyError:
-                    node: Node = self.server.get_node(dtype)
-                    browse_name = await node.read_browse_name()
-                    name = browse_name.Name
+            registered = self.server.types.find(dtype)
+            if registered is not None:
+                name = registered.__name__
+            else:
+                node: Node = self.server.get_node(dtype)
+                browse_name = await node.read_browse_name()
+                name = browse_name.Name
         obj_el = Et.SubElement(val_el, "uax:ExtensionObject")
         type_el = Et.SubElement(obj_el, "uax:TypeId")
         id_el = Et.SubElement(type_el, "uax:Identifier")
@@ -555,17 +556,13 @@ class XmlExporter:
                 dtype = ua.NodeId(getattr(ua.ObjectIds, type_name))
             except AttributeError:
                 try:
-                    cls = getattr(ua, type_name)
-                    enc_node: Node = self.server.get_node(ua.typeid_by_extension_objects[cls])
+                    cls = self.server.types.by_name(type_name) if type_name not in dir(ua) else getattr(ua, type_name)
+                    enc_node: Node = self.server.get_node(self.server.types.encoding_id_of(cls))
                     dtype_node = (
                         await enc_node.get_referenced_nodes(ua.ObjectIds.HasEncoding, ua.BrowseDirection.Inverse)
                     )[0]
                     dtype = dtype_node.nodeid
                 except (AttributeError, KeyError):
-                    for enum_cls in ua.enums_datatypes:
-                        if enum_cls.__class__ == field.type.__class__:
-                            dtype = ua.enums_datatypes[enum_cls]
-                            break
                     self.logger.debug("could not find field type %s in registered types", field.type)
                     return
             await self.member_to_etree(struct_el, field.name, dtype, getattr(val, field.name))

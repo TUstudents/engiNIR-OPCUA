@@ -113,8 +113,9 @@ class SequenceHeader:
 
 
 class Message:
-    def __init__(self, chunks: Sequence["MessageChunk"]) -> None:
+    def __init__(self, chunks: Sequence["MessageChunk"], types: uatypes.TypeRegistry | None = None) -> None:
         self._chunks = chunks
+        self._types = types
 
     def request_id(self) -> int:
         return self._chunks[0].SequenceHeader.RequestId
@@ -130,7 +131,7 @@ class Message:
 
     def body(self) -> utils.Buffer:
         body = b"".join([c.Body for c in self._chunks])
-        return utils.Buffer(body)
+        return utils.Buffer(body, types=self._types)
 
 
 ana = auto.NodeAttributesMask

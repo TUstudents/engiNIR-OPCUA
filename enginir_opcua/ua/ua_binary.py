@@ -791,7 +791,9 @@ def extensionobject_from_binary(data: Buffer | IO) -> Any:
     encoding = _read(data, 1)[0]
     if encoding > 2:
         raise UaError(f"Unknown ExtensionObject encoding {encoding}")
-    registered = typeid in ua.extension_objects_by_typeid
+    types = getattr(data, "types", None) or ua.default_types
+    cls = types.class_for_encoding(typeid)
+    registered = cls is not None
     window: Buffer | None = None
     unframed = False
     if encoding != 0:
@@ -807,7 +809,7 @@ def extensionobject_from_binary(data: Buffer | IO) -> Any:
     if _is_null_nodeid(typeid):
         return ua.ExtensionObject()
     if registered and encoding != 2:
-        cls = ua.extension_objects_by_typeid[typeid]
+        assert cls is not None
         if not unframed and window is None:
             raise UaError(f"parsing ExtensionObject {cls.__name__} without data")
         return from_binary(cls, data if unframed else window)  # type: ignore[arg-type]
@@ -846,7 +848,7 @@ def extensionobject_to_binary(obj: Any) -> bytes:
         encoding = 0
         body = None
     else:
-        type_id = ua.typeid_by_extension_objects.get(obj.__class__)
+        type_id = ua.uatypes.encoding_id_for_class(obj.__class__)
         if type_id is None:
             type_id = _encoding_for_class_via_mro(obj.__class__)
         encoding = 0x01

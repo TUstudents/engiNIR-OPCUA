@@ -730,6 +730,10 @@ class Server:
         await subscription.init()
         return subscription
 
+    @property
+    def types(self) -> ua.TypeRegistry:
+        return self.iserver.types
+
     async def get_namespace_array(self) -> list[str]:
         """
         get all namespace defined in server

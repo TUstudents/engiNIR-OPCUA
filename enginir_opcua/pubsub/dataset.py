@@ -39,7 +39,7 @@ from ..ua.uatypes import (
     ValueRank,
     Variant,
     VariantType,
-    extension_objects_by_datatype,
+    default_types,
 )
 from .utils import version_time_now
 
@@ -162,7 +162,7 @@ class DataSetField:
         """
         if self._meta.BuiltInType != 0:
             return VariantType(self._meta.BuiltInType).name
-        return extension_objects_by_datatype[self._meta.DataType].__name__
+        return default_types.get(self._meta.DataType).__name__
 
 
 class DataSetMeta:

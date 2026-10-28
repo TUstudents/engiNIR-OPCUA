@@ -36,7 +36,7 @@ class Buffer:
     and added a few convenience methods.
     """
 
-    def __init__(self, data: bytes, start_pos: int = 0, size: int = -1) -> None:
+    def __init__(self, data: bytes, start_pos: int = 0, size: int = -1, types: Any = None) -> None:
         if start_pos < 0 or start_pos > len(data):
             raise UaError(f"Buffer start {start_pos} is outside the data of {len(data)} bytes")
         if size == -1:
@@ -47,6 +47,7 @@ class Buffer:
         self._start = start_pos
         self._end = start_pos + size
         self._cur_pos = start_pos
+        self.types = types
 
     def __str__(self) -> str:
         return f"Buffer(size:{len(self)}, data:{self._data[self._cur_pos : self._end]!r})"
@@ -83,7 +84,7 @@ class Buffer:
         if size == -1:
             size = len(self)
         self._check_size(size)
-        return Buffer(self._data, self._cur_pos, size)
+        return Buffer(self._data, self._cur_pos, size, self.types)
 
     def skip(self, size: int) -> None:
         """

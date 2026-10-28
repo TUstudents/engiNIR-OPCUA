@@ -24,7 +24,7 @@ async def main():
 
         # loading one specific custom struct
         mystructnode = await client.nodes.base_structure_type.get_child(f"{idx}:MyStruct")
-        my_type = await load_custom_struct(mystructnode)
+        my_type = await load_custom_struct(mystructnode, client.types)
 
 
 if __name__ == "__main__":

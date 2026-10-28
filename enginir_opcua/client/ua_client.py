@@ -11,6 +11,7 @@ Low level binary client.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
 from collections.abc import Awaitable, Callable
@@ -104,9 +105,19 @@ class UASocketProtocol(asyncio.Protocol):
         self.pre_request_hook: Callable[[], Awaitable[None]] | None = None
         # Synchronous callback fired from connection_lost — used by the supervisor to detect transport loss.
         self.on_connection_lost: Callable[[Exception | None], None] | None = None
+        self._types: ua.TypeRegistry | None = None
         # Predicate telling whether the owning session is closing, so late responses
         # to cancelled requests are logged as expected teardown rather than warnings.
         self.is_session_closing: Callable[[], bool] | None = None
+
+    @property
+    def types(self) -> ua.TypeRegistry | None:
+        return self._types
+
+    @types.setter
+    def types(self, registry: ua.TypeRegistry | None) -> None:
+        self._types = registry
+        self._channel.types = registry
 
     def _check_server_certificate(self, chain: bytes) -> None:
         if self.certificate_validator is None:
@@ -215,7 +226,8 @@ class UASocketProtocol(asyncio.Protocol):
         self.logger.debug("Sending: %s", request)
         next_request_id = self._request_id + 1
         try:
-            binreq = struct_to_binary(request)
+            with self._types.encoding() if self._types is not None else contextlib.nullcontext():
+                binreq = struct_to_binary(request)
             msg = self._channel.message_to_binary(binreq, message_type=message_type, request_id=next_request_id)
         except MessageTooLarge as e:
             self._request_handle -= 1
@@ -480,6 +492,7 @@ class UaClient:
         self.reconnect_on_loss = False
         self.observer: Observer = NULL_OBSERVER
         self.session: UaSession = UaSession(self)
+        self.types: ua.TypeRegistry | None = None
 
     @property
     def state(self) -> UaClientState:
@@ -617,6 +630,7 @@ class UaClient:
         self.protocol.validation_host_name = self.validation_host_name
         self.protocol.pre_request_hook = self._pre_request_hook
         self.protocol.on_connection_lost = self._on_transport_lost
+        self.protocol.types = self.types
         self.protocol.is_session_closing = self._is_session_closing
         return self.protocol
 

@@ -90,6 +90,10 @@ class InternalServer:
     There is one `InternalServer` for every `Server`.
     """
 
+    def _namespace_uris(self) -> list[str]:
+        value = self.aspace.read_attribute(ua.NodeId(ua.ObjectIds.Server_NamespaceArray), ua.AttributeIds.Value)
+        return list(value.Value.Value) if value.Value is not None and value.Value.Value else []
+
     def __init__(self, user_manager: UserManager | None = None) -> None:
         self.logger = logging.getLogger(__name__)
         self.callback_service = CallbackService()
@@ -154,6 +158,7 @@ class InternalServer:
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
         self.aspace = AddressSpace()
+        self.types = ua.TypeRegistry(namespaces=self._namespace_uris, parents=(ua.default_types,))
         self.attribute_service = AttributeService(self.aspace)
         self.view_service = ViewService(self.aspace, self)
         self.method_service = MethodService(self.aspace)
