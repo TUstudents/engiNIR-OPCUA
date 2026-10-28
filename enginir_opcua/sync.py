@@ -14,7 +14,7 @@ import time
 import weakref
 from collections import deque
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Condition, RLock, Thread, current_thread
 from threading import Event as ThreadEvent
@@ -26,7 +26,7 @@ from cryptography import x509
 from enginir_opcua import client, common, server, ua
 from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_builder, xmlexporter
 from enginir_opcua.common.events import Event
-from enginir_opcua.crypto import uacrypto
+from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.observer import Observer
 from enginir_opcua.server.user_managers import UserManager
@@ -671,7 +671,16 @@ class Client(_Owner):
     ) -> None: ...
 
     @syncmethod
-    def set_security(self) -> None: ...
+    def set_security(
+        self,
+        policy: type[security_policies.SecurityPolicy],
+        certificate: str | uacrypto.CertProperties | bytes | Path | None = None,
+        private_key: str | uacrypto.CertProperties | bytes | Path | None = None,
+        private_key_password: str | bytes | None = None,
+        server_certificate: str | uacrypto.CertProperties | bytes | None = None,
+        mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
+        certificate_chain: Sequence[str | uacrypto.CertProperties | bytes | Path] | None = None,
+    ) -> None: ...
 
     @syncmethod
     def set_security_string(self, string: str) -> None: ...
@@ -779,11 +788,21 @@ class Client(_Owner):
 
     @syncmethod
     def import_xml(
-        self, path: str | None = None, xmlstring: str | None = None, strict_mode: bool = True
+        self,
+        path: str | None = None,
+        xmlstring: str | None = None,
+        strict_mode: bool = True,
+        auto_load_definitions: bool = True,
     ) -> list[ua.NodeId]: ...
 
     @syncmethod
-    def export_xml(self, nodes: Iterable[SyncNode], path: str, export_values: bool = False) -> None: ...
+    def export_xml(
+        self,
+        nodes: Iterable[SyncNode],
+        path: str,
+        export_values: bool = False,
+        model_uris: list[str] | None = None,
+    ) -> None: ...
 
     @syncmethod
     def register_namespace(self, uri: str) -> int: ...
@@ -807,6 +826,9 @@ class Client(_Owner):
         self, nodes: Iterable[SyncNode], values: Iterable[Any], raise_on_partial_error: bool = True
     ) -> list[ua.StatusCode]: ...
 
+    get_values = read_values  # legacy
+    set_values = write_values  # legacy
+
     @syncmethod
     def browse_nodes(self, nodes: Iterable[SyncNode]) -> list[tuple[SyncNode, ua.BrowseResult]]: ...
 
@@ -814,6 +836,15 @@ class Client(_Owner):
     def translate_browsepaths(
         self, starting_node: ua.NodeId, relative_paths: Iterable[ua.RelativePath | str]
     ) -> list[ua.BrowsePathResult]: ...
+
+    @staticmethod
+    def find_endpoint(
+        endpoints: Iterable[ua.EndpointDescription],
+        security_mode: ua.MessageSecurityMode,
+        policy_uri: str,
+        url: str | None = None,
+    ) -> ua.EndpointDescription:
+        return client.Client.find_endpoint(endpoints, security_mode, policy_uri, url)
 
     def __enter__(self) -> Client:
         try:
@@ -920,6 +951,172 @@ class Server(_Owner):
 
     __repr__ = __str__
 
+    allow_plaintext_password = _aio_property("allow_plaintext_password")
+    types = _aio_property("types", writable=False)
+
+    def get_root_node(self) -> SyncNode:
+        return SyncNode(self.tloop, self.aio_obj.get_root_node())
+
+    def get_objects_node(self) -> SyncNode:
+        return SyncNode(self.tloop, self.aio_obj.get_objects_node())
+
+    def set_match_discovery_endpoint_url(self, match_discovery_endpoint_url: bool) -> None:
+        self.aio_obj.set_match_discovery_endpoint_url(match_discovery_endpoint_url)
+
+    def set_match_discovery_client_ip(self, match_discovery_client_ip: bool) -> None:
+        self.aio_obj.set_match_discovery_client_ip(match_discovery_client_ip)
+
+    def set_force_server_timestamp(self, force_server_timestamp: bool) -> None:
+        self.aio_obj.set_force_server_timestamp(force_server_timestamp)
+
+    def accept_server_registrations(self, enabled: bool = True) -> None:
+        self.aio_obj.accept_server_registrations(enabled)
+
+    def set_user_trust_store(self, trust_store: TrustStore) -> None:
+        self.aio_obj.set_user_trust_store(trust_store)
+
+    def set_certificate_validator(self, validator: Any) -> None:
+        self.aio_obj.set_certificate_validator(validator)
+
+    def set_application_hook(self, hook: Any) -> None:
+        self.aio_obj.set_application_hook(hook)
+
+    def set_attribute_value_setter(
+        self, nodeid: ua.NodeId, setter: Callable[..., Any], attr: ua.AttributeIds = ua.AttributeIds.Value
+    ) -> None:
+        self.aio_obj.set_attribute_value_setter(nodeid, setter, attr)
+
+    def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value) -> ua.DataValue:
+        return self.aio_obj.read_attribute_value(nodeid, attr)
+
+    def subscribe_server_callback(self, event: Any, handle: Callable[..., Any]) -> None:
+        self.aio_obj.subscribe_server_callback(event, handle)
+
+    def unsubscribe_server_callback(self, event: Any, handle: Callable[..., Any]) -> None:
+        self.aio_obj.unsubscribe_server_callback(event, handle)
+
+    @syncmethod
+    def set_build_info(
+        self,
+        product_uri: str,
+        manufacturer_name: str,
+        product_name: str,
+        software_version: str,
+        build_number: str,
+        build_date: datetime,
+    ) -> None: ...
+
+    @syncmethod
+    def load_certificate_chain(self, chain: Iterable[str | bytes | Path]) -> None: ...
+
+    @syncmethod
+    def find_servers(self, uris: list[str] | None = None) -> list[ua.ApplicationDescription]: ...
+
+    @syncmethod
+    def get_endpoints(self) -> list[ua.EndpointDescription]: ...
+
+    @syncmethod
+    def register_to_discovery(
+        self,
+        url: str = "opc.tcp://localhost:4840",
+        period: int = 60,
+        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+    ) -> None: ...
+
+    @syncmethod
+    def unregister_from_discovery(
+        self,
+        url: str = "opc.tcp://localhost:4840",
+        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+    ) -> None: ...
+
+    @syncmethod
+    def create_custom_data_type(
+        self,
+        idx: int | ua.NodeId,
+        name: str | ua.QualifiedName,
+        basetype: ua.NodeId | int = ua.ObjectIds.BaseDataType,
+        properties: list[tuple[Any, ...]] | None = None,
+        description: str | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def create_custom_event_type(
+        self,
+        idx: int | ua.NodeId,
+        name: str | ua.QualifiedName,
+        basetype: ua.NodeId | int = ua.ObjectIds.BaseEventType,
+        properties: list[tuple[Any, ...]] | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def create_custom_object_type(
+        self,
+        idx: int | ua.NodeId,
+        name: str | ua.QualifiedName,
+        basetype: ua.NodeId | int = ua.ObjectIds.BaseObjectType,
+        properties: list[tuple[Any, ...]] | None = None,
+        variables: list[tuple[Any, ...]] | None = None,
+        methods: list[tuple[Any, ...]] | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def create_custom_variable_type(
+        self,
+        idx: int | ua.NodeId,
+        name: str | ua.QualifiedName,
+        basetype: ua.NodeId | int = ua.ObjectIds.BaseVariableType,
+        properties: list[tuple[Any, ...]] | None = None,
+        variables: list[tuple[Any, ...]] | None = None,
+        methods: list[tuple[Any, ...]] | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def export_xml(
+        self,
+        nodes: Iterable[SyncNode],
+        path: str,
+        export_values: bool = False,
+        model_uris: list[str] | None = None,
+    ) -> None: ...
+
+    @syncmethod
+    def export_xml_by_ns(
+        self, path: str, namespaces: list[str | int] | None = None, export_values: bool = False
+    ) -> None: ...
+
+    @syncmethod
+    def delete_nodes(
+        self, nodes: Iterable[SyncNode], recursive: bool = False
+    ) -> tuple[list[SyncNode], list[ua.StatusCode]]: ...
+
+    @syncmethod
+    def read_attributes(
+        self, nodes: Iterable[SyncNode], attr: ua.AttributeIds = ua.AttributeIds.Value
+    ) -> list[ua.DataValue]: ...
+
+    @syncmethod
+    def historize_node_data_change(
+        self,
+        node: SyncNode | list[SyncNode] | tuple[SyncNode, ...],
+        period: timedelta = timedelta(days=7),
+        count: int = 0,
+    ) -> None: ...
+
+    @syncmethod
+    def dehistorize_node_data_change(self, node: SyncNode | list[SyncNode] | tuple[SyncNode, ...]) -> None: ...
+
+    @syncmethod
+    def historize_node_event(
+        self,
+        node: SyncNode | list[SyncNode] | tuple[SyncNode, ...],
+        period: timedelta = timedelta(days=7),
+        count: int = 0,
+    ) -> None: ...
+
+    @syncmethod
+    def dehistorize_node_event(self, node: SyncNode | list[SyncNode] | tuple[SyncNode, ...]) -> None: ...
+
     def __enter__(self) -> Server:
         self.start()
         return self
@@ -930,11 +1127,11 @@ class Server(_Owner):
         self.stop()
 
     @syncmethod
-    def load_certificate(self, path: str, format: str | None = None) -> None: ...
+    def load_certificate(self, path_or_content: str | bytes | Path, format: str | None = None) -> None: ...
 
     @syncmethod
     def load_private_key(
-        self, path: str | Path | bytes, password: str | bytes | None = None, format: str | None = None
+        self, path_or_content: str | Path | bytes, password: str | bytes | None = None, format: str | None = None
     ) -> None: ...
 
     def set_endpoint(self, url: str) -> None:
@@ -1010,7 +1207,11 @@ class Server(_Owner):
 
     @syncmethod
     def import_xml(
-        self, path: str | None = None, xmlstring: str | None = None, strict_mode: bool = True
+        self,
+        path: str | None = None,
+        xmlstring: str | None = None,
+        strict_mode: bool = True,
+        auto_load_definitions: bool = True,
     ) -> list[ua.NodeId]: ...
 
     @syncmethod
@@ -1020,10 +1221,12 @@ class Server(_Owner):
     def load_enums(self) -> dict[str, type]: ...
 
     @syncmethod
-    def load_type_definitions(self) -> dict[str, type]: ...
+    def load_type_definitions(self, nodes: Iterable[SyncNode] | None = None) -> Any: ...
 
     @syncmethod
-    def load_data_type_definitions(self, node: SyncNode | None = None) -> dict[str, type]: ...
+    def load_data_type_definitions(
+        self, node: SyncNode | None = None, overwrite_existing: bool = False
+    ) -> dict[str, type]: ...
 
     @syncmethod
     def write_attribute_value(
@@ -1198,7 +1401,7 @@ class SyncNode:
         starttime: datetime | None = None,
         endtime: datetime | None = None,
         numvalues: int = 0,
-        return_bounds: bool = True,
+        return_bounds: bool = False,
     ) -> list[ua.DataValue]: ...
 
     @syncmethod
@@ -1206,6 +1409,7 @@ class SyncNode:
         self,
         details: ua.ReadRawModifiedDetails,
         continuation_point: bytes | None = None,
+        release_continuation_point: bool = False,
     ) -> ua.HistoryReadResult: ...
 
     @syncmethod
@@ -1222,7 +1426,12 @@ class SyncNode:
     ) -> list[Event]: ...
 
     @syncmethod
-    def history_read_events(self, details: Iterable[ua.ReadEventDetails]) -> ua.HistoryReadResult: ...
+    def history_read_events(
+        self,
+        details: ua.ReadEventDetails,
+        continuation_point: bytes | None = None,
+        release_continuation_point: bool = False,
+    ) -> ua.HistoryReadResult: ...
 
     @syncmethod
     def set_modelling_rule(self, mandatory: bool) -> None: ...
@@ -1257,22 +1466,39 @@ class SyncNode:
     ) -> SyncNode: ...
 
     @syncmethod
-    def add_object_type(self, nodeid: ua.NodeId | str, bname: ua.QualifiedName | str) -> SyncNode: ...
+    def add_object_type(
+        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, is_abstract: bool = False
+    ) -> SyncNode: ...
 
     @syncmethod
     def add_variable_type(
-        self, nodeid: ua.NodeId | str, bname: ua.QualifiedName | str, datatype: ua.NodeId | int
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        datatype: ua.NodeId | int,
+        is_abstract: bool = False,
     ) -> SyncNode: ...
 
     @syncmethod
     def add_folder(self, nodeid: ua.NodeId | str, bname: ua.QualifiedName | str) -> SyncNode: ...
 
     @syncmethod
-    def add_method(self, *args: Any) -> SyncNode: ...
+    def add_method(
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        callback: Callable[..., Any] | None = None,
+        inputs: list[Any] | None = None,
+        outputs: list[Any] | None = None,
+    ) -> SyncNode: ...
 
     @syncmethod
     def add_data_type(
-        self, nodeid: ua.NodeId | str, bname: ua.QualifiedName | str, description: str | None = None
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        description: str | None = None,
+        is_abstract: bool = False,
     ) -> SyncNode: ...
 
     @syncmethod
@@ -1282,6 +1508,7 @@ class SyncNode:
     def write_value(self, value: Any, varianttype: ua.VariantType | None = None) -> None: ...
 
     set_value = write_value  # legacy
+    set_data_value = write_value  # legacy
 
     @syncmethod
     def write_params(self, params: ua.WriteParameters) -> list[ua.StatusCode]: ...
@@ -1305,7 +1532,9 @@ class SyncNode:
     get_data_type_as_variant_type = read_data_type_as_variant_type  # legacy
 
     @syncmethod
-    def call_method(self, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any) -> Any: ...
+    def call_method(
+        self, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any, timeout: float | None = None
+    ) -> Any: ...
 
     @syncmethod
     def get_references(
@@ -1324,6 +1553,7 @@ class SyncNode:
         reftype: SyncNode | ua.NodeId | str | int,
         forward: bool = True,
         bidirectional: bool = True,
+        target_class: ua.NodeClass | None = None,
     ) -> None: ...
 
     @syncmethod
@@ -1413,6 +1643,12 @@ class SyncNode:
     @syncmethod
     def write_value_rank(self, value: int) -> None: ...
 
+    @syncmethod
+    def set_read_only(self) -> None: ...
+
+    @syncmethod
+    def history_update(self, details: ua.HistoryUpdateDetails) -> ua.HistoryUpdateResult: ...
+
 
 class Subscription:
     def __init__(self, tloop: ThreadLoop, sub: subscription.Subscription) -> None:
@@ -1455,7 +1691,7 @@ class Subscription:
         attr: ua.AttributeIds = ua.AttributeIds.Value,
         queuesize: int = 0,
         monitoring: ua.MonitoringMode = ua.MonitoringMode.Reporting,
-        sampling_interval: float = 0.0,
+        sampling_interval: ua.Duration = -1,
     ) -> int | list[int | ua.StatusCode]: ...
 
     @syncmethod
@@ -1469,6 +1705,7 @@ class Subscription:
         | Iterable[SyncNode | ua.NodeId | str | int] = ua.ObjectIds.BaseEventType,
         evfilter: ua.EventFilter | None = None,
         queuesize: int = 0,
+        where_clause_generation: bool = True,
     ) -> int: ...
 
     def _make_monitored_item_request(
@@ -1492,6 +1729,57 @@ class Subscription:
 
     @syncmethod
     def delete(self) -> None: ...
+
+    is_deleted = _aio_property("is_deleted", writable=False)
+
+    def is_stale(self, margin: float) -> bool:
+        return self.aio_obj.is_stale(margin)
+
+    @syncmethod
+    def update(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult: ...
+
+    @syncmethod
+    def recreate(self) -> None: ...
+
+    @syncmethod
+    def subscribe_alarms_and_conditions(
+        self,
+        sourcenode: SyncNode | ua.NodeId | str | int = ua.ObjectIds.Server,
+        evtypes: SyncNode
+        | ua.NodeId
+        | str
+        | int
+        | Iterable[SyncNode | ua.NodeId | str | int] = ua.ObjectIds.ConditionType,
+        evfilter: ua.EventFilter | None = None,
+        queuesize: int = 0,
+    ) -> int: ...
+
+    @syncmethod
+    def modify_monitored_item(
+        self,
+        handle: int,
+        new_samp_time: ua.Duration | None = None,
+        new_queuesize: int | None = None,
+        mod_filter_val: int | None = -1,
+    ) -> list[ua.MonitoredItemModifyResult]: ...
+
+    @syncmethod
+    def deadband_monitor(
+        self,
+        var: SyncNode | Iterable[SyncNode],
+        deadband_val: ua.Double,
+        deadbandtype: ua.UInt32 = 1,
+        queuesize: int = 0,
+        attr: ua.AttributeIds = ua.AttributeIds.Value,
+    ) -> int | list[int | ua.StatusCode]: ...
+
+    @syncmethod
+    def set_monitoring_mode(
+        self, monitoring: ua.MonitoringMode, handles: int | Iterable[int] | None = None
+    ) -> list[ua.StatusCode]: ...
+
+    @syncmethod
+    def set_publishing_mode(self, publishing: bool) -> list[ua.StatusCode]: ...
 
 
 class XmlExporter:
