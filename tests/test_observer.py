@@ -5,7 +5,7 @@ import pytest
 
 from enginir_opcua import Client, ua
 from enginir_opcua.client.ua_client import UaClient, UaClientState
-from enginir_opcua.common.subscription import Subscription
+from enginir_opcua.common.subscription import DataChangeEvent, Subscription
 from enginir_opcua.observer import NULL_OBSERVER, Observer, SubscriptionEvent
 
 from .conftest import port_num
@@ -17,6 +17,7 @@ class RecordingObserver(Observer):
         self.states = []
         self.subscriptions = []
         self.notifications = []
+        self.dropped = []
 
     def on_request(self, request_type, duration, error):
         self.requests.append((request_type, duration, error))
@@ -29,6 +30,9 @@ class RecordingObserver(Observer):
 
     def on_notification(self, subscription_id, event_count):
         self.notifications.append((subscription_id, event_count))
+
+    def on_messages_dropped(self, subscription_id, count):
+        self.dropped.append((subscription_id, count))
 
 
 class BrokenObserver(Observer):
@@ -311,3 +315,30 @@ def test_obs1_every_hook_is_documented():
         assert f"``{name}(" in page
         assert getattr(Observer, name).__doc__
     assert Observer.__doc__
+
+
+async def test_obs3_events_dropped_from_the_iterator_queue_are_reported():
+    observer = RecordingObserver()
+    server = mock.MagicMock()
+    server.observer = observer
+    subscription = Subscription(server, ua.CreateSubscriptionParameters(), None, queue_maxsize=2)
+    subscription.subscription_id = 7
+
+    for _ in range(4):
+        subscription._put_event(mock.MagicMock())
+
+    assert subscription.dropped_events == 2
+    assert observer.dropped == [(7, 1), (7, 1)]
+
+
+async def test_obs3_events_for_a_handler_without_the_method_are_reported():
+    observer = RecordingObserver()
+    server = mock.MagicMock()
+    server.observer = observer
+    subscription = Subscription(server, ua.CreateSubscriptionParameters(), object())
+    subscription.subscription_id = 7
+
+    await subscription._dispatch_to_handler(DataChangeEvent(node=mock.MagicMock(), value=1, data=mock.MagicMock()))
+
+    assert subscription.dropped_events == 1
+    assert observer.dropped == [(7, 1)]

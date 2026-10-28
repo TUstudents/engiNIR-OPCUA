@@ -149,7 +149,8 @@ Synchronous interface (`enginir_opcua.sync`):
 
 Observer:
 - `Client(observer=...)` and `client.observer` set an `Observer`. The module and its hooks are documented
-  (`on_messages_dropped` and `on_messages_lost` are new since 2.x).
+  (`on_messages_dropped` and `on_messages_lost` are new since 2.x). `on_messages_dropped` also reports events dropped
+  from the iterator queue of a Subscription and events for a handler that lacks the method.
 
 Documentation:
 - Spec references in docstrings are citations such as `OPC 10000-4 v1.05, 5.9.2`, not links. The section numbers were
