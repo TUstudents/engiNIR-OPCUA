@@ -48,6 +48,13 @@ _EXIT_TIMEOUT = 5.0
 
 
 class ThreadLoop:
+    """
+    A thread that runs an event loop, and the way to run a coroutine on it from another thread (:meth:`post`).
+
+    It can be started again after :meth:`stop`. The thread is a daemon thread. ``timeout`` is the time in seconds
+    that :meth:`post` waits for a coroutine (``None`` for no limit).
+    """
+
     def __init__(self, timeout: float | None = 120, stop_grace: float = 5.0) -> None:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.timeout: float | None = timeout
@@ -347,17 +354,14 @@ def syncfunc(aio_func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
 
 def sync_uaclient_method(aio_func: Callable[..., Any]) -> Callable[[Client], functools.partial[Any]]:
     """
-    Usage:
+    Make a blocking function from a method of the low level ``UaClient``, for example::
 
-    ```python
-    from enginir_opcua.client.ua_client import UaClient
-    from enginir_opcua.sync import Client
+        from enginir_opcua.client.ua_client import UaClient
+        from enginir_opcua.sync import Client
 
-    with Client('opc.tcp://localhost:4840') as client:
-        read_attributes = sync_uaclient_method(UaClient.read_attributes)(client)
-        results = read_attributes(...)
-        ...
-    ```
+        with Client('opc.tcp://localhost:4840') as client:
+            read_attributes = sync_uaclient_method(UaClient.read_attributes)(client)
+            results = read_attributes(...)
     """
 
     def sync_method(client: Client) -> functools.partial[Any]:
@@ -369,17 +373,14 @@ def sync_uaclient_method(aio_func: Callable[..., Any]) -> Callable[[Client], fun
 
 def sync_async_client_method(aio_func: Callable[..., Any]) -> Callable[[Client], functools.partial[Any]]:
     """
-    Usage:
+    Make a blocking function from a method of the async ``Client``, for example::
 
-    ```python
-    from enginir_opcua.client import Client as AsyncClient
-    from enginir_opcua.sync import Client
+        from enginir_opcua.client import Client as AsyncClient
+        from enginir_opcua.sync import Client
 
-    with Client('opc.tcp://localhost:4840') as client:
-        read_attributes = sync_async_client_method(AsyncClient.read_attributes)(client)
-        results = read_attributes(...)
-        ...
-    ```
+        with Client('opc.tcp://localhost:4840') as client:
+            read_attributes = sync_async_client_method(AsyncClient.read_attributes)(client)
+            results = read_attributes(...)
     """
 
     def sync_method(client: Client) -> functools.partial[Any]:
