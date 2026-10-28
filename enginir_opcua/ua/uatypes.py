@@ -1427,8 +1427,6 @@ class TypeRegistry:
 
     def _required_key(self, nodeid: NodeId) -> TypeKey:
         key = self._key(nodeid)
-        if self._namespaces is not None and nodeid.NamespaceIndex == 0:
-            raise UaError(f"{nodeid} is in namespace 0, whose types are fixed")
         return key
 
     def _own(self, table: dict[TypeKey, type], nodeid: NodeId) -> type | None:
@@ -1610,6 +1608,19 @@ def encoding_id_for_class(cls: type) -> NodeId | None:
         return owner.encoding_id_of(cls)
     try:
         return default_types.encoding_id_of(cls)
+    except KeyError:
+        return None
+
+
+def data_type_of_class(cls: type) -> NodeId | None:
+    """
+    The DataType NodeId of a structure or enumeration class, in the namespace indices of the session that made the
+    class (or the default registry); None if no registry knows the class.
+    """
+    owner_ref = cls.__dict__.get("__ua_registry__")
+    owner = owner_ref() if owner_ref is not None else None
+    try:
+        return (owner or default_types).data_type_of(cls)
     except KeyError:
         return None
 

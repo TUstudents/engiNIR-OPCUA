@@ -60,10 +60,13 @@ def test_com40_base_types_are_found_through_any_registry() -> None:
     assert reg.class_for_encoding(argument_encoding) is ua.uaprotocol_auto.Argument
 
 
-def test_com40_namespace_zero_cannot_be_overwritten() -> None:
+def test_com40_namespace_zero_type_of_a_server_shadows_only_in_its_own_registry() -> None:
     reg, _ = registry("urn:a")
-    with pytest.raises(ua.UaError):
-        reg.register_struct(ua.NodeId(ua.ObjectIds.Argument), ua.NodeId(5, 0), First, "First")
+    other, _ = registry("urn:b")
+    argument = ua.NodeId(ua.ObjectIds.Argument)
+    reg.register_struct(argument, ua.NodeId(5, 0), First, "First")
+    assert reg.get(argument) is First
+    assert other.find(argument) is not First
 
 
 def test_com40_encoding_a_foreign_class_raises() -> None:
@@ -182,3 +185,17 @@ def test_com40_codecs_of_a_dropped_registry_do_not_keep_its_classes_alive() -> N
     delattr(ua, "Leaky")
     gc.collect()
     assert reference() is None
+
+
+def test_com40_data_type_of_class_uses_the_owner_registry() -> None:
+    reg, table = registry("urn:a", "urn:b")
+    reg.register_struct(ua.NodeId(7, 2), ua.NodeId(8, 2), First, "First")
+    assert ua.data_type_of_class(First) == ua.NodeId(7, 2)
+    table[1], table[2] = table[2], table[1]
+    assert ua.data_type_of_class(First) == ua.NodeId(7, 1)
+
+    @dataclass
+    class Unknown:
+        pass
+
+    assert ua.data_type_of_class(Unknown) is None

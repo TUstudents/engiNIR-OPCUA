@@ -716,7 +716,7 @@ async def load_data_type_definitions(
                 new_objects[dts.name] = cls  # type: ignore
             except NotImplementedError:
                 _logger.exception("Structure type %s not implemented", dts.sdef)
-            except (AttributeError, RuntimeError, KeyError, TypeError, ValueError):
+            except (AttributeError, RuntimeError, KeyError, TypeError, ValueError, ua.UaError):
                 if log_ex:
                     _logger.exception("Failed to resolve datatype %s", dts.sdef)
                 failed_types.append(dts)
