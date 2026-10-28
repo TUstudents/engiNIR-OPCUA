@@ -44,6 +44,12 @@ class PubSub(PubSubInformationModel):
         if cfg is not None:
             self._pds = [self._new_published_dataset(pds) for pds in cfg.PublishedDataSets]
             self._con = [PubSubConnection(c) for c in cfg.Connections]
+            for con in self._con:
+                self._register(con)
+
+    def _register(self, con: PubSubConnection) -> None:
+        con.set_if(self)
+        con.bind_server(self._server)
 
     def _new_published_dataset(self, cfg: PublishedDataSetDataType) -> PublishedDataSet:
         if self._server is not None and isinstance(cfg.DataSetSource, PublishedDataItemsDataType):
@@ -59,6 +65,8 @@ class PubSub(PubSubInformationModel):
         o = cls()
         if connections is not None:
             o._con = connections
+            for con in connections:
+                o._register(con)
         if datasets is not None:
             o._pds = datasets
         return o
@@ -97,7 +105,7 @@ class PubSub(PubSubInformationModel):
             await pds._init_information_model(self._node, self._server)
 
     async def add_connection(self, con: PubSubConnection) -> None:
-        con.set_if(self)
+        self._register(con)
         self._con.append(con)
         if self._node is not None:
             await con._init_information_model(self._server)

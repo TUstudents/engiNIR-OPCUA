@@ -76,6 +76,7 @@ class PubSubConnection(PubSubInformationModel):
         self._writer_tasks = None
         self._reader_tasks = None
         self._nodes = {}
+        self._bound_server: Server | None = None
 
     @classmethod
     def udp_uadp(
@@ -145,6 +146,7 @@ class PubSubConnection(PubSubInformationModel):
         """
         self._cfg.ReaderGroups.append(reader._cfg)
         self._reader_groups.append(reader)
+        reader.bind_server(self._bound_server)
         if self.model_is_init():
             await reader._init_information_model(self._node, self._server)
 
@@ -256,6 +258,12 @@ class PubSubConnection(PubSubInformationModel):
         Registers an IPubSub for the connection
         """
         self._app = ps
+
+    def bind_server(self, server: Server | None) -> None:
+        """Gives the readers of the connection their sinks, see `DataSetReader.bind_server`"""
+        self._bound_server = server
+        for group in self._reader_groups:
+            group.bind_server(server)
 
     def set_receiver(self, receiver: PubSubReceiver) -> None:
         """
