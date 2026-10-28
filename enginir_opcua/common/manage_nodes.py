@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any
 
@@ -14,6 +14,7 @@ import enginir_opcua
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
 
+from .copy_node_util import aggregated_children
 from .instantiate_util import instantiate
 from .node_factory import make_node
 
@@ -104,10 +105,7 @@ async def create_property(
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
     var = ua.Variant(val, varianttype)
-    if datatype and isinstance(datatype, int):
-        datatype = ua.NodeId(datatype, 0)
-    if datatype and not isinstance(datatype, ua.NodeId):
-        raise RuntimeError("datatype argument must be a nodeid or an int refering to a nodeid")
+    datatype = _checked_datatype(datatype, val)
     return make_node(
         parent.session,
         await _create_variable(parent.session, parent.nodeid, nodeid, qname, var, datatype=datatype, isproperty=True),
@@ -129,15 +127,24 @@ async def create_variable(
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
     var = ua.Variant(val, varianttype)
-    if datatype and isinstance(datatype, int):
-        datatype = ua.NodeId(datatype, 0)
-    if datatype and not isinstance(datatype, ua.NodeId):
-        raise RuntimeError("datatype argument must be a nodeid or an int refering to a nodeid")
-
+    datatype = _checked_datatype(datatype, val)
     return make_node(
         parent.session,
         await _create_variable(parent.session, parent.nodeid, nodeid, qname, var, datatype=datatype, isproperty=False),
     )
+
+
+def _checked_datatype(datatype: ua.NodeId | int | None, val: Any) -> ua.NodeId | None:
+    if datatype is not None and not isinstance(datatype, ua.NodeId | int):
+        raise TypeError("datatype argument must be a NodeId or an int referring to a namespace 0 NodeId")
+    if isinstance(datatype, int) and datatype:
+        return ua.NodeId(datatype, 0)
+    if datatype:
+        return datatype
+    sample = val[0] if isinstance(val, list | tuple) and val else val
+    if isinstance(sample, Enum) and type(sample) in ua.enums_datatypes:
+        return ua.enums_datatypes[type(sample)]
+    return None
 
 
 async def create_variable_type(
@@ -145,6 +152,7 @@ async def create_variable_type(
     nodeid: ua.NodeId | str | int,
     bname: ua.QualifiedName | str,
     datatype: ua.NodeId | int,
+    is_abstract: bool = False,
 ) -> enginir_opcua.Node:
     """
     Create a new variable type
@@ -152,12 +160,12 @@ async def create_variable_type(
     or idx, name and data type
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
-    if datatype and isinstance(datatype, int):
-        datatype = ua.NodeId(datatype, 0)
-    if datatype and not isinstance(datatype, ua.NodeId):
-        raise RuntimeError(f"Data type argument must be a nodeid or an int refering to a nodeid, received: {datatype}")
+    datatype = _checked_datatype(datatype, None)
+    if datatype is None:
+        raise TypeError("Data type argument must be a NodeId or an int referring to a NodeId")
     return make_node(
-        parent.session, await _create_variable_type(parent.session, parent.nodeid, nodeid, qname, datatype)
+        parent.session,
+        await _create_variable_type(parent.session, parent.nodeid, nodeid, qname, datatype, is_abstract=is_abstract),
     )
 
 
@@ -174,6 +182,10 @@ async def create_reference_type(
     or idx and name
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
+    if symmetric and inversename:
+        raise ValueError("A symmetric ReferenceType has no InverseName")
+    if not symmetric and not inversename:
+        raise ValueError("A non-symmetric ReferenceType needs an InverseName")
     return make_node(
         parent.session,
         await _create_reference_type(parent.session, parent.nodeid, nodeid, qname, symmetric, inversename),
@@ -181,7 +193,10 @@ async def create_reference_type(
 
 
 async def create_object_type(
-    parent: enginir_opcua.Node, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str
+    parent: enginir_opcua.Node,
+    nodeid: ua.NodeId | str | int,
+    bname: ua.QualifiedName | str,
+    is_abstract: bool = False,
 ) -> enginir_opcua.Node:
     """
     Create a new object type to be instantiated in address space.
@@ -189,31 +204,34 @@ async def create_object_type(
     or namespace index, name
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
-    return make_node(parent.session, await _create_object_type(parent.session, parent.nodeid, nodeid, qname))
+    return make_node(
+        parent.session, await _create_object_type(parent.session, parent.nodeid, nodeid, qname, is_abstract)
+    )
 
 
-async def create_method(parent: enginir_opcua.Node, *args: Any) -> enginir_opcua.Node:
+async def create_method(
+    parent: enginir_opcua.Node,
+    nodeid: ua.NodeId | str | int,
+    bname: ua.QualifiedName | str,
+    callback: Callable[..., Any] | None = None,
+    inputs: list[Any] | None = None,
+    outputs: list[Any] | None = None,
+) -> enginir_opcua.Node:
     """
     create a child method object
-    This is only possible on server side!!
-    args are nodeid, browsename, method_to_be_called, [input argument types], [output argument types]
-    or idx, name, method_to_be_called, [input argument types], [output argument types]
-    if argument types is specified, child nodes advertising what arguments the method uses and returns will be created
-    a callback is a method accepting the nodeid of the parent as first argument and variants after.
-    returns a list of variants
+    arguments are nodeid, browsename, callback, [input argument types], [output argument types]
+    or namespace index, name, callback, [input argument types], [output argument types]
+    if argument types are given, child nodes advertising what arguments the method uses and returns are created.
+    An argument type is a ua.Argument, a VariantType, a NodeId or a type class; a list of one of these declares an array.
+    A callback accepts the nodeid of the parent as first argument and variants after, and returns a list of variants.
+    A callback can only be bound on a local session (a Server); on any other session pass none and the
+    server that holds the node provides the implementation.
     """
     _logger.info("create_method %r", parent)
-    nodeid, qname = _parse_nodeid_qname(*args[:2])
-    callback = args[2]
-    if len(args) > 3:
-        inputs = args[3]
-    else:
-        inputs = []
-    if len(args) > 4:
-        outputs = args[4]
-    else:
-        outputs = []
-    return make_node(parent.session, await _create_method(parent, nodeid, qname, callback, inputs, outputs))
+    nodeid, qname = _parse_nodeid_qname(nodeid, bname)
+    if callback is not None and not hasattr(parent.session, "add_method_callback"):
+        raise ua.UaError("A method callback can only be bound on a local server session")
+    return make_node(parent.session, await _create_method(parent, nodeid, qname, callback, inputs or [], outputs or []))
 
 
 async def _create_object(
@@ -238,7 +256,6 @@ async def _create_object(
         addnode.TypeDefinition = objecttype
     attrs = ua.ObjectAttributes()
     attrs.EventNotifier = 0
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
@@ -264,10 +281,10 @@ async def _create_reference_type(
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasSubtype)
     attrs = ua.ReferenceTypeAttributes()
     attrs.IsAbstract = False
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.Symmetric = symmetric
-    attrs.InverseName = ua.LocalizedText(inversename)
+    if inversename:
+        attrs.InverseName = ua.LocalizedText(inversename)
     attrs.UserWriteMask = 0
     addnode.NodeAttributes = attrs
 
@@ -281,6 +298,7 @@ async def _create_object_type(
     parentnodeid: ua.NodeId,
     nodeid: ua.NodeId,
     qname: ua.QualifiedName,
+    is_abstract: bool = False,
 ) -> ua.NodeId:
     addnode = ua.AddNodesItem()
     addnode.RequestedNewNodeId = nodeid
@@ -289,8 +307,7 @@ async def _create_object_type(
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasSubtype)
     addnode.NodeClass = ua.NodeClass.ObjectType
     attrs = ua.ObjectTypeAttributes()
-    attrs.IsAbstract = False
-    attrs.Description = ua.LocalizedText(qname.Name)
+    attrs.IsAbstract = is_abstract
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
@@ -321,7 +338,6 @@ async def _create_variable(
         addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasComponent)
         addnode.TypeDefinition = ua.NodeId(ua.ObjectIds.BaseDataVariableType)
     attrs = ua.VariableAttributes()
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     if datatype:
         attrs.DataType = datatype
@@ -329,13 +345,7 @@ async def _create_variable(
         attrs.DataType = _guess_datatype(var)
 
     attrs.Value = var
-    if not isinstance(var.Value, list | tuple):
-        attrs.ValueRank = ua.ValueRank.Scalar
-        attrs.ArrayDimensions = None
-    else:
-        if var.Dimensions:
-            attrs.ValueRank = len(var.Dimensions)
-            attrs.ArrayDimensions = var.Dimensions
+    attrs.ValueRank, attrs.ArrayDimensions = _rank_and_dimensions(var)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
     attrs.Historizing = False
@@ -347,6 +357,13 @@ async def _create_variable(
     return results[0].AddedNodeId
 
 
+def _rank_and_dimensions(var: ua.Variant) -> tuple[int, list[int] | None]:
+    if not isinstance(var.Value, list | tuple):
+        return ua.ValueRank.Scalar, None
+    rank = len(var.Dimensions) if var.Dimensions else 1
+    return rank, [0] * rank
+
+
 async def _create_variable_type(
     session: AbstractSession,
     parentnodeid: ua.NodeId,
@@ -354,6 +371,7 @@ async def _create_variable_type(
     qname: ua.QualifiedName,
     datatype: ua.NodeId,
     value: Any = None,
+    is_abstract: bool = False,
 ) -> ua.NodeId:
     addnode = ua.AddNodesItem()
     addnode.RequestedNewNodeId = nodeid
@@ -363,17 +381,15 @@ async def _create_variable_type(
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasSubtype)
     # addnode.TypeDefinition = ua.NodeId(ua.ObjectIds.BaseDataVariableType)
     attrs = ua.VariableTypeAttributes()
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.DataType = datatype
-    attrs.IsAbstract = False
-    if value:
-        attrs.Value = value
-        if isinstance(value, list | tuple):
-            attrs.ValueRank = ua.ValueRank.OneDimension
-        else:
-            attrs.ValueRank = ua.ValueRank.Scalar
-    # attrs.ArrayDimensions = None
+    attrs.IsAbstract = is_abstract
+    attrs.ValueRank = ua.ValueRank.Scalar
+    attrs.ArrayDimensions = None
+    if value is not None:
+        variant = value if isinstance(value, ua.Variant) else ua.Variant(value)
+        attrs.Value = variant
+        attrs.ValueRank, attrs.ArrayDimensions = _rank_and_dimensions(variant)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
     addnode.NodeAttributes = attrs
@@ -387,6 +403,7 @@ async def create_data_type(
     nodeid: ua.NodeId | str | int,
     bname: ua.QualifiedName | str,
     description: str | None = None,
+    is_abstract: bool = False,
 ) -> enginir_opcua.Node:
     """
     Create a new data type to be used in new variables, etc ..
@@ -402,28 +419,17 @@ async def create_data_type(
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasSubtype)
     # addnode.TypeDefinition = ua.NodeId(ua.ObjectIds.BaseDataVariableType) # No type definition for types
     attrs = ua.DataTypeAttributes()
-    if description is None:
-        attrs.Description = ua.LocalizedText(qname.Name)
-    else:
+    if description is not None:
         attrs.Description = ua.LocalizedText(description)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.WriteMask = 1 << ua.WriteMask.DataTypeDefinition
     attrs.UserWriteMask = 1 << ua.WriteMask.DataTypeDefinition
-    attrs.IsAbstract = False  # True mean they cannot be instantiated
+    attrs.IsAbstract = is_abstract
     addnode.NodeAttributes = attrs
     results = await parent.session.add_nodes([addnode])
     results[0].StatusCode.check()
 
     new_node_id = results[0].AddedNodeId
-
-    # add reverse_reference
-    aitem = ua.AddReferencesItem()
-    aitem.SourceNodeId = new_node_id
-    aitem.TargetNodeId = parent.nodeid
-    aitem.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasSubtype)
-    aitem.IsForward = False
-    params = [aitem]
-    results = await parent.session.add_references(params)
 
     return make_node(parent.session, new_node_id)
 
@@ -438,7 +444,7 @@ async def create_encoding(
     """
     nodeid, qname = _parse_nodeid_qname(nodeid, bname)
     if qname.NamespaceIndex != 0:
-        raise ua.UaError("Encoding QualigiedName index must be 0")
+        raise ua.UaError("Encoding QualifiedName index must be 0")
     return make_node(parent.session, await _create_encoding(parent.session, parent.nodeid, nodeid, qname))
 
 
@@ -453,9 +459,9 @@ async def _create_encoding(
     addnode.BrowseName = qname
     addnode.ParentNodeId = parentnodeid
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasEncoding)
+    addnode.TypeDefinition = ua.NodeId(ua.ObjectIds.DataTypeEncodingType)
     addnode.NodeClass = ua.NodeClass.Object
     attrs = ua.ObjectAttributes()
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
@@ -480,9 +486,7 @@ async def _create_method(
     addnode.NodeClass = ua.NodeClass.Method
     addnode.ParentNodeId = parent.nodeid
     addnode.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HasComponent)
-    # node.TypeDefinition = ua.NodeId(ua.ObjectIds.BaseObjectType)
     attrs = ua.MethodAttributes()
-    attrs.Description = ua.LocalizedText(qname.Name)
     attrs.DisplayName = ua.LocalizedText(qname.Name)
     attrs.WriteMask = 0
     attrs.UserWriteMask = 0
@@ -492,39 +496,44 @@ async def _create_method(
     results = await parent.session.add_nodes([addnode])
     results[0].StatusCode.check()
     method = make_node(parent.session, results[0].AddedNodeId)
-    if inputs:
-        prob = await create_property(
-            method,
-            ua.NodeId(NamespaceIndex=method.nodeid.NamespaceIndex),
-            ua.QualifiedName("InputArguments", 0),
-            [_vtype_to_argument(vtype) for vtype in inputs],
-            varianttype=ua.VariantType.ExtensionObject,
-            datatype=ua.ObjectIds.Argument,
-        )
-        await prob.set_modelling_rule(True)
-    if outputs:
-        prob = await create_property(
-            method,
-            ua.NodeId(NamespaceIndex=method.nodeid.NamespaceIndex),
-            ua.QualifiedName("OutputArguments", 0),
-            [_vtype_to_argument(vtype) for vtype in outputs],
-            varianttype=ua.VariantType.ExtensionObject,
-            datatype=ua.ObjectIds.Argument,
-        )
-        await prob.set_modelling_rule(True)
-    if hasattr(parent.session, "add_method_callback"):
-        parent.session.add_method_callback(method.nodeid, callback)
+    try:
+        for name, types in (("InputArguments", inputs), ("OutputArguments", outputs)):
+            if types:
+                prob = await create_property(
+                    method,
+                    ua.NodeId(NamespaceIndex=method.nodeid.NamespaceIndex),
+                    ua.QualifiedName(name, 0),
+                    [_vtype_to_argument(vtype, f"{name[:-9]}{index}") for index, vtype in enumerate(types)],
+                    varianttype=ua.VariantType.ExtensionObject,
+                    datatype=ua.ObjectIds.Argument,
+                )
+                await prob.set_modelling_rule(True)
+        if callback is not None:
+            parent.session.add_method_callback(method.nodeid, callback)  # type: ignore[attr-defined]
+    except BaseException:
+        await _remove_quietly(parent.session, method)
+        raise
     return results[0].AddedNodeId
 
 
-def _vtype_to_argument(vtype: Any) -> ua.Argument:
+async def _remove_quietly(session: AbstractSession, node: enginir_opcua.Node) -> None:
+    try:
+        await delete_nodes(session, [node], recursive=True)
+    except Exception:
+        _logger.warning("Could not remove %s after a failure", node, exc_info=True)
+
+
+def _vtype_to_argument(vtype: Any, name: str = "") -> ua.Argument:
     if isinstance(vtype, ua.Argument):
         return vtype
     arg = ua.Argument()
+    arg.Name = name
     arg.ValueRank = ua.ValueRank.Scalar
+    arg.ArrayDimensions = None
     if isinstance(vtype, list | tuple) and len(vtype) > 0:
         vtype = vtype[0]
         arg.ValueRank = ua.ValueRank.OneDimension
+        arg.ArrayDimensions = [0]
     if hasattr(vtype, "data_type"):
         arg.DataType = vtype.data_type
     elif inspect.isclass(vtype) and issubclass(vtype, Enum):
@@ -543,6 +552,8 @@ def _vtype_to_argument(vtype: Any) -> ua.Argument:
 
 
 def _guess_datatype(variant: ua.Variant) -> ua.NodeId:
+    if variant.VariantType == ua.VariantType.Null:
+        raise ua.UaError("Cannot guess the DataType of a null value, give the datatype")
     if variant.VariantType == ua.VariantType.ExtensionObject:
         if variant.Value is None:
             raise ua.UaError("Cannot guess DataType from Null ExtensionObject")
@@ -568,26 +579,71 @@ async def delete_nodes(
     delete_target_references: bool = True,
 ) -> tuple[list[enginir_opcua.Node], list[ua.StatusCode]]:
     """
-    Delete specified nodes. Optionally delete recursively all nodes with a
-    downward hierachic references to the node
-    return the list of deleted node and the result
+    Delete specified nodes. With recursive, also the nodes below them along forward aggregating references
+    (HasComponent, HasProperty, HasOrderedComponent and their subtypes), children first. A node that another
+    node outside the deleted set still aggregates is kept.
+    return the list of nodes the request deleted and their results
     """
+    requested = list(nodes)
+    ordered = await _with_aggregated_children(requested) if recursive else requested
     nodestodelete: list[ua.DeleteNodesItem] = []
-    if recursive:
-        nodes = await _add_childs(nodes)
-    for mynode in nodes:
+    for mynode in ordered:
         it = ua.DeleteNodesItem()
         it.NodeId = mynode.nodeid
         it.DeleteTargetReferences = delete_target_references
         nodestodelete.append(it)
     params = ua.DeleteNodesParameters()
     params.NodesToDelete = nodestodelete
-    return list(nodes), await session.delete_nodes(params)
+    return ordered, await session.delete_nodes(params)
 
 
-async def _add_childs(nodes: Iterable[enginir_opcua.Node]) -> list[enginir_opcua.Node]:
-    results: list[enginir_opcua.Node] = []
-    for mynode in nodes:
-        results += await _add_childs(await mynode.get_children())
-        results += [mynode]
-    return results
+async def _aggregation_neighbours(node: enginir_opcua.Node, direction: ua.BrowseDirection) -> list[enginir_opcua.Node]:
+    if direction == ua.BrowseDirection.Forward:
+        references = await aggregated_children(node)
+    else:
+        references = await node.get_references(
+            ua.ObjectIds.Aggregates, direction, ua.NodeClass.Unspecified, True, ua.BrowseResultMask.None_
+        )
+    return [make_node(node.session, reference.NodeId) for reference in references]
+
+
+async def _with_aggregated_children(roots: list[enginir_opcua.Node]) -> list[enginir_opcua.Node]:
+    root_ids = {root.nodeid for root in roots}
+    children: dict[ua.NodeId, list[enginir_opcua.Node]] = {}
+    found: dict[ua.NodeId, enginir_opcua.Node] = {root.nodeid: root for root in roots}
+    pending = list(roots)
+    while pending:
+        current = pending.pop(0)
+        below = await _aggregation_neighbours(current, ua.BrowseDirection.Forward)
+        children[current.nodeid] = below
+        for child in below:
+            if child.nodeid not in found:
+                found[child.nodeid] = child
+                pending.append(child)
+    parents = {
+        nid: {p.nodeid for p in await _aggregation_neighbours(found[nid], ua.BrowseDirection.Inverse)}
+        for nid in found
+        if nid not in root_ids
+    }
+    kept = set(found)
+    changed = True
+    while changed:
+        changed = False
+        for nid in list(kept - root_ids):
+            if not parents[nid] <= kept:
+                kept.discard(nid)
+                changed = True
+    ordered: list[enginir_opcua.Node] = []
+    emitted: set[ua.NodeId] = set()
+
+    def visit(nid: ua.NodeId) -> None:
+        if nid in emitted or nid not in kept:
+            return
+        emitted.add(nid)
+        for child in children.get(nid, []):
+            visit(child.nodeid)
+        ordered.append(found[nid])
+
+    for root in roots:
+        visit(root.nodeid)
+    return ordered

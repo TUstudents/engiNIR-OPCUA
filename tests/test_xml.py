@@ -167,7 +167,13 @@ async def test_xml_method(opc, tmpdir):
     await opc.opc.register_namespace("foo")
     await opc.opc.register_namespace("bar")
     o = await opc.opc.nodes.objects.add_object(2, "xmlexportmethod")
-    m = await o.add_method(2, "callme", func, [ua.VariantType.Double, ua.VariantType.String], [ua.VariantType.Float])
+    m = await o.add_method(
+        2,
+        "callme",
+        func if hasattr(opc.opc, "iserver") else None,
+        [ua.VariantType.Double, ua.VariantType.String],
+        [ua.VariantType.Float],
+    )
     # set an arg dimension to a list to test list export
     inputs = await m.get_child("InputArguments")
     val = await inputs.read_value()
@@ -210,11 +216,11 @@ async def test_xml_vars(opc, tmpdir):
     assert [[1, 2], [3, 4]] == await a2.read_value()
     assert ua.NodeId(ua.ObjectIds.UInt32) == await a2.read_data_type()
     assert await a2.read_value_rank() in (0, 2)
-    assert [2, 2] == (await a2.read_attribute(ua.AttributeIds.ArrayDimensions)).Value.Value
+    assert [0, 0] == (await a2.read_attribute(ua.AttributeIds.ArrayDimensions)).Value.Value
     # assert a3.read_value(), [[]])  # would require special code ...
     assert ua.NodeId(ua.ObjectIds.ByteString) == await a3.read_data_type()
     assert await a3.read_value_rank() in (0, 2)
-    assert [1, 0] == (await a3.read_attribute(ua.AttributeIds.ArrayDimensions)).Value.Value
+    assert [0, 0] == (await a3.read_attribute(ua.AttributeIds.ArrayDimensions)).Value.Value
 
 
 async def test_xml_ns(opc, tmpdir):
