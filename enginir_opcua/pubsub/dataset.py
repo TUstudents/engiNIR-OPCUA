@@ -615,6 +615,7 @@ class PublishedDataItems(PubSubInformationModel):
     @uamethod
     async def _add_variables(
         self,
+        parent: NodeId,
         config_version: ConfigurationVersionDataType,
         field_name_aliases: list[String],
         promoted_fields: list[Boolean],
@@ -637,6 +638,7 @@ class PublishedDataItems(PubSubInformationModel):
     @uamethod
     async def _remove_variables(
         self,
+        parent: NodeId,
         config_version: ConfigurationVersionDataType,
         variables_to_remove: list[UInt32],
     ) -> tuple[ConfigurationVersionDataType, list[StatusCodes]]:

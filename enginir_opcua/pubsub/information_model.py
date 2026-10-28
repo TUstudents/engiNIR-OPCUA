@@ -8,7 +8,7 @@ from ..common.node import Node
 from ..ua.status_codes import StatusCodes
 from ..ua.uaerrors import UaStatusCodeError
 from ..ua.uaprotocol_auto import PubSubState
-from ..ua.uatypes import DataValue, QualifiedName, String, Variant, VariantType
+from ..ua.uatypes import DataValue, NodeId, QualifiedName, String, Variant, VariantType
 
 if TYPE_CHECKING:
     from ..server import Server
@@ -47,11 +47,11 @@ class PubSubInformationModel:
         return self._node is not None
 
     @uamethod
-    async def enable(self) -> StatusCodes:
+    async def enable(self, parent: NodeId) -> StatusCodes:
         raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     @uamethod
-    async def disable(self) -> StatusCodes:
+    async def disable(self, parent: NodeId) -> StatusCodes:
         raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     async def _init_node(self, node: Node, server: Server | None) -> None:
@@ -95,17 +95,17 @@ class PubSubInformationModel:
         """
         Internal sets the state of the information model
         """
+        self.__state_fallback = state
         if self._state_node is not None:
-            await write_typed(self._state_node, state)
-        else:
-            self.__state_fallback = state
+            try:
+                await write_typed(self._state_node, state)
+            except UaStatusCodeError:
+                self._state_node = None
 
     async def get_state(self) -> PubSubState:
         """
         Internal gets the state of the information model
         """
-        if self._state_node is not None:
-            return await self._state_node.read_value()
         return self.__state_fallback
 
     async def _get_node_name(self) -> String:

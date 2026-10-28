@@ -64,19 +64,20 @@ class PubSubConnection(PubSubInformationModel):
         ]:
             raise UaError(f"No valid publisher_id: {self._cfg.PublisherId}")
         if self._cfg.TransportProfileUri != UDP_UADP_PROFILE:
-            raise UaError(f"Not supported PubSub Profile: f{self._cfg.TransportProfileUri}")
+            raise UaError(f"Not supported PubSub Profile: {self._cfg.TransportProfileUri}")
         udp_cfg = UdpSettings.from_cfg(self._cfg)
         self._network_factory = OpcUdp
         self._network_settings = udp_cfg
         self._writer_groups = [WriterGroup(cfg) for cfg in self._cfg.WriterGroups]
         self._reader_groups = [ReaderGroup(cfg) for cfg in self._cfg.ReaderGroups]
         self._receiver = self
-        self._transport = None
-        self._protocol = None
-        self._writer_tasks = None
-        self._reader_tasks = None
+        self._transport: asyncio.DatagramTransport | None = None
+        self._protocol: OpcUdp | None = None
+        self._writer_tasks: dict[WriterGroup, asyncio.Task[None]] = {}
         self._nodes = {}
         self._bound_server: Server | None = None
+        self._app: IPubSub | None = None
+        self._invalid_groups: list[WriterGroup] = []
 
     @classmethod
     def udp_uadp(
@@ -119,8 +120,10 @@ class PubSubConnection(PubSubInformationModel):
         o = cls(cfg)
         if writer_groups is not None:
             o._writer_groups = writer_groups
+            cfg.WriterGroups = [g._cfg for g in writer_groups]
         if reader_groups is not None:
             o._reader_groups = reader_groups
+            cfg.ReaderGroups = [g._cfg for g in reader_groups]
         return o
 
     async def get_name(self) -> String:
@@ -135,7 +138,8 @@ class PubSubConnection(PubSubInformationModel):
         """
         Adds a writer group
         """
-        self._cfg.WriterGroups.append(writer_group._cfg)
+        if writer_group._cfg not in self._cfg.WriterGroups:
+            self._cfg.WriterGroups.append(writer_group._cfg)
         self._writer_groups.append(writer_group)
         if self.model_is_init():
             await writer_group._init_information_model(self._node, self._server, self._app)
@@ -144,7 +148,8 @@ class PubSubConnection(PubSubInformationModel):
         """
         Adds a reader group
         """
-        self._cfg.ReaderGroups.append(reader._cfg)
+        if reader._cfg not in self._cfg.ReaderGroups:
+            self._cfg.ReaderGroups.append(reader._cfg)
         self._reader_groups.append(reader)
         reader.bind_server(self._bound_server)
         if self.model_is_init():
@@ -170,53 +175,104 @@ class PubSubConnection(PubSubInformationModel):
 
     async def remove_reader_group(self, name: String) -> None:
         """
-        Removes a reader group from the connection
+        Removes a reader group from the connection: stops it, deletes its node and forgets it
         """
         r = self.get_reader_group(name)
-        if r is not None and r._node is not None:
-            await r._node.delete()
-            del r._meta
-            del r
+        if r is None:
+            raise ValueError(f"Unknown ReaderGroup {name}")
+        await r.stop()
+        if r._node is not None:
+            await r._node.delete(recursive=True)
+        self._reader_groups.remove(r)
+        if r._cfg in self._cfg.ReaderGroups:
+            self._cfg.ReaderGroups.remove(r._cfg)
 
     async def remove_writer_group(self, name: String) -> None:
         """
-        Removes a writer group from the connection
+        Removes a writer group from the connection: stops it, deletes its node and forgets it
         """
         w = self.get_writer_group(name)
-        if w is not None and w._node is not None:
-            await w._node.delete()
-            # del w._meta #No meta in DataSetWriter
-            del w
+        if w is None:
+            raise ValueError(f"Unknown WriterGroup {name}")
+        task = self._writer_tasks.pop(w, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await w._set_state(PubSubState.Disabled)
+        if w._node is not None:
+            await w._node.delete(recursive=True)
+        self._writer_groups.remove(w)
+        if w._cfg in self._cfg.WriterGroups:
+            self._cfg.WriterGroups.remove(w._cfg)
+
+    def _check_startable(self) -> None:
+        secured = self._groups_with_message_security()
+        if secured:
+            raise UaError(f"PubSub message security is not supported, refusing to start {', '.join(secured)}")
+        if self._writer_groups and self._app is None:
+            raise UaError(
+                f"Connection {self._cfg.Name} has writer groups but no PubSub: add it with PubSub.add_connection()"
+            )
+
+    def _groups_to_run(self) -> list[WriterGroup]:
+        """The enabled writer groups in order of their priority, highest first; a group with an Address on a
+        multicast connection is in the Error state (Part 14, 7.3.2.2)"""
+        groups = []
+        for group in sorted(self._writer_groups, key=lambda w: int(w._cfg.Priority or 0), reverse=True):
+            if self._network_settings.is_multicast() and group.get_destination_url() is not None:
+                logger.error(
+                    "WriterGroup %s has an Address, but the multicast connection %s sends to its own address",
+                    group._cfg.Name,
+                    self._cfg.Name,
+                )
+                self._invalid_groups.append(group)
+                continue
+            groups.append(group)
+        return groups
 
     async def start(self) -> None:
         """
         Starts the connection, which listens to incoming messages
-        and sends messages from writers
+        and sends messages from writers. If it can't start, it is cleaned up and the error is raised.
         """
-        logging.info("Starting Connection %s", await self.get_name())
-        secured = self._groups_with_message_security()
-        if secured:
-            raise UaError(f"PubSub message security is not supported, refusing to start {', '.join(secured)}")
-        loop = asyncio.get_event_loop()
-        sock, _, _ = self._network_settings.create_socket(
-            receive=bool(self._reader_groups) or self._receiver is not self
-        )
-        self._transport, self._protocol = await loop.create_datagram_endpoint(
-            lambda: self._network_factory(self._network_settings, self._receiver, self._cfg.PublisherId),
-            sock=sock,
-        )
-        self._writer_tasks = asyncio.gather(*[writer.run(self._protocol, self._app) for writer in self._writer_groups])
-        reader_tasks = asyncio.gather(*[reader.start() for reader in self._reader_groups])
-        await reader_tasks
-        if self._protocol is not None:
+        logger.info("Starting Connection %s", await self.get_name())
+        if not self._cfg.Enabled:
+            await self._set_state(PubSubState.Disabled)
+            return
+        try:
+            self._check_startable()
+            self._invalid_groups = []
+            groups = self._groups_to_run()
+            loop = asyncio.get_running_loop()
+            sock, _, _ = self._network_settings.create_socket(
+                receive=bool(self._reader_groups) or self._receiver is not self
+            )
+            types = self._bound_server.types if self._bound_server is not None else None
+            self._transport, self._protocol = await loop.create_datagram_endpoint(
+                lambda: self._network_factory(self._network_settings, self._receiver, self._cfg.PublisherId, types),
+                sock=sock,
+            )
+            for group in self._writer_groups:
+                group._ps = self._app
+            for group in groups:
+                await group.prepare(self._protocol)
+            for reader in self._reader_groups:
+                await reader.start()
             self._protocol.set_receiver(self._receiver)
-        else:
-            logger.warning("Protocol is None — cannot set receiver")
-        await self._set_state(PubSubState.Operational)
+            for group in self._invalid_groups:
+                await group._set_state(PubSubState.Error)
+            for group in groups:
+                if group._cfg.Enabled:
+                    self._writer_tasks[group] = loop.create_task(group.run(self._protocol, self._app))
+            await self._set_state(PubSubState.Operational)
+        except BaseException:
+            await self._cleanup()
+            await self._set_state(PubSubState.Error)
+            raise
 
     def _groups_with_message_security(self) -> list[str]:
         secured = [str(group._cfg.Name) for group in self._writer_groups if group._cfg.SecurityMode in SECURED_MODES]
-        secured += [str(group.Name) for group in self._cfg.ReaderGroups if group.SecurityMode in SECURED_MODES]
+        secured += [str(group._cfg.Name) for group in self._reader_groups if group._cfg.SecurityMode in SECURED_MODES]
         secured += [
             str(reader._cfg.Name)
             for group in self._reader_groups
@@ -225,21 +281,25 @@ class PubSubConnection(PubSubInformationModel):
         ]
         return secured
 
+    async def _cleanup(self) -> None:
+        tasks = list(self._writer_tasks.values())
+        self._writer_tasks = {}
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*[reader.stop() for reader in self._reader_groups], return_exceptions=True)
+        protocol, self._protocol = self._protocol, None
+        if protocol is not None:
+            await protocol.close()
+        transport, self._transport = self._transport, None
+        if transport is not None:
+            transport.close()
+
     async def stop(self) -> None:
-        """Stops alle activity of a connection"""
-        logging.info("Stopping Connection %s", await self.get_name())
-        reader_tasks = asyncio.gather(*[reader.stop() for reader in self._reader_groups])
-        await reader_tasks
-        if self._writer_tasks is not None:
-            self._writer_tasks.cancel()
-            await self._writer_tasks
-        if self._protocol is not None:
-            await self._protocol.close()
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
-        if self._protocol is not None:
-            self._protocol = None
+        """Stops all activity of a connection; safe to call again"""
+        logger.info("Stopping Connection %s", await self.get_name())
+        await self._cleanup()
         await self._set_state(PubSubState.Disabled)
 
     async def send_uadp_msg(self, msg: UadpNetworkMessage) -> None:
@@ -279,32 +339,16 @@ class PubSubConnection(PubSubInformationModel):
             await r.handle_msg(msg)
 
     @uamethod
-    async def _add_reader_group(self, rg: ReaderGroupDataType) -> NodeId:
-        rgp = ReaderGroup(rg)
-        await self.add_reader_group(rgp)
-        if rgp._node is not None:
-            return rgp._node.nodeid
-        raise UaError("ReaderGroup node is not initialized")
+    async def _add_reader_group(self, parent: NodeId, rg: ReaderGroupDataType) -> NodeId:
+        raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     @uamethod
-    async def _add_writer_group(self, wg: WriterGroupDataType) -> NodeId:
-        wgp = WriterGroup(wg)
-        await self.add_reader_group(wgp)
-        if wgp._node is not None:
-            return wgp._node.nodeid
-        raise UaError("WriterGroup node is not initialized")
+    async def _add_writer_group(self, parent: NodeId, wg: WriterGroupDataType) -> NodeId:
+        raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     @uamethod
-    async def _remove_group(self, nid: NodeId) -> None:
-        for r in self._reader_groups:
-            if r._node is not None and r._node.nodeid == nid:
-                await self.remove_reader_group(r)
-                return
-        for w in self._writer_groups:
-            if w._node is not None and w._node.nodeid == nid:
-                await self.remove_writer_group(w)
-                return
-        raise UaStatusCodeError(StatusCodes.BadNodeIdUnknown)
+    async def _remove_group(self, parent: NodeId, nid: NodeId) -> None:
+        raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     async def _init_information_model(self, server: Server) -> None:
         """
