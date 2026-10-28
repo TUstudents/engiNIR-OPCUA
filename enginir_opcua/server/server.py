@@ -68,10 +68,13 @@ class Server:
     This class creates an enginir_opcua server with default values
 
     Create your own namespace and then populate your server address space
-    using use the get_root() or get_objects() to get Node objects.
-    and get_event_object() to fire events.
-    Then start server. See server-example.py
-    All methods are threadsafe
+    using the nodes of ``server.nodes`` (``root``, ``objects``, ...) or ``get_node()``,
+    and ``get_event_generator()`` to fire events. Then start the server.
+
+    The server is not thread-safe. It runs on the event loop that started it, and the address space and the
+    services have no locks: use it from tasks of that loop only. From other threads use ``enginir_opcua.sync.Server``
+    or ``asyncio.run_coroutine_threadsafe``. Method callbacks that are plain functions run in a thread pool,
+    so they must not touch the server objects directly; ``async def`` callbacks run on the loop.
 
     If you need more flexibility you call directly the Ua Service methods
     on the iserver or iserver.isession object members.
@@ -310,7 +313,7 @@ class Server:
         your system!
         default is : "urn:enginir:opcua:server"
 
-        Per OPC UA Part 5 §6.3.1, both NamespaceArray[1] and ServerArray[0]
+        Per OPC 10000-5 v1.05, 6.3.1, both NamespaceArray[1] and ServerArray[0]
         shall equal the ApplicationUri.
         """
         self._application_uri = uri
@@ -322,7 +325,7 @@ class Server:
             uries.append(uri)
         await ns_node.write_value(uries)
 
-        # Keep ServerArray in sync (Part 5 §6.3.1)
+        # Keep ServerArray in sync (OPC 10000-5 v1.05, 6.3.1)
         sa_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerArray))
         server_array = await sa_node.read_value()
         if server_array:

@@ -284,3 +284,30 @@ async def test_a_broken_observer_does_not_break_publishing():
     subscription.subscription_id = 7
 
     await subscription.publish_callback(_publish_result([]))
+
+
+def test_obs2_a_client_takes_an_observer_as_argument_and_property():
+    """The observer is set on the Client, not on the UaClient inside it."""
+    from enginir_opcua import Client
+
+    observer = Observer()
+    client = Client("opc.tcp://localhost:4840", observer=observer)
+    assert client.observer is observer
+    assert client.uaclient.observer is observer
+    other = Observer()
+    client.observer = other
+    assert client.uaclient.observer is other
+    assert Client("opc.tcp://localhost:4840").observer is NULL_OBSERVER
+
+
+def test_obs1_every_hook_is_documented():
+    """The usage page lists every hook, and every hook has a docstring."""
+    from pathlib import Path
+
+    page = (Path(__file__).parent.parent / "docs" / "usage" / "common" / "observer.rst").read_text()
+    hooks = [name for name in vars(Observer) if name.startswith("on_")]
+    assert len(hooks) == 6
+    for name in hooks:
+        assert f"``{name}(" in page
+        assert getattr(Observer, name).__doc__
+    assert Observer.__doc__

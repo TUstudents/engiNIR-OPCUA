@@ -1095,7 +1095,7 @@ def header_from_binary(data: Buffer | IO) -> ua.Header:
 
 def uatcp_to_binary(message_type: ua.MessageType, message: Any) -> bytes:
     """
-    Convert OPC UA TCP message (see OPC UA specs Part 6, 7.1) to binary.
+    Convert OPC UA TCP message (see OPC 10000-6 v1.05, 7.1) to binary.
     The only supported types are Hello, Acknowledge and ErrorMessage
     """
     header = ua.Header(message_type, ua.ChunkType.Single)

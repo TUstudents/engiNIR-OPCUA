@@ -172,7 +172,7 @@ SubEvent = DataChangeEvent | OpcEvent | StatusChangeEvent
 
 @dataclass(frozen=True)
 class RevisedParameters:
-    """The values the server agreed to for a Subscription (Part 4, 5.14.2.2)."""
+    """The values the server agreed to for a Subscription (OPC 10000-4 v1.05, 5.14.2.2)."""
 
     publishing_interval: float
     lifetime_count: int
@@ -202,7 +202,7 @@ def subscription_parameters(
     """
     Build the parameters of CreateSubscription. The counts follow from times, not from the Session timeout, so a
     keep-alive arrives about every `keep_alive_seconds` whatever the interval, and the lifetime is at least three
-    times the keep-alive (Part 4, 5.14.2.2). `session_timeout` in milliseconds limits the keep-alive to a quarter of it.
+    times the keep-alive (OPC 10000-4 v1.05, 5.14.2.2). `session_timeout` in milliseconds limits the keep-alive to a quarter of it.
     :raises ValueError: for explicit counts whose lifetime is below three keep-alives
     """
     if session_timeout:

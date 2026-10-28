@@ -348,7 +348,7 @@ class Node:
         attributeid is a member of ua.AttributeIds
         datavalue is a ua.DataValue object
         indexrange is a NumericRange (a string; e.g. "1" or "1:3".
-            See https://reference.opcfoundation.org/v104/Core/docs/Part4/7.22/)
+            See OPC 10000-4 v1.05, 7.27)
         """
         attr = ua.WriteValue()
         attr.NodeId = self.nodeid

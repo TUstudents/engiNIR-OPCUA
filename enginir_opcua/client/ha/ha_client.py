@@ -29,7 +29,7 @@ SUB_NAME_COUNT = 9999
 
 class HaMode(IntEnum):
     """
-    Failover modes of OPC UA Part 4, 6.6.2.4.5. Only WARM is implemented; the other values name the modes of the
+    Failover modes of OPC 10000-4 v1.05, 6.6.2.4.5. Only WARM is implemented; the other values name the modes of the
     specification and are refused by `HaClient` with a NotImplementedError.
     """
 
@@ -57,7 +57,7 @@ def classify_service_level(level: int, healthy_state: int = ConnectionStates.HEA
 
 def redundancy_accepted(mode: HaMode, support: ua.RedundancySupport | int | None) -> bool:
     """
-    Whether a server that reports `support` can be used in failover mode `mode` (Part 4, 6.6.2.4.5.1).
+    Whether a server that reports `support` can be used in failover mode `mode` (OPC 10000-4 v1.05, 6.6.2.4.5.1).
     A server that reports nothing is accepted.
     """
     if support is None:
@@ -120,7 +120,7 @@ class HaConfig:
 class HaClient:
     """
     The HaClient is responsible for managing non-transparent server redundancy.
-    Only the Warm failover mode is implemented (Part 4, 6.6.2.4.5.3): the standby servers hold the same
+    Only the Warm failover mode is implemented (OPC 10000-4 v1.05, 6.6.2.4.5.3): the standby servers hold the same
     subscriptions and monitored items, but do not sample or publish.
     The servers must have:
         - Identical NodeIds
@@ -512,7 +512,7 @@ class HaClient:
 
     async def get_serving_client(self, clients: list[Client], serving_client: Client | None) -> Client | None:
         """
-        Elect the client that serves (Part 4, 6.6.2.4.2, 6.6.2.4.3): a Healthy active client stays whatever the
+        Elect the client that serves (OPC 10000-4 v1.05, 6.6.2.4.2, 6.6.2.4.3): a Healthy active client stays whatever the
         others report. Otherwise the Healthy client with the highest ServiceLevel wins, ties going to the active
         client and then to the earlier URL. Without a Healthy client the best Degraded one is used, with a warning;
         a Degraded active client is only replaced by a better one, and not within `min_active_seconds` of its

@@ -10,7 +10,9 @@ All breaking changes are collected here and released together.
 Package and identity:
 - The import package is `enginir_opcua` and the distribution is `enginir-opcua`. There is no `asyncua` alias, so both
   packages can be installed side by side.
-- The command-line tools are `enginir-ua<tool>` (`enginir-uaread`, `enginir-uals`, `enginir-uaserver`, …).
+- The command line is one program, `enginir-opcua`, with the subcommands `read`, `write`, `call`, `ls`, `subscribe`,
+  `history`, `discover`, `server`, `shell` and `generate-structs`. The scripts `enginir-uaread`, `enginir-uals`,
+  `enginir-uaserver` and the others stay as deprecated aliases that print a notice; they are removed in 4.0.0.
 - The default application identity changed: server endpoint `opc.tcp://0.0.0.0:4840/enginir-opcua/server/`,
   ApplicationUri `urn:enginir:opcua:server` and `urn:enginir:opcua:client`, ProductUri `urn:enginir:opcua`,
   ManufacturerName `engiNIR`.
@@ -112,9 +114,47 @@ High availability:
   `RedundancySupport` is not used unless `HaConfig(allow_unsupported_redundancy=True)`.
   `HaSecurityConfig` takes user credentials. Unknown subscription names raise `KeyError`; `HaClient.status()` is new.
 
-Tools:
-- `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. `uaserver` is a demo without security and
-  says so; `--accept-all-logins` opts into permissive logins. The sync `Server` takes `user_manager`.
+Command line (`enginir-opcua`):
+- One command with subcommands replaces the eleven `enginir-ua*` scripts, which are deprecated aliases until 4.0.0.
+  `python -m enginir_opcua` works too, and the `tools/ua*` helper scripts of the repository are gone.
+- `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. A password in the URL is warned about.
+- Errors are one line on stderr with exit status 1, usage errors give 2, and Ctrl-C ends a command without a traceback.
+  `--timeout` is a float of seconds and defaults to 4 (it was an integer defaulting to 1); `--verbose LEVEL` is
+  `--log-level LEVEL`; the option `-i/--namespace` that did nothing is gone; `uals --depth` must be at least 1.
+- `write` and `call`: every `--datatype` that was offered works (`guid`, `bytestring` as hex, `xmlelement`,
+  `localizedtext`, `datetime` as ISO 8601, UTC without a zone), `write` reads the DataType of the node by default
+  (`--datatype auto`), and a comma no longer makes an array: pass `--array` (and `--separator`). `call` takes one
+  argument per `ARG` and refuses a node with several methods unless `-m` is given. The old `-l true|false|guess` forms
+  work in the old scripts only.
+- `server` is a demo: it prints a banner, listens on 127.0.0.1 by default (it was 0.0.0.0; the Docker image passes
+  `--url opc.tcp://0.0.0.0:4840`), and `--shell` keeps the server running while the shell is open. `shell` opens a
+  Python shell with `client`, `root`, `objects` and `mynode`. `--pki-dir` and `--security Policy,Mode` set up
+  secure connections; control characters in text from a server are printed escaped.
+
+Synchronous interface (`enginir_opcua.sync`):
+- Subscription handlers, state listeners and `connection_lost_callback` run on a handler thread, not on the loop, so
+  they may call the sync API; a sync call on the loop thread raises `RuntimeError` instead of deadlocking. The handler
+  queue is bounded (`handler_queue_maxsize`, 1000): the oldest call is dropped and `Observer.on_messages_dropped` is
+  called.
+- A call that times out is cancelled before `TimeoutError` is raised. `Subscription.next_event(timeout)` and iteration
+  are no longer cut by the wrapper timeout.
+- `ThreadLoop` is a daemon thread that can be started again after `stop()`, so `connect()` after `disconnect()` works
+  and nodes obtained before stay valid; still-connected clients are disconnected at exit. `ThreadLoop` is no longer a
+  `threading.Thread` subclass and `ThreadLoopNotRunning` is a `RuntimeError`.
+- The sync `Client` takes `auto_reconnect`, `reconnect_max_delay`, `reconnect_request_timeout`, `observer` and
+  `handler_queue_maxsize`, has `state` and `add_state_listener`, and no longer takes the unused `user_manager`. The
+  sync `Server.register_namespace` and `get_namespace_index` call their parameter `uri`. The signatures, the missing
+  methods and the docstrings of the sync classes follow the async ones; tuples and dicts come back as such.
+- `disconnect()` and `stop()` can be called twice.
+
+Observer:
+- `Client(observer=...)` and `client.observer` set an `Observer`. The module and its hooks are documented
+  (`on_messages_dropped` and `on_messages_lost` are new since 2.x).
+
+Documentation:
+- Spec references in docstrings are citations such as `OPC 10000-4 v1.05, 5.9.2`, not links. The section numbers were
+  renumbered where the 1.04 numbers were used (Part 4 inserted 5.4, so the service sets moved by one). The client and
+  server overviews and the sync, Observer and command-line pages are written.
 
 Status codes:
 - Status codes are matched by their top 16 bits, so `except ua.uaerrors.BadNodeIdUnknown` also catches a code with info

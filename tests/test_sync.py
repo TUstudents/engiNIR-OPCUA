@@ -1,12 +1,11 @@
 import tempfile
-import threading
 import uuid
 from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
 
-from enginir_opcua import ua, uamethod
+from enginir_opcua import sync, ua, uamethod
 from enginir_opcua.client import Client as AsyncClient
 from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.server import Server as AsyncServer
@@ -370,7 +369,7 @@ def test_create_struct_sync_client(client):
 
 
 def alive_thread_loops():
-    return {t for t in threading.enumerate() if isinstance(t, ThreadLoop) and t.is_alive()}
+    return {t for t in list(sync._running_loops) if t.is_alive()}
 
 
 def test_sync_server_init_failure_stops_own_tloop(monkeypatch):

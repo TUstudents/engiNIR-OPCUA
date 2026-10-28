@@ -619,7 +619,7 @@ class CertificateValidator:
             check_revocation: None checks revocation when the trust store has a CRL location (for the folders of a
                 PKI directory: when one holds a list), True requires a CRL location, False turns the revocation
                 steps off.
-            accept_ca_application_certificates: accept application certificates marked cA TRUE (Part 6, 6.2.2).
+            accept_ca_application_certificates: accept application certificates marked cA TRUE (OPC 10000-6 v1.05, 6.2.2).
             max_chain_length: the longest certificate chain that is accepted.
             clock: the current time in UTC, for tests.
         """
@@ -687,7 +687,7 @@ class CertificateValidator:
         """
         Validate the certificate of an X509 identity token, followed by any intermediate CA certificates, against
         the trust store of this validator (the user trust list). The application URI and host name steps are
-        skipped and only digitalSignature is required of the key usage (Part 6, 6.2.3).
+        skipped and only digitalSignature is required of the key usage (OPC 10000-6 v1.05, 6.2.3).
         """
         return self.validate_application_certificate(chain, ValidationContext(PeerRole.USER, policy_uri))
 

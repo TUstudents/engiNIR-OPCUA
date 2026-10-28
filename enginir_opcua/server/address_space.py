@@ -152,7 +152,7 @@ class NodeData:
 class AttributeService:
     """
     This class implements the attribute service set defined in the opc ua standard.
-    https://reference.opcfoundation.org/v104/Core/docs/Part4/5.10.1/
+    OPC 10000-4 v1.05, 5.11.1
     """
 
     def __init__(self, aspace: AddressSpace) -> None:
@@ -198,7 +198,7 @@ class DefaultBrowseLimits:
 class ViewService:
     """
     This class implements the view service set defined in the opc ua standard.
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/5.9.1/
+    OPC 10000-4 v1.05, 5.9.1
     """
 
     def __init__(self, aspace: AddressSpace, limits: BrowseLimits | None = None) -> None:
@@ -412,7 +412,7 @@ class ViewService:
 class NodeManagementService:
     """
     This class implements the node management service set defined in the opc ua standard.
-    https://reference.opcfoundation.org/v105/Core/docs/Part4/5.7.1/
+    OPC 10000-4 v1.05, 5.8.1
     """
 
     def __init__(self, aspace: AddressSpace) -> None:
@@ -548,7 +548,7 @@ class NodeManagementService:
         return definition
 
     def _is_inside_type(self, nodeid: ua.NodeId) -> bool:
-        """InstanceDeclarations below a type may have an abstract TypeDefinition (Part 3, 6.2.5)."""
+        """InstanceDeclarations below a type may have an abstract TypeDefinition (OPC 10000-3 v1.05, 6.2.1)."""
         aspace = self._aspace
         for _ in range(32):
             node = aspace.get(nodeid)
@@ -871,7 +871,7 @@ class NodeManagementService:
 class MethodService:
     """
     This class implements the method service set defined in the opc ua standard.
-    https://reference.opcfoundation.org/v104/Core/docs/Part4/5.11.1/
+    OPC 10000-4 v1.05, 5.12.1
     """
 
     def __init__(self, aspace: AddressSpace) -> None:
@@ -1028,7 +1028,7 @@ class AddressSpace:
     The address space object stores all the nodes of the OPC-UA server and helper methods.
     The methods are thread safe
 
-    https://reference.opcfoundation.org/Core/docs/Part3/
+    OPC 10000-3 v1.05
     """
 
     def __init__(self) -> None:

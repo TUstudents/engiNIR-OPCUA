@@ -213,7 +213,7 @@ class XmlImporter:
         """
         check if the NamespaceMetadata objects in server namespaces exists otherwise add them
         to prevent errors when other nodesets depend on this namespace.
-        The whole nodeset of the namespace was imported, so it is not a subset (Part 5, 6.3.13).
+        The whole nodeset of the namespace was imported, so it is not a subset (OPC 10000-5 v1.05, 6.3.13).
         """
         descs = await self.session.nodes.namespaces.get_children_descriptions()
         ns_objs = [n.BrowseName.Name for n in descs]
@@ -333,7 +333,7 @@ class XmlImporter:
 
     async def _assign_parents(self, dnodes: list[NodeData]) -> list[NodeData]:
         """
-        Part 4, 5.8.2: a node is added below a parent with a hierarchical reference. The parent is the node's
+        OPC 10000-4 v1.05, 5.8.2: a node is added below a parent with a hierarchical reference. The parent is the node's
         ParentNodeId, else the source of a hierarchical reference to it, else the DataType that has it as an encoding.
         """
         forward_index: dict[ua.NodeId, list[tuple[ua.NodeId, ua.NodeId]]] = {}
@@ -348,7 +348,7 @@ class XmlImporter:
                 refs = ", ".join(f"{r.reftype} {'->' if r.forward else '<-'} {r.target}" for r in nd.refs)
                 error = NodeSetError(
                     f"Node {nd.browsename} ({nd.nodeid}) has no hierarchical parent, so it cannot be added"
-                    f" (Part 4, 5.8.2). Its references: {refs or 'none'}"
+                    f" (OPC 10000-4 v1.05, 5.8.2). Its references: {refs or 'none'}"
                 )
                 self.failures.append((nd.nodeid, error))
                 if self.strict_mode and nd.typedef != DATA_TYPE_ENCODING_TYPE:
@@ -984,9 +984,11 @@ class XmlImporter:
         optional = any(field.optional for field in obj.definitions)
         union = obj.struct_type == "IsUnion"
         if allows_subtypes and optional:
-            raise NodeSetError(f"{obj.browsename}: a field cannot be both IsOptional and AllowSubTypes (Part 6, F.12)")
+            raise NodeSetError(
+                f"{obj.browsename}: a field cannot be both IsOptional and AllowSubTypes (OPC 10000-6 v1.05, F.12)"
+            )
         if union and optional:
-            raise NodeSetError(f"{obj.browsename}: the fields of a union cannot be optional (Part 6, F.12)")
+            raise NodeSetError(f"{obj.browsename}: the fields of a union cannot be optional (OPC 10000-6 v1.05, F.12)")
         own = []
         for field in obj.definitions:
             f = ua.StructureField()

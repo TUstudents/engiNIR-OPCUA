@@ -38,7 +38,8 @@ Repository = "https://github.com/TUstudents/engiNIR-OPCUA"
 Upstream = "https://github.com/FreeOpcUa/opcua-asyncio"
 
 [project.scripts]
-enginir-uabrowse = "enginir_opcua.tools:uals"
+enginir-opcua = "enginir_opcua.tools:cli"
+enginir-uabrowse = "enginir_opcua.tools:uabrowse"
 enginir-uacall = "enginir_opcua.tools:uacall"
 enginir-uaclient = "enginir_opcua.tools:uaclient"
 enginir-uadiscover = "enginir_opcua.tools:uadiscover"

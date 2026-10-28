@@ -9,9 +9,7 @@ from enginir_opcua.ua.uatypes import RelativePath
 
 def test_relative_path():
     """
-    The following examples from 1 to 7 are taken from OPC-UA Specification Part 4 - Services, A.2 BNF of RelativePath.
-
-    https://reference.opcfoundation.org/Core/Part4/v105/docs/A.2
+    The following examples from 1 to 7 are taken from OPC 10000-4 v1.05, A.2 (BNF of RelativePath).
     """
 
     path1 = RelativePath.from_string("/2:Block&.Output")

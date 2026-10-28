@@ -187,9 +187,7 @@ class RelativePathElementFormatter:
 
 class RelativePathFormatter:
     """
-    Implementation of OPC-UA Specification Part 4: Services - A.2 BNF of RelativePath.
-
-    https://reference.opcfoundation.org/Core/Part4/v105/docs/A.2
+    Implementation of the BNF of RelativePath, OPC 10000-4 v1.05, A.2.
     """
 
     _elements: list[RelativePathElementFormatter]
