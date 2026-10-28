@@ -353,7 +353,7 @@ def sync_uaclient_method(aio_func: Callable[..., Any]) -> Callable[[Client], fun
     from enginir_opcua.client.ua_client import UaClient
     from enginir_opcua.sync import Client
 
-    with Client('otp.tcp://localhost') as client:
+    with Client('opc.tcp://localhost:4840') as client:
         read_attributes = sync_uaclient_method(UaClient.read_attributes)(client)
         results = read_attributes(...)
         ...
@@ -375,7 +375,7 @@ def sync_async_client_method(aio_func: Callable[..., Any]) -> Callable[[Client],
     from enginir_opcua.client import Client as AsyncClient
     from enginir_opcua.sync import Client
 
-    with Client('otp.tcp://localhost') as client:
+    with Client('opc.tcp://localhost:4840') as client:
         read_attributes = sync_async_client_method(AsyncClient.read_attributes)(client)
         results = read_attributes(...)
         ...
