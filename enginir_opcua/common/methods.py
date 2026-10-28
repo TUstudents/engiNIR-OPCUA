@@ -13,22 +13,12 @@ from weakref import WeakKeyDictionary
 import enginir_opcua
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
-from enginir_opcua.common.ua_utils import data_type_to_variant_type
+from enginir_opcua.common.ua_utils import INTEGER_RANGES, data_type_to_variant_type
 
 _logger = logging.getLogger(__name__)
 
 _input_arguments: WeakKeyDictionary[Any, dict[ua.NodeId, list[tuple[ua.VariantType, int]] | None]] = WeakKeyDictionary()
 
-_INTEGER_RANGES = {
-    ua.VariantType.SByte: (-(2**7), 2**7 - 1),
-    ua.VariantType.Byte: (0, 2**8 - 1),
-    ua.VariantType.Int16: (-(2**15), 2**15 - 1),
-    ua.VariantType.UInt16: (0, 2**16 - 1),
-    ua.VariantType.Int32: (-(2**31), 2**31 - 1),
-    ua.VariantType.UInt32: (0, 2**32 - 1),
-    ua.VariantType.Int64: (-(2**63), 2**63 - 1),
-    ua.VariantType.UInt64: (0, 2**64 - 1),
-}
 _FLOATS = (ua.VariantType.Float, ua.VariantType.Double)
 
 
@@ -162,12 +152,12 @@ def _convert_argument(value: Any, variant_type: ua.VariantType, rank: int, index
 
 
 def _convert_scalar(value: Any, variant_type: ua.VariantType, index: int) -> Any:
-    if variant_type in _INTEGER_RANGES:
+    if variant_type in INTEGER_RANGES:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise TypeError(f"Argument {index} must be an integer for {variant_type.name}, got {value!r}")
         if isinstance(value, float) and not value.is_integer():
             raise TypeError(f"Argument {index} has a fraction and cannot be {variant_type.name}: {value!r}")
-        low, high = _INTEGER_RANGES[variant_type]
+        low, high = INTEGER_RANGES[variant_type]
         if not low <= value <= high:
             raise TypeError(f"Argument {index} is outside the range of {variant_type.name}: {value!r}")
         return int(value)
