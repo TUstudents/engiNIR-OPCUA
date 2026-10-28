@@ -494,3 +494,30 @@ async def test_optionsets(srv):
     assert curved_res == curved
     assert len(curved_res.Data) == 2
     assert curved_res.Description == "ABC"
+
+
+async def test_com43_a_refused_add_nodes_raises(srv, monkeypatch):
+    async def refuse(items):
+        return [ua.AddNodesResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadParentNodeIdInvalid)) for _ in items]
+
+    monkeypatch.setattr(srv.dict_builder._session_server, "add_nodes", refuse)
+    with pytest.raises(ua.UaStatusCodeError):
+        await srv.dict_builder.create_data_type("RefusedStruct")
+
+
+async def test_com43_a_refused_add_references_raises(srv, monkeypatch):
+    async def refuse(items):
+        return [ua.StatusCode(ua.StatusCodes.BadReferenceNotAllowed) for _ in items]
+
+    monkeypatch.setattr(srv.dict_builder._session_server, "add_references", refuse)
+    with pytest.raises(ua.UaStatusCodeError):
+        await srv.dict_builder.create_data_type("RefusedLinks")
+
+
+async def test_com43_struct_node_add_field_takes_the_field_name_first(srv):
+    struct_node = await srv.dict_builder.create_data_type("NamedFirst")
+    struct_node.add_field("Speed", ua.VariantType.Double)
+    struct_node.add_field("Items", ua.VariantType.Int32, is_array=True)
+    xml = srv.dict_builder._type_dictionary.get_dict_value().decode()
+    assert 'Name="Speed" TypeName="opc:Double"' in xml
+    assert 'Name="Items" TypeName="opc:Int32" LengthField="NoOfItems"' in xml
