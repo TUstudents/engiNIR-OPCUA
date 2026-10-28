@@ -20,7 +20,7 @@ the server. The following session gives you an idea how the tools can be used.
 
 .. code-block:: console
 
-    $ uals --url=opc.tcp://127.0.0.1:4840  # List root node
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840  # List root node
     Browsing node i=84 at opc.tcp://127.0.0.1:4840
     DisplayName                                NodeId   BrowseName    Value
 
@@ -28,7 +28,7 @@ the server. The following session gives you an idea how the tools can be used.
     LocalizedText(Locale=None, Text='Types')   i=86     0:Types
     LocalizedText(Locale=None, Text='Views')   i=87     0:Views
 
-    $ uals --url=opc.tcp://127.0.0.1:4840 --nodeid i=85 # List 0:Objects
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840 -n i=85 # List 0:Objects
     Browsing node i=85 at opc.tcp://127.0.0.1:4840
 
     DisplayName                                     NodeId               BrowseName         Value
@@ -40,9 +40,9 @@ the server. The following session gives you an idea how the tools can be used.
 
     $ # In the last two lines we can see our own MyObject and ServerMethod
     $ # Lets read a value!
-    $ uaread --url=opc.tcp://127.0.0.1:4840 --nodeid "ns=2;i=2"  # By NodeId
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -n "ns=2;i=2"  # By NodeId
     7.599999999999997
-    $ uaread --url=opc.tcp://127.0.0.1:4840 --path "0:Objects,2:MyObject,2:MyVariable" # By BrowsePath
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -p "0:Objects,2:MyObject,2:MyVariable" # By BrowsePath
     12.199999999999996
 
 Seems like our server is working and we can browse through the nodes, read values, ...
