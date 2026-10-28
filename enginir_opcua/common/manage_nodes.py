@@ -14,6 +14,7 @@ import enginir_opcua
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
 
+from .copy_node_util import aggregated_children
 from .instantiate_util import instantiate
 from .node_factory import make_node
 
@@ -597,9 +598,12 @@ async def delete_nodes(
 
 
 async def _aggregation_neighbours(node: enginir_opcua.Node, direction: ua.BrowseDirection) -> list[enginir_opcua.Node]:
-    references = await node.get_references(
-        ua.ObjectIds.Aggregates, direction, ua.NodeClass.Unspecified, True, ua.BrowseResultMask.None_
-    )
+    if direction == ua.BrowseDirection.Forward:
+        references = await aggregated_children(node)
+    else:
+        references = await node.get_references(
+            ua.ObjectIds.Aggregates, direction, ua.NodeClass.Unspecified, True, ua.BrowseResultMask.None_
+        )
     return [make_node(node.session, reference.NodeId) for reference in references]
 
 
