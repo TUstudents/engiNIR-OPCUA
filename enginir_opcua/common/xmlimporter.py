@@ -1057,6 +1057,8 @@ class XmlImporter:
                 if ndata.typedef is not None and ndata.typedef in all_nodes and ndata.nodetype not in type_node_kinds:
                     if ndata.typedef not in sorted_nodes:
                         continue
+                if ndata.parentlink in all_nodes and ndata.parentlink not in sorted_nodes:
+                    continue
                 if order_by_fields and not field_types_ready(ndata):
                     continue
                 if ndata.parent is None or ndata.parent not in all_nodes or ndata.parent in sorted_nodes:
