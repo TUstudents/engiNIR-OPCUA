@@ -28,7 +28,8 @@ _BASE_TYPES = (
     ua.NodeId(ua.ObjectIds.BaseDataVariableType),
     ua.NodeId(ua.ObjectIds.PropertyType),
 )
-_INSTANTIABLE = (ua.NodeClass.ObjectType, ua.NodeClass.VariableType)
+# A Method InstanceDeclaration can be instantiated too: the instance gets a copy of it with its arguments.
+_INSTANTIABLE = (ua.NodeClass.ObjectType, ua.NodeClass.VariableType, ua.NodeClass.Method)
 
 
 async def is_abstract(node_type: enginir_opcua.Node) -> bool:
@@ -54,7 +55,7 @@ async def instantiate(
     rdesc.TypeDefinition = node_type.nodeid
     if rdesc.NodeClass not in _INSTANTIABLE:
         raise ua.UaError(f"InstantiationError NodeId: {node_type.nodeid} is a {rdesc.NodeClass.name}, not a type")
-    if await is_abstract(node_type):
+    if rdesc.NodeClass != ua.NodeClass.Method and await is_abstract(node_type):
         raise ua.UaError(f"InstantiationError NodeId: {node_type.nodeid} is abstract and cant be instantiated!")
     if nodeid is None:
         nodeid = ua.NodeId(NamespaceIndex=idx)

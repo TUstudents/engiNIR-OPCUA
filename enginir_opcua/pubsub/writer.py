@@ -446,7 +446,12 @@ class WriterGroup(PubSubInformationModel):
         )
         if self._node is None:
             raise UaError("Writer node is not initialized")
-        await self._node.add_variable(NodeId(NamespaceIndex=1), "0:SecurityGroupId", self._cfg.SecurityGroupId)
+        await self._node.add_variable(
+            NodeId(NamespaceIndex=1),
+            "0:SecurityGroupId",
+            self._cfg.SecurityGroupId,
+            datatype=NodeId(ObjectIds.String),
+        )
         await self._node.add_variable(
             NodeId(NamespaceIndex=Int16(1)),
             "0:SecurityKeyServices",
