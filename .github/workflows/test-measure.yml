@@ -31,6 +31,9 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run the full suite with coverage contexts and durations
+        # The sys.monitoring core (default on 3.14) reports a line only once, so per-test contexts need the C tracer.
+        env:
+          COVERAGE_CORE: ctrace
         run: >
           uv run pytest tests -q -p no:cacheprovider
           --cov=enginir_opcua --cov-branch --cov-context=test
