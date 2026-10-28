@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import socket
 from typing import Any
@@ -202,3 +203,33 @@ async def test_pub25_destination_urls_resolve_to_address_tuples() -> None:
     assert await protocol.resolve_destination("opc.udp://127.0.0.1:4850") == ("127.0.0.1", 4850)
     assert await protocol.resolve_destination("opc.udp://127.0.0.1") == ("127.0.0.1", 4840)
     await protocol.close()
+
+
+async def test_pub26_the_registry_of_the_session_is_used_to_decode_and_encode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The types of the server's registry, not the global ones, decode and encode structures in DataSets."""
+
+    class Registry:
+        encoding_entered = 0
+
+        @contextlib.contextmanager
+        def encoding(self):  # type: ignore[no-untyped-def]
+            Registry.encoding_entered += 1
+            yield
+
+    registry = Registry()
+    decoded_with: list[Any] = []
+    original = udp_module.decode_network_message
+
+    def spy(buffer: Any) -> Any:
+        decoded_with.append(buffer.types)
+        return original(buffer)
+
+    monkeypatch.setattr(udp_module, "decode_network_message", spy)
+    receiver = _Receiver()
+    protocol = _protocol(receiver, types=registry)
+    protocol.datagram_received(_message(1), ("127.0.0.1", 1))
+    await asyncio.sleep(0.05)
+    protocol.send_uadp([UadpNetworkMessage(UadpHeader(UInt16(1)), Payload=[])])
+    await protocol.close()
+    assert decoded_with == [registry]
+    assert Registry.encoding_entered == 1
