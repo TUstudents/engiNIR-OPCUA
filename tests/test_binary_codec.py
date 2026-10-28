@@ -383,7 +383,7 @@ def test_ua51_self_containing_structure_nesting_is_bounded() -> None:
 def test_ua51_extensionobject_nesting_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Part 6, 5.2.2.15: ExtensionObjects can hold ExtensionObjects; the depth is limited by this library."""
     type_id = ua.NodeId(9999, 2)
-    monkeypatch.setitem(ua.extension_objects_by_typeid, type_id, _Wrapper)
+    monkeypatch.setitem(ua.default_types._encodings, type_id, _Wrapper)
     wrapped = bytes.fromhex("00 00 00")
     for _ in range(2_000):
         wrapped = nodeid_to_binary(type_id) + b"\x01" + struct.pack("<i", len(wrapped)) + wrapped

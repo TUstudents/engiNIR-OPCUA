@@ -6,7 +6,7 @@ and browse address space
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, overload
 
@@ -52,6 +52,7 @@ def _to_nodeid(nodeid: Node | ua.NodeId | str | int) -> ua.NodeId:
     raise ua.UaError(f"Could not resolve '{nodeid}' to a type id")
 
 
+_ALL_ELEMENTS_PROCESSED = 0xFFFFFFFF
 _EARLIEST_SPECIFIED_TIME = ua.get_win_epoch() + timedelta(microseconds=1)
 
 
@@ -248,12 +249,13 @@ class Node:
         """
         return await self.read_attribute(ua.AttributeIds.Value, None, raise_on_bad_status)
 
-    async def write_array_dimensions(self, value: int) -> None:
+    async def write_array_dimensions(self, value: int | Iterable[int]) -> None:
         """
-        Set attribute ArrayDimensions of node
-        make sure it has the correct data type
+        Set attribute ArrayDimensions of node: the maximum length of each dimension, 0 when unknown.
+        A single integer is the one-dimensional case.
         """
-        v = ua.Variant(value, ua.VariantType.UInt32)
+        dimensions = [value] if isinstance(value, int) else list(value)
+        v = ua.Variant(dimensions, ua.VariantType.UInt32)
         await self.write_attribute(ua.AttributeIds.ArrayDimensions, ua.DataValue(v))
 
     async def read_array_dimensions(self) -> list[int]:
@@ -274,12 +276,17 @@ class Node:
 
     async def read_value_rank(self) -> int:
         """
-        Read and return ValueRank attribute of node
+        Read and return the ValueRank attribute of the node.
+        The result is a ua.ValueRank member when there is one, else the plain integer (more than four dimensions).
         """
         res = await self.read_attribute(ua.AttributeIds.ValueRank)
         if res.Value is None:
             raise UaInvalidParameterError("Value must not be None if the result is in Good status")
-        return ua.ValueRank(res.Value.Value)
+        rank = res.Value.Value
+        try:
+            return ua.ValueRank(rank)
+        except ValueError:
+            return int(rank)
 
     async def write_value(self, value: Any, varianttype: ua.VariantType | None = None) -> None:
         """
@@ -498,17 +505,39 @@ class Node:
 
     async def _browse_next(self, results: list[ua.BrowseResult]) -> list[ua.ReferenceDescription]:
         if not results:
-            return []
-        references = results[0].References
-        while results[0].ContinuationPoint:
-            params = ua.BrowseNextParameters()
-            params.ContinuationPoints = [results[0].ContinuationPoint]
-            params.ReleaseContinuationPoints = False
-            results = await self.session.browse_next(params)
-            if not results:
+            raise ua.UaError("The server returned no BrowseResult")
+        result = results[0]
+        result.StatusCode.check()
+        references = list(result.References)
+        point = result.ContinuationPoint
+        while point:
+            try:
+                params = ua.BrowseNextParameters()
+                params.ContinuationPoints = [point]
+                params.ReleaseContinuationPoints = False
+                next_results = await self.session.browse_next(params)
+                if not next_results:
+                    raise ua.UaError("The server returned no BrowseResult for BrowseNext")
+                result = next_results[0]
+                result.StatusCode.check()
+            except BaseException:
+                await self._release_browse_point(point)
+                raise
+            references.extend(result.References)
+            if result.ContinuationPoint == point and not result.References:
+                await self._release_browse_point(point)
                 break
-            references.extend(results[0].References)
+            point = result.ContinuationPoint
         return references
+
+    async def _release_browse_point(self, point: bytes) -> None:
+        params = ua.BrowseNextParameters()
+        params.ContinuationPoints = [point]
+        params.ReleaseContinuationPoints = True
+        try:
+            await self.session.browse_next(params)
+        except Exception:
+            _logger.debug("Could not release the browse continuation point", exc_info=True)
 
     async def get_referenced_nodes(
         self,
@@ -548,11 +577,10 @@ class Node:
 
     async def get_path(self, max_length: int = 20, as_string: bool = False) -> list[Node] | list[str]:
         """
-        Attempt to find path of node from root node and return it as a list of Nodes.
-        There might several possible paths to a node, this function will return one
-        Some nodes may be missing references, so this method may
-        return an empty list
-        Since address space may have circular references, a max length is specified
+        Find one path from the Root to this node and return it as a list of Nodes, the Root side first and
+        this node last, so the list is never empty. The walk follows the first inverse hierarchical reference
+        of each node, so the path starts at the Root only if every node on the way has such a reference.
+        Since the address space may have circular references, a max length is specified.
         """
         path = await self._get_path(max_length)
         nodes = [Node(self.session, ref.NodeId) for ref in path]
@@ -563,12 +591,7 @@ class Node:
 
     async def _get_path(self, max_length: int = 20) -> list[ua.ReferenceDescription]:
         """
-        Attempt to find path of node from root node and return it as a list of Nodes.
-        There might several possible paths to a node, this function will return one
-        Some nodes may be missing references, so this method may
-        return an empty list
-        Since address space may have circular references, a max length is specified
-
+        References of the walk from the farthest ancestor to the parent of this node, see get_path.
         """
         path = []
         node = self
@@ -632,18 +655,26 @@ class Node:
         bpath.RelativePath = rpath
         results = await self.session.translate_browsepaths_to_nodeids([bpath])
         result = results[0]
-        result.StatusCode.check()
+        targets = self._complete_targets(result)
+        if not targets:
+            ua.StatusCode(ua.StatusCodes.BadNoMatch).check()
         if return_all:
-            return [Node(self.session, target.TargetId) for target in result.Targets]
-        return Node(self.session, result.Targets[0].TargetId)
+            return [Node(self.session, target.TargetId) for target in targets]
+        return Node(self.session, targets[0].TargetId)
+
+    @staticmethod
+    def _complete_targets(result: ua.BrowsePathResult) -> list[ua.BrowsePathTarget]:
+        result.StatusCode.check()
+        return [target for target in result.Targets if target.RemainingPathIndex == _ALL_ELEMENTS_PROCESSED]
 
     async def get_children_by_path(
         self,
         paths: Iterable[ua.QualifiedName | str | Iterable[ua.QualifiedName | str]],
         raise_on_partial_error: bool = True,
-    ) -> list[list[Node | None]]:
+    ) -> list[list[Node] | None]:
         """
         get children specified by their paths from this node.
+        A path that does not resolve completely gives None at its position, or raises UaStatusCodeErrors.
         A path might be:
         * a string representing a relative path as per UA spec
         * a qualified name
@@ -664,17 +695,22 @@ class Node:
             bpaths.append(bpath)
 
         results = await self.session.translate_browsepaths_to_nodeids(bpaths)
-        try:
-            if raise_on_partial_error:
-                for result in results:
-                    result.StatusCode.check()
-        except ua.UaStatusCodeError:
-            codes = [result.StatusCode.value for result in results]
+        found: list[list[Node] | None] = []
+        codes: list[int] = []
+        for result in results:
+            if result.StatusCode.is_good():
+                targets = [t for t in result.Targets if t.RemainingPathIndex == _ALL_ELEMENTS_PROCESSED]
+            else:
+                targets = []
+            if targets:
+                found.append([Node(self.session, target.TargetId) for target in targets])
+                codes.append(ua.StatusCodes.Good)
+            else:
+                found.append(None)
+                codes.append(ua.StatusCodes.BadNoMatch if result.StatusCode.is_good() else result.StatusCode.value)
+        if raise_on_partial_error and any(code != ua.StatusCodes.Good for code in codes):
             raise ua.UaStatusCodeErrors(codes)
-        return [
-            [Node(self.session, target.TargetId) for target in result.Targets] if result.StatusCode.is_good() else None
-            for result in results
-        ]
+        return found
 
     def _make_relative_path(self, path: Iterable[ua.QualifiedName | str]) -> ua.RelativePath:
         rpath = ua.RelativePath()
@@ -698,42 +734,60 @@ class Node:
         return_bounds: bool = False,
     ) -> list[ua.DataValue]:
         """
-        Read raw history of a node
-        result code from server is checked and an exception is raised in case of error
-        If numvalues is > 0 and number of events in period is > numvalues
-        then result will be truncated
+        Read raw history of a node, following the continuation points until the server has no more values.
+        The result code of every response is checked and an exception is raised in case of error.
+        numvalues is the most values returned in total, 0 means all. A continuation point still open
+        when the read stops is released.
         """
         details = ua.ReadRawModifiedDetails()
         details.IsReadModified = False
         details.StartTime, details.EndTime = _history_time_domain(starttime, endtime, numvalues)
         details.NumValuesPerNode = numvalues
         details.ReturnBounds = return_bounds
-        history = []
-        continuation_point = None
-        while True:
-            previous_continuation_point = continuation_point
-            result = await self.history_read(details, continuation_point)
-            result.StatusCode.check()
-            continuation_point = result.ContinuationPoint
-            history.extend(result.HistoryData.DataValues)  # type: ignore[attr-defined]
-            # No more data available
-            if continuation_point is None:
-                break
-            # Server is not making progress: it returned the same continuation
-            # point again, so continuing would loop forever
-            if continuation_point == previous_continuation_point:
-                break
-            # No more data needed
-            if numvalues > 0:
-                break
-        return history
+        history: list[ua.DataValue] = []
+
+        def collect(result: ua.HistoryReadResult) -> int:
+            values = result.HistoryData.DataValues  # type: ignore[attr-defined]
+            history.extend(values)
+            return len(history)
+
+        await self._read_history_pages(self.history_read, details, collect, numvalues)
+        return history[:numvalues] if numvalues > 0 else history
+
+    async def _read_history_pages(self, read: Any, details: Any, collect: Any, numvalues: int) -> None:
+        point: bytes | None = None
+        try:
+            while True:
+                result = await read(details, point)
+                result.StatusCode.check()
+                previous = point
+                point = result.ContinuationPoint or None
+                count = collect(result)
+                if point is None or point == previous or (numvalues > 0 and count >= numvalues):
+                    break
+        except BaseException:
+            if point is not None:
+                await self._release_history_point(read, details, point)
+            raise
+        if point is not None:
+            await self._release_history_point(read, details, point)
+
+    async def _release_history_point(self, read: Any, details: Any, point: bytes) -> None:
+        try:
+            await read(details, point, True)
+        except Exception:
+            _logger.debug("Could not release the history continuation point", exc_info=True)
 
     async def history_read(
-        self, details: ua.ReadRawModifiedDetails, continuation_point: bytes | None = None
+        self,
+        details: ua.ReadRawModifiedDetails,
+        continuation_point: bytes | None = None,
+        release_continuation_point: bool = False,
     ) -> ua.HistoryReadResult:
         """
-        Read raw history of a node, low-level function
-        result code from server is checked and an exception is raised in case of error
+        Read raw history of a node, low-level function: one HistoryRead request.
+        The result is returned as it is; the caller checks its StatusCode.
+        With release_continuation_point the given continuation point is freed in the server.
         """
         valueid = ua.HistoryReadValueId()
         valueid.NodeId = self.nodeid
@@ -742,19 +796,21 @@ class Node:
         params = ua.HistoryReadParameters()
         params.HistoryReadDetails = details
         params.TimestampsToReturn = ua.TimestampsToReturn.Both
-        params.ReleaseContinuationPoints = False
+        params.ReleaseContinuationPoints = release_continuation_point
         params.NodesToRead.append(valueid)
         return (await self.session.history_read(params))[0]
 
     async def history_update(self, details: ua.HistoryUpdateDetails) -> ua.HistoryUpdateResult:
         """
-        Update history of a node, low-level function
-        result code from server is checked and an exception is raised in case of error
+        Update history of a node, low-level function.
+        An exception is raised for a Bad StatusCode of the result or of any of its operation results.
         """
         params = ua.HistoryUpdateParameters()
         params.HistoryUpdateDetails.append(details)
         result = (await self.session.history_update(params))[0]
         result.StatusCode.check()
+        for operation_result in result.OperationResults or []:
+            operation_result.check()
         return result
 
     async def read_event_history(
@@ -765,10 +821,10 @@ class Node:
         evtypes: Node | ua.NodeId | str | int | Iterable[Node | ua.NodeId | str | int] = ua.ObjectIds.BaseEventType,
     ) -> list[Event]:
         """
-        Read event history of a source node
-        result code from server is checked and an exception is raised in case of error
-        If numvalues is > 0 and number of events in period is > numvalues
-        then result will be truncated
+        Read event history of a source node, following the continuation points until the server has no more events.
+        The result code of every response is checked and an exception is raised in case of error.
+        numvalues is the most events returned in total, 0 means all. A continuation point still open
+        when the read stops is released.
         """
         details = ua.ReadEventDetails()
         details.StartTime, details.EndTime = _history_time_domain(starttime, endtime, numvalues)
@@ -778,27 +834,27 @@ class Node:
         evtype_nodes = [Node(self.session, evtype) for evtype in evtypes]
         evfilter = await get_filter_from_event_type(evtype_nodes)
         details.Filter = evfilter
-        result = await self.history_read_events(details)
-        result.StatusCode.check()
-        event_res = []
-        for res in result.HistoryData.Events:  # type: ignore[attr-defined]
-            event_res.append(Event.from_event_fields(evfilter.SelectClauses, res.EventFields))
-        return event_res
+        event_res: list[Event] = []
 
-    async def history_read_events(self, details: ua.ReadEventDetails) -> ua.HistoryReadResult:
+        def collect(result: ua.HistoryReadResult) -> int:
+            for res in result.HistoryData.Events:  # type: ignore[attr-defined]
+                event_res.append(Event.from_event_fields(evfilter.SelectClauses, res.EventFields))
+            return len(event_res)
+
+        await self._read_history_pages(self.history_read_events, details, collect, numvalues)
+        return event_res[:numvalues] if numvalues > 0 else event_res
+
+    async def history_read_events(
+        self,
+        details: ua.ReadEventDetails,
+        continuation_point: bytes | None = None,
+        release_continuation_point: bool = False,
+    ) -> ua.HistoryReadResult:
         """
-        Read event history of a node, low-level function
-        result code from server is checked and an exception is raised in case of error
+        Read event history of a node, low-level function: one HistoryRead request.
+        The result is returned as it is; the caller checks its StatusCode.
         """
-        valueid = ua.HistoryReadValueId()
-        valueid.NodeId = self.nodeid
-        valueid.IndexRange = ""
-        params = ua.HistoryReadParameters()
-        params.HistoryReadDetails = details
-        params.TimestampsToReturn = ua.TimestampsToReturn.Both
-        params.ReleaseContinuationPoints = False
-        params.NodesToRead.append(valueid)
-        return (await self.session.history_read(params))[0]
+        return await self.history_read(details, continuation_point, release_continuation_point)  # type: ignore[arg-type]
 
     async def delete(self, delete_references: bool = True, recursive: bool = False) -> list[Node]:
         """
@@ -847,15 +903,23 @@ class Node:
         reftype: Node | ua.NodeId | str | int,
         forward: bool = True,
         bidirectional: bool = True,
+        target_class: ua.NodeClass | None = None,
     ) -> None:
         """
-        Add reference to node
+        Add reference to node. The NodeClass of the target is part of the request;
+        it is read from the target when not given, and left unspecified if it cannot be read.
         """
         aitem = ua.AddReferencesItem()
         aitem.SourceNodeId = self.nodeid
         aitem.TargetNodeId = _to_nodeid(target)
         aitem.ReferenceTypeId = _to_nodeid(reftype)
         aitem.IsForward = forward
+        if target_class is None:
+            try:
+                target_class = await Node(self.session, aitem.TargetNodeId).read_node_class()
+            except (ua.UaError, ValueError):
+                target_class = ua.NodeClass.Unspecified
+        aitem.TargetNodeClass = target_class
         params = [aitem]
         if bidirectional:
             aitem2 = ua.AddReferencesItem()
@@ -863,9 +927,16 @@ class Node:
             aitem2.TargetNodeId = aitem.SourceNodeId
             aitem2.ReferenceTypeId = aitem.ReferenceTypeId
             aitem2.IsForward = not forward
+            aitem2.TargetNodeClass = await self._own_node_class()
             params.append(aitem2)
         results = await self.session.add_references(params)
         _check_results(results, len(params))
+
+    async def _own_node_class(self) -> ua.NodeClass:
+        try:
+            return await self.read_node_class()
+        except (ua.UaError, ValueError):
+            return ua.NodeClass.Unspecified
 
     async def set_modelling_rule(self, mandatory: bool | None) -> None:
         """
@@ -877,11 +948,13 @@ class Node:
         # remove all existing modelling rule
         rules = await self.get_references(ua.ObjectIds.HasModellingRule)
         if rules:
-            await self.session.delete_references(list(map(self._fill_delete_reference_item, rules)))
+            results = await self.session.delete_references(list(map(self._fill_delete_reference_item, rules)))
+            for result in results:
+                result.check()
         # add new modelling rule as requested
         if mandatory is not None:
             rule = ua.ObjectIds.ModellingRule_Mandatory if mandatory else ua.ObjectIds.ModellingRule_Optional
-            await self.add_reference(rule, ua.ObjectIds.HasModellingRule, True, False)
+            await self.add_reference(rule, ua.ObjectIds.HasModellingRule, True, False, ua.NodeClass.Object)
 
     async def add_folder(self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str) -> Node:
         return await create_folder(self, nodeid, bname)
@@ -905,18 +978,28 @@ class Node:
     ) -> Node:
         return await create_variable(self, nodeid, bname, val, varianttype, datatype)
 
-    async def add_object_type(self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str) -> Node:
-        return await create_object_type(self, nodeid, bname)
+    async def add_object_type(
+        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, is_abstract: bool = False
+    ) -> Node:
+        return await create_object_type(self, nodeid, bname, is_abstract)
 
     async def add_variable_type(
-        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, datatype: ua.NodeId | int
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        datatype: ua.NodeId | int,
+        is_abstract: bool = False,
     ) -> Node:
-        return await create_variable_type(self, nodeid, bname, datatype)
+        return await create_variable_type(self, nodeid, bname, datatype, is_abstract)
 
     async def add_data_type(
-        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, description: str | None = None
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        description: str | None = None,
+        is_abstract: bool = False,
     ) -> Node:
-        return await create_data_type(self, nodeid, bname, description=description)
+        return await create_data_type(self, nodeid, bname, description=description, is_abstract=is_abstract)
 
     async def add_property(
         self,
@@ -928,8 +1011,15 @@ class Node:
     ) -> Node:
         return await create_property(self, nodeid, bname, val, varianttype, datatype)
 
-    async def add_method(self, *args: Any) -> Node:
-        return await create_method(self, *args)
+    async def add_method(
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        callback: Callable[..., Any] | None = None,
+        inputs: list[Any] | None = None,
+        outputs: list[Any] | None = None,
+    ) -> Node:
+        return await create_method(self, nodeid, bname, callback, inputs, outputs)
 
     async def add_reference_type(
         self,

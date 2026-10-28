@@ -730,6 +730,10 @@ class Server:
         await subscription.init()
         return subscription
 
+    @property
+    def types(self) -> ua.TypeRegistry:
+        return self.iserver.types
+
     async def get_namespace_array(self) -> list[str]:
         """
         get all namespace defined in server
@@ -881,13 +885,16 @@ class Server:
         importer = XmlImporter(self, strict_mode, auto_load_definitions)
         return await importer.import_xml(path, xmlstring)
 
-    async def export_xml(self, nodes: Iterable[Node], path: str, export_values: bool = False) -> None:
+    async def export_xml(
+        self, nodes: Iterable[Node], path: str, export_values: bool = False, model_uris: list[str] | None = None
+    ) -> None:
         """
         Export defined nodes to xml
         :param export_value: export values from variants
+        :param model_uris: namespaces that are written as models, with their version and required models
         """
         exp = XmlExporter(self, export_values=export_values)
-        await exp.build_etree(nodes)
+        await exp.build_etree(nodes, model_uris=model_uris)
         await exp.write_xml(path)
 
     async def export_xml_by_ns(
@@ -904,7 +911,9 @@ class Server:
         if namespaces is None:
             namespaces = []
         nodes = await get_nodes_of_namespace(self, namespaces)
-        await self.export_xml(nodes, path, export_values=export_values)
+        ns_array = await self.get_namespace_array()
+        uris = [ns if isinstance(ns, str) else ns_array[ns] for ns in namespaces] or ns_array[1:]
+        await self.export_xml(nodes, path, export_values=export_values, model_uris=uris)
 
     async def delete_nodes(
         self, nodes: Iterable[Node], recursive: bool = False
@@ -979,13 +988,15 @@ class Server:
         _logger.warning("Deprecated since spec 1.04, call load_data_type_definitions")
         return await load_type_definitions(self, nodes)
 
-    async def load_data_type_definitions(self, node: Node | None = None) -> dict[str, type]:
+    async def load_data_type_definitions(
+        self, node: Node | None = None, overwrite_existing: bool = False
+    ) -> dict[str, type]:
         """
         Load custom types (custom structures/extension objects) definition from server
         Generate Python classes for custom structures/extension objects defined in server
         These classes will be available in ua module
         """
-        return await load_data_type_definitions(self, node)
+        return await load_data_type_definitions(self, node, overwrite_existing=overwrite_existing)
 
     async def load_enums(self) -> dict[str, type]:
         """

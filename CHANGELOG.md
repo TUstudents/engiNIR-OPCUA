@@ -298,7 +298,76 @@ Crypto:
 
 XML import:
 - Nodes marked `DesignToolOnly`, their children and references to them are skipped (OPC 10000-6, F.7).
+- `import_xml` raises `NodeSetError` (a `UaError` and a `ValueError`) when a node is refused or cannot be placed: every
+  node needs a hierarchical parent (OPC 10000-4, 5.8.2), taken from `ParentNodeId`, a hierarchical reference or, for a
+  DataTypeEncoding, `HasEncoding`. Nothing is exempt from the status check. The returned list holds only nodes that
+  exist; `XmlImporter.failures` lists the rest in non-strict mode. A DataTypeEncoding that no DataType refers to is
+  skipped with a warning.
+- Required models are compared by `ModelVersion`, then `PublicationDate`, and all missing ones are named.
+  NamespaceMetadata objects created by an import have `IsNamespaceSubset = False`.
+- XML values follow XML Schema: booleans are `true`, `false`, `1` or `0` (anything else raises), a dateTime without a
+  zone is UTC, an empty `<String/>` is `""`. Minified files, `ServerUris`, Views and Matrix values import. NodeId,
+  ExpandedNodeId and QualifiedName values use the server's namespace indices.
+- Executable, AccessLevel 0, Historizing and WriteMask of imported nodes are kept; the User* variants are read but only
+  exported when they differ from the primary attribute. Option sets, subtyped structures, inherited fields and the
+  Default Binary encoding id are imported; DataTypeDefinitions are written with the Write service.
+- Export writes only attributes of the UANodeSet schema, keeps Symmetric, IsAbstract, AccessLevel 0, WriteMask, Views,
+  `IsOptionSet` and `AllowSubTypes`, maps namespace indices in values, no longer lists the base URI first, and
+  `export_xml_by_ns` writes a `Models` element. `build_etree_chunked` no longer reconnects.
+
+Custom types:
+- Every `Client` and `Server` has its own type registry, `client.types` / `server.types`, keyed by namespace URI and
+  identifier. Classes made by `load_data_type_definitions()` or `import_xml()` belong to that session: a client in the
+  same process as a server must load the definitions itself, and sending a class of another session raises. The
+  module-level `ua.extension_objects_by_*`, `ua.enums_*`, `ua.get_type` and `ua.register_*` only serve namespace 0 and
+  legacy registrations; `ua.<Name>` still binds the first class of a name.
+- `Buffer` carries the registry of the connection (`Buffer.types`) that decodes ExtensionObjects.
+- `new_struct_field(array=True)` has `ArrayDimensions = [0]`; `new_enum` keeps the `Value` of an `EnumField`;
+  enumeration members whose names clean to the same identifier raise; `Server.load_data_type_definitions()` takes
+  `overwrite_existing`, which now reloads changed definitions; generated defaults no longer use random or current values.
+- `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
+- `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 
 Code generation:
 - The generated code comes from the `nodeset` submodule, pinned to UA-Nodeset `UA-1.05.07-2026-05-01`.
   `schemas/regenerate.py` replaces `schemas/update_ua_nodeset.py`.
+
+Node helpers:
+- `CallbackService` keeps every listener, ordered by priority and then insertion order (a second listener with the
+  same priority used to replace the first); any awaitable result is awaited and dispatch works on a snapshot.
+- `string_to_val` is the inverse of `val_to_string`: lists quote elements that contain commas, quotes or brackets,
+  nested and empty lists work, enumerations read by name. Invalid text raises `ValueError`, integers are range
+  checked, Booleans are `true`/`false`/`1`/`0` in any case (the legacy `on`/`yes` are gone), and types without a text
+  form raise `NotImplementedError`.
+- `get_references`, `get_children` and the other browse helpers raise on a Bad browse result and release the
+  continuation point when a page fails. `get_child` and `get_children_by_path` accept a target only when the whole
+  path resolved. `read_event_history` and `read_raw_history` read every page and release an open continuation point;
+  `history_read_events` takes a continuation point. `history_update` checks the operation results.
+- `write_array_dimensions` writes a `UInt32[]`; `read_value_rank` returns a plain integer above four dimensions.
+  `Node.add_reference` sends the target NodeClass.
+- A failed method call raises `UaStatusCodeError` with `input_argument_results` and `input_argument_diagnostic_infos`;
+  multi-dimensional arguments are converted.
+- `create_method` takes `(nodeid, bname, callback, inputs, outputs)`; binding a callback on a client session raises
+  `UaError` (pass no callback to create the Method node without one). Arguments are named `Input<i>`/`Output<i>`,
+  an argument type given as a list is an array. A symmetric ReferenceType has no InverseName, a non-symmetric one
+  needs it (`ValueError`). `add_object_type`, `add_variable_type` and `add_data_type` take `is_abstract`.
+- New variables: a list has ValueRank 1 (or the number of dimensions) and ArrayDimensions of zeros (unknown maximum),
+  there is no Description, and a VariableType without a value is scalar; falsy initial values are kept. Encoding
+  objects have the DataTypeEncodingType type definition. `create_data_type` adds no second HasSubtype reference.
+- Recursive `delete_nodes` and `copy_node` follow only aggregating references (HasComponent, HasProperty, ...), each
+  node once, children first; nodes another parent still aggregates are kept. `copy_node` copies EventNotifier,
+  IsAbstract and the ModellingRule, takes `referenceType` (default: the reference the source hangs on), and removes
+  what it created when it fails.
+- `instantiate` accepts only ObjectTypes and VariableTypes, skips placeholder and ExposesItsArray declarations,
+  instantiates the declarations of a child's own type (and its EventNotifier), checks every AddNodes result and removes
+  what it created when it fails.
+- Event filters: `where_clause_from_evtype` uses the `OfType` operator (one element per type, combined with `Or`)
+  instead of listing the subtypes; an EventType without a supertype chain to BaseEventType raises `UaError`.
+- State machines: `FiniteStateMachine.install()` creates a concrete subtype (or takes `state_machine_type`).
+  `add_transition(..., from_state=, to_state=)` creates the FromState and ToState references; names and numbers
+  must be unique, number 0 is valid, there is at most one initial State, and `change_state` rejects a transition that
+  does not connect the current state to the new one and always raises a TransitionEvent (default message
+  "<from> to <to>"). `State`/`Transition` ids follow the DataType of the `Id` property. The classes
+  `ExclusiveLimitStateMachine`, `FileTransferStateMachine`, `ProgramStateMachine` and `ShelvedStateMachine` are removed.
+- `get_node_supertypes` returns the nearest supertype first; `get_nodes_of_namespace` can return namespace 0 and raises
+  `UaError` for an unknown URI; `get_node_children` and `get_node_subtypes` list each node once.

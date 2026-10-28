@@ -42,6 +42,7 @@ class UaProcessor:
         self._limits = copy.deepcopy(limits)  # Copy limits because they get overriden
         self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
         self._channel.peer_certificate_check = self._check_client_certificate
+        self._channel.types = internal_server.types
         self._hello_received: bool = False
         self._hello_protocol_version = 0
         self.on_token_window: Callable[[float], None] | None = None
@@ -129,9 +130,9 @@ class UaProcessor:
     def send_response(self, requesthandle, seqhdr, response, msgtype=ua.MessageType.SecureMessage):
         response.ResponseHeader.RequestHandle = requesthandle
         try:
-            data = self._channel.message_to_binary(
-                struct_to_binary(response), message_type=msgtype, request_id=seqhdr.RequestId
-            )
+            with self.iserver.types.encoding():
+                body = struct_to_binary(response)
+            data = self._channel.message_to_binary(body, message_type=msgtype, request_id=seqhdr.RequestId)
         except MessageTooLarge:
             _logger.warning(
                 "Response %s to request %s is above the limits of the client", type(response), requesthandle

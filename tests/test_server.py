@@ -643,7 +643,7 @@ async def test_get_node_by_ns(server):
     nodes = await ua_utils.get_nodes_of_namespace(server, namespaces=idx_b)
     assert 1 == len(nodes)
     assert {idx_b} == get_ns_of_nodes(nodes)
-    with pytest.raises(ValueError):
+    with pytest.raises(ua.UaError):
         await ua_utils.get_nodes_of_namespace(server, namespaces="non_existing_ns")
 
 

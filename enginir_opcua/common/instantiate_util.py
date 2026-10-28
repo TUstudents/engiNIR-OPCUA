@@ -10,11 +10,26 @@ from typing import Any
 import enginir_opcua
 from enginir_opcua import ua
 
-from .copy_node_util import _rdesc_from_node, _read_and_copy_attrs
+from .copy_node_util import _added_node, _rdesc_from_node, _read_and_copy_attrs, remove_created
 from .node_factory import make_node
-from .ua_utils import get_node_supertypes, is_child_present
+from .ua_utils import get_node_supertypes
 
 _logger = logging.getLogger(__name__)
+
+_MANDATORY = ua.NodeId(ua.ObjectIds.ModellingRule_Mandatory)
+_OPTIONAL = ua.NodeId(ua.ObjectIds.ModellingRule_Optional)
+_PLACEHOLDERS = (
+    ua.NodeId(ua.ObjectIds.ModellingRule_MandatoryPlaceholder),
+    ua.NodeId(ua.ObjectIds.ModellingRule_OptionalPlaceholder),
+)
+_EXPOSES_ITS_ARRAY = ua.NodeId(ua.ObjectIds.ModellingRule_ExposesItsArray)
+_BASE_TYPES = (
+    ua.NodeId(ua.ObjectIds.BaseObjectType),
+    ua.NodeId(ua.ObjectIds.BaseDataVariableType),
+    ua.NodeId(ua.ObjectIds.PropertyType),
+)
+# A Method InstanceDeclaration can be instantiated too: the instance gets a copy of it with its arguments.
+_INSTANTIABLE = (ua.NodeClass.ObjectType, ua.NodeClass.VariableType, ua.NodeClass.Method)
 
 
 async def is_abstract(node_type: enginir_opcua.Node) -> bool:
@@ -32,57 +47,78 @@ async def instantiate(
     instantiate_optional: bool = True,
 ) -> list[enginir_opcua.Node]:
     """
-    instantiate a node type under a parent node.
-    nodeid and browse name of new node can be specified, or just namespace index
-    If they exists children of the node type, such as components, variables and
-    properties are also instantiated
+    Instantiate an ObjectType or VariableType below a parent node. The new node, listed first in the result,
+    gets the children its type and the supertypes declare with the ModellingRules Mandatory (and Optional
+    if instantiate_optional). Placeholders are not instantiated. If a step fails the nodes made so far are removed.
     """
     rdesc = await _rdesc_from_node(parent, node_type)
     rdesc.TypeDefinition = node_type.nodeid
-    if rdesc.NodeClass in (
-        ua.NodeClass.DataType,
-        ua.NodeClass.ReferenceType,
-        ua.NodeClass.ObjectType,
-        ua.NodeClass.ReferenceType,
-    ):
-        # Only some nodes can be abstract
-        abstract = await is_abstract(node_type)
-        if abstract:
-            raise ua.UaError(f"InstantiationError NodeId: {node_type.nodeid} is abstract and cant be instantiated!")
+    if rdesc.NodeClass not in _INSTANTIABLE:
+        raise ua.UaError(f"InstantiationError NodeId: {node_type.nodeid} is a {rdesc.NodeClass.name}, not a type")
+    if rdesc.NodeClass != ua.NodeClass.Method and await is_abstract(node_type):
+        raise ua.UaError(f"InstantiationError NodeId: {node_type.nodeid} is abstract and cant be instantiated!")
     if nodeid is None:
-        nodeid = ua.NodeId(NamespaceIndex=idx)  # will trigger automatic node generation in namespace idx
+        nodeid = ua.NodeId(NamespaceIndex=idx)
     if bname is None:
         bname = rdesc.BrowseName
     elif isinstance(bname, str):
         bname = ua.QualifiedName.from_string(bname)
 
-    nodeids = await _instantiate_node(
-        parent.session,
-        make_node(parent.session, rdesc.NodeId),
-        parent.nodeid,
-        rdesc,
-        nodeid,
-        bname,
-        dname=dname,
-        instantiate_optional=instantiate_optional,
-    )
-    return [make_node(parent.session, nid) for nid in nodeids]
+    created: list[ua.NodeId] = []
+    try:
+        await _instantiate_node(
+            parent.session,
+            make_node(parent.session, rdesc.NodeId),
+            parent.nodeid,
+            rdesc,
+            nodeid,
+            bname,
+            created,
+            dname=dname,
+            instantiate_optional=instantiate_optional,
+        )
+    except BaseException:
+        await remove_created(parent.session, created)
+        raise
+    return [make_node(parent.session, nid) for nid in created]
+
+
+async def _modelling_rule(session: Any, declaration: enginir_opcua.Node, name: ua.QualifiedName) -> ua.NodeId | None:
+    rules = await declaration.get_referenced_nodes(ua.ObjectIds.HasModellingRule, ua.BrowseDirection.Forward)
+    if not rules:
+        return None
+    if len(rules) > 1:
+        _logger.warning("Instantiate: %s has several modelling rules, using the first", name)
+    return rules[0].nodeid
+
+
+async def _declaration_sources(
+    node_type: enginir_opcua.Node, is_declaration: bool, typedef: ua.NodeId | None
+) -> list[enginir_opcua.Node]:
+    sources: list[enginir_opcua.Node] = []
+    if is_declaration:
+        sources.append(node_type)
+        if typedef is None or typedef.is_null() or typedef in _BASE_TYPES:
+            return sources
+        typenode = make_node(node_type.session, typedef)
+    else:
+        typenode = node_type
+    sources.extend(await get_node_supertypes(typenode, includeitself=True, skipbase=False))
+    return sources
 
 
 async def _instantiate_node(
     session: Any,
     node_type: enginir_opcua.Node,
     parentid: ua.NodeId,
-    rdesc: Any,
+    rdesc: ua.ReferenceDescription,
     nodeid: ua.NodeId,
     bname: ua.QualifiedName,
+    created: list[ua.NodeId],
     dname: ua.LocalizedText | None = None,
-    recursive: bool = True,
+    is_declaration: bool = False,
     instantiate_optional: bool = True,
-) -> list[ua.NodeId]:
-    """
-    instantiate a node type under parent
-    """
+) -> None:
     addnode = ua.AddNodesItem()
     addnode.RequestedNewNodeId = nodeid
     addnode.BrowseName = bname
@@ -93,79 +129,54 @@ async def _instantiate_node(
     if rdesc.NodeClass in (ua.NodeClass.Object, ua.NodeClass.ObjectType):
         addnode.NodeClass = ua.NodeClass.Object
         await _read_and_copy_attrs(node_type, ua.ObjectAttributes(), addnode)
-
     elif rdesc.NodeClass in (ua.NodeClass.Variable, ua.NodeClass.VariableType):
         addnode.NodeClass = ua.NodeClass.Variable
         await _read_and_copy_attrs(node_type, ua.VariableAttributes(), addnode)
-    elif rdesc.NodeClass in (ua.NodeClass.Method,):
+    elif rdesc.NodeClass == ua.NodeClass.Method:
         addnode.NodeClass = ua.NodeClass.Method
         await _read_and_copy_attrs(node_type, ua.MethodAttributes(), addnode)
-    elif rdesc.NodeClass in (ua.NodeClass.DataType,):
-        addnode.NodeClass = ua.NodeClass.DataType
-        await _read_and_copy_attrs(node_type, ua.DataTypeAttributes(), addnode)
     else:
         _logger.error("Instantiate: Node class not supported: %s", rdesc.NodeClass)
-        raise RuntimeError("Instantiate: Node class not supported")
+        raise ua.UaError(f"Instantiate: Node class {rdesc.NodeClass} not supported")
     if addnode.NodeClass not in (ua.NodeClass.Object, ua.NodeClass.Variable):
         addnode.TypeDefinition = ua.NodeId()
     if dname is not None:
         addnode.NodeAttributes.DisplayName = dname
 
-    res = (await session.add_nodes([addnode]))[0]
-    added_nodes = [res.AddedNodeId]
+    added = await _added_node(session, addnode, created)
 
-    if recursive:
-        parents = await get_node_supertypes(node_type, includeitself=True)
-        node = make_node(session, res.AddedNodeId)
-        for parent in parents:
-            descs = await parent.get_children_descriptions()
-            for c_rdesc in descs:
-                # skip items that already exists, prefer the 'lowest' one in object hierarchy
-                if not await is_child_present(node, c_rdesc.BrowseName):
-                    c_node_type = make_node(session, c_rdesc.NodeId)
-                    refs = await c_node_type.get_referenced_nodes(refs=ua.ObjectIds.HasModellingRule)
-                    if not refs:
-                        # spec says to ignore nodes without modelling rules
-                        _logger.info(
-                            "Instantiate: Skip node without modelling rule %s as part of %s",
-                            c_rdesc.BrowseName,
-                            addnode.BrowseName,
-                        )
-                        continue
-                        # exclude nodes with optional ModellingRule if requested
-                    if refs[0].nodeid in (
-                        ua.NodeId(ua.ObjectIds.ModellingRule_Optional),
-                        ua.NodeId(ua.ObjectIds.ModellingRule_OptionalPlaceholder),
-                    ):
-                        # instatiate optionals
-                        if not instantiate_optional:
-                            _logger.info(
-                                "Instantiate: Skip optional node %s as part of %s",
-                                c_rdesc.BrowseName,
-                                addnode.BrowseName,
-                            )
-                            continue
-                    # if root node being instantiated has a String NodeId, create the children with a String NodeId
-                    if res.AddedNodeId.NodeIdType is ua.NodeIdType.String:
-                        inst_nodeid = res.AddedNodeId.Identifier + "." + c_rdesc.BrowseName.Name
-                        nodeids = await _instantiate_node(
-                            session,
-                            c_node_type,
-                            res.AddedNodeId,
-                            c_rdesc,
-                            nodeid=ua.NodeId(Identifier=inst_nodeid, NamespaceIndex=res.AddedNodeId.NamespaceIndex),
-                            bname=c_rdesc.BrowseName,
-                            instantiate_optional=instantiate_optional,
-                        )
-                    else:
-                        nodeids = await _instantiate_node(
-                            session,
-                            c_node_type,
-                            res.AddedNodeId,
-                            c_rdesc,
-                            nodeid=ua.NodeId(NamespaceIndex=res.AddedNodeId.NamespaceIndex),
-                            bname=c_rdesc.BrowseName,
-                            instantiate_optional=instantiate_optional,
-                        )
-                    added_nodes.extend(nodeids)
-    return added_nodes
+    names: set[tuple[int, str | None]] = set()
+    typedef = rdesc.TypeDefinition if is_declaration else None
+    for source in await _declaration_sources(node_type, is_declaration, typedef):
+        for c_rdesc in await source.get_children_descriptions():
+            if (c_rdesc.BrowseName.NamespaceIndex, c_rdesc.BrowseName.Name) in names:
+                continue
+            c_node = make_node(session, c_rdesc.NodeId)
+            rule = await _modelling_rule(session, c_node, c_rdesc.BrowseName)
+            if rule is None:
+                _logger.info("Instantiate: skip %s without modelling rule", c_rdesc.BrowseName)
+                continue
+            if rule in _PLACEHOLDERS or rule == _EXPOSES_ITS_ARRAY:
+                _logger.info("Instantiate: skip %s with modelling rule %s", c_rdesc.BrowseName, rule)
+                continue
+            if rule != _MANDATORY:
+                if rule != _OPTIONAL:
+                    _logger.info("Instantiate: treating the rule %s of %s as Optional", rule, c_rdesc.BrowseName)
+                if not instantiate_optional:
+                    continue
+            if added.NodeIdType is ua.NodeIdType.String:
+                child_id = ua.NodeId(f"{added.Identifier!s}.{c_rdesc.BrowseName.Name}", added.NamespaceIndex)
+            else:
+                child_id = ua.NodeId(NamespaceIndex=added.NamespaceIndex)
+            names.add((c_rdesc.BrowseName.NamespaceIndex, c_rdesc.BrowseName.Name))
+            await _instantiate_node(
+                session,
+                c_node,
+                added,
+                c_rdesc,
+                child_id,
+                c_rdesc.BrowseName,
+                created,
+                is_declaration=True,
+                instantiate_optional=instantiate_optional,
+            )

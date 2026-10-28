@@ -542,9 +542,29 @@ class NodeManagementService:
             not trusted
             and wanted == ua.NodeClass.ObjectType
             and aspace.bool_attribute(type_node, ua.AttributeIds.IsAbstract)
+            and not self._is_inside_type(item.ParentNodeId)
         ):
             raise ua.uaerrors.BadTypeDefinitionInvalid()
         return definition
+
+    def _is_inside_type(self, nodeid: ua.NodeId) -> bool:
+        """InstanceDeclarations below a type may have an abstract TypeDefinition (Part 3, 6.2.5)."""
+        aspace = self._aspace
+        for _ in range(32):
+            node = aspace.get(nodeid)
+            if node is None:
+                return False
+            if aspace.node_class_of(node) in (ua.NodeClass.ObjectType, ua.NodeClass.VariableType):
+                return True
+            parents = [
+                ref.NodeId
+                for ref in node.references
+                if not ref.IsForward and ref.ReferenceTypeId in (HAS_COMPONENT, HAS_PROPERTY)
+            ]
+            if not parents:
+                return False
+            nodeid = parents[0]
+        return False
 
     def _complete_attributes(self, nodedata: NodeData, item: ua.AddNodesItem, type_definition: ua.NodeId) -> None:
         defaults: dict[ua.AttributeIds, tuple[Any, ua.VariantType]] = {
@@ -601,6 +621,10 @@ class NodeManagementService:
         )
         # add requested attrs
         self._add_nodeattributes(item.NodeAttributes, nodedata, add_timestamps)
+        if item.NodeClass == ua.NodeClass.DataType and ua.AttributeIds.DataTypeDefinition not in nodedata.attributes:
+            nodedata.attributes[ua.AttributeIds.DataTypeDefinition] = AttributeValue(
+                ua.DataValue(ua.Variant(None, ua.VariantType.Null))
+            )
 
     def _add_unique_reference(
         self, nodedata: NodeData, desc: ua.ReferenceDescription, strict: bool = False

@@ -1101,10 +1101,10 @@ def test_typeid_by_extension_objects_distinguishes_same_named_classes(restore_ua
     ua.register_extension_object("Collide", enc_a, CollideA, dt_a)
     ua.register_extension_object("Collide", enc_b, CollideB, dt_b)
 
-    assert ua.typeid_by_extension_objects[CollideA] == enc_a
-    assert ua.typeid_by_extension_objects[CollideB] == enc_b
-    assert ua.extension_objects_by_datatype[dt_a] is CollideA
-    assert ua.extension_objects_by_datatype[dt_b] is CollideB
+    assert ua.default_types.encoding_id_of(CollideA) == enc_a
+    assert ua.default_types.encoding_id_of(CollideB) == enc_b
+    assert ua.default_types.get(dt_a) is CollideA
+    assert ua.default_types.get(dt_b) is CollideB
 
 
 def test_get_type_resolves_by_nodeid(restore_ua_registry) -> None:
@@ -1149,10 +1149,10 @@ def test_browsename_collision_both_registered_in_dicts(restore_ua_registry) -> N
     ua.register_extension_object("Collide", sdef_b.DefaultEncodingId, cls_b, dt_b)
 
     assert getattr(ua, "Collide") is cls_a
-    assert ua.extension_objects_by_datatype[dt_a] is cls_a
-    assert ua.extension_objects_by_datatype[dt_b] is cls_b
-    assert ua.typeid_by_extension_objects[cls_a] == sdef_a.DefaultEncodingId
-    assert ua.typeid_by_extension_objects[cls_b] == sdef_b.DefaultEncodingId
+    assert ua.default_types.get(dt_a) is cls_a
+    assert ua.default_types.get(dt_b) is cls_b
+    assert ua.default_types.encoding_id_of(cls_a) == sdef_a.DefaultEncodingId
+    assert ua.default_types.encoding_id_of(cls_b) == sdef_b.DefaultEncodingId
     assert ua.get_type(dt_a) is cls_a
     assert ua.get_type(dt_b) is cls_b
 

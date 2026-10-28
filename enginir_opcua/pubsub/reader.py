@@ -426,7 +426,10 @@ class ReaderGroup(PubSubInformationModel):
         )
         if self._node is not None:
             await self._node.add_variable(
-                NodeId(NamespaceIndex=Int16(1)), "0:SecurityGroupId", self._cfg.SecurityGroupId
+                NodeId(NamespaceIndex=Int16(1)),
+                "0:SecurityGroupId",
+                self._cfg.SecurityGroupId,
+                datatype=NodeId(Int32(ObjectIds.String)),
             )
         else:
             logger.warning("self._node is None, cannot add variable")

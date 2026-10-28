@@ -13,22 +13,17 @@ from weakref import WeakKeyDictionary
 import enginir_opcua
 from enginir_opcua import ua
 from enginir_opcua.common.session_interface import AbstractSession
-from enginir_opcua.common.ua_utils import data_type_to_variant_type
+from enginir_opcua.common.ua_utils import INTEGER_RANGES, data_type_to_variant_type
 
 _logger = logging.getLogger(__name__)
 
 _input_arguments: WeakKeyDictionary[Any, dict[ua.NodeId, list[tuple[ua.VariantType, int]] | None]] = WeakKeyDictionary()
 
-_INTEGER_RANGES = {
-    ua.VariantType.SByte: (-(2**7), 2**7 - 1),
-    ua.VariantType.Byte: (0, 2**8 - 1),
-    ua.VariantType.Int16: (-(2**15), 2**15 - 1),
-    ua.VariantType.UInt16: (0, 2**16 - 1),
-    ua.VariantType.Int32: (-(2**31), 2**31 - 1),
-    ua.VariantType.UInt32: (0, 2**32 - 1),
-    ua.VariantType.Int64: (-(2**63), 2**63 - 1),
-    ua.VariantType.UInt64: (0, 2**64 - 1),
-}
+_ARGUMENT_ERRORS = (
+    ua.StatusCodes.BadInvalidArgument,
+    ua.StatusCodes.BadArgumentsMissing,
+    ua.StatusCodes.BadTooManyArguments,
+)
 _FLOATS = (ua.VariantType.Float, ua.VariantType.Double)
 
 
@@ -39,12 +34,12 @@ async def call_method(
     timeout: float | None = None,
 ) -> Any:
     """
-    Call an OPC-UA method. methodid is browse name of child method or the
-    nodeid of method as a NodeId object
-    arguments are variants or python object convertible to variants.
-    which may be of different types
-    returns a list of values or a single value depending on the output of the method
-    : param: parent `Node`
+    Call a Method of the parent Object and return its outputs as Python values.
+    methodid is a NodeId, a Node, or the BrowseName (text or QualifiedName) of a child Method of the parent.
+    Arguments are Variants or Python values; the latter are converted with the InputArguments the Method declares.
+    Returns None for no output, the value for one output, a list for several. A Method with one array output
+    also returns a list: use call_method_full to tell the cases apart.
+    A failed call raises UaStatusCodeError with input_argument_results and input_argument_diagnostic_infos.
     """
     result = await call_method_full(parent, methodid, *args, timeout=timeout)
 
@@ -62,12 +57,7 @@ async def call_method_full(
     timeout: float | None = None,
 ) -> ua.CallMethodResult:
     """
-    Call an OPC-UA method. methodid is browse name of child method or the
-    nodeid of method as a NodeId object
-    arguments are variants or python object convertible to variants.
-    which may be of different types
-    returns a CallMethodResult object with converted OutputArguments
-    : param: parent `Node`
+    Like call_method, but returns the CallMethodResult whose OutputArguments is always the list of output values.
     """
     if isinstance(methodid, str | ua.uatypes.QualifiedName):
         methodid = (await parent.get_child(methodid)).nodeid
@@ -90,11 +80,8 @@ async def _call_method(
     timeout: float | None = None,
 ) -> ua.CallMethodResult:
     """
-    :param server: `UaClient` or `InternalSession`
-    :param parentnodeid:
-    :param methodid:
-    :param arguments:
-    :return:
+    Send one Call. Raises UaStatusCodeError with the per-argument results when the operation status is Bad.
+    :param session: `UaClient` or `InternalSession`
     """
     request = ua.CallMethodRequest()
     request.ObjectId = parentnodeid
@@ -104,8 +91,11 @@ async def _call_method(
     results = await (session.call(methodstocall) if timeout is None else session.call(methodstocall, timeout=timeout))  # type: ignore[call-arg]
     res = results[0]
     if not res.StatusCode.is_good():
+        if res.StatusCode.value in _ARGUMENT_ERRORS:
+            _input_arguments.get(session, {}).pop(methodid, None)
         error = ua.UaStatusCodeError(res.StatusCode.value)
-        error.input_argument_results = res.InputArgumentResults  # type: ignore[attr-defined]
+        error.input_argument_results = res.InputArgumentResults or []  # type: ignore[attr-defined]
+        error.input_argument_diagnostic_infos = res.InputArgumentDiagnosticInfos or []  # type: ignore[attr-defined]
         raise error
     return res
 
@@ -147,27 +137,34 @@ async def convert_arguments(session: AbstractSession, methodid: ua.NodeId, args:
 
 
 def _convert_argument(value: Any, variant_type: ua.VariantType, rank: int, index: int) -> ua.Variant:
-    is_array = rank >= 1
     if variant_type is ua.VariantType.Variant:
         return ua.Variant(value)
-    if is_array and variant_type is ua.VariantType.Byte and isinstance(value, bytes | bytearray):
+    if rank >= 1 and variant_type is ua.VariantType.Byte and isinstance(value, bytes | bytearray):
         return ua.Variant(bytes(value), ua.VariantType.ByteString)
-    if is_array:
+    if rank >= 1:
         if not isinstance(value, list | tuple):
             raise TypeError(f"Argument {index} must be a list for the declared array of {variant_type.name}")
-        return ua.Variant([_convert_scalar(item, variant_type, index) for item in value], variant_type)
+        return ua.Variant(_convert_nested(value, variant_type, index, rank), variant_type)
     if rank == ua.ValueRank.Scalar or not isinstance(value, list | tuple):
         return ua.Variant(_convert_scalar(value, variant_type, index), variant_type)
     return ua.Variant(list(value), variant_type)
 
 
+def _convert_nested(value: Any, variant_type: ua.VariantType, index: int, depth: int) -> Any:
+    if depth == 0:
+        return _convert_scalar(value, variant_type, index)
+    if not isinstance(value, list | tuple):
+        raise TypeError(f"Argument {index} must be nested lists for the declared array of {variant_type.name}")
+    return [_convert_nested(item, variant_type, index, depth - 1) for item in value]
+
+
 def _convert_scalar(value: Any, variant_type: ua.VariantType, index: int) -> Any:
-    if variant_type in _INTEGER_RANGES:
+    if variant_type in INTEGER_RANGES:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise TypeError(f"Argument {index} must be an integer for {variant_type.name}, got {value!r}")
         if isinstance(value, float) and not value.is_integer():
             raise TypeError(f"Argument {index} has a fraction and cannot be {variant_type.name}: {value!r}")
-        low, high = _INTEGER_RANGES[variant_type]
+        low, high = INTEGER_RANGES[variant_type]
         if not low <= value <= high:
             raise TypeError(f"Argument {index} is outside the range of {variant_type.name}: {value!r}")
         return int(value)

@@ -142,6 +142,11 @@ class Client:
         self._policy_ids: list[ua.UserTokenPolicy] = []
         self._discovered_endpoints: list[ua.EndpointDescription] | None = None
         self.uaclient: UaClient = UaClient(timeout)
+        self._namespace_uris: list[str] = []
+        self.types: ua.TypeRegistry = ua.TypeRegistry(
+            namespaces=lambda: self._namespace_uris, parents=(ua.default_types,)
+        )
+        self.uaclient.types = self.types
         self.uaclient.pre_request_hook = self._wait_until_ready
         self.user_certificate: x509.Certificate | None = None
         self.user_private_key: PrivateKeyTypes | None = None
@@ -563,6 +568,7 @@ class Client:
         self.uaclient.clear_disconnect_request()
         self.uaclient.reconnect_on_loss = self._auto_reconnect
         await self._connect_sequence()
+        await self.get_namespace_array()
         self._supervisor_task = asyncio.create_task(self._connection_supervisor())
         self._stale_watchdog_task = asyncio.create_task(self._stale_watchdog_loop())
 
@@ -1502,7 +1508,8 @@ class Client:
 
     async def get_namespace_array(self) -> list[str]:
         ns_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
-        return await ns_node.read_value()
+        self._namespace_uris = list(await ns_node.read_value())
+        return list(self._namespace_uris)
 
     async def get_namespace_index(self, uri: str) -> int:
         uries = await self.get_namespace_array()
@@ -1527,13 +1534,16 @@ class Client:
         importer = XmlImporter(self, strict_mode=strict_mode, auto_load_definitions=auto_load_definitions)
         return await importer.import_xml(path, xmlstring)
 
-    async def export_xml(self, nodes: Iterable[Node], path: str, export_values: bool = False) -> None:
+    async def export_xml(
+        self, nodes: Iterable[Node], path: str, export_values: bool = False, model_uris: list[str] | None = None
+    ) -> None:
         """
         Export defined nodes to xml
         :param export_values: exports values from variants
+        :param model_uris: namespaces that are written as models, with their version and required models
         """
         exp = XmlExporter(self, export_values=export_values)
-        await exp.build_etree(nodes)
+        await exp.build_etree(nodes, model_uris=model_uris)
         await exp.write_xml(path)
 
     async def register_namespace(self, uri: str) -> int:
@@ -1544,9 +1554,11 @@ class Client:
         ns_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
         uries = await ns_node.read_value()
         if uri in uries:
+            self._namespace_uris = list(uries)
             return uries.index(uri)
         uries.append(uri)
         await ns_node.write_value(uries)
+        self._namespace_uris = list(uries)
         return len(uries) - 1
 
     async def load_type_definitions(self, nodes: Iterable[Node] | None = None) -> Any:

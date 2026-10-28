@@ -6,7 +6,7 @@ import enginir_opcua
 from enginir_opcua import ua
 
 from ..ua.uaerrors import UaError
-from .ua_utils import get_node_subtypes, is_subtype
+from .ua_utils import is_subtype
 
 if TYPE_CHECKING:
     from enginir_opcua.common.node import Node
@@ -139,9 +139,11 @@ class Event:
         ev = Event()
         ev.select_clauses = select_clauses
         ev.event_fields = fields
+        if len(fields) < len(select_clauses):
+            raise UaError(f"Received {len(fields)} event fields for {len(select_clauses)} select clauses")
         for idx, sattr in enumerate(select_clauses):
             if len(sattr.BrowsePath) == 0:
-                name = sattr.AttributeId.name
+                name = ua.AttributeIds(sattr.AttributeId).name
             else:
                 name = Event.browse_path_to_attribute_name(sattr.BrowsePath)
             ev.add_property(name, fields[idx].Value, fields[idx].VariantType)
@@ -188,10 +190,14 @@ async def _select_clause_from_childs(
     already_selected: dict[str, str],
     browse_path: list[ua.QualifiedName],
     type_definition_id: ua.NodeId,
+    visited: frozenset[ua.NodeId] = frozenset(),
 ) -> None:
+    visited = visited | {child.nodeid}
     for ref in refs:
+        if ref.NodeId in visited:
+            continue
         if ref.NodeClass == ua.NodeClass.Variable:
-            if ref.ReferenceTypeId == ua.ObjectIds.HasProperty:
+            if ref.ReferenceTypeId == ua.NodeId(ua.ObjectIds.HasProperty):
                 await _append_new_attribute_to_select_clauses(
                     select_clauses, already_selected, [*browse_path, ref.BrowseName], type_definition_id
                 )
@@ -208,7 +214,13 @@ async def _select_clause_from_childs(
                     _BROWSE_MASK,
                 )
                 await _select_clause_from_childs(
-                    var, refs, select_clauses, already_selected, [*browse_path, ref.BrowseName], type_definition_id
+                    var,
+                    refs,
+                    select_clauses,
+                    already_selected,
+                    [*browse_path, ref.BrowseName],
+                    type_definition_id,
+                    visited,
                 )
         elif ref.NodeClass == ua.NodeClass.Object:
             obj = child.new_node(child.session, ref.NodeId)
@@ -220,7 +232,7 @@ async def _select_clause_from_childs(
                 _BROWSE_MASK,
             )
             await _select_clause_from_childs(
-                obj, refs, select_clauses, already_selected, [*browse_path, ref.BrowseName], type_definition_id
+                obj, refs, select_clauses, already_selected, [*browse_path, ref.BrowseName], type_definition_id, visited
             )
 
 
@@ -236,7 +248,7 @@ async def _event_type_nodes_up_to_base(evtype: "Node") -> list["Node"]:
             refs=ua.ObjectIds.HasSubtype, direction=ua.BrowseDirection.Inverse
         )
         if len(parents) != 1:
-            return []
+            raise UaError(f"EventType {evtype.nodeid} does not have one chain of supertypes up to BaseEventType")
         curr_node = parents[0]
     nodes.reverse()
     return nodes
@@ -269,26 +281,42 @@ async def select_clauses_from_evtype(
     return select_clauses
 
 
+def _of_type_element(evtype: "Node") -> ua.ContentFilterElement:
+    element = ua.ContentFilterElement()
+    element.FilterOperator = ua.FilterOperator.OfType
+    element.FilterOperands.append(ua.LiteralOperand(Value=ua.Variant(evtype.nodeid)))
+    return element
+
+
 async def where_clause_from_evtype(evtypes: list["Node"]) -> ua.ContentFilter:
+    """
+    A WhereClause that lets through events of the given types and their subtypes, decided by the server
+    with one OfType element per type, combined with Or.
+    """
     cf = ua.ContentFilter()
-    el = ua.ContentFilterElement()
+    if not evtypes:
+        return cf
+    if len(evtypes) == 1:
+        cf.Elements.append(_of_type_element(evtypes[0]))
+        return cf
+    elements: list[ua.ContentFilterElement] = []
 
-    op = ua.SimpleAttributeOperand()
-    op.BrowsePath.append(ua.QualifiedName("EventType", 0))
-    op.AttributeId = ua.AttributeIds.Value
-    op.TypeDefinitionId = ua.NodeId(ua.ObjectIds.BaseEventType)
-    el.FilterOperands.append(op)
+    def build(remaining: list["Node"]) -> None:
+        if len(remaining) == 1:
+            elements.append(_of_type_element(remaining[0]))
+            return
+        combine = ua.ContentFilterElement()
+        combine.FilterOperator = ua.FilterOperator.Or
+        elements.append(combine)
+        position = len(elements) - 1
+        combine.FilterOperands.append(ua.ElementOperand(Index=len(elements)))
+        elements.append(_of_type_element(remaining[0]))
+        combine.FilterOperands.append(ua.ElementOperand(Index=len(elements)))
+        build(remaining[1:])
+        assert elements[position] is combine
 
-    subtypes: list[ua.NodeId] = []
-    for evtype in evtypes:
-        for st in await get_node_subtypes(evtype):
-            subtypes.append(st.nodeid)
-    subtypes = list(set(subtypes))
-    for subtypeid in subtypes:
-        op = ua.LiteralOperand(Value=ua.Variant(subtypeid))
-        el.FilterOperands.append(op)
-    el.FilterOperator = ua.FilterOperator.InList
-    cf.Elements.append(el)
+    build(list(evtypes))
+    cf.Elements = elements
     return cf
 
 

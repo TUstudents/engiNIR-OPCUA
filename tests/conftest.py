@@ -39,26 +39,13 @@ SLEEP = 0.4
 PORTS_USED = set()
 Opc = namedtuple("Opc", ["opc", "server"])
 
-UA_REGISTRIES: tuple[dict[Any, Any], ...] = (
-    ua.extension_objects_by_datatype,
-    ua.extension_objects_by_typeid,
-    ua.typeid_by_extension_objects,
-    ua.datatype_by_extension_object,
-    ua.enums_by_datatype,
-    ua.enums_datatypes,
-    ua.basetype_by_datatype,
-    ua.basetype_datatypes,
-)
-
 
 @pytest.fixture
 def restore_ua_registry() -> Iterator[None]:
-    registries = [dict(registry) for registry in UA_REGISTRIES]
+    saved_registry = ua.default_types.snapshot()
     ua_attributes = dict(vars(ua))
     yield
-    for registry, saved in zip(UA_REGISTRIES, registries):
-        registry.clear()
-        registry.update(saved)
+    ua.default_types.restore(saved_registry)
     for name in set(vars(ua)) - set(ua_attributes):
         delattr(ua, name)
     for name, value in ua_attributes.items():
