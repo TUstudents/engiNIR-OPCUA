@@ -591,8 +591,8 @@ class Client:
         """Run the full connect sequence: socket, hello, channel, session, activate.
 
         If `session_state_path` is set and a persisted session is found, attempt
-        ActivateSession on the existing authentication_token first (spec Part 4
-        §6.7). Fall back to CreateSession + ActivateSession when no state is
+        ActivateSession on the existing authentication_token first
+        (OPC 10000-4 v1.05, 6.7). Fall back to CreateSession + ActivateSession when no state is
         persisted or the server has expired the session.
         """
         await self.connect_socket()

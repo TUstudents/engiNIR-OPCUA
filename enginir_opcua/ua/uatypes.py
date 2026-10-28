@@ -317,7 +317,7 @@ class AccessLevel(_MaskEnum):
     """
     Bit index to indicate what the access level is.
 
-    Spec Part 3, appears multiple times, e.g. paragraph 5.6.2 Variable NodeClass
+    OPC 10000-3 v1.05, 5.6.2 (Variable NodeClass), and in the other NodeClasses that have the Attribute.
     """
 
     CurrentRead = 0
@@ -333,7 +333,7 @@ class WriteMask(_MaskEnum):
     """
     Bit index to indicate which attribute of a node is writable
 
-    Spec Part 3, Paragraph 5.2.7 WriteMask
+    OPC 10000-3 v1.05, 5.2.7 (WriteMask).
     """
 
     AccessLevel = 0
@@ -368,7 +368,7 @@ class EventNotifier(_MaskEnum):
     """
     Bit index to indicate how a node can be used for events.
 
-    Spec Part 3, appears multiple times, e.g. Paragraph 5.4 View NodeClass
+    OPC 10000-3 v1.05, 5.4 (View NodeClass), and in the other NodeClasses that have the Attribute.
     """
 
     SubscribeToEvents = 0
