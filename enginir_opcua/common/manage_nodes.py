@@ -142,8 +142,8 @@ def _checked_datatype(datatype: ua.NodeId | int | None, val: Any) -> ua.NodeId |
     if datatype:
         return datatype
     sample = val[0] if isinstance(val, list | tuple) and val else val
-    if isinstance(sample, Enum) and type(sample) in ua.enums_datatypes:
-        return ua.enums_datatypes[type(sample)]
+    if isinstance(sample, Enum):
+        return ua.data_type_of_class(type(sample))
     return None
 
 
@@ -537,7 +537,10 @@ def _vtype_to_argument(vtype: Any, name: str = "") -> ua.Argument:
     if hasattr(vtype, "data_type"):
         arg.DataType = vtype.data_type
     elif inspect.isclass(vtype) and issubclass(vtype, Enum):
-        arg.DataType = ua.enums_datatypes[vtype]
+        data_type = ua.data_type_of_class(vtype)
+        if data_type is None:
+            raise ua.UaError(f"No DataType is registered for enumeration {vtype.__name__}")
+        arg.DataType = data_type
     elif isinstance(vtype, ua.VariantType):
         arg.DataType = ua.NodeId(vtype.value)
     elif isinstance(vtype, ua.NodeId):
@@ -566,8 +569,9 @@ def _guess_datatype(variant: ua.Variant) -> ua.NodeId:
         classname = extobj.__class__.__name__
         if hasattr(ua.ObjectIds, classname):
             return ua.NodeId(getattr(ua.ObjectIds, classname))
-        if extobj.__class__ in ua.datatype_by_extension_object:
-            return ua.datatype_by_extension_object[extobj.__class__]
+        data_type = ua.data_type_of_class(extobj.__class__)
+        if data_type is not None:
+            return data_type
         raise ua.UaError(f"Cannot guess DataType of {variant} of python type {type(variant)}")
     return ua.NodeId(getattr(ua.ObjectIds, variant.VariantType.name))
 

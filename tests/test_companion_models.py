@@ -25,7 +25,6 @@ AMB = NODESETS / "AMB" / "Opc.Ua.AMB.NodeSet2.xml"
 IA = NODESETS / "IA" / "Opc.Ua.IA.NodeSet2.xml"
 MACHINERY = NODESETS / "Machinery" / "Opc.Ua.Machinery.NodeSet2.xml"
 LADS = NODESETS / "LADS" / "Opc.Ua.LADS.NodeSet2.xml"
-INSTANCE_FINDINGS = "COM-22, COM-90, ws-g/nodes"
 AGGREGATES = (ua.ObjectIds.HasComponent, ua.ObjectIds.HasProperty)
 
 
@@ -128,7 +127,6 @@ async def test_every_encoding_of_an_imported_data_type_exists(companion: Compani
     assert checked > 10
 
 
-@pytest.mark.xfail(strict=True, reason=INSTANCE_FINDINGS)
 async def test_instances_have_no_placeholder_nodes(companion: Companion) -> None:
     for key, root in companion.instances.items():
         names = [companion.aspace.browse_name_of(companion.aspace[n]).Name for n in companion.subtree(root)]
@@ -161,7 +159,6 @@ async def test_a_client_reads_the_variables_of_both_instances(opc: Any, companio
                 )
 
 
-@pytest.mark.xfail(strict=True, reason=INSTANCE_FINDINGS)
 async def test_instances_have_the_mandatory_children_of_their_declared_types(companion: Companion) -> None:
     mandatory = ua.NodeId(ua.ObjectIds.ModellingRule_Mandatory)
     has_modelling_rule = ua.NodeId(ua.ObjectIds.HasModellingRule)
@@ -173,10 +170,15 @@ async def test_instances_have_the_mandatory_children_of_their_declared_types(com
             r.NodeId for r in aspace[nodeid].references if r.IsForward and r.ReferenceTypeId.Identifier in AGGREGATES
         ]
 
-    def names(nodeids: list[ua.NodeId]) -> set[Any]:
-        return {aspace.browse_name_of(aspace[n]) for n in nodeids}
+    def key(nodeid: ua.NodeId) -> tuple[int, str | None]:
+        name = aspace.browse_name_of(aspace[nodeid])
+        return (name.NamespaceIndex, name.Name)
+
+    def names(nodeids: list[ua.NodeId]) -> set[tuple[int, str | None]]:
+        return {key(n) for n in nodeids}
 
     missing = []
+    checked = 0
     for root in companion.instances.values():
         for nodeid in [root, *companion.subtree(root)]:
             for reference in aspace[nodeid].references:
@@ -194,6 +196,8 @@ async def test_instances_have_the_mandatory_children_of_their_declared_types(com
                     )
                 ]
                 for child in declared:
-                    if aspace.browse_name_of(aspace[child]) not in names(children(nodeid)):
+                    checked += 1
+                    if key(child) not in names(children(nodeid)):
                         missing.append((nodeid, child))
+    assert checked > 0
     assert missing == []
