@@ -2,12 +2,12 @@
 Protocols which are used to decouple components from pubsub
 """
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..ua.uaprotocol_auto import PubSubState
-from ..ua.uatypes import Byte, ExtensionObject, String, UInt16, UInt32, UInt64
+from ..ua.uatypes import ExtensionObject, String
 from .dataset import DataSetMeta, DataSetValue, PublishedDataSet
-from .uadp import UadpNetworkMessage
+from .uadp import PublisherIdValue, UadpNetworkMessage
 
 
 class PubSubSender(Protocol):
@@ -15,15 +15,21 @@ class PubSubSender(Protocol):
     Implements sending Messages
     """
 
-    def send_uadp(self, msgs: list[UadpNetworkMessage]):
+    def send_uadp(self, msgs: list[UadpNetworkMessage], destination: Any = None) -> None:
         """
-        Sends a UadpMessage if supported!
+        Sends UADP messages, to the destination if given and to the connection's address otherwise
         """
         raise NotImplementedError
 
-    def get_publisher_id(self) -> Byte | UInt16 | UInt32 | UInt64 | String:
+    async def resolve_destination(self, url: str) -> Any:
         """
-        Returns the publisher id for creating messages
+        Resolves the address a WriterGroup sends to, once, before it starts publishing
+        """
+        raise NotImplementedError
+
+    def get_publisher_id(self) -> PublisherIdValue | None:
+        """
+        Returns the publisher id, with its type, for creating messages
         """
         raise NotImplementedError
 

@@ -196,7 +196,9 @@ class PubSubConnection(PubSubInformationModel):
         if secured:
             raise UaError(f"PubSub message security is not supported, refusing to start {', '.join(secured)}")
         loop = asyncio.get_event_loop()
-        sock, _, _ = self._network_settings.create_socket()
+        sock, _, _ = self._network_settings.create_socket(
+            receive=bool(self._reader_groups) or self._receiver is not self
+        )
         self._transport, self._protocol = await loop.create_datagram_endpoint(
             lambda: self._network_factory(self._network_settings, self._receiver, self._cfg.PublisherId),
             sock=sock,
@@ -229,6 +231,8 @@ class PubSubConnection(PubSubInformationModel):
         if self._writer_tasks is not None:
             self._writer_tasks.cancel()
             await self._writer_tasks
+        if self._protocol is not None:
+            await self._protocol.close()
         if self._transport is not None:
             self._transport.close()
             self._transport = None
