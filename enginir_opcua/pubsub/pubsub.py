@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
 import anyio
 
@@ -38,7 +39,7 @@ class PubSub(PubSubInformationModel):
     def __init__(self, cfg: PubSubConfigurationDataType = None, server: Server = None) -> None:
         super().__init__()
         self._running = False
-        self._pds: list[PublishedDataSet] = []
+        self._pds: list[PublishedDataSet | PublishedDataItems] = []
         self._con: list[PubSubConnection] = []
         self._enabled = False
         self._server = server
@@ -54,7 +55,7 @@ class PubSub(PubSubInformationModel):
         con.set_if(self)
         con.bind_server(self._server)
 
-    def _new_published_dataset(self, cfg: PublishedDataSetDataType) -> PublishedDataSet:
+    def _new_published_dataset(self, cfg: PublishedDataSetDataType) -> PublishedDataSet | PublishedDataItems:
         if self._server is not None and isinstance(cfg.DataSetSource, PublishedDataItemsDataType):
             return PublishedDataItems(cfg, self._server)
         return PublishedDataSet(cfg)
@@ -63,15 +64,15 @@ class PubSub(PubSubInformationModel):
     def new(
         cls,
         connections: list[PubSubConnection] | None = None,
-        datasets: list[PublishedDataSet] | None = None,
-    ):
+        datasets: Sequence[PublishedDataSet | PublishedDataItems] | None = None,
+    ) -> Self:
         o = cls()
         if connections is not None:
             o._con = connections
             for con in connections:
                 o._register(con)
         if datasets is not None:
-            o._pds = datasets
+            o._pds = list(datasets)
         return o
 
     async def init_information_model(self) -> None:
@@ -103,7 +104,7 @@ class PubSub(PubSubInformationModel):
             self._enabled,
         )
 
-    async def add_published_dataset(self, pds: PublishedDataSet) -> None:
+    async def add_published_dataset(self, pds: PublishedDataSet | PublishedDataItems) -> None:
         self._pds.append(pds)
         if self._node is not None and self._datasets_node is not None:
             await pds._init_information_model(self._datasets_node, self._server)
@@ -117,7 +118,7 @@ class PubSub(PubSubInformationModel):
     def get_connection(self, name: String) -> PubSubConnection | None:
         return next((c for c in self._con if c._cfg.Name == name), None)
 
-    def get_published_dataset(self, name: String) -> PublishedDataSet | None:
+    def get_published_dataset(self, name: String) -> PublishedDataSet | PublishedDataItems | None:
         return next((pds for pds in self._pds if pds.get_name() == name), None)
 
     async def remove_published_dataset(self, name: String) -> None:
@@ -182,7 +183,7 @@ class PubSub(PubSubInformationModel):
         await self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.stop()
 
     async def load_binary_file(self, file: str | Path) -> None:

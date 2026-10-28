@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from ..common.node import Node
 from ..ua import SubscribedDataSetMirrorDataType, TargetVariablesDataType
@@ -112,7 +112,7 @@ class FieldTargets:
         nodeid: NodeId,
         override_handling: OverrideValueHandling = OverrideValueHandling.Disabled,
         override_value: Variant | None = None,
-    ):
+    ) -> Self:
         """
         Helper to create a target from a DataSetField and an NodeId
         """

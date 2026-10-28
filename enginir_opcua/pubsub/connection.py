@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from ..common.instantiate_util import instantiate
 from ..common.methods import uamethod
@@ -87,7 +87,7 @@ class PubSubConnection(PubSubInformationModel):
         network_cfg: UdpSettings,
         reader_groups: list[ReaderGroup] | None = None,
         writer_groups: list[WriterGroup] | None = None,
-    ):
+    ) -> Self:
         """
         Creates UDP UADP Connection
         """

@@ -10,7 +10,7 @@ import logging
 import math
 from collections import Counter
 from datetime import UTC
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from ..common import instantiate_util
 from ..common.node import Node
@@ -105,7 +105,7 @@ class DataSetWriter(PubSubInformationModel):
         *,
         message_timestamp: bool | None = None,
         message_status: bool | None = None,
-    ):
+    ) -> Self:
         """
         Create a DataSetWriter for UADP with sane defaults
         name: Name of the DataSetWriter
@@ -347,7 +347,7 @@ class WriterGroup(PubSubInformationModel):
         payload_header: bool | None = True,
         priority: int = 0,
         address: str | None = None,
-    ):
+    ) -> Self:
         """
         Create a WriterGroup for UADP with sane defaults
         name: Name of the WriterGroup

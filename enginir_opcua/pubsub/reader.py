@@ -10,7 +10,7 @@ import contextlib
 import logging
 import time
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from ..common import instantiate_util
 from ..common.node import Node
@@ -152,7 +152,7 @@ class DataSetReader(PubSubInformationModel):
         name: str | None = None,
         enabled: bool | None = False,
         subscribed: SubscribedDataSet | None = None,
-    ):
+    ) -> Self:
         if name is None:
             name = f"Reader{cls.__reader_cnt}"
             cls.__reader_cnt += 1
@@ -438,8 +438,8 @@ class ReaderGroup(PubSubInformationModel):
         cls,
         name: str | None = None,
         reader: list[DataSetReader] | None = None,
-        enable=False,
-    ):
+        enable: bool = False,
+    ) -> Self:
         obj = cls(ReaderGroupDataType())
         obj._reader = reader if reader is not None else []
         obj._cfg.DataSetReaders = [r._cfg for r in obj._reader]
@@ -505,7 +505,7 @@ class ReaderGroup(PubSubInformationModel):
             self.counters["ignored: no matching reader"] += 1
             logger.debug("Got Message with no matching reader: %s", msg.Header.PublisherId)
 
-    async def start(self):
+    async def start(self) -> None:
         await self._set_state(PubSubState.Operational)
         try:
             for reader in self._reader:
@@ -514,7 +514,7 @@ class ReaderGroup(PubSubInformationModel):
             await self._set_state(PubSubState.Error)
             raise
 
-    async def stop(self):
+    async def stop(self) -> None:
         await self._set_state(PubSubState.Disabled)
         for reader in self._reader:
             await reader.stop()

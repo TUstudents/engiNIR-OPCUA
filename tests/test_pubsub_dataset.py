@@ -199,3 +199,12 @@ async def test_pub32_a_saved_configuration_file_can_be_loaded_again(tmp_path) ->
     loaded = loader.get_published_dataset(String("Saved"))
     assert loaded is not None
     assert [f.Name for f in loaded.dataset.get_config().Fields] == ["a"]
+
+
+async def test_pub33_pubsub_get_config_includes_published_data_items(server: Server) -> None:
+    node = await server.nodes.objects.add_variable(
+        NodeId(String("Pub33Var"), Int16(1)), "Pub33Var", 1, VariantType.Int32
+    )
+    items = await PublishedDataItems.Create(String("Pub33"), server, [TargetVariable("v", node.nodeid)])
+    config = pubsub.PubSub.new(connections=[], datasets=[items]).get_config()
+    assert [d.Name for d in config.PublishedDataSets] == ["Pub33"]

@@ -423,6 +423,7 @@ async def target_with_ranges(
     dataset = DataSetMeta.Create(String(name))
     dataset.add_scalar(String("Values"), VariantType.Int32)
     field = dataset.get_field("Values")
+    assert field is not None
     config = FieldTargetDataType(
         DataSetFieldId=field.DataSetFieldId,
         TargetNodeId=node.nodeid,

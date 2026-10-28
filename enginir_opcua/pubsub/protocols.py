@@ -49,7 +49,7 @@ class PubSubReceiver(Protocol):
     Receiver for Pubsub Messages
     """
 
-    async def got_uadp(self, msg: UadpNetworkMessage):
+    async def got_uadp(self, msg: UadpNetworkMessage) -> None:
         """Called when a msg is received"""
         raise NotImplementedError
 
@@ -57,11 +57,11 @@ class PubSubReceiver(Protocol):
 class SubscribedDataSet(Protocol):
     """Receiver for subscribed datasets"""
 
-    async def on_dataset_received(self, meta: DataSetMeta, fields: list[DataSetValue]):
+    async def on_dataset_received(self, meta: DataSetMeta, fields: list[DataSetValue]) -> None:
         """Called when a published dataset received an update"""
         raise NotImplementedError
 
-    async def on_state_change(self, meta: DataSetMeta, state: PubSubState):
+    async def on_state_change(self, meta: DataSetMeta, state: PubSubState) -> None:
         """Called when a DataSet state changes"""
         raise NotImplementedError
 

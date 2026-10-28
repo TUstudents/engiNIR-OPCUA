@@ -8,7 +8,7 @@ import dataclasses
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from ..common import instantiate_util
 from ..common.methods import uamethod
@@ -106,7 +106,9 @@ class DataSetField:
             self._meta = meta
 
     @classmethod
-    def CreateScalar(cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None):
+    def CreateScalar(
+        cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None
+    ) -> Self:
         """
         Creates a scalar Field with datatype and name
         """
@@ -122,7 +124,9 @@ class DataSetField:
         return cls(meta)
 
     @classmethod
-    def CreateArray(cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None):
+    def CreateArray(
+        cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None
+    ) -> Self:
         """
         Creates a one dimensional array Field with datatype and name
         """
@@ -217,7 +221,7 @@ class DataSetMeta:
         name: String,
         description: LocalizedText | None = None,
         dataset_fields: list[DataSetField] | None = None,
-    ):
+    ) -> Self:
         """creates a datasetmeta"""
         meta = DataSetMetaDataType()
         if description is not None:
@@ -253,13 +257,13 @@ class DataSetMeta:
         self._meta.Fields.append(ds_field._meta)
         self._update_version(major=False)
 
-    def add_scalar(self, name: String, datatype: NodeId | VariantType):
+    def add_scalar(self, name: String, datatype: NodeId | VariantType) -> None:
         self.add_field(DataSetField.CreateScalar(name, datatype))
 
-    def add_array(self, name: String, datatype: NodeId | VariantType):
+    def add_array(self, name: String, datatype: NodeId | VariantType) -> None:
         self.add_field(DataSetField.CreateArray(name, datatype))
 
-    def get_field(self, name) -> DataSetField | None:
+    def get_field(self, name: str) -> DataSetField | None:
         return next((f for f in self._fields if f.Name == name), None)
 
     def remove_field(self, field_name: str) -> None:
@@ -433,7 +437,7 @@ class PubSubDataSourceServer(PubSubDataSource):
             ret.append(dv)
         return ret
 
-    async def add_variable(self, published_variable: PublishedVariableDataType):
+    async def add_variable(self, published_variable: PublishedVariableDataType) -> None:
         self.data_items.PublishedData.append(published_variable)
 
 
@@ -493,12 +497,12 @@ class PublishedDataSet(PubSubInformationModel):
         name: String,
         dataset: DataSetMeta,
         source: PubSubDataSource | None = None,
-    ):
+    ) -> Self:
         """Allows to construct a PublishDataSet without using the ua structures."""
         s = cls(PublishedDataSetDataType(Name=name), source, dataset)
         return s
 
-    def set_source_custom(self, source: PubSubDataSource):
+    def set_source_custom(self, source: PubSubDataSource) -> None:
         """Set the source as custom user defined one"""
         self._source = source
 
@@ -653,7 +657,7 @@ class PublishedDataItems(PubSubInformationModel):
         raise UaStatusCodeError(StatusCodes.BadNotImplemented)
 
     @classmethod
-    async def Create(cls, name: String, server: Server, variables: list[TargetVariable]):
+    async def Create(cls, name: String, server: Server, variables: list[TargetVariable]) -> Self:
         """Allows to construct a PublishedDataItems without using the ua structures."""
         items = PublishedDataItemsDataType()
         fields = []
@@ -694,6 +698,9 @@ class PublishedDataItems(PubSubInformationModel):
     def get_name(self) -> String:
         # @TODO return node value
         return self._data.Name
+
+    def get_config(self) -> PublishedDataSetDataType:
+        return self._data
 
     async def get_meta(self) -> DataSetMeta:
         # @TODO return node value

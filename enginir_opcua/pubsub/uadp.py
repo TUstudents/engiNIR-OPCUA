@@ -725,6 +725,8 @@ class UadpDataSetSkipped:
 
 
 class UadpDataSetMessage(Protocol):
+    Header: UadpDataSetMessageHeader
+
     def message_to_binary(self) -> bytes:
         raise NotImplementedError("UadpDataSetMessage is a abstract class")
 

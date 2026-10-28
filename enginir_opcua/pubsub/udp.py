@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import InitVar, dataclass
 from ipaddress import ip_address
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlparse
 
 from ..common.utils import Buffer
@@ -48,7 +48,7 @@ BROADCAST = "255.255.255.255"
 _ANY = socket.inet_aton("0.0.0.0")
 
 
-def _get_address_adapter(address: NetworkAddressUrlDataType):
+def _get_address_adapter(address: NetworkAddressUrlDataType) -> tuple[tuple[str | None, int], str | None]:
     addr = None
     if address.NetworkInterface is not None:
         addr = address.NetworkInterface
@@ -107,14 +107,14 @@ class UdpSettings:
     Adapter: tuple[str | None, int] = None  # NetworkInterface (IP address or name) and the receive port
     Url: InitVar[str] = None  # Url to generate the addr
 
-    def __post_init__(self, Url: str):
+    def __post_init__(self, Url: str) -> None:
         if Url is not None:
             self.Addr = parse_url(Url)
         if self.Adapter is None:
             self.Adapter = (None, self.Addr[1])
 
     @classmethod
-    def from_cfg(cls, cfg: PubSubConnectionDataType):
+    def from_cfg(cls, cfg: PubSubConnectionDataType) -> Self:
         addr, adpater = _get_address_adapter(cfg.Address)
         s = cls(addr, Adapter=(adpater, addr[1]))
         s.set_key_value(cfg.ConnectionProperties)
