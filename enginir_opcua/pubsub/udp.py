@@ -9,7 +9,6 @@ import logging
 import socket
 import struct
 import sys
-import time
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import InitVar, dataclass
@@ -39,12 +38,12 @@ from .uadp import (
     has_security_header,
     publisher_id_from_variant,
 )
+from .utils import RateLimitedLog
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 4840
 DEFAULT_QUEUE_SIZE = 256
-LOG_INTERVAL = 10.0
 BROADCAST = "255.255.255.255"
 _ANY = socket.inet_aton("0.0.0.0")
 
@@ -93,28 +92,6 @@ def resolve_interface(interface: str | None, family: int) -> tuple[str | None, i
         return None, socket.if_nametoindex(interface)
     except OSError as e:
         raise UaError(f"NetworkInterface {interface} is neither an IP address nor an interface name") from e
-
-
-class _RateLimitedLog:
-    """Logs the first event of a kind, then at most one more every `interval` seconds with the number it skipped"""
-
-    def __init__(self, interval: float = LOG_INTERVAL) -> None:
-        self._interval = interval
-        self._last: dict[str, float] = {}
-        self._skipped: Counter[str] = Counter()
-
-    def warning(self, key: str, message: str, *args: Any) -> None:
-        now = time.monotonic()
-        last = self._last.get(key)
-        if last is not None and now - last < self._interval:
-            self._skipped[key] += 1
-            return
-        skipped = self._skipped.pop(key, 0)
-        self._last[key] = now
-        if skipped:
-            logger.warning("%s (%d similar events not logged)", message % args, skipped)
-        else:
-            logger.warning(message, *args)
 
 
 @dataclass
@@ -284,7 +261,7 @@ class OpcUdp(asyncio.DatagramProtocol):
         self.destination: tuple[Any, ...] = cfg.Addr
         self._queue: asyncio.Queue[tuple[bytes, Any]] = asyncio.Queue(maxsize=queue_size)
         self._task: asyncio.Task[None] | None = None
-        self._log = _RateLimitedLog()
+        self._log = RateLimitedLog(logger)
 
     def connection_made(self, transport: asyncio.transports.BaseTransport) -> None:
         self.transport: asyncio.transports.DatagramTransport = transport  # type: ignore[assignment]
@@ -355,14 +332,24 @@ class OpcUdp(asyncio.DatagramProtocol):
             with self.types.encoding():
                 yield
 
-    def send_uadp(self, msgs: list[UadpNetworkMessage], destination: tuple[Any, ...] | None = None) -> None:
+    def send_uadp(
+        self, msgs: list[UadpNetworkMessage], destination: tuple[Any, ...] | None = None, max_size: int = 0
+    ) -> list[int]:
+        """Sends the messages and returns the sizes of those that were left out because they are larger than
+        `max_size` (6.2.5.5); 0 means no limit"""
         target = destination if destination is not None else self.destination
+        oversize: list[int] = []
         for msg in msgs:
             logger.debug("Sending UadpMsg %s", msg)
             with self._encoding():
                 data = msg.to_binary()
+            if max_size and len(data) > max_size:
+                self.counters["oversize"] += 1
+                oversize.append(len(data))
+                continue
             self.transport.sendto(data, target)
             self.counters["sent"] += 1
+        return oversize
 
     async def resolve_destination(self, url: str) -> tuple[Any, ...]:
         """The socket address of an opc.udp URL, resolved once so that sending never waits for a name server"""

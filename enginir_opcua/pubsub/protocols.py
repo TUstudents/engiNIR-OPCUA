@@ -15,9 +15,10 @@ class PubSubSender(Protocol):
     Implements sending Messages
     """
 
-    def send_uadp(self, msgs: list[UadpNetworkMessage], destination: Any = None) -> None:
+    def send_uadp(self, msgs: list[UadpNetworkMessage], destination: Any = None, max_size: int = 0) -> list[int]:
         """
-        Sends UADP messages, to the destination if given and to the connection's address otherwise
+        Sends UADP messages, to the destination if given and to the connection's address otherwise. Messages larger
+        than max_size (when it is above 0) are not sent; their sizes are returned.
         """
         raise NotImplementedError
 

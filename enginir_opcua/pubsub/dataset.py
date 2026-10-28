@@ -21,6 +21,7 @@ from ..ua.status_codes import StatusCodes
 from ..ua.uaerrors import UaStatusCodeError
 from ..ua.uaprotocol_auto import (
     ConfigurationVersionDataType,
+    DataSetFieldContentMask,
     DataSetFieldFlags,
     PublishedDataItemsDataType,
     PublishedDataSetDataType,
@@ -271,6 +272,36 @@ class DataSetMeta:
 
     def get_config(self) -> DataSetMetaDataType:
         return self._meta
+
+
+def worst_status(values: list[DataValue]) -> StatusCode:
+    """The status of a DataSetMessage: the worst status of its fields, Bad before Uncertain (Part 14, 6.2.11.1)"""
+    status = StatusCode(UInt32(StatusCodes.Good))
+    for v in values:
+        if v.StatusCode is None or v.StatusCode.is_good():
+            continue
+        if status.is_good() or (v.StatusCode.is_bad() and not status.is_bad()):
+            status = v.StatusCode
+    return status
+
+
+def select_value_parts(values: list[DataValue], mask: DataSetFieldContentMask) -> list[DataValue]:
+    """Copies of the values with only the parts of the DataSetFieldContentMask (Part 14, 6.2.4.2)"""
+    ret = []
+    for v in values:
+        changes: dict[str, Any] = {}
+        if DataSetFieldContentMask.StatusCode not in mask:
+            changes["StatusCode"] = None
+        if DataSetFieldContentMask.SourceTimestamp not in mask:
+            changes["SourceTimestamp"] = None
+        if DataSetFieldContentMask.SourcePicoSeconds not in mask or DataSetFieldContentMask.SourceTimestamp not in mask:
+            changes["SourcePicoseconds"] = None
+        if DataSetFieldContentMask.ServerTimestamp not in mask:
+            changes["ServerTimestamp"] = None
+        if DataSetFieldContentMask.ServerPicoSeconds not in mask or DataSetFieldContentMask.ServerTimestamp not in mask:
+            changes["ServerPicoseconds"] = None
+        ret.append(dataclasses.replace(v, **changes))
+    return ret
 
 
 class PubSubDataSource:
