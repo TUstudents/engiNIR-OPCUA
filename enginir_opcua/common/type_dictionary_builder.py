@@ -170,6 +170,7 @@ class DataTypeDictionaryBuilder:
             attrs.ValueRank = -1
             new_node.NodeAttributes = attrs
             res = await self._session_server.add_nodes([new_node])
+            res[0].StatusCode.check()
             return res[0].AddedNodeId
         _logger.warning(
             "Making %s object for node %s which already exist, its data will be overriden", self, existing_node
@@ -212,7 +213,10 @@ class DataTypeDictionaryBuilder:
         ]
         for ref in refs:
             ref.TargetNodeClass = ua.NodeClass.Unspecified
-        await self._session_server.add_references(refs)
+        results = await self._session_server.add_references(refs)
+        for status in results:
+            if status.is_bad() and status.value != ua.StatusCodes.BadDuplicateReferenceNotAllowed:
+                status.check()
 
     async def _create_data_type(
         self, type_name: str, nodeid: ua.NodeId | None = None, init: bool = True
@@ -233,6 +237,7 @@ class DataTypeDictionaryBuilder:
             dt_node.NodeAttributes = dt_attributes
 
             res = await self._session_server.add_nodes([dt_node])
+            res[0].StatusCode.check()
             data_type_node_id = res[0].AddedNodeId
         else:
             data_type_node_id = nodeid
@@ -256,6 +261,7 @@ class DataTypeDictionaryBuilder:
             desc_node.NodeAttributes = desc_attributes
 
             res = await self._session_server.add_nodes([desc_node])
+            res[0].StatusCode.check()
             description_node_id = res[0].AddedNodeId
             added.append(description_node_id)
 
@@ -273,6 +279,7 @@ class DataTypeDictionaryBuilder:
             obj_node.NodeAttributes = obj_attributes
 
             res = await self._session_server.add_nodes([obj_node])
+            res[0].StatusCode.check()
             bind_obj_node_id = res[0].AddedNodeId
             added.append(bind_obj_node_id)
 
@@ -304,10 +311,10 @@ class StructNode:
         self.name = name
         self.node_ids = node_ids
 
-    def add_field(self, type_name: str | Enum, field_name: str | StructNode, is_array: bool = False) -> None:
-        if isinstance(field_name, StructNode):
-            field_name = field_name.name
-        self._type_dict.add_field(field_name, type_name, self.name, is_array)
+    def add_field(self, field_name: str, field_type: str | Enum | StructNode, is_array: bool = False) -> None:
+        if isinstance(field_type, StructNode):
+            field_type = field_type.name
+        self._type_dict.add_field(field_type, field_name, self.name, is_array)
 
 
 def get_ua_class(ua_class_name: str) -> Any:

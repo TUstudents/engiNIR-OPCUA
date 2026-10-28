@@ -113,8 +113,9 @@ class SequenceHeader:
 
 
 class Message:
-    def __init__(self, chunks: Sequence["MessageChunk"]) -> None:
+    def __init__(self, chunks: Sequence["MessageChunk"], types: uatypes.TypeRegistry | None = None) -> None:
         self._chunks = chunks
+        self._types = types
 
     def request_id(self) -> int:
         return self._chunks[0].SequenceHeader.RequestId
@@ -130,7 +131,7 @@ class Message:
 
     def body(self) -> utils.Buffer:
         body = b"".join([c.Body for c in self._chunks])
-        return utils.Buffer(body)
+        return utils.Buffer(body, types=self._types)
 
 
 ana = auto.NodeAttributesMask
@@ -209,26 +210,9 @@ class ReferenceTypeAttributes(auto.ReferenceTypeAttributes):
 
 @dataclass(slots=True)
 class DataTypeAttributes(auto.DataTypeAttributes):
-    DataTypeDefinition: uatypes.ExtensionObject = field(default_factory=auto.ExtensionObject)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "SpecifiedAttributes",
-            (
-                ana.DisplayName
-                | ana.Description
-                | ana.WriteMask
-                | ana.UserWriteMask
-                | ana.IsAbstract
-                | ana.DataTypeDefinition
-            ),
-        )
-
-
-nid = uatypes.FourByteNodeId(auto.ObjectIds.DataTypeAttributes_Encoding_DefaultBinary)
-uatypes.extension_objects_by_typeid[nid] = DataTypeAttributes
-uatypes.typeid_by_extension_objects[DataTypeAttributes] = nid
+    SpecifiedAttributes: uatypes.UInt32 = (
+        ana.DisplayName | ana.Description | ana.WriteMask | ana.UserWriteMask | ana.IsAbstract
+    )
 
 
 @dataclass(slots=True)

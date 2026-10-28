@@ -298,6 +298,35 @@ Crypto:
 
 XML import:
 - Nodes marked `DesignToolOnly`, their children and references to them are skipped (OPC 10000-6, F.7).
+- `import_xml` raises `NodeSetError` (a `UaError` and a `ValueError`) when a node is refused or cannot be placed: every
+  node needs a hierarchical parent (OPC 10000-4, 5.8.2), taken from `ParentNodeId`, a hierarchical reference or, for a
+  DataTypeEncoding, `HasEncoding`. Nothing is exempt from the status check. The returned list holds only nodes that
+  exist; `XmlImporter.failures` lists the rest in non-strict mode. A DataTypeEncoding that no DataType refers to is
+  skipped with a warning.
+- Required models are compared by `ModelVersion`, then `PublicationDate`, and all missing ones are named.
+  NamespaceMetadata objects created by an import have `IsNamespaceSubset = False`.
+- XML values follow XML Schema: booleans are `true`, `false`, `1` or `0` (anything else raises), a dateTime without a
+  zone is UTC, an empty `<String/>` is `""`. Minified files, `ServerUris`, Views and Matrix values import. NodeId,
+  ExpandedNodeId and QualifiedName values use the server's namespace indices.
+- Executable, AccessLevel 0, Historizing and WriteMask of imported nodes are kept; the User* variants are read but only
+  exported when they differ from the primary attribute. Option sets, subtyped structures, inherited fields and the
+  Default Binary encoding id are imported; DataTypeDefinitions are written with the Write service.
+- Export writes only attributes of the UANodeSet schema, keeps Symmetric, IsAbstract, AccessLevel 0, WriteMask, Views,
+  `IsOptionSet` and `AllowSubTypes`, maps namespace indices in values, no longer lists the base URI first, and
+  `export_xml_by_ns` writes a `Models` element. `build_etree_chunked` no longer reconnects.
+
+Custom types:
+- Every `Client` and `Server` has its own type registry, `client.types` / `server.types`, keyed by namespace URI and
+  identifier. Classes made by `load_data_type_definitions()` or `import_xml()` belong to that session: a client in the
+  same process as a server must load the definitions itself, and sending a class of another session raises. The
+  module-level `ua.extension_objects_by_*`, `ua.enums_*`, `ua.get_type` and `ua.register_*` only serve namespace 0 and
+  legacy registrations; `ua.<Name>` still binds the first class of a name.
+- `Buffer` carries the registry of the connection (`Buffer.types`) that decodes ExtensionObjects.
+- `new_struct_field(array=True)` has `ArrayDimensions = [0]`; `new_enum` keeps the `Value` of an `EnumField`;
+  enumeration members whose names clean to the same identifier raise; `Server.load_data_type_definitions()` takes
+  `overwrite_existing`, which now reloads changed definitions; generated defaults no longer use random or current values.
+- `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
+- `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 
 Code generation:
 - The generated code comes from the `nodeset` submodule, pinned to UA-Nodeset `UA-1.05.07-2026-05-01`.

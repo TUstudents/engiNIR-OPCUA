@@ -92,8 +92,6 @@ async def disposable_opc(request):
 
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
-    if opc.opc is not opc.server:
-        pytest.skip("AddNodes of a Session needs a hierarchical parent reference, the nodesets use ConnectsTo")
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
     nodes = await opc.opc.import_xml(NODESET_DI)
     nodes += await opc.opc.import_xml(NODESET_IA)
@@ -395,7 +393,6 @@ async def test_xml_datetime_array(opc, tmpdir):
         3,
         "myxmlvar-array",
         [
-            datetime.datetime.now(),
             datetime.datetime.now(datetime.UTC),
             datetime.datetime.now(timezone("Asia/Tokyo")),
         ],
@@ -649,7 +646,7 @@ async def test_xml_var_nillable(opc):
     _ = await opc.opc.import_xml(xmlstring=xml)
     var_string = opc.opc.get_node(ua.NodeId("test_xml.string.nillable", 1))
     var_bool = opc.opc.get_node(ua.NodeId("test_xml.bool.nillable", 1))
-    assert await var_string.read_value() is None
+    assert await var_string.read_value() == ""
     assert await var_bool.read_value() is None
     await opc.opc.delete_nodes([var_string, var_bool])
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import keyword
 import logging
 import re
@@ -8,7 +9,6 @@ import typing
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, make_dataclass
-from datetime import UTC, datetime
 from enum import Enum, IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
@@ -50,7 +50,7 @@ def new_struct_field(
         raise ValueError(f"DataType of a field must be a NodeId, not {dtype} of type {type(dtype)}")
     if array:
         field.ValueRank = ua.ValueRank.OneDimension
-        field.ArrayDimensions = [1]  # type: ignore
+        field.ArrayDimensions = [0]  # type: ignore
     else:
         field.ValueRank = ua.ValueRank.Scalar
         field.ArrayDimensions = None
@@ -126,8 +126,12 @@ async def new_enum(
     edef = ua.EnumDefinition()
     counter = 0
     for item in fields:
-        field = item if isinstance(item, ua.EnumField) else new_enum_field(item)
-        field.Value = counter
+        if isinstance(item, ua.EnumField):
+            field = copy.copy(item)
+            counter = field.Value
+        else:
+            field = new_enum_field(item)
+            field.Value = counter
         counter += 1
         edef.Fields.append(field)
     if option_set:
@@ -178,13 +182,13 @@ def _default_value_for(uatype: str, optional: bool = False) -> Any:
     if uatype == "String":
         return ua.String()
     if uatype == "Guid":
-        return uuid.uuid4()
+        return uuid.UUID(int=0)
     if uatype in ("ByteString", "CharArray", "Char"):
         return b""
     if uatype == "Boolean":
         return False
     if uatype == "DateTime":
-        return datetime.now(UTC)
+        return ua.get_win_epoch()
     if uatype in _NUMERIC_TYPES:
         return getattr(ua, uatype)(0)
     if isinstance(cls, type) and issubclass(cls, Enum):
@@ -244,7 +248,11 @@ def _make_union_property(name: str, idx: int) -> property:
 
 
 def make_structure(
-    data_type: ua.NodeId, struct_name: str, sdef: ua.StructureDefinition, log_error: bool = True
+    data_type: ua.NodeId,
+    struct_name: str,
+    sdef: ua.StructureDefinition,
+    log_error: bool = True,
+    types: ua.TypeRegistry | None = None,
 ) -> dict[str, type]:
     """
     given a StructureDefinition object, generate Python class
@@ -288,14 +296,9 @@ def make_structure(
                 uatype_name = "ExtensionObject"
             else:
                 uatype_name = ua.ObjectIdNames[sfield.DataType.Identifier]
-        elif sfield.DataType in ua.extension_objects_by_datatype:
-            dep_cls = ua.extension_objects_by_datatype[sfield.DataType]
-            uatype_name = dep_cls.__name__
-        elif sfield.DataType in ua.enums_by_datatype:
-            dep_cls = ua.enums_by_datatype[sfield.DataType]
-            uatype_name = dep_cls.__name__
-        elif sfield.DataType in ua.basetype_by_datatype:
-            uatype_name = ua.basetype_by_datatype[sfield.DataType]
+        elif (registered := (types or ua.default_types).find(sfield.DataType)) is not None:
+            dep_cls = registered
+            uatype_name = registered.__name__
         elif sfield.DataType == data_type:
             is_self_ref = True
             uatype_name = struct_name
@@ -398,6 +401,7 @@ def _generate_object(
     enum: bool = False,
     option_set: bool = False,
     log_fail: bool = True,
+    types: ua.TypeRegistry | None = None,
 ) -> dict[str, Any]:
     """
     generate Python class
@@ -408,7 +412,7 @@ def _generate_object(
     if enum:
         env.update(make_enum(name, sdef, option_set))
     else:
-        env.update(make_structure(data_type, name, sdef, log_error=log_fail))
+        env.update(make_structure(data_type, name, sdef, log_error=log_fail, types=types))
     return env
 
 
@@ -470,10 +474,8 @@ async def get_children_descriptions_type_definitions(
     nodes = []
     idxs = []
     for idx, desc in enumerate(descs):
-        if not overwrite_existing and desc.BrowseName.Name:
-            existing = getattr(ua, desc.BrowseName.Name, None)
-            if existing is not None and getattr(existing, "data_type", None) == desc.NodeId:
-                continue
+        if not overwrite_existing and server.types.find_own(desc.NodeId) is not None:
+            continue
         idxs.append(idx)
         nodes.append(server.get_node(desc.NodeId))
 
@@ -503,7 +505,7 @@ async def _get_parent_types(node: Node) -> list[Node]:
     return parents
 
 
-async def load_custom_struct(node: Node) -> Any:
+async def load_custom_struct(node: Node, types: ua.TypeRegistry | None = None) -> Any:
     sdef = await node.read_data_type_definition()
     if not isinstance(sdef, ua.StructureDefinition):
         raise UaInvalidParameterError(f"Expected StructureDefinition, got: {type(sdef)}")
@@ -515,28 +517,29 @@ async def load_custom_struct(node: Node) -> Any:
             for f in reversed(parent_sdef.Fields):
                 if f.Name not in names:
                     sdef.Fields.insert(0, f)
-    existing = getattr(ua, name, None)
-    if existing is not None and getattr(existing, "data_type", None) == node.nodeid:
+    types = types or ua.default_types
+    existing = types.find_own(node.nodeid)
+    if existing is not None:
         return existing
-    env = _generate_object(name, sdef, data_type=node.nodeid)
+    env = _generate_object(name, sdef, data_type=node.nodeid, types=types)
     struct = env[name]
-    ua.register_extension_object(name, sdef.DefaultEncodingId, struct, node.nodeid)
+    types.register_struct(node.nodeid, sdef.DefaultEncodingId, struct, name)
     return struct
 
 
-async def load_custom_struct_xml_import(node_id: ua.NodeId, attrs: ua.DataTypeAttributes) -> Any:
+async def load_custom_struct_xml_import(
+    types: ua.TypeRegistry, node_id: ua.NodeId, name: str, sdef: ua.StructureDefinition
+) -> Any:
     """
     This function is used to load custom structs from xmlimporter
     """
-    name = attrs.DisplayName.Text
-    existing = getattr(ua, name, None)
-    if existing is not None and getattr(existing, "data_type", None) == node_id:
+    name = clean_name(name)
+    existing = types.find_own(node_id)
+    if existing is not None:
         return existing
-    # FIXME : mypy attribute not defined
-    sdef = attrs.DataTypeDefinition  # type: ignore[attr-defined]
-    env = _generate_object(name, sdef, data_type=node_id)
+    env = _generate_object(name, sdef, data_type=node_id, types=types)
     struct = env[name]
-    ua.register_extension_object(name, sdef.DefaultEncodingId, struct, node_id)
+    types.register_struct(node_id, sdef.DefaultEncodingId, struct, name)
     return struct
 
 
@@ -549,9 +552,9 @@ async def _recursive_parse_basedatatypes(
         name = clean_name(desc.BrowseName.Name)
         if parent_datatype != "Number":
             # Don't insert Number alias, they should be already insert because they have to be basetypes already
-            if not hasattr(ua, name):
+            if desc.NodeId.NamespaceIndex != 0 and server.types.find_own(desc.NodeId) is None:
                 env = make_basetype(name, parent_datatype)
-                ua.register_basetype(name, desc.NodeId, env[name])
+                server.types.register_alias(desc.NodeId, env[name], name)
                 new_alias[name] = env[name]
     # Recurse into siblings in parallel (all parents already registered above)
     if descs:
@@ -571,13 +574,14 @@ async def load_basetype_alias_xml_import(
     """
     Insert alias for a datatype used for xml import
     """
-    if hasattr(ua, name):
-        return getattr(ua, name)
+    existing = server.types.find_own(nodeid)
+    if existing is not None:
+        return existing
     parent = server.get_node(parent_datatype_nid)
     bname = await parent.read_browse_name()
     parent_datatype = clean_name(bname.Name)
     env = make_basetype(name, parent_datatype)
-    ua.register_basetype(name, nodeid, env[name])
+    server.types.register_alias(nodeid, env[name], name)
     return env[name]
 
 
@@ -676,12 +680,13 @@ async def load_data_type_definitions(
     Read DataTypeDefinition attribute on all Structure and Enumeration defined
     on server and generate Python objects in ua namespace to be used to talk with server
     """
+    await server.get_namespace_array()
     new_objects = await _load_base_datatypes(server)  # we need to load all basedatatypes alias first
 
     # Load enums and option sets in parallel - they are independent of each other
     enum_results, optionset_results = await asyncio.gather(
-        load_enums(server),
-        load_enums(server, server.nodes.option_set_type, True),
+        load_enums(server, overwrite_existing=overwrite_existing),
+        load_enums(server, server.nodes.option_set_type, True, overwrite_existing),
     )
     new_objects.update(enum_results)
     new_objects.update(optionset_results)
@@ -690,7 +695,7 @@ async def load_data_type_definitions(
         base_node = server.nodes.base_structure_type
 
     parser = RecursiveParser(server)
-    dtypes = await parser.parse(base_node)
+    dtypes = await parser.parse(base_node, overwrite_existing)
 
     # Topological sort: O(n+e) instead of comparison-based O(n^2 log n)
     dtypes = _topological_sort_dtypes(dtypes)
@@ -701,18 +706,17 @@ async def load_data_type_definitions(
         failed_types = []
         log_ex = retries == cnt + 1
         for dts in dtypes:
-            existing = getattr(ua, dts.name, None)
-            if existing is not None and getattr(existing, "data_type", None) == dts.data_type:
+            if not overwrite_existing and server.types.find_own(dts.data_type) is not None:
                 continue
             try:
-                env = _generate_object(dts.name, dts.sdef, data_type=dts.data_type, log_fail=log_ex)
+                env = _generate_object(dts.name, dts.sdef, data_type=dts.data_type, log_fail=log_ex, types=server.types)
                 cls = env[dts.name]
                 cls.data_type = dts.data_type
-                ua.register_extension_object(dts.name, dts.encoding_id, cls, dts.data_type)
+                server.types.register_struct(dts.data_type, dts.encoding_id, cls, dts.name)
                 new_objects[dts.name] = cls  # type: ignore
             except NotImplementedError:
                 _logger.exception("Structure type %s not implemented", dts.sdef)
-            except (AttributeError, RuntimeError, KeyError, TypeError, ValueError):
+            except (AttributeError, RuntimeError, KeyError, TypeError, ValueError, ua.UaError):
                 if log_ex:
                     _logger.exception("Failed to resolve datatype %s", dts.sdef)
                 failed_types.append(dts)
@@ -736,6 +740,10 @@ def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool) -> dict[str,
         return {name: cls}
     for n, sfield in enumerate(edef.Fields):
         fieldname = clean_name(sfield.Name)
+        if fieldname in members:
+            raise ua.UaError(
+                f"Enumeration {name}: the fields '{sfield.Name}' and another one both become '{fieldname}'"
+            )
         if hasattr(sfield, "Value"):
             value = sfield.Value if not option_set else (1 << sfield.Value)
         else:
@@ -765,8 +773,7 @@ async def load_enums(
     new_enums = {}
     for idx, desc in enumerate(descs):
         name = clean_name(desc.BrowseName.Name)
-        existing = getattr(ua, name, None)
-        if existing is not None and getattr(existing, "data_type", None) == desc.NodeId:
+        if not overwrite_existing and server.types.find_own(desc.NodeId) is not None:
             continue
         _logger.info("Registering %s %s %s", typename, desc.NodeId, name)
         edef = sdefs[idx]
@@ -780,21 +787,22 @@ async def load_enums(
             )
             continue
         cls = env[name]
-        ua.register_enum(name, desc.NodeId, cls)
+        server.types.register_enum(desc.NodeId, cls, name)
         new_enums[name] = cls
     return new_enums
 
 
-async def load_enum_xml_import(node_id: ua.NodeId, attrs: ua.DataTypeAttributes, option_set: bool) -> Any:
+async def load_enum_xml_import(
+    types: ua.TypeRegistry, node_id: ua.NodeId, name: str, edef: ua.EnumDefinition, option_set: bool
+) -> Any:
     """
     This function is used to load enums from xmlimporter
     """
-    name = attrs.DisplayName.Text
-    existing = getattr(ua, name, None)
-    if existing is not None and getattr(existing, "data_type", None) == node_id:
+    name = clean_name(name)
+    existing = types.find_own(node_id)
+    if existing is not None:
         return existing
-    # FIXME: DateTypeDefinition is not a known attribute for mypy
-    env = _generate_object(name, attrs.DataTypeDefinition, enum=True, option_set=option_set)  # type: ignore[attr-defined]
+    env = _generate_object(name, edef, enum=True, option_set=option_set)
     cls = env[name]
-    ua.register_enum(name, node_id, cls)
+    types.register_enum(node_id, cls, name)
     return cls

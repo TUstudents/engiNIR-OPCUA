@@ -2071,6 +2071,7 @@ async def test_custom_method_with_struct(opc):
     )
 
     await opc.opc.load_data_type_definitions()
+    await opc.server.load_data_type_definitions()
 
     @uamethod
     def func(parent, mystruct):

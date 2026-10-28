@@ -435,6 +435,7 @@ class SecureChannel:
         self._limits = limits
         self.last_used = time.monotonic()
         self._clock: Callable[[], float] = time.monotonic
+        self.types: ua.TypeRegistry | None = None
 
     @property
     def channel_id(self) -> int:
@@ -823,6 +824,6 @@ class SecureChannel:
             raise MessageSizeExceeded("Chunk count exceeds the limit")
         if header.ChunkType == ua.ChunkType.Intermediate:
             return None
-        message = ua.Message(self._incoming_parts)
+        message = ua.Message(self._incoming_parts, self.types)
         self._drop_incoming_parts()
         return message
