@@ -715,13 +715,10 @@ async def test_get_filter_from_ConditionType(opc):
     assert browsePathEnabledStateId in browsePathList
     # Check for additional NodeId attribute, which is not directly contained in ConditionType
     assert len([o for o in evfilter.SelectClauses if o.AttributeId == ua.AttributeIds.NodeId]) == 1
-    # Check some subtypes in where clause
-    alarmType = opc.opc.get_node(ua.ObjectIds.AlarmConditionType)
-    systemType = opc.opc.get_node(ua.ObjectIds.SystemOffNormalAlarmType)
-    filterOperands = evfilter.WhereClause.Elements[0].FilterOperands
-    operandNodeIds = [f.Value.Value for f in filterOperands if type(f) is ua.uaprotocol_auto.LiteralOperand]
-    assert alarmType.nodeid in operandNodeIds
-    assert systemType.nodeid in operandNodeIds
+    # The where clause asks the server for the type and its subtypes with OfType (Part 4, 7.7.3)
+    element = evfilter.WhereClause.Elements[0]
+    assert element.FilterOperator == ua.FilterOperator.OfType
+    assert element.FilterOperands[0].Value.Value == condType.nodeid
 
 
 async def test_get_event_contains_object(opc):
