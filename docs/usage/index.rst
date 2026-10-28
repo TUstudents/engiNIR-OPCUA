@@ -35,6 +35,12 @@ Usage Guide
 
 .. toctree::
     :maxdepth: 2
+    :caption: PubSub
+
+    pubsub/overview
+
+.. toctree::
+    :maxdepth: 2
     :caption: Sync Interface
 
     sync/overview
