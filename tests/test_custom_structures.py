@@ -521,3 +521,35 @@ async def test_com43_struct_node_add_field_takes_the_field_name_first(srv):
     xml = srv.dict_builder._type_dictionary.get_dict_value().decode()
     assert 'Name="Speed" TypeName="opc:Double"' in xml
     assert 'Name="Items" TypeName="opc:Int32" LengthField="NoOfItems"' in xml
+
+
+COM112_DICTIONARY = b"""<opc:TypeDictionary xmlns:opc="http://opcfoundation.org/BinarySchema/" TargetNamespace="urn:test">
+  <opc:StructuredType BaseType="ua:ExtensionObject" Name="Com111Plain">
+    <opc:Field TypeName="opc:Int32" Name="NoOfPlain" />
+    <opc:Field TypeName="opc:Int32" Name="Count" />
+    <opc:Field TypeName="opc:Int32" Name="Items" LengthField="Count" />
+  </opc:StructuredType>
+</opc:TypeDictionary>"""
+
+
+def test_com112_arrays_are_found_by_the_length_field_attribute():
+    generator = StructGenerator()
+    generator.make_model_from_string(COM112_DICTIONARY)
+    classes = generator.get_python_classes({})
+    instance = classes["Com111Plain"]()
+    assert instance.NoOfPlain == 0
+    assert instance.Items == []
+    assert not hasattr(instance, "Count")
+
+
+def test_com112_a_structure_without_type_id_is_not_registered_by_the_generated_file(tmpdir):
+    generator = StructGenerator()
+    generator.make_model_from_string(COM112_DICTIONARY)
+    path = tmpdir.join("generated.py").strpath
+    generator.save_to_file(path, register=True)
+    with open(path) as generated:
+        assert "from_string('None')" not in generated.read()
+    generator.set_typeid("Com111Plain", "ns=2;i=9")
+    generator.save_to_file(path, register=True)
+    with open(path) as generated:
+        assert "ua.NodeId.from_string('ns=2;i=9')" in generated.read()

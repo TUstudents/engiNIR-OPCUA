@@ -201,17 +201,6 @@ class StructGenerator:
         root = obj.getroot()
         self._make_model(root)
 
-    def _is_array_field(self, name: str) -> bool:
-        if name.startswith("NoOf"):
-            return True
-        if name.startswith("__") and name.endswith("Length"):
-            # Codesys syntax
-            return True
-        if name.startswith("#"):
-            # BR syntax
-            return True
-        return False
-
     def _make_model(self, root: ET.Element) -> None:
         enums = {}
         for child in root:
@@ -229,15 +218,18 @@ class StructGenerator:
         for child in root:
             if child.tag.endswith("StructuredType"):
                 struct = Struct(child.get("Name"))
-                array = False
-                # these lines can be reduced in >= Python3.8 with root.iterfind("{*}Field") and similar
+                length_fields = {
+                    xmlfield.get("LengthField")
+                    for xmlfield in child
+                    if xmlfield.tag.endswith("Field") and xmlfield.get("LengthField")
+                }
                 for xmlfield in child:
                     if xmlfield.tag.endswith("Field"):
                         name = xmlfield.get("Name")
                         _clean_name = clean_name(name)
-                        if self._is_array_field(name):
-                            array = True
+                        if name in length_fields:
                             continue
+                        array = bool(xmlfield.get("LengthField"))
                         _type = xmlfield.get("TypeName") or ""
                         if ":" in _type:
                             _type = _type.split(":")[1]
@@ -256,7 +248,6 @@ class StructGenerator:
                         if array:
                             field.array = True
                             field.value = "field(default_factory=list)"
-                            array = False
                         struct.fields.append(field)
                 self.model.append(struct)
 
@@ -272,8 +263,8 @@ class StructGenerator:
     def _make_registration(self) -> str:
         code = "\n\n"
         for struct in self.model:
-            if isinstance(struct, EnumType):
-                continue  # No registration required for enums
+            if isinstance(struct, EnumType) or struct.typeid is None:
+                continue
             code += (
                 f"ua.register_extension_object('{struct.name}',"
                 f" ua.NodeId.from_string('{struct.typeid}'), {struct.name})\n"

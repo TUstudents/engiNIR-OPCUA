@@ -372,6 +372,9 @@ Custom types:
   `UnionWithSubtypedValues` definitions are built. Option sets are found below Byte, UInt16, UInt32 and UInt64 and use
   the width of their base type instead of always 32 bits. An enumeration without DataTypeDefinition is built from its
   `EnumValues` or `EnumStrings` Property.
+- The legacy loader for DataTypeDictionaries (`Client.load_type_definitions()`) finds arrays by the `LengthField`
+  attribute of the dictionary, not by field names starting with `NoOf`, `__...Length` or `#`, and a generated file
+  registers only structures that have a type id.
 - `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
 - `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 
