@@ -33,6 +33,7 @@ from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
+from ..observer import Observer
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
@@ -94,6 +95,7 @@ class Client:
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
         allow_deprecated_policies: bool = False,
+        observer: Observer | None = None,
     ) -> None:
         """
         :param url: url of the server.
@@ -111,6 +113,8 @@ class Client:
         :param reconnect_request_timeout: how long requests block waiting for the
             connection to become ready while the supervisor is reconnecting.
         :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
+        :param observer: an :class:`enginir_opcua.observer.Observer` that is told about requests, state changes and
+            subscription events; also available as the ``observer`` property.
 
         Some other client parameters can be changed by setting
         attributes on the constructed object:
@@ -147,6 +151,8 @@ class Client:
             namespaces=lambda: self._namespace_uris, parents=(ua.default_types,)
         )
         self.uaclient.types = self.types
+        if observer is not None:
+            self.uaclient.observer = observer
         self.uaclient.pre_request_hook = self._wait_until_ready
         self.user_certificate: x509.Certificate | None = None
         self.user_private_key: PrivateKeyTypes | None = None
@@ -197,6 +203,15 @@ class Client:
         return f"Client({self.server_url.geturl()})"
 
     __repr__ = __str__
+
+    @property
+    def observer(self) -> Observer:
+        """The :class:`enginir_opcua.observer.Observer` of this client; the null observer unless one was set."""
+        return self.uaclient.observer
+
+    @observer.setter
+    def observer(self, observer: Observer) -> None:
+        self.uaclient.observer = observer
 
     @property
     def state(self) -> UaClientState:
