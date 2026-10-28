@@ -368,6 +368,10 @@ Custom types:
 - `new_struct_field(array=True)` has `ArrayDimensions = [0]`; `new_enum` keeps the `Value` of an `EnumField`;
   enumeration members whose names clean to the same identifier raise; `Server.load_data_type_definitions()` takes
   `overwrite_existing`, which now reloads changed definitions; generated defaults no longer use random or current values.
+- Structure fields with ValueRank 2 or more are nested lists, encoded as inline matrices (OPC 10000-6, 5.2.5), and
+  `UnionWithSubtypedValues` definitions are built. Option sets are found below Byte, UInt16, UInt32 and UInt64 and use
+  the width of their base type instead of always 32 bits. An enumeration without DataTypeDefinition is built from its
+  `EnumValues` or `EnumStrings` Property.
 - `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
 - `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 
