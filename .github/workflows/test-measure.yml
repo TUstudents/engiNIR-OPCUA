@@ -1,0 +1,52 @@
+# Measures the test suite for workstream T: coverage with per-test contexts, and durations.
+# Runs on pushes to the ws/t-tests branch only; the results are uploaded as artifacts.
+
+name: Test measurement
+
+on:
+  push:
+    branches: [ws/t-tests]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Run the full suite with coverage contexts and durations
+        run: >
+          uv run pytest tests -q -p no:cacheprovider
+          --cov=enginir_opcua --cov-branch --cov-context=test
+          --cov-report=json:coverage.json --cov-report=term
+          --durations=0 --junitxml=junit.xml
+          | tee pytest-output.txt
+
+      - name: Upload the measurement
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: test-measurement
+          path: |
+            .coverage
+            coverage.json
+            junit.xml
+            pytest-output.txt
+          include-hidden-files: true
+          retention-days: 14
