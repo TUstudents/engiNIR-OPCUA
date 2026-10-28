@@ -17,17 +17,12 @@ from ..ua.uaprotocol_auto import (
     PubSubConnectionDataType,
 )
 from ..ua.uatypes import (
-    Byte,
     QualifiedName,
-    String,
-    UInt16,
-    UInt32,
-    UInt64,
     Variant,
     VariantType,
 )
 from .connection import PubSubReceiver
-from .uadp import UadpNetworkMessage, has_security_header
+from .uadp import PublisherIdValue, UadpNetworkMessage, has_security_header, publisher_id_from_variant
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +138,7 @@ class OpcUdp(asyncio.DatagramProtocol):
         super().__init__()
         self.cfg = cfg
         self.receiver = receiver
-        self.publisher_id = publisher_id.Value
+        self.publisher_id = publisher_id_from_variant(publisher_id)
 
     def connection_made(self, transport: asyncio.transports.BaseTransport) -> None:
         self.transport: asyncio.transports.DatagramTransport = transport
@@ -175,7 +170,7 @@ class OpcUdp(asyncio.DatagramProtocol):
     def set_receiver(self, receiver: PubSubReceiver) -> None:
         self.receiver = receiver
 
-    def get_publisher_id(self) -> Byte | UInt16 | UInt32 | UInt64 | String:
+    def get_publisher_id(self) -> PublisherIdValue | None:
         """
         Returns the publisher id for creating messages
         """
