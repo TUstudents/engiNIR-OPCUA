@@ -467,7 +467,7 @@ async def test_anonymous_rejection():
         cert,
         mode=ua.MessageSecurityMode.SignAndEncrypt,
     )
-    with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
+    with pytest.raises(ua.uaerrors.ConfigurationError):
         await clt.connect()
     await srv.stop()
 

@@ -2,4 +2,4 @@
 Pure Python OPC-UA library
 """
 
-from .ha_client import HaClient, HaMode, HaSecurityConfig, ConnectionStates
+from .ha_client import ConnectionStates, HaClient, HaConfig, HaMode, HaSecurityConfig

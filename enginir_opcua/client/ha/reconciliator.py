@@ -1,23 +1,21 @@
 import asyncio
-import inspect
 import logging
 import time
 from collections import defaultdict
 from dataclasses import astuple
 from enum import Enum
 from functools import partial
-from pickle import PicklingError
 from typing import TYPE_CHECKING
 
 from sortedcontainers import SortedDict  # type: ignore
 
 from enginir_opcua import Client, ua
 
-from .common import batch, event_wait, get_digest
+from .common import ConnectionStates, batch, wait_any
 from .virtual_subscription import VirtualSubscription
 
 if TYPE_CHECKING:
-    from enginir_opcua.sync import Subscription
+    from enginir_opcua.common.subscription import Subscription
 
 
 _logger = logging.getLogger(__name__)
@@ -54,13 +52,17 @@ class Reconciliator:
 
     BATCH_MI_SIZE = 1000
 
-    def __init__(self, timer: int, ha_client: "HaClient") -> None:
+    def __init__(self, timer: float, ha_client: "HaClient") -> None:
         self.timer = timer
         self.ha_client = ha_client
         self.is_running = False
+        self.errors = 0
+        self.BATCH_MI_SIZE = ha_client._config.batch_mi_size
 
         # An event loop must be set in the current thread
         self.stop_event = asyncio.Event()
+        self.wake_event = asyncio.Event()
+        self._url_tasks: dict[str, asyncio.Task] = {}
 
         self.real_map: dict[str, SortedDict] = {}
         for url in self.ha_client.urls:
@@ -84,25 +86,41 @@ class Reconciliator:
                 continue
             setattr(self, hook, lambda **kwargs: None)
 
+    def wake(self) -> None:
+        self.wake_event.set()
+
     async def run(self) -> None:
-        _logger.info("Starting Reconciliator loop, checking every %dsec", self.timer)
+        _logger.info("Starting Reconciliator loop, checking every %.1fsec", self.timer)
         self.is_running = True
         while self.is_running:
             start = time.monotonic()
-            async with self.ha_client._url_to_reset_lock:
-                await self.resubscribe()
-            async with self.ha_client._ideal_map_lock:
+            try:
+                async with self.ha_client._url_to_reset_lock:
+                    await self.resubscribe()
                 await self.reconciliate()
-            await self.debug_status()
+            except Exception:
+                _logger.exception("Reconciliation failed")
+                self.errors += 1
             stop = time.monotonic() - start
             _logger.info("[TIME] Reconciliation: %.2fsec", stop)
 
-            if await event_wait(self.stop_event, self.timer):
+            if await wait_any(self.timer, self.stop_event, self.wake_event):
                 self.is_running = False
                 break
+        for task in self._url_tasks.values():
+            task.cancel()
+        await asyncio.gather(*self._url_tasks.values(), return_exceptions=True)
+        self._url_tasks.clear()
 
     async def stop(self) -> None:
         self.stop_event.set()
+
+    async def close_subscriptions(self, reason: str) -> None:
+        """End the Subscription objects of every server locally, without calling the servers."""
+        for subs in self.name_to_subscription.values():
+            for sub in subs.values():
+                sub.close(reason)
+        self.name_to_subscription.clear()
 
     def refresh_handles(self, url: str) -> None:
         """Rebuild node_to_handle[url] from the current Subscription objects.
@@ -116,11 +134,22 @@ class Reconciliator:
         if not subs_for_url:
             return
         handles = self.node_to_handle.setdefault(url, {})
-        for sub in subs_for_url.values():
+        for sub_name, sub in subs_for_url.items():
             for mi in sub._monitored_items.values():
                 if mi.node is None or mi.server_handle is None:
                     continue
                 handles[mi.node.nodeid.to_string()] = mi.server_handle
+            self._sync_modes(url, sub_name, sub)
+
+    def _sync_modes(self, url: str, sub_name: str, sub: "Subscription") -> None:
+        """Record the modes the Subscription really has, so that a difference to the ideal state is applied again."""
+        real = self.real_map.get(url, {}).get(sub_name)
+        if real is None:
+            return
+        real.publishing = sub.parameters.PublishingEnabled
+        modes = {mi.monitoring_mode for mi in sub._monitored_items.values()}
+        if len(modes) == 1:
+            real.monitoring = modes.pop()
 
     async def resubscribe(self) -> None:
         """
@@ -135,19 +164,18 @@ class Reconciliator:
         while url_to_reset:
             url = url_to_reset.pop()
             self.real_map[url].clear()
-            if self.name_to_subscription.get(url):
-                self.name_to_subscription.pop(url)
-            if self.node_to_handle.get(url):
-                self.node_to_handle.pop(url)
+            for sub in self.name_to_subscription.pop(url, {}).values():
+                sub.close("HaClient reset the connection")
+            self.node_to_handle.pop(url, None)
 
     async def reconciliate(self) -> None:
         """
         Identify the differences between the ideal and the real_map
         and take actual actions on the underlying OPC-UA objects.
 
-        We only tries to reconciliate healthy clients, since most of the
-        unhealthy clients will end up resubscribing and their map
-        will be cleared anyway.
+        The ideal map is copied under its lock and the lock is released before any request goes out, so a slow
+        or dead server never holds up the application or a failover. Each server is reconciled by its own task;
+        a task that is still waiting for its server is left alone until it ends.
 
         Reconciliator steps are ordered this way:
 
@@ -157,26 +185,46 @@ class Reconciliator:
           4 - Add nodes to subscriptions
           5 - Update publishing/monitoring options
         """
-
-        ideal_map = self.ha_client.ideal_map
-        healthy, _unhealthy = await self.ha_client.group_clients_by_health()
+        async with self.ha_client._ideal_map_lock:
+            ideal_map = {
+                url: SortedDict(
+                    {
+                        name: VirtualSubscription(
+                            vs.period, vs.handler, vs.publishing, vs.monitoring, SortedDict(vs.nodes)
+                        )
+                        for name, vs in subs.items()
+                    }
+                )
+                for url, subs in self.ha_client.ideal_map.items()
+            }
         async with self.ha_client._client_lock:
-            valid_urls = {self.ha_client.clients[h].url for h in healthy}
+            valid_urls = [
+                info.url
+                for client, info in self.ha_client.clients.items()
+                if info.status >= ConnectionStates.DEGRADED and info.redundancy_ok is not False
+            ]
+        active = self.ha_client.active_client
+        active_url = active.server_url.geturl() if active is not None else None
+        valid_urls.sort(key=lambda url: url != active_url)
         real_map = self.real_map
-        try:
-            targets = set()
-            for url in valid_urls:
-                digest_ideal = get_digest(ideal_map[url])
-                digest_real = get_digest(real_map[url])
-                if url not in real_map or digest_ideal != digest_real:
-                    targets.add(url)
-            if not targets:
-                _logger.info("[PASS] No configuration difference for healthy targets: %s", valid_urls)
-                return
-            _logger.info("[WORK] Configuration difference found for healthy targets: %s", targets)
-        except (AttributeError, TypeError, PicklingError) as e:
-            _logger.warning("[WORK] Reconciliator performance impacted: %s", e)
-            targets = set(valid_urls)
+        targets = [url for url in valid_urls if ideal_map[url] != real_map[url]]
+        if not targets:
+            _logger.info("[PASS] No configuration difference for connected targets: %s", valid_urls)
+            return
+        _logger.info("[WORK] Configuration difference found for targets: %s", targets)
+        started = []
+        for url in targets:
+            running = self._url_tasks.get(url)
+            if running is not None and not running.done():
+                continue
+            task = asyncio.create_task(self._reconcile_url(url, real_map, ideal_map))
+            self._url_tasks[url] = task
+            started.append(task)
+        if started:
+            await asyncio.wait(started, timeout=self.timer)
+
+    async def _reconcile_url(self, url: str, real_map: SubMap, ideal_map: SubMap) -> None:
+        targets = {url}
         # add missing and delete unsubscribed subs
         await self.update_subscriptions(real_map, ideal_map, targets)
         # add and remove nodes
@@ -271,7 +319,7 @@ class Reconciliator:
             # some servers are sensitive to the number of MI per request
             for batch_nodes_obj in batch(nodes_obj, self.BATCH_MI_SIZE):
                 task = asyncio.create_task(
-                    real_sub.subscribe_data_change(
+                    real_sub.subscribe_data_change(  # type: ignore[call-overload]
                         batch_nodes_obj,
                         *astuple(node_attr),
                         monitoring=monitoring,
@@ -306,7 +354,9 @@ class Reconciliator:
         if node_to_del:
             _logger.info("Removing %d Nodes", len(node_to_del))
             for batch_nodes in batch(node_to_del, self.BATCH_MI_SIZE):
-                node_handles = [self.node_to_handle[url][node] for node in batch_nodes]
+                node_handles = [
+                    self.node_to_handle[url][node] for node in batch_nodes if node in self.node_to_handle[url]
+                ]
                 task = asyncio.create_task(real_sub.unsubscribe(node_handles))
                 task.add_done_callback(
                     partial(
@@ -365,17 +415,21 @@ class Reconciliator:
         fut: asyncio.Task,
         **kwargs,
     ) -> None:
-        if fut.exception():
-            _logger.warning("Can't %s on %s: %s", action.value, url, fut.exception())
+        if fut.cancelled() or fut.exception():
+            _logger.warning(
+                "Can't %s on %s: %s", action.value, url, fut.exception() if not fut.cancelled() else "cancelled"
+            )
             return
-        sub_name = kwargs["sub_name"]
-        vs = self.real_map[url][sub_name]
-        setattr(vs, action.name.lower(), val)
+        vs = self.real_map[url].get(kwargs["sub_name"])
+        if vs is not None:
+            setattr(vs, action.name.lower(), val)
 
     def add_to_map(self, url: str, action: Method, fut: asyncio.Task, **kwargs) -> None:
-        if fut.exception():
-            _logger.warning("Can't %s on %s: %s", action.value, url, fut.exception())
-            self.hook_add_to_map_error(url=url, action=action, fut=fut, **kwargs)
+        if fut.cancelled() or fut.exception():
+            _logger.warning(
+                "Can't %s on %s: %s", action.value, url, fut.exception() if not fut.cancelled() else "cancelled"
+            )
+            self._call_hook(self.hook_add_to_map_error, url=url, action=action, fut=fut, **kwargs)
             return
 
         sub_name = kwargs.pop("sub_name")
@@ -386,7 +440,9 @@ class Reconciliator:
 
         if action == Method.ADD_MI:
             nodes = kwargs["nodes"]
-            vs = self.real_map[url][sub_name]
+            vs = self.real_map[url].get(sub_name)
+            if vs is None:
+                return
             vs.subscribe_data_change(nodes, *astuple(kwargs["node_attr"]))
             for node, handle in zip(nodes, fut.result()):
                 if isinstance(handle, ua.StatusCode):
@@ -396,38 +452,51 @@ class Reconciliator:
                     # The node is invalid, remove it from both maps
                     if handle.name == "BadNodeIdUnknown":
                         _logger.warning("WARNING: Abandoning %s because it returned %s from %s", node, handle, url)
-                        real_vs = self.ha_client.ideal_map[url][sub_name]
-                        real_vs.unsubscribe([node])
+                        ideal_vs = self.ha_client.ideal_map[url].get(sub_name)
+                        if ideal_vs is not None:
+                            ideal_vs.unsubscribe([node])
                     continue
                 self.node_to_handle[url][node] = handle
-        self.hook_add_to_map(fut=fut, url=url, action=action, **kwargs)
+        self._call_hook(self.hook_add_to_map, fut=fut, url=url, action=action, **kwargs)
 
     def del_from_map(self, url: str, action: Method, fut: asyncio.Task, **kwargs) -> None:
-        if fut.exception():
+        if fut.cancelled() or fut.exception():
             # log exception but continues to delete local resources
-            _logger.warning("Can't %s on %s: %s", action.value, url, fut.exception())
+            _logger.warning(
+                "Can't %s on %s: %s", action.value, url, fut.exception() if not fut.cancelled() else "cancelled"
+            )
         sub_name = kwargs["sub_name"]
 
         if action == Method.DEL_SUB:
-            self.real_map[url].pop(sub_name)
-            self.name_to_subscription[url].pop(sub_name)
-            _logger.warning("In del_from_map del sub: %s", fut.result())
+            self.real_map[url].pop(sub_name, None)
+            self.name_to_subscription[url].pop(sub_name, None)
 
         if action == Method.DEL_MI:
             nodes = kwargs["nodes"]
-            vs = self.real_map[url][sub_name]
-            vs.unsubscribe(nodes)
+            vs = self.real_map[url].get(sub_name)
+            if vs is not None:
+                vs.unsubscribe(nodes)
             for node in nodes:
-                self.node_to_handle[url].pop(node)
-        self.hook_del_from_map(fut=fut, url=url, action=action, **kwargs)
+                self.node_to_handle[url].pop(node, None)
+        self._call_hook(self.hook_del_from_map, fut=fut, url=url, action=action, **kwargs)
+
+    @staticmethod
+    def _call_hook(hook, **kwargs) -> None:
+        try:
+            hook(**kwargs)
+        except Exception:
+            _logger.exception("Reconciliator hook raised")
 
     async def debug_status(self) -> None:
         """
-        Return the class attribute for troubleshooting purposes
+        Log the size of the maps for troubleshooting purposes
         """
-        for a in inspect.getmembers(self):
-            if not a[0].startswith("__") and not inspect.ismethod(a[1]):
-                _logger.debug(a)
+        _logger.debug(
+            "real_map=%s name_to_subscription=%s node_to_handle=%s",
+            {url: list(subs) for url, subs in self.real_map.items()},
+            {url: list(subs) for url, subs in self.name_to_subscription.items()},
+            {url: len(nodes) for url, nodes in self.node_to_handle.items()},
+        )
 
     def hook_mi_request(self, url: str, sub_name: str, nodes: set[SortedDict], action: Method):
         """placeholder for easily superclass the HaClient and implement custom logic"""

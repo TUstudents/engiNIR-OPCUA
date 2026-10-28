@@ -1,23 +1,38 @@
+"""
+Deprecated: use `enginir_opcua.client.ua_file_transfer`. This module is removed in 4.0.0.
+"""
+
+import warnings
 from types import TracebackType
 from typing import Any
 
 from enginir_opcua import ua
 from enginir_opcua.common.node import Node
 
+from .ua_file_transfer import UaFile as _UaFile
+
+_MODES = {"r": ua.OpenFileMode.Read, "w": ua.OpenFileMode.Write}
+
 
 class UaFile:
+    """
+    Deprecated wrapper over `ua_file_transfer.UaFile` with the string modes "r" (Read) and "w" (Write).
+    Mode "w" does not erase an existing file; open `ua_file_transfer.UaFile` with
+    `OpenFileMode.Write | OpenFileMode.EraseExisting` for that.
+    """
+
     def __init__(self, file_node: Node, open_mode: str) -> None:
-        self._file_node = file_node
-        self._handle: int | None = None
-        if open_mode == "r":
-            self._init_open = ua.OpenFileMode.Read.value
-        elif open_mode == "w":
-            self._init_open = ua.OpenFileMode.Write.value
-        else:
+        warnings.warn(
+            "enginir_opcua.client.ua_file is deprecated, use enginir_opcua.client.ua_file_transfer",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if open_mode not in _MODES:
             raise ValueError("file mode is not supported")
+        self._file = _UaFile(file_node, _MODES[open_mode])
 
     async def __aenter__(self) -> "UaFile":
-        self._handle = await self.open(self._init_open)
+        await self._file.open()
         return self
 
     async def __aexit__(
@@ -26,36 +41,24 @@ class UaFile:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> Any:
-        return await self.close()
+        return await self._file.close()
 
     async def open(self, open_mode: int) -> Any:
         """open file method"""
-        open_node = await self._file_node.get_child("Open")
-        arg = ua.Variant(open_mode, ua.VariantType.Byte)
-        return await self._file_node.call_method(open_node, arg)
+        return await self._file.open(open_mode)
 
     async def close(self) -> Any:
         """close file method"""
-        read_node = await self._file_node.get_child("Close")
-        arg1 = ua.Variant(self._handle, ua.VariantType.UInt32)
-        return await self._file_node.call_method(read_node, arg1)
+        return await self._file.close()
 
     async def read(self) -> Any:
         """reads file contents"""
-        size = await self.get_size()
-        read_node = await self._file_node.get_child("Read")
-        arg1 = ua.Variant(self._handle, ua.VariantType.UInt32)
-        arg2 = ua.Variant(size, ua.VariantType.Int32)
-        return await self._file_node.call_method(read_node, arg1, arg2)
+        return await self._file.read()
 
     async def write(self, data: bytes) -> Any:
         """writes file contents"""
-        write_node = await self._file_node.get_child("Write")
-        arg1 = ua.Variant(self._handle, ua.VariantType.UInt32)
-        arg2 = ua.Variant(data, ua.VariantType.ByteString)
-        return await self._file_node.call_method(write_node, arg1, arg2)
+        return await self._file.write(data)
 
     async def get_size(self) -> Any:
         """gets size of file"""
-        size_node = await self._file_node.get_child("Size")
-        return await size_node.read_value()
+        return await self._file.get_size()

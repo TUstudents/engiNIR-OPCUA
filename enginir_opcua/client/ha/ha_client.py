@@ -1,11 +1,13 @@
 import asyncio
-import inspect
 import logging
-from collections.abc import Callable, Generator, Iterable, Sequence
+import time
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import IntEnum
 from functools import partial
 from itertools import chain
+from typing import Any
 
 from sortedcontainers import SortedDict  # type: ignore
 
@@ -16,52 +18,61 @@ from enginir_opcua.ua.uaerrors import BadSessionClosed, BadSessionNotActivated
 from ...crypto.security_policies import SecurityPolicy
 from ...crypto.truststore import TrustStore
 from ...crypto.uacrypto import CertProperties
-from .common import ClientNotFound, event_wait
+from .common import ClientNotFound, ConnectionStates, event_wait, wait_any
 from .reconciliator import Reconciliator
 from .virtual_subscription import TypeSubHandler, VirtualSubscription
 
 _logger = logging.getLogger(__name__)
 
+SUB_NAME_COUNT = 9999
+
 
 class HaMode(IntEnum):
-    # OPC UA Part 4 - 6.6.2.4.5.2 - Cold
-    # Only connect to the active_client, failover is managed by
-    # promoting another client of the pool to active_client
+    """
+    Failover modes of OPC UA Part 4, 6.6.2.4.5. Only WARM is implemented; the other values name the modes of the
+    specification and are refused by `HaClient` with a NotImplementedError.
+    """
+
+    # OPC UA Part 4 - 6.6.2.4.5.2 - Cold (not implemented)
     COLD = 0
     # OPC UA Part 4 - 6.6.2.4.5.3 - Warm
-    # Enable the active client similarly to the cold mode.
     # Secondary clients create the MonitoredItems,
     # but disable sampling and publishing.
     WARM = 1
-    # OPC UA Part 4 - 6.6.2.4.5.4 - Hot A
-    # Client connects to multiple Servers and establishes
-    # subscription(s) in each where only one is Reporting;
-    # the others are Sampling only.
+    # OPC UA Part 4 - 6.6.2.4.5.4 - Hot A (not implemented)
     HOT_A = 2
-    # OPC UA Part 4 - 6.6.2.4.5.4 - Hot B
-    # Client connects to multiple Servers and establishes
-    # subscription(s) in each where all subscriptions are Reporting.
-    # The Client is responsible for handling/processing
-    # multiple subscription streams concurrently.
+    # OPC UA Part 4 - 6.6.2.4.5.4 - Hot B (not implemented)
     HOT_B = 3
 
 
-class ConnectionStates(IntEnum):
-    """
-    OPC UA Part 4 - Services Release
-    Section 6.6.2.4.2 ServiceLevel
-    """
+def classify_service_level(level: int, healthy_state: int = ConnectionStates.HEALTHY) -> ConnectionStates:
+    if level >= healthy_state:
+        return ConnectionStates.HEALTHY
+    if level >= ConnectionStates.DEGRADED:
+        return ConnectionStates.DEGRADED
+    if level == ConnectionStates.NO_DATA:
+        return ConnectionStates.NO_DATA
+    return ConnectionStates.IN_MAINTENANCE
 
-    IN_MAINTENANCE = 0
-    NO_DATA = 1
-    DEGRADED = 2
-    HEALTHY = 200
+
+def redundancy_accepted(mode: HaMode, support: ua.RedundancySupport | int | None) -> bool:
+    """
+    Whether a server that reports `support` can be used in failover mode `mode` (Part 4, 6.6.2.4.5.1).
+    A server that reports nothing is accepted.
+    """
+    if support is None:
+        return True
+    return int(support) in (ua.RedundancySupport.Warm, ua.RedundancySupport.Hot)
 
 
 @dataclass
 class ServerInfo:
     url: str
-    status: ConnectionStates = field(default_factory=lambda: ConnectionStates(1))
+    status: int = ConnectionStates.NO_DATA
+    retry_at: float | None = None
+    last_probe_at: float | None = None
+    errors: int = 0
+    redundancy_ok: bool | None = None
 
 
 @dataclass(frozen=True, eq=True)
@@ -72,6 +83,10 @@ class HaSecurityConfig:
     server_certificate: CertProperties | None = None
     mode: ua.MessageSecurityMode | None = None
     trust_store: TrustStore | None = None
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+    user_certificate: CertProperties | None = field(default=None, repr=False)
+    user_private_key: CertProperties | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.policy is not None and self.server_certificate is None and self.trust_store is None:
@@ -86,20 +101,28 @@ class HaConfig:
     """
 
     ha_mode: HaMode
-    keepalive_timer: int = 15
-    manager_timer: int = 15
-    reconciliator_timer: int = 15
+    keepalive_timer: float = 5
+    manager_timer: float = 5
+    reconciliator_timer: float = 15
     session_timeout: int = 60
     request_timeout: int = 30
     secure_channel_timeout: int = 3600
     session_name: str = "HaClient"
     urls: list[str] = field(default_factory=list)
+    probe_timeout: float | None = None
+    min_active_seconds: float = 10
+    maintenance_retry_interval: float = 300
+    batch_mi_size: int = 1000
+    stop_grace: float = 5
+    allow_unsupported_redundancy: bool = False
 
 
 class HaClient:
     """
     The HaClient is responsible for managing non-transparent server redundancy.
-    The two servers must have:
+    Only the Warm failover mode is implemented (Part 4, 6.6.2.4.5.3): the standby servers hold the same
+    subscriptions and monitored items, but do not sample or publish.
+    The servers must have:
         - Identical NodeIds
         - Identical browse path and AddressSpace structure
         - Identical Service Level logic
@@ -114,6 +137,10 @@ class HaClient:
     HEALTHY_STATE = ConnectionStates.HEALTHY
 
     def __init__(self, config: HaConfig, security: HaSecurityConfig | None = None) -> None:
+        if config.ha_mode != HaMode.WARM:
+            raise NotImplementedError(f"HA mode {config.ha_mode.name} is not implemented; only WARM is supported")
+        if len(config.urls) < 2 or len(set(config.urls)) != len(config.urls):
+            raise ValueError("HaConfig needs at least two distinct urls")
         self._config: HaConfig = config
         self._keepalive_task: dict[KeepAlive, asyncio.Task] = {}
         self._manager_task: dict[HaManager, asyncio.Task] = {}
@@ -127,20 +154,17 @@ class HaClient:
 
         self.clients: dict[Client, ServerInfo] = {}
         self.active_client: Client | None = None
+        self._active_since: float | None = None
         # full type: dict[str, Sorteddict[str, VirtualSubscription]]
         self.ideal_map: dict[str, SortedDict] = {}
         self.sub_names: set[str] = set()
         self.url_to_reset: set[str] = set()
         self._state_listener_unsubs: list[Callable[[], None]] = []
+        self._ready: dict[Client, asyncio.Event] = {}
+        self._resetting: set[Client] = set()
         self.is_running = False
 
-        if config.ha_mode != HaMode.WARM:
-            # TODO
-            # Check if transparent redundancy support exist for the server (nodeid=2035)
-            # and prevent using HaClient with such servers.
-            raise NotImplementedError(f"{config.ha_mode} not currently supported by HaClient")
-
-        for url in self.urls:
+        for url in config.urls:
             c = Client(url, timeout=self._config.request_timeout)
             # timeouts for the session and secure channel are in ms
             c.session_timeout = self._config.session_timeout * 1000
@@ -148,6 +172,7 @@ class HaClient:
             c.description = self._config.session_name
             server_info = ServerInfo(url)
             self.clients[c] = server_info
+            self._ready[c] = asyncio.Event()
             self.ideal_map[url] = SortedDict()
 
         # security can also be set via the set_security method
@@ -157,7 +182,16 @@ class HaClient:
 
     async def start(self) -> None:
         for client, server in self.clients.items():
-            keepalive = KeepAlive(client, server, self._config.keepalive_timer)
+            keepalive = KeepAlive(
+                client,
+                server,
+                self._config.keepalive_timer,
+                probe_timeout=self._config.probe_timeout,
+                ready=self._ready[client],
+                on_change=self.manager.wake,
+                band_of=self.band_of,
+                maintenance_retry_interval=self._config.maintenance_retry_interval,
+            )
             task = asyncio.create_task(keepalive.run())
             self._keepalive_task[keepalive] = task
             self._watch_client_state(client)
@@ -175,7 +209,7 @@ class HaClient:
         # restores subscriptions, but the recreate() fallback assigns new
         # server-side handles. After every RECONNECTING -> CONNECTED transition,
         # refresh Reconciliator.node_to_handle so later unsubscribe calls use the
-        # current handles.
+        # current handles, and compare the modes with the ideal state.
         url = client.server_url.geturl()
         prev: UaClientState | None = None
 
@@ -183,12 +217,15 @@ class HaClient:
             nonlocal prev
             if prev is UaClientState.RECONNECTING and state is UaClientState.CONNECTED:
                 self.reconciliator.refresh_handles(url)
+                self.reconciliator.wake()
+            if state is not UaClientState.CONNECTED:
+                self.manager.wake()
             prev = state
 
-        unsub = client.uaclient._add_state_listener(on_state_change)
+        unsub = client.uaclient.add_state_listener(on_state_change)
         self._state_listener_unsubs.append(unsub)
 
-    async def stop(self):
+    async def stop(self) -> None:
         for unsub in self._state_listener_unsubs:
             try:
                 unsub()
@@ -196,14 +233,8 @@ class HaClient:
                 _logger.exception("state listener unsubscribe raised")
         self._state_listener_unsubs.clear()
 
-        to_stop: Sequence[KeepAlive | HaManager | Reconciliator] = chain(
-            self._keepalive_task, self._manager_task, self._reconciliator_task
-        )
-        stop = [p.stop() for p in to_stop]
-
-        await asyncio.gather(*stop)
-        disco = [c.disconnect() for c in self.clients]
-        await asyncio.gather(*disco, return_exceptions=True)
+        to_stop: list[Any] = list(chain(self._keepalive_task, self._manager_task, self._reconciliator_task))
+        await asyncio.gather(*(p.stop() for p in to_stop))
 
         tasks = list(
             chain(
@@ -212,14 +243,17 @@ class HaClient:
                 self._reconciliator_task.values(),
             )
         )
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=self._config.stop_grace)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._keepalive_task.clear()
+        self._manager_task.clear()
+        self._reconciliator_task.clear()
 
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await self.reconciliator.close_subscriptions("HaClient stopped")
+        await asyncio.gather(*(c.disconnect() for c in self.clients), return_exceptions=True)
         self.is_running = False
 
     def set_security(
@@ -230,17 +264,43 @@ class HaClient:
         server_certificate: CertProperties | None = None,
         mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
         trust_store: TrustStore | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        user_certificate: CertProperties | None = None,
+        user_private_key: CertProperties | None = None,
     ) -> None:
         """
         Set the security of every client. Either the server certificate (pinned) or a trust store is required:
         a certificate fetched from an unsecured GetEndpoints call, at start or on a reconnect, is only used
-        when the trust store validates it.
+        when the trust store validates it. The user credentials, a user name and password or a user certificate
+        and key, go to every client as well.
         """
-        self.security_config = HaSecurityConfig(policy, certificate, private_key, server_certificate, mode, trust_store)
+        self.security_config = HaSecurityConfig(
+            policy,
+            certificate,
+            private_key,
+            server_certificate,
+            mode,
+            trust_store,
+            username,
+            password,
+            user_certificate,
+            user_private_key,
+        )
+
+    def band_of(self, level: int) -> ConnectionStates:
+        return classify_service_level(level, self.HEALTHY_STATE)
+
+    def _new_sub_name(self) -> str:
+        try:
+            return next(self._gen_sub)
+        except (RuntimeError, StopIteration):
+            self._gen_sub = self.generate_sub_name()
+            return next(self._gen_sub)
 
     async def create_subscription(self, period: int, handler: TypeSubHandler) -> str:
         async with self._ideal_map_lock:
-            sub_name = next(self._gen_sub)
+            sub_name = self._new_sub_name()
             for client in self.clients:
                 if client == self.active_client:
                     vs = VirtualSubscription(
@@ -258,7 +318,20 @@ class HaClient:
                     )
                 url = client.server_url.geturl()
                 self.ideal_map[url][sub_name] = vs
-            return sub_name
+        self.reconciliator.wake()
+        return sub_name
+
+    @staticmethod
+    def _node_strings(nodes: Iterable[Node] | Iterable[str]) -> list[str]:
+        result: list[str] = []
+        for n in nodes:
+            if isinstance(n, Node):
+                if n.nodeid is None:
+                    raise ValueError(f"{n} has no NodeId")
+                result.append(n.nodeid.to_string())
+            else:
+                result.append(n)
+        return result
 
     async def subscribe_data_change(
         self,
@@ -267,28 +340,44 @@ class HaClient:
         attr=ua.AttributeIds.Value,
         queuesize=0,
     ) -> None:
+        node_ids = self._node_strings(nodes)
         async with self._ideal_map_lock:
-            # FIXME: nodeid can be None
-            nodes = [n.nodeid.to_string() if isinstance(n, Node) else n for n in nodes]  # type: ignore[union-attr]
+            if sub_name not in self.sub_names or any(sub_name not in self.ideal_map[url] for url in self.urls):
+                raise KeyError(f"no subscription named {sub_name}")
             for url in self.urls:
-                vs = self.ideal_map[url].get(sub_name)
-                if not vs:
-                    _logger.warning(
-                        "The subscription specified for the data_change: %s doesn't exist in ideal_map", sub_name
-                    )
-                    return
-                vs.subscribe_data_change(nodes, attr, queuesize)
-                await self.hook_on_subscribe(nodes=nodes, attr=attr, queuesize=queuesize, url=url)
+                self.ideal_map[url][sub_name].subscribe_data_change(node_ids, attr, queuesize)
+        for url in self.urls:
+            await self.hook_on_subscribe(nodes=node_ids, attr=attr, queuesize=queuesize, url=url)
+        self.reconciliator.wake()
 
     async def delete_subscriptions(self, sub_names: list[str]) -> None:
         async with self._ideal_map_lock:
+            unknown = [n for n in sub_names if n not in self.sub_names]
+            if unknown:
+                raise KeyError(f"no subscription named {', '.join(unknown)}")
             for sub_name in sub_names:
                 for url in self.urls:
-                    if self.ideal_map[url].get(sub_name):
-                        self.ideal_map[url].pop(sub_name)
-                    else:
-                        _logger.warning("No subscription named %s in ideal_map", sub_name)
-                self.sub_names.remove(sub_name)
+                    self.ideal_map[url].pop(sub_name, None)
+                self.sub_names.discard(sub_name)
+        self.reconciliator.wake()
+
+    async def _apply_identity(self, client: Client) -> None:
+        security = self.security_config
+        if security.username is not None:
+            client.set_user(security.username)
+        if security.password is not None:
+            client.set_password(security.password)
+        if security.user_certificate is not None:
+            await client.load_client_certificate(
+                security.user_certificate.path_or_content,
+                security.user_certificate.extension,  # type: ignore[arg-type]
+            )
+        if security.user_private_key is not None:
+            await client.load_private_key(
+                security.user_private_key.path_or_content,  # type: ignore[arg-type]
+                security.user_private_key.password,
+                security.user_private_key.extension,
+            )
 
     async def reconnect(self, client: Client) -> None:
         """
@@ -303,55 +392,92 @@ class HaClient:
         async with self._url_to_reset_lock:
             url = client.server_url.geturl()
             self.url_to_reset.add(url)
+        self._resetting.add(client)
         try:
-            await client.disconnect()
-        except Exception:
-            pass
-        await self.hook_on_reconnect(client=client)
-        security = self.security_config
-        if security.policy:
-            if security.trust_store is not None:
-                client.set_trust_store(security.trust_store)
-            await client.set_security(
-                policy=security.policy,
-                certificate=security.certificate,  # type: ignore[arg-type]
-                private_key=security.private_key,  # type: ignore[arg-type]
-                server_certificate=security.server_certificate,
-                mode=security.mode,  # type: ignore[arg-type]
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            await self.hook_on_reconnect(client=client)
+            await self._apply_identity(client)
+            security = self.security_config
+            if security.policy:
+                if security.trust_store is not None:
+                    client.set_trust_store(security.trust_store)
+                await client.set_security(
+                    policy=security.policy,
+                    certificate=security.certificate,  # type: ignore[arg-type]
+                    private_key=security.private_key,  # type: ignore[arg-type]
+                    server_certificate=security.server_certificate,
+                    mode=security.mode,  # type: ignore[arg-type]
+                )
+            await client.connect(
+                auto_reconnect=True,
+                reconnect_max_delay=self._config.manager_timer,
+                reconnect_request_timeout=self._config.request_timeout,
             )
-        await client.connect(
-            auto_reconnect=True,
-            reconnect_max_delay=self._config.manager_timer,
-            reconnect_request_timeout=self._config.request_timeout,
-        )
+            await self._check_redundancy(client)
+        finally:
+            self._resetting.discard(client)
+            self._ready[client].set()
+            self.reconciliator.wake()
+
+    async def _check_redundancy(self, client: Client) -> None:
+        info = self.clients[client]
+        if self._config.allow_unsupported_redundancy or client.uaclient.state is not UaClientState.CONNECTED:
+            info.redundancy_ok = None
+            return
+        support: int | None = None
+        try:
+            node = client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerRedundancy_RedundancySupport))
+            support = int(await node.read_value())
+        except Exception:
+            _logger.warning("%s does not report its RedundancySupport; accepting it", info.url, exc_info=True)
+        accepted = redundancy_accepted(self._config.ha_mode, support)
+        info.redundancy_ok = accepted
+        if not accepted:
+            _logger.error(
+                "%s reports RedundancySupport %s, which does not fit failover mode %s; not using it",
+                info.url,
+                support,
+                self._config.ha_mode.name,
+            )
 
     async def unsubscribe(self, nodes: Iterable[Node] | Iterable[str]) -> None:
+        node_set = set(self._node_strings(nodes))
+        removed: list[tuple[str, set[str]]] = []
         async with self._ideal_map_lock:
             sub_to_nodes = {}
             first_url = self.urls[0]
             for sub_name, vs in self.ideal_map[first_url].items():
-                # FIXME: nodeid can be None
-                node_set = {
-                    n.nodeid.to_string() if isinstance(n, Node) else n
-                    for n in nodes  # type: ignore[union-attr]
-                }
                 to_del = node_set & vs.get_nodes()
                 if to_del:
                     sub_to_nodes[sub_name] = to_del
             for url in self.urls:
                 for sub_name, str_nodes in sub_to_nodes.items():
-                    vs = self.ideal_map[url][sub_name]
-                    vs.unsubscribe(str_nodes)
-                    await self.hook_on_unsubscribe(url=url, nodes=str_nodes)
+                    self.ideal_map[url][sub_name].unsubscribe(str_nodes)
+                    removed.append((url, str_nodes))
+        for url, str_nodes in removed:
+            await self.hook_on_unsubscribe(url=url, nodes=str_nodes)
+        self.reconciliator.wake()
 
     async def failover_warm(self, primary: Client | None, secondaries: Iterable[Client]) -> None:
+        old = self.active_client
         async with self._ideal_map_lock:
             if primary:
                 self._set_monitoring_mode(ua.MonitoringMode.Reporting, clients=[primary])
                 self._set_publishing_mode(True, clients=[primary])
             self.active_client = primary
+            if primary is not old:
+                self._active_since = time.monotonic()
             self._set_monitoring_mode(ua.MonitoringMode.Disabled, clients=secondaries)
             self._set_publishing_mode(False, clients=secondaries)
+        self.reconciliator.wake()
+        if primary is not old:
+            old_url = old.server_url.geturl() if old else None
+            new_url = primary.server_url.geturl() if primary else None
+            _logger.info("Active server changed from %s to %s", old_url, new_url)
+            await self.hook_on_failover(old_url, new_url)
 
     def _set_monitoring_mode(self, monitoring: ua.MonitoringMode, clients: Iterable[Client]) -> None:
         for client in clients:
@@ -378,34 +504,67 @@ class HaClient:
                     unhealthy.append(client)
             return healthy, unhealthy
 
+    def _level(self, client: Client) -> int:
+        info = self.clients[client]
+        if info.redundancy_ok is False:
+            return ConnectionStates.NO_DATA
+        return int(info.status)
+
     async def get_serving_client(self, clients: list[Client], serving_client: Client | None) -> Client | None:
         """
-        Returns the client with the higher service level.
-
-        The service level reference is taken from the active_client,
-        thus we prevent failing over when mutliple clients
-        return the same number.
+        Elect the client that serves (Part 4, 6.6.2.4.2, 6.6.2.4.3): a Healthy active client stays whatever the
+        others report. Otherwise the Healthy client with the highest ServiceLevel wins, ties going to the active
+        client and then to the earlier URL. Without a Healthy client the best Degraded one is used, with a warning;
+        a Degraded active client is only replaced by a better one, and not within `min_active_seconds` of its
+        election. Clients with no data or in maintenance never serve.
         """
         async with self._client_lock:
-            if serving_client:
-                max_slevel = self.clients[serving_client].status
-            else:
-                max_slevel = ConnectionStates.NO_DATA
+            order = {c: i for i, c in enumerate(self.clients)}
+            healthy_state = int(self.HEALTHY_STATE)
+            current = self._level(serving_client) if serving_client is not None else None
+            if serving_client is not None and current is not None and current >= healthy_state:
+                return serving_client
 
-            for c in clients:
-                c_slevel = self.clients[c].status
-                if c_slevel > max_slevel:
-                    serving_client = c
-                    max_slevel = c_slevel
-            return serving_client if max_slevel >= self.HEALTHY_STATE else None
+            def preference(c: Client) -> tuple[int, bool, int]:
+                return self._level(c), c is serving_client, -order[c]
 
-    async def debug_status(self):
-        """
-        Return the class attribute for troubleshooting purposes
-        """
-        for a in inspect.getmembers(self):
-            if not a[0].startswith("__") and not inspect.ismethod(a[1]):
-                _logger.debug(a)
+            healthy = [c for c in clients if self._level(c) >= healthy_state]
+            if healthy:
+                return max(healthy, key=preference)
+            degraded = [c for c in clients if int(ConnectionStates.DEGRADED) <= self._level(c) < healthy_state]
+            if not degraded:
+                return None
+            best = max(degraded, key=preference)
+            if serving_client is not None and current is not None and current >= ConnectionStates.DEGRADED:
+                recent = (
+                    self._active_since is not None
+                    and time.monotonic() - self._active_since < self._config.min_active_seconds
+                )
+                if self._level(best) <= current or recent:
+                    return serving_client
+            if best is not serving_client:
+                _logger.warning(
+                    "No Healthy server; using the Degraded server %s (ServiceLevel %s)",
+                    self.clients[best].url,
+                    self._level(best),
+                )
+            return best
+
+    def status(self) -> list[dict[str, Any]]:
+        """Snapshot of every server for monitoring."""
+        return [
+            {
+                "url": info.url,
+                "band": self.band_of(self._level(client)),
+                "level": info.status,
+                "state": client.uaclient.state,
+                "active": client is self.active_client,
+                "last_probe_at": info.last_probe_at,
+                "errors": info.errors,
+                "redundancy_ok": info.redundancy_ok,
+            }
+            for client, info in self.clients.items()
+        ]
 
     def get_client_warm_mode(self) -> list[Client]:
         return list(self.clients)
@@ -440,14 +599,18 @@ class HaClient:
     def generate_sub_name(self) -> Generator[str, None, None]:
         """
         Asyncio unsafe - yield names for subscriptions.
+        :raises RuntimeError: when every name is taken
         """
         while True:
-            for i in range(9999):
+            for i in range(SUB_NAME_COUNT):
                 sub_name = f"sub_{i}"
                 if sub_name in self.sub_names:
                     continue
                 self.sub_names.add(sub_name)
                 yield sub_name
+                break
+            else:
+                raise RuntimeError("no free subscription name")
 
     async def hook_on_reconnect(self, **kwargs):
         pass
@@ -458,67 +621,122 @@ class HaClient:
     async def hook_on_unsubscribe(self, **kwargs):
         pass
 
+    async def hook_on_failover(self, old_url: str | None, new_url: str | None) -> None:
+        pass
+
 
 class KeepAlive:
     """
-    Ping the server status regularly to check its health
+    Probe the status of a server regularly to check its health
     """
 
-    def __init__(self, client, server, timer) -> None:
+    def __init__(
+        self,
+        client: Client,
+        server: ServerInfo,
+        timer: float,
+        *,
+        probe_timeout: float | None = None,
+        ready: asyncio.Event | None = None,
+        on_change: Callable[[], None] | None = None,
+        band_of: Callable[[int], ConnectionStates] = classify_service_level,
+        maintenance_retry_interval: float = 300,
+    ) -> None:
         self.client: Client = client
         self.server: ServerInfo = server
-        self.timer: int = timer
+        self.timer: float = timer
+        self.probe_timeout: float = probe_timeout if probe_timeout is not None else timer
+        self.ready = ready
+        self.on_change = on_change
+        self.band_of = band_of
+        self.maintenance_retry_interval = maintenance_retry_interval
         self.stop_event: asyncio.locks.Event = asyncio.Event()
         self.is_running: bool = False
 
     async def stop(self) -> None:
         self.stop_event.set()
 
-    async def run(self) -> None:
-        status_node = self.client.nodes.server_state
-        slevel_node = self.client.nodes.service_level
+    def _set_level(self, level: int) -> None:
         server_info = self.server
-        client = self.client
-        # wait for HaManager to connect clients
-        await asyncio.sleep(3)
-        self.is_running = True
-        _logger.info("Starting keepalive loop for %s, checking every %dsec", server_info.url, self.timer)
-        while self.is_running:
-            if client.uaclient.protocol is None:
-                server_info.status = ConnectionStates.NO_DATA
-                _logger.info("No active client")
-            else:
-                try:
-                    status, slevel = await client.read_values([status_node, slevel_node])
-                    if status != ua.ServerState.Running:
-                        _logger.info("ServerState is not running")
-                        server_info.status = ConnectionStates.NO_DATA
-                    else:
-                        server_info.status = slevel
-                except BadSessionNotActivated:
-                    _logger.warning("Session is not yet activated.")
-                    server_info.status = ConnectionStates.NO_DATA
-                except BadSessionClosed:
-                    _logger.warning("Session is closed.")
-                    server_info.status = ConnectionStates.NO_DATA
-                except ConnectionError:
-                    _logger.warning("No connection.")
-                    server_info.status = ConnectionStates.NO_DATA
-                except TimeoutError:
-                    _logger.warning("Timeout when fetching state")
-                    server_info.status = ConnectionStates.NO_DATA
-                except asyncio.CancelledError:
-                    _logger.warning("CancelledError, this means we should shutdown")
-                    server_info.status = ConnectionStates.NO_DATA
-                    # FIXME: It cannot be correct to catch CancelledError here, we should re-raise
-                except Exception:
-                    _logger.exception("Unknown exception during keepalive liveness check")
-                    server_info.status = ConnectionStates.NO_DATA
+        before = self.band_of(int(server_info.status))
+        server_info.status = level
+        if self.band_of(level) is not before and self.on_change is not None:
+            self.on_change()
 
-            _logger.info("ServiceLevel for %s: %s", server_info.url, server_info.status)
+    async def run(self) -> None:
+        if self.ready is not None:
+            ready_wait = asyncio.ensure_future(self.ready.wait())
+            stop_wait = asyncio.ensure_future(self.stop_event.wait())
+            try:
+                await asyncio.wait({ready_wait, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                ready_wait.cancel()
+                stop_wait.cancel()
+            if self.stop_event.is_set():
+                return
+        self.is_running = True
+        _logger.info("Starting keepalive loop for %s, checking every %.1fsec", self.server.url, self.timer)
+        while self.is_running:
+            try:
+                await self.probe()
+            except Exception:
+                _logger.exception("Unknown exception during keepalive liveness check")
+                self.server.errors += 1
+                self._set_level(ConnectionStates.NO_DATA)
+            _logger.info("ServiceLevel for %s: %s", self.server.url, self.server.status)
             if await event_wait(self.stop_event, self.timer):
                 self.is_running = False
                 break
+
+    async def probe(self) -> None:
+        client = self.client
+        server_info = self.server
+        if server_info.retry_at is not None and time.monotonic() < server_info.retry_at:
+            return
+        if client.uaclient.state is not UaClientState.CONNECTED:
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        try:
+            async with asyncio.timeout(self.probe_timeout):
+                status, slevel = await client.read_values([client.nodes.server_state, client.nodes.service_level])
+        except BadSessionNotActivated:
+            _logger.warning("Session is not yet activated.")
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        except BadSessionClosed:
+            _logger.warning("Session is closed.")
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        except ConnectionError:
+            _logger.warning("No connection.")
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        except TimeoutError:
+            _logger.warning("Timeout when fetching state")
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        server_info.last_probe_at = time.monotonic()
+        if status != ua.ServerState.Running:
+            _logger.info("ServerState is not running")
+            self._set_level(ConnectionStates.NO_DATA)
+            return
+        self._set_level(int(slevel))
+        if int(slevel) == ConnectionStates.IN_MAINTENANCE:
+            await self._note_maintenance()
+
+    async def _note_maintenance(self) -> None:
+        wait = self.maintenance_retry_interval
+        try:
+            async with asyncio.timeout(self.probe_timeout):
+                returns = await self.client.get_node(ua.NodeId(ua.ObjectIds.Server_EstimatedReturnTime)).read_value()
+            if isinstance(returns, datetime):
+                remaining = (returns - datetime.now(UTC)).total_seconds()
+                if remaining > 0:
+                    wait = remaining
+        except Exception:
+            _logger.debug("EstimatedReturnTime not available from %s", self.server.url, exc_info=True)
+        self.server.retry_at = time.monotonic() + wait
+        _logger.info("%s is in maintenance, not connecting for %.0fsec", self.server.url, wait)
 
 
 class HaManager:
@@ -527,14 +745,19 @@ class HaManager:
     according to the selected HaMode
     """
 
-    def __init__(self, ha_client: HaClient, timer: int | None = None) -> None:
+    def __init__(self, ha_client: HaClient, timer: float | None = None) -> None:
         self.ha_client = ha_client
         self.timer = self.set_loop_timer(timer)
         self.stop_event = asyncio.Event()
+        self.wake_event = asyncio.Event()
         self.is_running = False
+        self.errors = 0
 
-    def set_loop_timer(self, timer: int | None):
+    def set_loop_timer(self, timer: float | None):
         return timer if timer else int(self.ha_client.session_timeout)
+
+    def wake(self) -> None:
+        self.wake_event.set()
 
     async def run(self) -> None:
         ha_mode = self.ha_client.ha_mode
@@ -544,14 +767,17 @@ class HaManager:
         reconnect = getattr(self, reco_func)
         self.is_running = True
 
-        _logger.info("Starting HaManager loop, checking every %dsec", self.timer)
+        _logger.info("Starting HaManager loop, checking every %.1fsec", self.timer)
         while self.is_running:
-            # failover happens here
-            await update_state()
-            await reconnect()
-            await self.ha_client.debug_status()
+            try:
+                # failover happens here
+                await update_state()
+                await reconnect()
+            except Exception:
+                _logger.exception("HaManager step failed")
+                self.errors += 1
 
-            if await event_wait(self.stop_event, self.timer):
+            if await wait_any(self.timer, self.stop_event, self.wake_event):
                 self.is_running = False
                 break
 
@@ -563,49 +789,45 @@ class HaManager:
         clients = self.ha_client.get_clients()
         primary_client = await self.ha_client.get_serving_client(list(self.ha_client.clients), active_client)
         if primary_client != active_client:
-            # disable monitoring and reporting when the service_level goes below 200
             _logger.info("Failing over active client from %s to %s", active_client, primary_client)
             secondaries = set(clients) - {primary_client} if primary_client else set(clients)
             await self.ha_client.failover_warm(primary=primary_client, secondaries=secondaries)
 
     async def reconnect_warm(self) -> None:
         """
-        Reconnect disconnected clients
+        Bring up disconnected clients and disconnect the ones in maintenance. A client that is connected is never
+        reset because of its ServiceLevel: the standby of a Warm pair is Degraded by design.
         """
-        healthy, unhealthy = await self.ha_client.group_clients_by_health()
-
-        async def reco_resub(client: Client, force: bool):
-            # The Client's own auto-reconnect supervisor handles transport drops;
-            # don't disturb it while it's in the middle of recovery.
-            if client.uaclient.state in (
-                UaClientState.CONNECTING,
-                UaClientState.SOCKET_OPEN,
-                UaClientState.CHANNEL_OPEN,
-                UaClientState.RECONNECTING,
-                UaClientState.DISCONNECTING,
-            ):
-                return
-            if client.uaclient.state is UaClientState.CONNECTED and not force:
-                return
-            if (
-                force
-                or not client.uaclient.protocol
-                or (client.uaclient.protocol and client.uaclient.protocol.is_closed)
-            ):
-                _logger.info("Virtually reconnecting and resubscribing %s", client)
-                await self.ha_client.reconnect(client=client)
+        ha_client = self.ha_client
+        now = time.monotonic()
 
         def log_exception(client: Client, fut: asyncio.Task):
-            if fut.exception():
+            if not fut.cancelled() and fut.exception():
                 _logger.warning("Error when reconnecting %s: %s", client, fut.exception())
 
         tasks = []
-        for client in healthy:
-            task = asyncio.create_task(reco_resub(client, force=False))
-            task.add_done_callback(partial(log_exception, client))
-            tasks.append(task)
-        for client in unhealthy:
-            task = asyncio.create_task(reco_resub(client, force=True))
+        for client, info in list(ha_client.clients.items()):
+            state = client.uaclient.state
+            if client in ha_client._resetting:
+                continue
+            if info.status == ConnectionStates.IN_MAINTENANCE and state is not UaClientState.DISCONNECTED:
+                if state is UaClientState.CONNECTED:
+                    _logger.info("Disconnecting %s: it is in maintenance", info.url)
+                    task = asyncio.create_task(client.disconnect())
+                    task.add_done_callback(partial(log_exception, client))
+                    tasks.append(task)
+                continue
+            if state is not UaClientState.DISCONNECTED:
+                continue
+            if info.status == ConnectionStates.IN_MAINTENANCE and info.retry_at is None:
+                info.retry_at = now + ha_client._config.maintenance_retry_interval
+            if info.retry_at is not None:
+                if now < info.retry_at:
+                    continue
+                info.retry_at = None
+                info.status = ConnectionStates.NO_DATA
+            _logger.info("Virtually reconnecting and resubscribing %s", client)
+            task = asyncio.create_task(ha_client.reconnect(client=client))
             task.add_done_callback(partial(log_exception, client))
             tasks.append(task)
         await asyncio.gather(*tasks, return_exceptions=True)

@@ -39,6 +39,12 @@ from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_bin
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
 from .ua_session import SessionState, UaSession
 
+MAX_ABANDONED_REQUESTS = 10000
+
+
+def _timeout(timeout: float | None) -> dict[str, float]:
+    return {} if timeout is None else {"timeout": timeout}
+
 
 class UaClientState(Enum):
     DISCONNECTED = "disconnected"
@@ -79,6 +85,7 @@ class UASocketProtocol(asyncio.Protocol):
         self._request_id = 0
         self._request_handle = 0
         self._callbackmap: dict[int, asyncio.Future[Any]] = {}
+        self._abandoned_requests: dict[int, None] = {}
         if limits is None:
             limits = TransportLimits()
         else:
@@ -148,8 +155,10 @@ class UASocketProtocol(asyncio.Protocol):
 
     def _process_frame(self, header: ua.Header, body: Buffer) -> None:
         msg = self._channel.receive_from_header_and_body(header, body)
-        if header.MessageType == ua.MessageType.SecureOpen:
-            params: ua.OpenSecureChannelParameters = self._open_secure_channel_exchange
+        if header.MessageType == ua.MessageType.SecureOpen and isinstance(
+            self._open_secure_channel_exchange, ua.OpenSecureChannelParameters
+        ):
+            params = self._open_secure_channel_exchange
             self.check_answer(msg.body(), " in response to OpenSecureChannelRequest")
             response: ua.OpenSecureChannelResponse = struct_from_binary(ua.OpenSecureChannelResponse, msg.body())
             response.ResponseHeader.ServiceResult.check()
@@ -185,19 +194,24 @@ class UASocketProtocol(asyncio.Protocol):
             future.set_exception(ua.UaStatusCodeError(aborted.error.Error.value))
 
     def _send_request(
-        self, request: Any, timeout: float = 1, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float = 1,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        timeout_hint: float | None = None,
     ) -> asyncio.Future[Any]:
         """
         Send request to server, lower-level method.
-        Timeout is the timeout written in ua header.
+        Timeout is the timeout written in ua header, unless timeout_hint is given.
         :param request: Request
         :param timeout: Timeout in seconds
         :param message_type: UA Message Type (optional)
+        :param timeout_hint: Timeout in seconds written in the ua header instead of the timeout
         :return: Future that resolves with the Response
         """
         if self.transport is None:
             raise ConnectionError("Connection is not open")
-        self._setup_request_header(request.RequestHeader, timeout)
+        self._setup_request_header(request.RequestHeader, timeout if timeout_hint is None else timeout_hint)
         self.logger.debug("Sending: %s", request)
         next_request_id = self._request_id + 1
         try:
@@ -223,11 +237,15 @@ class UASocketProtocol(asyncio.Protocol):
         return future
 
     async def send_request(
-        self, request: Any, timeout: float | None = None, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float | None = None,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        timeout_hint: float | None = None,
     ) -> Buffer:
         """
         Send a request to the server.
-        Timeout is the timeout written in ua header.
+        Timeout is the time to wait for the answer and the timeout written in ua header, unless timeout_hint is given.
         Returns response object if no callback is provided.
         """
         timeout = self.timeout if timeout is None else timeout
@@ -236,7 +254,8 @@ class UASocketProtocol(asyncio.Protocol):
             # time out then.
             await self.pre_request_hook()
         try:
-            data = await wait_for(self._send_request(request, timeout, message_type), timeout if timeout else None)
+            pending = self._send_request(request, timeout, message_type, timeout_hint)
+            data = await self._wait_for_response(pending, self._request_id, timeout if timeout else None)
         except UaError:
             raise
         except TimeoutError:
@@ -249,12 +268,27 @@ class UASocketProtocol(asyncio.Protocol):
         self.check_answer(data, f" in response to {request.__class__.__name__}")
         return data
 
+    async def _wait_for_response(self, pending: asyncio.Future[Any], request_id: int, timeout: float | None) -> Any:
+        try:
+            return await wait_for(pending, timeout)
+        except BaseException:
+            self._abandon_request(request_id, pending)
+            raise
+
+    def _abandon_request(self, request_id: int, pending: asyncio.Future[Any]) -> None:
+        if self._callbackmap.get(request_id) is not pending:
+            return
+        del self._callbackmap[request_id]
+        self._abandoned_requests[request_id] = None
+        while len(self._abandoned_requests) > MAX_ABANDONED_REQUESTS:
+            del self._abandoned_requests[next(iter(self._abandoned_requests))]
+
     def check_answer(self, data: Buffer, context: str) -> bool:
         data = data.copy()
         typeid = nodeid_from_binary(data)
         if typeid == ua.FourByteNodeId(ua.ObjectIds.ServiceFault_Encoding_DefaultBinary):
             hdr = struct_from_binary(ua.ResponseHeader, data)
-            self.logger.warning(
+            self.logger.debug(
                 "ServiceFault (%s, diagnostics: %s) from server received %s",
                 hdr.ServiceResult.name,
                 hdr.ServiceDiagnostics,
@@ -269,14 +303,19 @@ class UASocketProtocol(asyncio.Protocol):
             if not fut.done():
                 fut.set_exception(exc)
         self._callbackmap.clear()
+        self._abandoned_requests.clear()
 
     def _call_callback(self, request_id: int, body: Buffer | ua.Acknowledge) -> None:
-        try:
-            future = self._callbackmap.pop(request_id)
-        except KeyError as ex:
-            raise ua.UaError(
-                f"No request found for request id: {request_id}, pending are {self._callbackmap.keys()}, body was {body}"
-            ) from ex
+        future = self._callbackmap.pop(request_id, None)
+        if future is None:
+            if request_id in self._abandoned_requests:
+                del self._abandoned_requests[request_id]
+                self.logger.debug("Dropped the late response to abandoned request id %s", request_id)
+                return
+            raise ua.UaStatusCodeError(
+                ua.StatusCodes.BadSecurityChecksFailed,
+                f"Response for request id {request_id}, which was never sent; pending are {list(self._callbackmap)}",
+            )
         try:
             future.set_result(body)
         except asyncio.InvalidStateError:
@@ -331,12 +370,14 @@ class UASocketProtocol(asyncio.Protocol):
                 "The response must be processed and returned before the next request can be sent."
             )
         self._open_secure_channel_exchange = params
-        await wait_for(self._send_request(request, message_type=ua.MessageType.SecureOpen), self.timeout)
-        assert isinstance(self._open_secure_channel_exchange, ua.OpenSecureChannelResponse)
-
-        _return = self._open_secure_channel_exchange.Parameters
-        self._open_secure_channel_exchange = None
-        return _return
+        try:
+            pending = self._send_request(request, message_type=ua.MessageType.SecureOpen)
+            await self._wait_for_response(pending, self._request_id, self.timeout)
+            exchange = self._open_secure_channel_exchange
+            assert isinstance(exchange, ua.OpenSecureChannelResponse)
+            return exchange.Parameters
+        finally:
+            self._open_secure_channel_exchange = None
 
     async def close_secure_channel(self) -> None:
         """
@@ -372,7 +413,7 @@ class StateSubscription:
         self._unsubscribe: Callable[[], None] | None = None
 
     async def __aenter__(self) -> StateSubscription:
-        self._unsubscribe = self._client._add_state_listener(self._queue.put_nowait)
+        self._unsubscribe = self._client.add_state_listener(self._queue.put_nowait)
         return self
 
     async def __aexit__(
@@ -435,6 +476,8 @@ class UaClient:
         self._state: UaClientState = UaClientState.DISCONNECTED
         self._state_listeners: list[Callable[[UaClientState], None]] = []
         self._disconnect_requested: bool = False
+        self._reconnect_hold = False
+        self.reconnect_on_loss = False
         self.observer: Observer = NULL_OBSERVER
         self.session: UaSession = UaSession(self)
 
@@ -465,6 +508,8 @@ class UaClient:
         """Set state and notify listeners. Same-state assignments are no-ops."""
         if target is self._state:
             return
+        if self._reconnect_hold and target is not UaClientState.RECONNECTING:
+            return
         self._state = target
         self._observe(lambda: self.observer.on_state_change(target))
         # Iterate a copy so listeners can safely unsubscribe themselves.
@@ -474,7 +519,7 @@ class UaClient:
             except Exception:
                 self.logger.exception("state listener raised")
 
-    def _add_state_listener(self, callback: Callable[[UaClientState], None]) -> Callable[[], None]:
+    def add_state_listener(self, callback: Callable[[UaClientState], None]) -> Callable[[], None]:
         """Register a raw state-change callback; returns an unsubscribe callable.
 
         Internal helper. External code should use the `subscribe_state()`
@@ -490,6 +535,12 @@ class UaClient:
                 pass
 
         return unsubscribe
+
+    def remove_state_listener(self, callback: Callable[[UaClientState], None]) -> None:
+        try:
+            self._state_listeners.remove(callback)
+        except ValueError:
+            pass
 
     def subscribe_state(self) -> StateSubscription:
         """Subscribe to state transitions; use as an async context manager.
@@ -508,10 +559,13 @@ class UaClient:
         """Called from UASocketProtocol.connection_lost.
 
         Surface the loss as a state change so that subscribers (the supervisor,
-        tests, user code) can react. Skip if we're already tearing down — the
-        user-initiated path drives state through DISCONNECTING/DISCONNECTED itself.
+        tests, user code) can react. Skip if we're already tearing down or reconnecting.
         """
-        if self._state not in (UaClientState.DISCONNECTED, UaClientState.DISCONNECTING):
+        if self._reconnect_hold or self._state in (UaClientState.DISCONNECTED, UaClientState.DISCONNECTING):
+            return
+        if self.reconnect_on_loss and self._state is UaClientState.CONNECTED:
+            self.enter_reconnecting()
+        else:
             self._set_state(UaClientState.DISCONNECTED)
 
     def notify_transport_lost(self) -> None:
@@ -520,11 +574,18 @@ class UaClient:
         self._on_transport_lost(None)
 
     def enter_reconnecting(self) -> None:
-        """Mark the client as reconnecting; the supervisor calls this before an attempt."""
+        """Mark the client as reconnecting. Until complete_reconnect or mark_disconnected the state stays
+        RECONNECTING, whatever the attempts do to the socket and the channel."""
+        self._reconnect_hold = True
         self._set_state(UaClientState.RECONNECTING)
+
+    def complete_reconnect(self) -> None:
+        self._reconnect_hold = False
+        self._set_state(UaClientState.CONNECTED)
 
     def mark_disconnected(self) -> None:
         """Mark the client as disconnected; the supervisor calls this when it gives up."""
+        self._reconnect_hold = False
         self._set_state(UaClientState.DISCONNECTED)
 
     @property
@@ -621,13 +682,28 @@ class UaClient:
             self._set_state(UaClientState.SOCKET_OPEN)
 
     async def _send_request(
-        self, request: Any, timeout: float | None = None, message_type: ua.MessageType = ua.MessageType.SecureMessage
+        self,
+        request: Any,
+        timeout: float | None = None,
+        message_type: ua.MessageType = ua.MessageType.SecureMessage,
+        *,
+        timeout_hint: float | None = None,
+        limited: bool = True,
     ) -> Buffer:
         with self.observer.observe_request(request):
+            if not limited:
+                return await self._send_unlimited(request, timeout, message_type, timeout_hint)
             async with self._request_semaphore:
-                if self.protocol is None:
-                    raise ConnectionError("Connection is not open")
-                return await self.protocol.send_request(request, timeout, message_type)
+                return await self._send_unlimited(request, timeout, message_type, timeout_hint)
+
+    async def _send_unlimited(
+        self, request: Any, timeout: float | None, message_type: ua.MessageType, timeout_hint: float | None
+    ) -> Buffer:
+        if self.protocol is None:
+            raise ConnectionError("Connection is not open")
+        if timeout_hint is None:
+            return await self.protocol.send_request(request, timeout, message_type)
+        return await self.protocol.send_request(request, timeout, message_type, timeout_hint)
 
     # --- back-compat: properties that previously lived on UaClient ---
 
@@ -699,6 +775,7 @@ class UaClient:
         response.ResponseHeader.ServiceResult.check()
 
     async def unregister_server(self, registered_server: ua.RegisteredServer) -> None:
+        """Same request as register_server; the caller's RegisteredServer.IsOnline = False makes it an unregistration."""
         self.logger.debug("unregister_server")
         request = ua.RegisterServerRequest()
         request.Server = registered_server
@@ -718,6 +795,7 @@ class UaClient:
         return response.ConfigurationResults
 
     async def unregister_server2(self, params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
+        """Same request as register_server2; the caller's RegisteredServer.IsOnline = False makes it an unregistration."""
         self.logger.debug("unregister_server2")
         request = ua.RegisterServer2Request()
         request.Parameters = params
@@ -729,74 +807,102 @@ class UaClient:
 
     # --- AbstractSession: delegate to default session ---
 
-    async def browse(self, parameters: ua.BrowseParameters) -> list[ua.BrowseResult]:
-        return await self.session.browse(parameters)
+    async def browse(self, parameters: ua.BrowseParameters, timeout: float | None = None) -> list[ua.BrowseResult]:
+        return await self.session.browse(parameters, **_timeout(timeout))
 
-    async def browse_next(self, parameters: ua.BrowseNextParameters) -> list[ua.BrowseResult]:
-        return await self.session.browse_next(parameters)
+    async def browse_next(
+        self, parameters: ua.BrowseNextParameters, timeout: float | None = None
+    ) -> list[ua.BrowseResult]:
+        return await self.session.browse_next(parameters, **_timeout(timeout))
 
-    async def translate_browsepaths_to_nodeids(self, browse_paths: list[ua.BrowsePath]) -> list[ua.BrowsePathResult]:
-        return await self.session.translate_browsepaths_to_nodeids(browse_paths)
+    async def translate_browsepaths_to_nodeids(
+        self, browse_paths: list[ua.BrowsePath], timeout: float | None = None
+    ) -> list[ua.BrowsePathResult]:
+        return await self.session.translate_browsepaths_to_nodeids(browse_paths, **_timeout(timeout))
 
-    async def register_nodes(self, nodes: list[ua.NodeId]) -> list[ua.NodeId]:
-        return await self.session.register_nodes(nodes)
+    async def register_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> list[ua.NodeId]:
+        return await self.session.register_nodes(nodes, **_timeout(timeout))
 
-    async def unregister_nodes(self, nodes: list[ua.NodeId]) -> None:
-        return await self.session.unregister_nodes(nodes)
+    async def unregister_nodes(self, nodes: list[ua.NodeId], timeout: float | None = None) -> None:
+        return await self.session.unregister_nodes(nodes, **_timeout(timeout))
 
-    async def read(self, parameters: ua.ReadParameters) -> list[ua.DataValue]:
-        return await self.session.read(parameters)
+    async def read(self, parameters: ua.ReadParameters, timeout: float | None = None) -> list[ua.DataValue]:
+        return await self.session.read(parameters, **_timeout(timeout))
 
-    async def write(self, params: ua.WriteParameters) -> list[ua.StatusCode]:
-        return await self.session.write(params)
+    async def write(self, params: ua.WriteParameters, timeout: float | None = None) -> list[ua.StatusCode]:
+        return await self.session.write(params, **_timeout(timeout))
 
-    async def history_read(self, params: ua.HistoryReadParameters) -> list[ua.HistoryReadResult]:
-        return await self.session.history_read(params)
+    async def history_read(
+        self, params: ua.HistoryReadParameters, timeout: float | None = None
+    ) -> list[ua.HistoryReadResult]:
+        return await self.session.history_read(params, **_timeout(timeout))
 
-    async def history_update(self, params: ua.HistoryUpdateParameters) -> list[ua.HistoryUpdateResult]:
-        return await self.session.history_update(params)
+    async def history_update(
+        self, params: ua.HistoryUpdateParameters, timeout: float | None = None
+    ) -> list[ua.HistoryUpdateResult]:
+        return await self.session.history_update(params, **_timeout(timeout))
 
-    async def read_attributes(self, nodeids: list[ua.NodeId], attr: ua.AttributeIds) -> list[ua.DataValue]:
-        return await self.session.read_attributes(nodeids, attr)
+    async def read_attributes(
+        self, nodeids: list[ua.NodeId], attr: ua.AttributeIds, timeout: float | None = None
+    ) -> list[ua.DataValue]:
+        return await self.session.read_attributes(nodeids, attr, **_timeout(timeout))
 
     async def write_attributes(
         self,
         nodeids: list[ua.NodeId],
         datavalues: list[ua.DataValue],
         attributeid: ua.AttributeIds = ua.AttributeIds.Value,
+        timeout: float | None = None,
     ) -> list[ua.StatusCode]:
-        return await self.session.write_attributes(nodeids, datavalues, attributeid)
+        return await self.session.write_attributes(nodeids, datavalues, attributeid, **_timeout(timeout))
 
-    async def add_nodes(self, nodestoadd: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
-        return await self.session.add_nodes(nodestoadd)
+    async def add_nodes(
+        self, nodestoadd: list[ua.AddNodesItem], timeout: float | None = None
+    ) -> list[ua.AddNodesResult]:
+        return await self.session.add_nodes(nodestoadd, **_timeout(timeout))
 
-    async def add_references(self, refs: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
-        return await self.session.add_references(refs)
+    async def add_references(
+        self, refs: list[ua.AddReferencesItem], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
+        return await self.session.add_references(refs, **_timeout(timeout))
 
-    async def delete_references(self, refs: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
-        return await self.session.delete_references(refs)
+    async def delete_references(
+        self, refs: list[ua.DeleteReferencesItem], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
+        return await self.session.delete_references(refs, **_timeout(timeout))
 
-    async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        return await self.session.delete_nodes(params)
+    async def delete_nodes(self, params: ua.DeleteNodesParameters, timeout: float | None = None) -> list[ua.StatusCode]:
+        return await self.session.delete_nodes(params, **_timeout(timeout))
 
-    async def call(self, methodstocall: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
-        return await self.session.call(methodstocall)
+    async def call(
+        self, methodstocall: list[ua.CallMethodRequest], timeout: float | None = None
+    ) -> list[ua.CallMethodResult]:
+        return await self.session.call(methodstocall, **_timeout(timeout))
 
     async def create_subscription(
-        self, params: ua.CreateSubscriptionParameters, callback: Callable[..., Any]
+        self,
+        params: ua.CreateSubscriptionParameters,
+        callback: Callable[..., Any],
+        timeout: float | None = None,
     ) -> ua.CreateSubscriptionResult:
-        return await self.session.create_subscription(params, callback)
+        return await self.session.create_subscription(params, callback, **_timeout(timeout))
 
-    async def update_subscription(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
-        return await self.session.update_subscription(params)
+    async def update_subscription(
+        self, params: ua.ModifySubscriptionParameters, timeout: float | None = None
+    ) -> ua.ModifySubscriptionResult:
+        return await self.session.update_subscription(params, **_timeout(timeout))
 
     modify_subscription = update_subscription  # legacy support
 
-    async def delete_subscriptions(self, subscription_ids: list[int]) -> list[ua.StatusCode]:
-        return await self.session.delete_subscriptions(subscription_ids)
+    async def delete_subscriptions(
+        self, subscription_ids: list[int], timeout: float | None = None
+    ) -> list[ua.StatusCode]:
+        return await self.session.delete_subscriptions(subscription_ids, **_timeout(timeout))
 
-    async def transfer_subscriptions(self, params: ua.TransferSubscriptionsParameters) -> list[ua.TransferResult]:
-        return await self.session.transfer_subscriptions(params)
+    async def transfer_subscriptions(
+        self, params: ua.TransferSubscriptionsParameters, timeout: float | None = None
+    ) -> list[ua.TransferResult]:
+        return await self.session.transfer_subscriptions(params, **_timeout(timeout))
 
     async def inform_subscriptions(self, status: ua.StatusCode) -> None:
         return await self.session.inform_subscriptions(status)
@@ -805,20 +911,30 @@ class UaClient:
         return await self.session.publish(acks)
 
     async def create_monitored_items(
-        self, params: ua.CreateMonitoredItemsParameters
+        self,
+        params: ua.CreateMonitoredItemsParameters,
+        timeout: float | None = None,
     ) -> list[ua.MonitoredItemCreateResult]:
-        return await self.session.create_monitored_items(params)
+        return await self.session.create_monitored_items(params, **_timeout(timeout))
 
-    async def delete_monitored_items(self, params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
-        return await self.session.delete_monitored_items(params)
+    async def delete_monitored_items(
+        self, params: ua.DeleteMonitoredItemsParameters, timeout: float | None = None
+    ) -> list[ua.StatusCode]:
+        return await self.session.delete_monitored_items(params, **_timeout(timeout))
 
     async def modify_monitored_items(
-        self, params: ua.ModifyMonitoredItemsParameters
+        self,
+        params: ua.ModifyMonitoredItemsParameters,
+        timeout: float | None = None,
     ) -> list[ua.MonitoredItemModifyResult]:
-        return await self.session.modify_monitored_items(params)
+        return await self.session.modify_monitored_items(params, **_timeout(timeout))
 
-    async def set_monitoring_mode(self, params: ua.SetMonitoringModeParameters) -> list[ua.uatypes.StatusCode]:
-        return await self.session.set_monitoring_mode(params)
+    async def set_monitoring_mode(
+        self, params: ua.SetMonitoringModeParameters, timeout: float | None = None
+    ) -> list[ua.uatypes.StatusCode]:
+        return await self.session.set_monitoring_mode(params, **_timeout(timeout))
 
-    async def set_publishing_mode(self, params: ua.SetPublishingModeParameters) -> list[ua.uatypes.StatusCode]:
-        return await self.session.set_publishing_mode(params)
+    async def set_publishing_mode(
+        self, params: ua.SetPublishingModeParameters, timeout: float | None = None
+    ) -> list[ua.uatypes.StatusCode]:
+        return await self.session.set_publishing_mode(params, **_timeout(timeout))

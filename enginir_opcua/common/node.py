@@ -940,8 +940,10 @@ class Node:
     ) -> Node:
         return await create_reference_type(self, nodeid, bname, symmetric, inversename)
 
-    async def call_method(self, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any) -> Any:
-        return await call_method(self, methodid, *args)
+    async def call_method(
+        self, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any, timeout: float | None = None
+    ) -> Any:
+        return await call_method(self, methodid, *args, timeout=timeout)
 
     async def register(self) -> None:
         """

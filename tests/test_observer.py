@@ -155,7 +155,7 @@ def test_a_broken_state_listener_does_not_break_the_transition():
         raise RuntimeError("listener is broken")
 
     client = UaClient()
-    client._add_state_listener(broken)
+    client.add_state_listener(broken)
 
     client._set_state(UaClientState.CONNECTED)
 
@@ -272,6 +272,7 @@ async def test_a_notification_with_no_items_is_still_reported():
     subscription.subscription_id = 7
 
     await subscription.publish_callback(_publish_result([]))
+    await asyncio.sleep(0.05)
 
     assert observer.notifications == [(7, 0)]
 

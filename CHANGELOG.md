@@ -67,6 +67,50 @@ Client:
 - A client that took its security from GetEndpoints compares that list with CreateSession's ServerEndpoints and fails
   with `Bad_SecurityChecksFailed` when they differ. Endpoints are no longer re-fetched on reconnect.
 - `HaSecurityConfig` needs a `server_certificate` or a `trust_store` when security is on.
+- Publish requests are pipelined: up to `UaSession.max_outstanding_publish_requests` (default 10) are in flight,
+  sized by the number of Subscriptions and the measured round trip, each with a timeout from the keep-alive time.
+  Acknowledgements are kept until the response to the request that carried them arrives (`max_pending_acks`, 2000),
+  and messages fetched with Republish are acknowledged too. Subscriptions register with `UaSession.register_sink`.
+- A timed-out request is removed from the request table; a late response to it is dropped, a response for an id that
+  was never sent closes the channel. A timed-out OpenSecureChannel no longer blocks every later renewal.
+- `connect()` on a connected client raises; a failure during `connect()` closes the Session it created.
+  `disconnect()` closes the local Subscriptions, and a later `connect()` doesn't bring them back. After a reconnect,
+  Subscriptions are restored before publishing resumes; the stale watchdog keeps running.
+- The client checks the server certificate's ApplicationUri against the endpoint's. `Client(url)` refuses schemes
+  other than `opc.tcp`; a URL without a port uses 4840. A user token type the endpoint doesn't offer raises
+  `ConfigurationError` before anything is sent.
+- `Node.call_method` converts arguments to the method's declared InputArguments types; services take a per-call
+  `timeout`. `UaClient.add_state_listener` is public. `get_keepalive_count` and `get_subscription_revised_params`
+  are removed; use `subscription_parameters`.
+- `HaClient` needs at least two server URLs.
+
+Client subscriptions (OPC 10000-4, 5.13 and 5.14):
+- `subscription_parameters(period, ...)` derives the keep-alive count from a keep-alive time (default 10 s) and the
+  lifetime count from a lifetime (default 300 s), never below three times the keep-alive; `MaxNotificationsPerPublish`
+  is 0. A `Subscription` stores the revised values (`revised`) and corrects a revised keep-alive above 60 s once.
+- The default sampling interval of `subscribe_data_change` is -1 (the publishing interval), not 50 ms.
+  `unsubscribe` skips handles it doesn't know instead of raising; it keeps items the server couldn't delete and raises
+  after removing the others. `modify_monitored_item` raises `ValueError` for an unknown handle and keeps the stored
+  filter, queue size, discard policy and timestamps unless given.
+- Notifications are delivered from a task per Subscription. A full inbox or event queue drops the oldest entry and
+  counts it (`dropped_messages`, `dropped_events`); a slow handler delays only its own Subscription. Handlers may
+  return any awaitable. Duplicate messages are dropped and missing ones are fetched with Republish
+  (`max_republish`, `republish_missing`). `Bad_Timeout` marks the Subscription lost; `Good_SubscriptionTransferred`
+  ends it without recreating. `Subscription.close()` ends it locally; `Subscription.state` is new.
+
+File transfer (OPC 10000-5, Annex C):
+- `UaFile.read()` reads in chunks until an empty ByteString and no longer uses `Size`; `write()` is chunked.
+  `UaFile(node, mode, chunk_size=, timeout=)` validates the open mode, resolves Methods once with a fallback to the
+  FileType Methods, refuses a second `open()` and sends no Close for a closed file. New: `read_chunk`, `iter_chunks`,
+  `adopt`, `get_mime_type`, `FileTransferError`, `InvalidStateError`. `client/ua_file.py` is a deprecated wrapper,
+  removed in 4.0.0.
+
+High availability:
+- `HaClient` keeps a Healthy active server whatever the others report, uses the best Degraded server when none is
+  Healthy, never resets a connected standby for its ServiceLevel, and disconnects a server in maintenance
+  (ServiceLevel 0). Probe and manager default to 5 s and wake each other. A server that reports no Warm or Hot
+  `RedundancySupport` is not used unless `HaConfig(allow_unsupported_redundancy=True)`.
+  `HaSecurityConfig` takes user credentials. Unknown subscription names raise `KeyError`; `HaClient.status()` is new.
 
 Tools:
 - `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. `uaserver` is a demo without security and

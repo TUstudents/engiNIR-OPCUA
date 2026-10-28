@@ -237,14 +237,11 @@ async def test_subscription_data_change(opc):
     node, val, _data = await myhandler.result()
     assert v1 == node
     assert [5] == val
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(999)  # non existing handle
+    await sub.unsubscribe(999)  # non existing handle is skipped
     await sub.unsubscribe(handle1)
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(handle1)  # second try should fail
+    await sub.unsubscribe(handle1)  # a second try is skipped as well
     await sub.delete()
-    with pytest.raises(ua.UaStatusCodeError):
-        await sub.unsubscribe(handle1)  # sub does not exist anymore
+    await sub.unsubscribe(handle1)  # sub does not exist anymore, nothing is sent
     await opc.opc.delete_nodes([v1])
 
 
@@ -324,8 +321,9 @@ async def test_set_monitoring_mode(opc, mocker):
     monitoring_mode = ua.SetMonitoringModeParameters()
     _ = mocker.patch.object(ua, "SetMonitoringModeParameters", return_value=monitoring_mode)
     _ = mocker.patch("enginir_opcua.client.ua_session.UaSession.set_monitoring_mode", new=AsyncMock())
-    _ = await o.add_variable(3, "SubscriptionVariable2", 123)
+    var = await o.add_variable(3, "SubscriptionVariable2", 123)
     sub = await opc.opc.create_subscription(100, myhandler)
+    await sub.subscribe_data_change(var)
 
     await sub.set_monitoring_mode(ua.MonitoringMode.Disabled)
     assert monitoring_mode.MonitoringMode == ua.MonitoringMode.Disabled
@@ -523,27 +521,34 @@ async def test_subscription_data_change_many(opc):
     await opc.opc.delete_nodes([v1, v2])
 
 
-def test_get_keepalive_count(mocker):
-    """
-    Check the subscription parameter MaxKeepAliveCount value
-    with various publishInterval and session_timeout values.
-    """
+@pytest.mark.parametrize(
+    ("session_timeout", "period", "keep_alive", "lifetime"),
+    [(3_600_000, 1000, 10, 300), (20_000, 1000, 5, 300), (3_600_000, 100, 100, 3000), (3_600_000, 0, 10, 300)],
+)
+async def test_cli10_create_subscription_uses_the_time_based_counts(
+    session_timeout: int, period: int, keep_alive: int, lifetime: int
+) -> None:
+    """Part 4, 5.14.2.2: keep-alive about every 10 s (at most a quarter of the session timeout), lifetime 3x or more."""
+    client = Client("opc.tcp://fake")
+    client.session_timeout = session_timeout
+    created: list[ua.CreateSubscriptionParameters] = []
 
-    c = Client("opc.tcp://fake")
-    # session timeout < publish_interval
-    publish_interval = 1000  # ms
-    c.session_timeout = 30000  # ms
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 22
-    # session_timeout > publish_interval
-    publish_interval = 75000
-    c.session_timeout = 30000
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 0
-    # RequestedPublishingInterval == 0: defer to server (spec Part 4 §5.13.2)
-    publish_interval = 0
-    keepalive_count = c.get_keepalive_count(publish_interval)
-    assert keepalive_count == 0
+    async def create_subscription(
+        params: ua.CreateSubscriptionParameters, callback: object
+    ) -> ua.CreateSubscriptionResult:
+        created.append(params)
+        return ua.CreateSubscriptionResult(
+            SubscriptionId=1,
+            RevisedPublishingInterval=params.RequestedPublishingInterval,
+            RevisedLifetimeCount=params.RequestedLifetimeCount,
+            RevisedMaxKeepAliveCount=params.RequestedMaxKeepAliveCount,
+        )
+
+    client.uaclient.session.create_subscription = create_subscription  # type: ignore[method-assign]
+    await client.create_subscription(period)
+    assert created[0].RequestedMaxKeepAliveCount == keep_alive
+    assert created[0].RequestedLifetimeCount >= lifetime
+    assert created[0].RequestedLifetimeCount >= 3 * keep_alive
 
 
 async def test_subscribe_server_time(opc):
@@ -1113,60 +1118,6 @@ async def test_internal_server_subscription(opc):
 
 
 @pytest.mark.parametrize("opc", ["client"], indirect=True)
-async def test_maxkeepalive_count(opc, mocker):
-    sub_handler = MySubHandler()
-    client, _server = opc
-
-    period = 1
-    max_keepalive_count = client.get_keepalive_count(period)
-    mock_period = 500
-    mock_max_keepalive_count = client.get_keepalive_count(mock_period)
-
-    mock_response = ua.CreateSubscriptionResult(
-        SubscriptionId=78,
-        RevisedPublishingInterval=mock_period,
-        RevisedLifetimeCount=10000,
-        RevisedMaxKeepAliveCount=2700,
-    )
-    mock_create_subscription = mocker.patch.object(
-        client.uaclient.session, "create_subscription", new=AsyncMock(return_value=mock_response)
-    )
-    mock_update_subscription = mocker.patch.object(client.uaclient.session, "update_subscription", new=AsyncMock())
-
-    sub = await client.create_subscription(period, sub_handler)
-    assert sub.parameters.RequestedMaxKeepAliveCount == mock_max_keepalive_count
-    assert mock_max_keepalive_count != max_keepalive_count
-    # mock point to the object at its finale state,
-    # here the subscription params have already been updated
-    mock_create_subscription.assert_awaited_with(
-        ua.CreateSubscriptionParameters(
-            RequestedPublishingInterval=mock_period,
-            RequestedLifetimeCount=10000,
-            RequestedMaxKeepAliveCount=mock_max_keepalive_count,
-            MaxNotificationsPerPublish=10000,
-            PublishingEnabled=True,
-            Priority=0,
-        ),
-        callback=mocker.ANY,
-    )
-    mock_update_subscription.assert_awaited_with(
-        ua.ModifySubscriptionParameters(
-            SubscriptionId=78,
-            RequestedPublishingInterval=mock_period,
-            RequestedLifetimeCount=10000,
-            RequestedMaxKeepAliveCount=mock_max_keepalive_count,
-            MaxNotificationsPerPublish=10000,
-        )
-    )
-
-    # we don't update when sub params == revised params
-    mock_update_subscription.reset_mock()
-    mock_create_subscription.reset_mock()
-    sub = await client.create_subscription(mock_period, sub_handler)
-    mock_update_subscription.assert_not_called()
-
-
-@pytest.mark.parametrize("opc", ["client"], indirect=True)
 async def test_publish_without_subscription(opc):
     assert opc.server.iserver.subscription_service.subscriptions == {}, (
         "Some prior test has left subscriptions on the server"
@@ -1188,7 +1139,7 @@ async def test_too_many_publish(opc, mocker):
         requests = [asyncio.create_task(opc.opc.uaclient.session.publish([])) for _ in range(11)]
         while True:
             done, pending = await asyncio.wait(requests, timeout=5, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            for task in [task for task in requests if task in done]:
                 exception = task.exception()
                 if exception is None:
                     requests.remove(task)

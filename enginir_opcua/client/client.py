@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import os
+import secrets
 import socket
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
@@ -24,36 +25,51 @@ from ..common.node import Node
 from ..common.shortcuts import Shortcuts
 from ..common.structures import load_enums, load_type_definitions
 from ..common.structures104 import load_data_type_definitions
-from ..common.subscription import Subscription, SubscriptionHandler
-from ..common.ua_utils import copy_dataclass_attr, value_to_datavalue
+from ..common.subscription import Subscription, SubscriptionHandler, subscription_parameters
+from ..common.ua_utils import value_to_datavalue
 from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
-from ..crypto.validator import ApplicationHook, CertificateValidator
+from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
+    BadCommunicationError,
+    BadConnectionClosed,
+    BadSecureChannelClosed,
+    BadSecureChannelIdInvalid,
     BadSecurityChecksFailed,
     BadSecurityPolicyRejected,
+    BadSessionClosed,
     BadSessionIdInvalid,
+    BadSessionNotActivated,
     ConfigurationError,
 )
 from .ua_client import StateSubscription, UaClient, UaClientState
+from .ua_session import check_result_count
 
 _logger = logging.getLogger(__name__)
 
 SESSION_NONCE_MIN_LENGTH = 32
 SESSION_NONCE_MAX_LENGTH = 128
+TCP_BINARY_PROFILE = "http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary"
+LOSS_STATUS_ERRORS = (
+    BadSecureChannelClosed,
+    BadSecureChannelIdInvalid,
+    BadSessionClosed,
+    BadSessionIdInvalid,
+    BadConnectionClosed,
+    BadCommunicationError,
+)
+DEFAULT_PORT = 4840
+RENEW_RETRY_DELAY = 1.0
+RENEW_RETRY_MAX_DELAY = 10.0
 
 _T = TypeVar("_T")
 
-# Task-scoped flag: when True, the pre-request hook bypasses its RECONNECTING
-# gate. The supervisor sets this around its own teardown/connect-sequence work
-# so requests it issues itself don't block waiting for the reconnect we're
-# currently performing. Because contextvars are scoped to the running task,
-# this does NOT leak into concurrent user requests on other tasks.
+
 _supervisor_owns_requests: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "enginir_opcua.supervisor_owns_requests", default=False
 )
@@ -104,6 +120,8 @@ class Client:
         self._password: str | None = None
         self.strip_url_credentials: bool = True
         self._server_url = urlparse(url)
+        if self._server_url.scheme != "opc.tcp":
+            raise ConfigurationError(f"Only opc.tcp URLs are supported, got {url!r}")
         userinfo, have_info, _ = self._server_url.netloc.rpartition("@")
         if have_info:
             username, have_password, password = userinfo.partition(":")
@@ -144,6 +162,8 @@ class Client:
         self._auto_reconnect: bool = auto_reconnect
         self._reconnect_max_delay: float = reconnect_max_delay
         self._reconnect_request_timeout: float = reconnect_request_timeout
+        self._max_activation_failures: int = 3
+        self._activation_failures: int = 0
         self._stale_check_margin: float = 1.5
         self._stale_check_interval: float = 0.5
         self.trust_store: TrustStore | None = None
@@ -198,20 +218,29 @@ class Client:
 
     @staticmethod
     def find_endpoint(
-        endpoints: Iterable[ua.EndpointDescription], security_mode: ua.MessageSecurityMode, policy_uri: str
+        endpoints: Iterable[ua.EndpointDescription],
+        security_mode: ua.MessageSecurityMode,
+        policy_uri: str,
+        url: str | None = None,
     ) -> ua.EndpointDescription:
         """
-        Find endpoint with required security mode and policy URI
+        Find the opc.tcp binary endpoint with the required security mode and policy URI.
+        Among several matches the one with the url of the caller wins, then the highest SecurityLevel.
         """
+        endpoints = list(endpoints)
         _logger.info("find_endpoint %r %r %r", endpoints, security_mode, policy_uri)
-        for ep in endpoints:
-            if (
-                ep.EndpointUrl.startswith(ua.OPC_TCP_SCHEME)
-                and ep.SecurityMode == security_mode
-                and ep.SecurityPolicyUri == policy_uri
-            ):
-                return ep
-        raise ua.UaError(f"No matching endpoints: {security_mode}, {policy_uri}")
+        matches = [
+            ep
+            for ep in endpoints
+            if ep.EndpointUrl.startswith(ua.OPC_TCP_SCHEME)
+            and ep.TransportProfileUri in (TCP_BINARY_PROFILE, "", None)
+            and ep.SecurityMode == security_mode
+            and ep.SecurityPolicyUri == policy_uri
+        ]
+        if not matches:
+            offered = sorted({(ep.SecurityMode.name, ep.SecurityPolicyUri) for ep in endpoints})
+            raise ua.UaError(f"No matching endpoints: {security_mode.name}, {policy_uri}; the server offers {offered}")
+        return max(matches, key=lambda ep: (url is not None and ep.EndpointUrl == url, ep.SecurityLevel or 0))
 
     def set_user(self, username: str) -> None:
         """
@@ -301,8 +330,18 @@ class Client:
         else:
             client_key_password = None
 
-        policy_class = getattr(security_policies, f"SecurityPolicy{parts[0]}")
-        mode = getattr(ua.MessageSecurityMode, parts[1])
+        policies = {
+            name.removeprefix("SecurityPolicy"): value
+            for name, value in vars(security_policies).items()
+            if name.startswith("SecurityPolicy") and isinstance(value, type) and hasattr(value, "URI")
+        }
+        policy_class = policies.get(parts[0])
+        if policy_class is None or parts[0] in ("", "None"):
+            raise ConfigurationError(f"Unknown security policy {parts[0]!r}; use one of {sorted(policies)}")
+        modes = {"Sign": ua.MessageSecurityMode.Sign, "SignAndEncrypt": ua.MessageSecurityMode.SignAndEncrypt}
+        if parts[1] not in modes:
+            raise ConfigurationError(f"Unknown security mode {parts[1]!r}; use one of {sorted(modes)}")
+        mode = modes[parts[1]]
         return await self.set_security(
             policy_class, parts[2], parts[3], client_key_password, parts[4] if len(parts) >= 5 else None, mode
         )
@@ -343,7 +382,7 @@ class Client:
             self.uaclient.security_policy = new_policy
             endpoints = await self.connect_and_get_server_endpoints()
             self._discovered_endpoints = endpoints
-            endpoint = Client.find_endpoint(endpoints, mode, policy.URI)
+            endpoint = Client.find_endpoint(endpoints, mode, policy.URI, self.server_url.geturl())
             server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
             server_certificate = uacrypto.CertProperties(server_certificate)
@@ -464,6 +503,8 @@ class Client:
 
     async def _with_temp_channel(self, op: Callable[[], Awaitable[_T]]) -> _T:
         """Open a transient socket + SecureChannel, run op, tear it down on exit."""
+        if self.uaclient.state is not UaClientState.DISCONNECTED:
+            raise ConnectionError("already connected")
         await self.connect_socket()
         try:
             await self.send_hello()
@@ -511,6 +552,8 @@ class Client:
             connection to become ready while the supervisor is reconnecting.
         """
         _logger.info("connect (auto_reconnect=%s)", auto_reconnect)
+        if self.uaclient.state is not UaClientState.DISCONNECTED:
+            raise ConnectionError("already connected")
         if auto_reconnect is not None:
             self._auto_reconnect = auto_reconnect
         if reconnect_max_delay is not None:
@@ -518,6 +561,7 @@ class Client:
         if reconnect_request_timeout is not None:
             self._reconnect_request_timeout = reconnect_request_timeout
         self.uaclient.clear_disconnect_request()
+        self.uaclient.reconnect_on_loss = self._auto_reconnect
         await self._connect_sequence()
         self._supervisor_task = asyncio.create_task(self._connection_supervisor())
         self._stale_watchdog_task = asyncio.create_task(self._stale_watchdog_loop())
@@ -537,27 +581,25 @@ class Client:
             if await self._try_resume_persisted_session():
                 return
             await self._create_and_activate_session()
-            self._save_session_state()
             self._start_renew_loop()
         except Exception:
             self.disconnect_socket()
             raise
 
     async def _activate_with_credentials(self) -> ua.ActivateSessionResult:
-        return await self.activate_session(
+        result = await self.activate_session(
             username=self._username, password=self._password, certificate=self.user_certificate
         )
+        self._save_session_state()
+        return result
 
     async def _create_and_activate_session(self) -> None:
         """CreateSession + ActivateSession, unwinding the session then the channel on failure."""
         try:
             await self.create_session()
-            try:
-                await self._activate_with_credentials()
-            except Exception:
-                await self._close_session_quiet()
-                raise
+            await self._activate_with_credentials()
         except Exception:
+            await self._close_session_quiet()
             await self._close_secure_channel_quiet()
             raise
 
@@ -573,7 +615,7 @@ class Client:
             if not self._policy_ids:
                 endpoints = await self.get_endpoints()
                 self._policy_ids = Client.find_endpoint(
-                    endpoints, self.security_policy.Mode, self.security_policy.URI
+                    endpoints, self.security_policy.Mode, self.security_policy.URI, self.server_url.geturl()
                 ).UserIdentityTokens
             await self._activate_with_credentials()
         except Exception as exc:
@@ -586,7 +628,6 @@ class Client:
             self._server_nonce = None
             return False
         _logger.info("Resumed persisted session %s", self.uaclient.session.authentication_token)
-        self._save_session_state()
         self._start_renew_loop()
         return True
 
@@ -620,6 +661,15 @@ class Client:
             _logger.exception("close_secure_channel raised during disconnect; continuing teardown")
         self.disconnect_socket()
         self._clear_persisted_session()
+        self._close_subscriptions()
+
+    def _close_subscriptions(self) -> None:
+        subscriptions, self._subscriptions = self._subscriptions, []
+        for subscription in subscriptions:
+            try:
+                subscription.close("the client disconnected")
+            except Exception:
+                _logger.exception("Closing subscription %s failed", subscription.subscription_id)
 
     def _try_load_persisted_session(self) -> bool:
         """Load `authentication_token` + `server_nonce` from disk into the live session.
@@ -714,7 +764,7 @@ class Client:
         """
 
         await self._prepare_certificate_validation()
-        await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port)
+        await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port or DEFAULT_PORT)
 
     async def _prepare_certificate_validation(self) -> None:
         if self.certificate_validator is not None:
@@ -773,47 +823,47 @@ class Client:
         params.EndpointUrl = self.server_url.geturl()
         return await self.uaclient.get_endpoints(params)
 
+    def _registered_server(self, server: "enginir_opcua.server.Server", online: bool) -> ua.RegisteredServer:
+        registered = ua.RegisteredServer()
+        registered.ServerUri = server.get_application_uri()
+        registered.ProductUri = server.product_uri
+        registered.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
+        registered.ServerType = server.application_type
+        registered.ServerNames = [ua.LocalizedText(server.name)]
+        registered.IsOnline = online
+        return registered
+
     async def register_server(
         self, server: "enginir_opcua.server.Server", discovery_configuration: ua.DiscoveryConfiguration | None = None
     ) -> None:
         """
-        register a server to discovery server
-        if discovery_configuration is provided, the newer register_server2 service call is used
+        Register a server with a discovery server.
+        RegisterServer2 is sent, with discovery_configuration if given. Only when the discovery server answers
+        Bad_ServiceUnsupported, the older RegisterServer is sent instead.
         """
-        serv = ua.RegisteredServer()
-        serv.ServerUri = server.get_application_uri()
-        serv.ProductUri = server.product_uri
-        serv.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
-        serv.ServerType = server.application_type
-        serv.ServerNames = [ua.LocalizedText(server.name)]
-        serv.IsOnline = True
-        if discovery_configuration:
-            params = ua.RegisterServer2Parameters()
-            params.Server = serv
-            params.DiscoveryConfiguration = discovery_configuration
+        registered = self._registered_server(server, True)
+        params = ua.RegisterServer2Parameters()
+        params.Server = registered
+        params.DiscoveryConfiguration = discovery_configuration or []
+        try:
             await self.uaclient.register_server2(params)
-        await self.uaclient.register_server(serv)
+        except ua.uaerrors.BadServiceUnsupported:
+            await self.uaclient.register_server(registered)
 
     async def unregister_server(
         self, server: "enginir_opcua.server.Server", discovery_configuration: ua.DiscoveryConfiguration | None = None
     ) -> None:
         """
-        register a server to discovery server
-        if discovery_configuration is provided, the newer register_server2 service call is used
+        Remove a server from a discovery server: the same calls as register_server with IsOnline set to False.
         """
-        serv = ua.RegisteredServer()
-        serv.ServerUri = server.get_application_uri()
-        serv.ProductUri = server.product_uri
-        serv.DiscoveryUrls = [cast(ua.String, server.endpoint.geturl())]
-        serv.ServerType = server.application_type
-        serv.ServerNames = [ua.LocalizedText(server.name)]
-        serv.IsOnline = False
-        if discovery_configuration:
-            params = ua.RegisterServer2Parameters()
-            params.Server = serv
-            params.DiscoveryConfiguration = discovery_configuration
+        registered = self._registered_server(server, False)
+        params = ua.RegisterServer2Parameters()
+        params.Server = registered
+        params.DiscoveryConfiguration = discovery_configuration or []
+        try:
             await self.uaclient.unregister_server2(params)
-        await self.uaclient.unregister_server(serv)
+        except ua.uaerrors.BadServiceUnsupported:
+            await self.uaclient.unregister_server(registered)
 
     async def find_servers(self, uris: Iterable[str] | None = None) -> list[ua.ApplicationDescription]:
         """
@@ -844,19 +894,15 @@ class Client:
         desc.ApplicationName = ua.LocalizedText(self.name)
         desc.ApplicationType = ua.ApplicationType.Client
         params = ua.CreateSessionParameters()
-        params.ServerUri = self.server_uri
+        params.ServerUri = None
         # at least 32 random bytes for server to prove possession of private key (specs part 4, 5.6.2.2)
         nonce = create_nonce(32)
         params.ClientNonce = nonce
-        if self.security_policy.host_certificate:
-            params.ClientCertificate = self.security_policy.host_certificate
-        elif self.user_certificate:
-            params.ClientCertificate = uacrypto.der_from_x509(self.user_certificate)
-        else:
-            params.ClientCertificate = None
+        params.ClientCertificate = self.security_policy.host_certificate or None
         params.ClientDescription = desc
         params.EndpointUrl = self.server_url.geturl()
-        params.SessionName = f"{self.description} Session{self._session_counter}"
+        self._session_counter += 1
+        params.SessionName = f"{self.description} Session{self._session_counter} {secrets.token_hex(4)}"
         params.RequestedSessionTimeout = self.session_timeout
         params.MaxResponseMessageSize = 0  # means no max size
         response = await self.uaclient.create_session(params)
@@ -875,7 +921,10 @@ class Client:
         elif self.security_policy.peer_certificate != server_certificate:
             raise ua.UaError("Server certificate mismatch")
         self._check_discovered_endpoints(response.ServerEndpoints)
-        ep = Client.find_endpoint(response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI)
+        ep = Client.find_endpoint(
+            response.ServerEndpoints, self.security_policy.Mode, self.security_policy.URI, self.server_url.geturl()
+        )
+        self._check_server_certificate_uri(server_certificate, ep)
 
         if self.application_hook and server_certificate:
             try:
@@ -889,7 +938,7 @@ class Client:
         if self.session_timeout != response.RevisedSessionTimeout:
             _logger.warning(
                 "Requested session timeout to be %dms, got %dms instead",
-                self.secure_channel_timeout,
+                self.session_timeout,
                 response.RevisedSessionTimeout,
             )
             self.session_timeout = response.RevisedSessionTimeout
@@ -899,8 +948,10 @@ class Client:
     def _endpoint_summary(endpoints: Iterable[ua.EndpointDescription]) -> set[tuple[Any, ...]]:
         return {
             (
+                endpoint.Server.ApplicationUri,
                 endpoint.SecurityMode,
                 endpoint.SecurityPolicyUri,
+                endpoint.SecurityLevel,
                 uacrypto.split_certificate_chain(endpoint.ServerCertificate)[0] if endpoint.ServerCertificate else b"",
                 frozenset(
                     (policy.PolicyId or "", policy.TokenType, policy.SecurityPolicyUri or "")
@@ -908,7 +959,18 @@ class Client:
                 ),
             )
             for endpoint in endpoints
+            if endpoint.TransportProfileUri in (TCP_BINARY_PROFILE, "", None)
         }
+
+    def _check_server_certificate_uri(self, server_certificate: bytes | None, endpoint: ua.EndpointDescription) -> None:
+        if not server_certificate or self.security_policy.Mode == ua.MessageSecurityMode.None_:
+            return
+        outcome = check_application_uri(
+            x509.load_der_x509_certificate(server_certificate), endpoint.Server.ApplicationUri
+        )
+        if not outcome.accepted:
+            _logger.error("The server certificate does not carry the ApplicationUri %r", endpoint.Server.ApplicationUri)
+            raise ua.UaStatusCodeError(outcome.status)
 
     def _check_discovered_endpoints(self, endpoints: Iterable[ua.EndpointDescription]) -> None:
         if self._discovered_endpoints is None:
@@ -1017,27 +1079,28 @@ class Client:
             _logger.debug("inform_subscriptions raised during loss handling", exc_info=True)
 
     async def _stale_watchdog_loop(self) -> None:
-        try:
-            while not self.uaclient.is_disconnect_requested:
+        while not self.uaclient.is_disconnect_requested:
+            try:
                 await asyncio.sleep(self._stale_check_interval)
                 if self.uaclient.state is not UaClientState.CONNECTED:
                     continue
-                for sub in list(self._subscriptions):
-                    if not sub.is_stale(self._stale_check_margin):
-                        continue
-                    _logger.warning("Subscription %s is stale; recreating", sub.subscription_id)
-                    try:
-                        await sub.recreate()
-                    except Exception:
-                        _logger.exception(
-                            "Subscription %s recreate failed; escalating to reconnect", sub.subscription_id
-                        )
-                        self.uaclient.notify_transport_lost()
-                        return
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _logger.exception("Stale subscription watchdog crashed")
+                await self._recreate_stale_subscriptions()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _logger.exception("Stale subscription watchdog iteration failed")
+
+    async def _recreate_stale_subscriptions(self) -> None:
+        for sub in list(self._subscriptions):
+            if not sub.is_stale(self._stale_check_margin):
+                continue
+            _logger.warning("Subscription %s is stale; recreating", sub.subscription_id)
+            try:
+                await sub.recreate()
+            except Exception:
+                _logger.exception("Subscription %s recreate failed; escalating to reconnect", sub.subscription_id)
+                self.uaclient.notify_transport_lost()
+                return
 
     async def _wait_for_health_signal(self) -> None:
         """Wait for either a state change (transport loss / supervisor work) or the next tick.
@@ -1052,7 +1115,12 @@ class Client:
                 pass
         if self.uaclient.state is UaClientState.CONNECTED:
             probe_timeout = min(self.session_timeout / 1000 / 2, self._watchdog_intervall)
-            await asyncio.wait_for(self.nodes.server_state.read_value(), timeout=probe_timeout)
+            try:
+                await asyncio.wait_for(self.nodes.server_state.read_value(), timeout=probe_timeout)
+            except ua.UaStatusCodeError as exc:
+                if isinstance(exc, LOSS_STATUS_ERRORS):
+                    raise
+                _logger.debug("The server answered the liveness probe with %s", exc)
 
     async def _fire_connection_lost_callback(self, exc: Exception) -> None:
         if self.connection_lost_callback is None:
@@ -1067,6 +1135,7 @@ class Client:
         token = _supervisor_owns_requests.set(True)
         try:
             delay = 1.0
+            self.uaclient.session.pause_publish()
             while not self.uaclient.is_disconnect_requested:
                 await self._teardown_transport_only()
                 try:
@@ -1083,7 +1152,6 @@ class Client:
                 else:
                     await self._finalize_reconnect(reused)
                     return True
-                self.uaclient.enter_reconnecting()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self._reconnect_max_delay)
             return False
@@ -1096,6 +1164,8 @@ class Client:
             await self._recreate_subscriptions()
         except Exception:
             _logger.exception("Subscription recreation failed; continuing")
+        self.uaclient.session.resume_publish()
+        self.uaclient.complete_reconnect()
         _logger.info("Reconnected successfully (session %s)", "reused" if reused else "recreated")
 
     async def _try_reactivate_existing_session(self) -> bool:
@@ -1122,20 +1192,27 @@ class Client:
     async def _reactivate_session(self) -> bool:
         """Bind the existing token to the new channel and try ActivateSession.
 
-        Returns True if the server still held the session; False (after closing it)
-        when a fresh CreateSession is needed.
+        Returns True if the server still held the session. Returns False (after closing it) when the server
+        shows that the session is gone, or when ActivateSession failed max_activation_failures times in a row
+        for another reason than a lost connection. Any other failure raises and the attempt is repeated.
         """
         self.uaclient.session.rebind_authentication_token()
         try:
             await self._activate_with_credentials()
-        except BadSessionIdInvalid:
+        except (BadSessionIdInvalid, BadSessionClosed, BadSessionNotActivated):
             _logger.info("Server forgot session; falling back to create+activate")
+        except ConnectionError:
+            raise
         except Exception:
-            _logger.info("Re-activate failed; falling back to create+activate", exc_info=True)
+            self._activation_failures += 1
+            if self._activation_failures < self._max_activation_failures:
+                raise
+            _logger.warning("Re-activate failed %s times; creating a new session", self._activation_failures)
         else:
-            self.uaclient.ensure_publish_loop()
+            self._activation_failures = 0
             self._start_renew_loop()
             return True
+        self._activation_failures = 0
         await self._close_session_quiet()
         return False
 
@@ -1181,16 +1258,28 @@ class Client:
         In theory, we could do that only if no session activity,
         but it does not cost much.
         """
+        last_renewal = time.monotonic()
+        delay = 0.0
         try:
             while not self.uaclient.is_disconnect_requested:
-                await asyncio.sleep(max(1.0, self.secure_channel_timeout * 0.75 / 1000))
+                await asyncio.sleep(delay or max(1.0, self.secure_channel_timeout * 0.75 / 1000))
                 _logger.debug("renewing channel")
-                await self.open_secure_channel(renew=True)
-        except ConnectionError as e:
-            _logger.info("connection error  in watchdog loop %s", e, exc_info=True)
-            raise
-        except Exception:
-            _logger.exception("Error while renewing session")
+                try:
+                    await self.open_secure_channel(renew=True)
+                except ConnectionError as e:
+                    _logger.info("connection error in the channel renewal loop: %s", e)
+                    return
+                except Exception as e:
+                    if time.monotonic() - last_renewal >= self.secure_channel_timeout / 1000:
+                        _logger.error("The security token expired without a successful renewal: %r", e)
+                        self.uaclient.notify_transport_lost()
+                        return
+                    delay = min(delay * 2, RENEW_RETRY_MAX_DELAY) if delay else RENEW_RETRY_DELAY
+                    _logger.warning("Renewing the secure channel failed (%r); trying again in %.2fs", e, delay)
+                else:
+                    last_renewal = time.monotonic()
+                    delay = 0.0
+        except asyncio.CancelledError:
             raise
 
     def server_policy(self, token_type: ua.UserTokenType) -> ua.UserTokenPolicy:
@@ -1205,7 +1294,7 @@ class Client:
                     return policy
                 # empty URI means "use this endpoint's policy URI"
                 return dataclasses.replace(policy, SecurityPolicyUri=self.security_policy.URI)
-        return ua.UserTokenPolicy(TokenType=token_type, SecurityPolicyUri=self.security_policy.URI)
+        raise ConfigurationError(f"The endpoint does not offer the user token type {token_type.name}")
 
     async def activate_session(
         self,
@@ -1229,12 +1318,12 @@ class Client:
             params.ClientSignature.Algorithm = security_policies.SecurityPolicyBasic256Sha256.AsymmetricSignatureURI
         params.ClientSignature.Signature = self.security_policy.asymmetric_cryptography.signature(challenge)
         params.LocaleIds = self._locale
-        if not username and not (user_certificate and self.user_private_key):
-            self._add_anonymous_auth(params)
-        elif user_certificate:
+        if user_certificate and self.user_private_key:
             self._add_certificate_auth(params, user_certificate, challenge, self.user_certificate_chain)
-        else:
+        elif username:
             self._add_user_auth(params, username, password)
+        else:
+            self._add_anonymous_auth(params)
         res = await self.uaclient.activate_session(params)
         self._check_session_nonce(res.ServerNonce)
         self._server_nonce = res.ServerNonce
@@ -1321,11 +1410,15 @@ class Client:
         self._stale_watchdog_task = None
         await self._cancel_task(self._supervisor_task)
         self._supervisor_task = None
-        # Disable the pre-request hook for the close path so it doesn't block.
-        self.uaclient.pre_request_hook = None
+        if self.uaclient.state is UaClientState.RECONNECTING:
+            self.uaclient.mark_disconnected()
         await self._cancel_task(self._renew_channel_task)
         self._renew_channel_task = None
-        return await self.uaclient.close_session(True)
+        token = _supervisor_owns_requests.set(True)
+        try:
+            return await self.uaclient.close_session(True)
+        finally:
+            _supervisor_owns_requests.reset(token)
 
     @staticmethod
     async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
@@ -1380,84 +1473,32 @@ class Client:
           `queue_maxsize` bounds the internal buffer.
 
         :param period: Either a publishing interval in milliseconds or a
-            `CreateSubscriptionParameters` instance.
+            `CreateSubscriptionParameters` instance. With an interval, the keep-alive count gives a keep-alive about
+            every 10 s (at most a quarter of the session timeout) and the lifetime covers at least 300 s and three
+            keep-alives; use `subscription_parameters` to change that. The revised values are stored and corrected
+            once by `Subscription.init`.
         :param handler: Optional callback handler. If None, iterator mode.
         :param queue_maxsize: Iterator-mode queue bound (default 1000).
         """
         if isinstance(period, ua.CreateSubscriptionParameters):
             params = period
         else:
-            params = ua.CreateSubscriptionParameters()
-            params.RequestedPublishingInterval = period
-            params.RequestedLifetimeCount = 10000
-            params.RequestedMaxKeepAliveCount = self.get_keepalive_count(period)
-            params.MaxNotificationsPerPublish = 10000
-            params.PublishingEnabled = publishing
-            params.Priority = 0
+            params = subscription_parameters(period, publishing, session_timeout=self.session_timeout)
         subscription = Subscription(
             self.uaclient.session,
             params,
             handler,
             queue_maxsize=queue_maxsize,
         )
-        results = await subscription.init()
-        new_params = self.get_subscription_revised_params(params, results)
-        if new_params:
-            results = await subscription.update(new_params)
-            _logger.info("Result from subscription update: %s", results)
+        await subscription.init()
         self._subscriptions.append(subscription)
         return subscription
-
-    def get_subscription_revised_params(
-        self,
-        params: ua.CreateSubscriptionParameters,
-        results: ua.CreateSubscriptionResult,
-    ) -> ua.ModifySubscriptionParameters | None:
-        if (
-            results.RevisedPublishingInterval == params.RequestedPublishingInterval
-            and results.RevisedLifetimeCount == params.RequestedLifetimeCount
-            and results.RevisedMaxKeepAliveCount == params.RequestedMaxKeepAliveCount
-        ):
-            return None
-        _logger.warning("Revised values returned differ from subscription values: %s", results)
-        revised_interval = results.RevisedPublishingInterval
-        new_keepalive_count = self.get_keepalive_count(revised_interval)
-        if (
-            revised_interval != params.RequestedPublishingInterval
-            and new_keepalive_count != params.RequestedMaxKeepAliveCount
-        ):
-            _logger.info(
-                "KeepAliveCount will be updated to %s for consistency with RevisedPublishInterval",
-                new_keepalive_count,
-            )
-            modified_params = ua.ModifySubscriptionParameters()
-            copy_dataclass_attr(params, modified_params)
-            modified_params.RequestedMaxKeepAliveCount = new_keepalive_count
-            modified_params.SubscriptionId = results.SubscriptionId
-            modified_params.RequestedPublishingInterval = results.RevisedPublishingInterval
-            modified_params.RequestedLifetimeCount = results.RevisedLifetimeCount
-            return modified_params
-        return None
 
     async def delete_subscriptions(self, subscription_ids: Iterable[int]) -> list[ua.StatusCode]:
         """
         Deletes the provided list of subscription_ids
         """
         return await self.uaclient.delete_subscriptions(subscription_ids)
-
-    def get_keepalive_count(self, period: float) -> int:
-        """
-        We request the server to send a Keepalive notification when
-        no notification has been received for 75% of the session lifetime.
-        This is especially useful to keep the session up
-        when self.session_timeout < self.secure_channel_timeout.
-
-        Part4 5.13.2: If the requested value is 0, the Server
-        shall revise with the smallest supported keep-alive count.
-        """
-        if not period:
-            return 0
-        return int((self.session_timeout / period) * 0.75)
 
     async def get_namespace_array(self) -> list[str]:
         ns_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
@@ -1542,19 +1583,20 @@ class Client:
         Rmw: This call modifies the nodeid of the nodes, the original nodeid is
         available as node.basenodeid
         """
-        nodeids = [node.nodeid for node in nodes]
-        nodeids = await self.uaclient.register_nodes(nodeids)
-        for node, nodeid in zip(nodes, nodeids):
+        nodes = list(nodes)
+        registered = await self.uaclient.register_nodes([node.nodeid for node in nodes])
+        check_result_count(len(nodes), len(registered))
+        for node, nodeid in zip(nodes, registered):
             node.basenodeid = node.nodeid
             node.nodeid = nodeid
-        return list(nodes)
+        return nodes
 
     async def unregister_nodes(self, nodes: Iterable[Node]) -> None:
         """
         Unregister nodes
         """
-        nodeids = [node.nodeid for node in nodes]
-        await self.uaclient.unregister_nodes(nodeids)
+        nodes = list(nodes)
+        await self.uaclient.unregister_nodes([node.nodeid for node in nodes])
         for node in nodes:
             if not node.basenodeid:
                 continue
@@ -1567,8 +1609,7 @@ class Client:
         """
         Read the attributes of multiple nodes.
         """
-        nodeids = [node.nodeid for node in nodes]
-        return await self.uaclient.read_attributes(nodeids, attr)
+        return await self.uaclient.read_attributes([node.nodeid for node in nodes], attr)
 
     async def read_values(self, nodes: Iterable[Node]) -> list[Any]:
         """
@@ -1585,6 +1626,8 @@ class Client:
         """
         nodeids = [node.nodeid for node in nodes]
         dvs = [value_to_datavalue(val) for val in values]
+        if len(nodeids) != len(dvs):
+            raise ValueError(f"{len(nodeids)} nodes and {len(dvs)} values")
         results = await self.uaclient.write_attributes(nodeids, dvs, ua.AttributeIds.Value)
         if raise_on_partial_error:
             for result in results:
@@ -1599,6 +1642,7 @@ class Client:
         Browses multiple nodes in one ua call
         returns a List of Tuples(Node, BrowseResult)
         """
+        nodes = list(nodes)
         nodestobrowse = []
         for node in nodes:
             desc = ua.BrowseDescription()
@@ -1610,6 +1654,7 @@ class Client:
         parameters.RequestedMaxReferencesPerNode = 0
         parameters.NodesToBrowse = nodestobrowse
         results = await self.uaclient.browse(parameters)
+        check_result_count(len(nodes), len(results))
         return list(zip(nodes, results))
 
     async def translate_browsepaths(
