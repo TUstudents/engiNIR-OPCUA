@@ -375,6 +375,9 @@ Custom types:
 - The legacy loader for DataTypeDictionaries (`Client.load_type_definitions()`) finds arrays by the `LengthField`
   attribute of the dictionary, not by field names starting with `NoOf`, `__...Length` or `#`, and a generated file
   registers only structures that have a type id.
+- The legacy loaders (`load_type_definitions()`, `load_enums()`) register their classes in the type registry of the
+  client or server, not in the process-wide registry, and `StructGenerator.get_python_classes()` without an
+  environment returns a new dictionary instead of writing into `ua`.
 - `ua.DataTypeAttributes` has no `DataTypeDefinition` field and no reserved bit 22 (OPC 10000-4, 7.24.8).
 - `StructNode.add_field(field_name, field_type, is_array)`; the dictionary builder checks every result.
 

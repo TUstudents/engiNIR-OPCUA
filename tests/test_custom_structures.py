@@ -523,6 +523,27 @@ async def test_com43_struct_node_add_field_takes_the_field_name_first(srv):
     assert 'Name="Items" TypeName="opc:Int32" LengthField="NoOfItems"' in xml
 
 
+async def test_com111_legacy_loader_registers_in_the_registry_of_the_session(srv):
+    struct_name = "Com111Struct"
+    await srv.dict_builder.create_data_type(struct_name)
+    srv.dict_builder.add_field(ua.VariantType.Int32, "id", struct_name)
+    await srv.dict_builder.set_dict_byte_string()
+    await srv.srv.load_type_definitions()
+    cls = srv.srv.types.by_name(struct_name)
+    assert cls().id == 0
+    assert srv.srv.types.class_for_encoding(srv.srv.types.encoding_id_of(cls)) is cls
+    with pytest.raises(KeyError):
+        ua.default_types.by_name(struct_name)
+
+
+def test_com111_generator_without_environment_does_not_touch_the_ua_module():
+    generator = StructGenerator()
+    generator.make_model_from_string(COM112_DICTIONARY)
+    classes = generator.get_python_classes()
+    assert "Com111Plain" in classes
+    assert not hasattr(ua, "Com111Plain")
+
+
 COM112_DICTIONARY = b"""<opc:TypeDictionary xmlns:opc="http://opcfoundation.org/BinarySchema/" TargetNamespace="urn:test">
   <opc:StructuredType BaseType="ua:ExtensionObject" Name="Com111Plain">
     <opc:Field TypeName="opc:Int32" Name="NoOfPlain" />
