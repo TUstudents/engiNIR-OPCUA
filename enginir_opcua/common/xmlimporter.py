@@ -163,7 +163,7 @@ class XmlImporter:
         if (xmlpath is None and xmlstring is None) or (xmlpath and xmlstring):
             raise ValueError("Expected either xmlpath or xmlstring, not both or neither.")
         _logger.info("Importing XML file %s", xmlpath)
-        self.parser = XMLParser()
+        self.parser = XMLParser(keep_empty_body_values=True)
         await self._check_required_models(xmlpath, xmlstring)
         await self.parser.parse(xmlpath, xmlstring)
         self.namespaces = await self._map_namespaces()
@@ -540,8 +540,12 @@ class XmlImporter:
         elif type_is_union(atttype):
             atttype = types_from_union(atttype)[0]
         if isinstance(val, str):
-            pval = ua_type_to_python(val, atttype.__name__)
-            fargs[attname] = pval
+            if type_is_list(atttype):
+                fargs[attname] = []
+            elif is_dataclass(atttype) and not val:
+                fargs[attname] = atttype()  # type: ignore[operator]
+            else:
+                fargs[attname] = ua_type_to_python(val, atttype)
             return
         # so we have either an object or a list...
         if type_is_list(atttype):
@@ -573,6 +577,8 @@ class XmlImporter:
                     # sub_atttype = self._get_val_type(atttype, attname2)
                     self._set_attr(sub_atttype, subargs, attname2, v2)
             subargs.pop("Encoding", None)
+            if atttype is ua.LocalizedText:
+                subargs = {key: value or None for key, value in subargs.items()}
             fargs[attname] = atttype(**subargs)  # type: ignore[operator]
         else:
             raise RuntimeError(f"Could not handle type {atttype} of type {type(atttype)}")
@@ -595,7 +601,9 @@ class XmlImporter:
             if hasattr(ua.ua_binary.Primitives, vtype):
                 return ua.Variant(obj.value, getattr(ua.VariantType, vtype))
             if vtype == "LocalizedText":
-                return ua.Variant([ua.LocalizedText(Text=item["Text"], Locale=item["Locale"]) for item in obj.value])
+                return ua.Variant(
+                    [ua.LocalizedText(Text=item["Text"] or None, Locale=item["Locale"] or None) for item in obj.value]
+                )
             if vtype in ["ExpandedNodeId", "QualifiedName", "XmlElement", "StatusCode"]:
                 return ua.Variant(obj.value)
             return ua.Variant([getattr(ua, vtype)(v) for v in obj.value])
@@ -605,9 +613,8 @@ class XmlImporter:
         if obj.valuetype == "Guid":
             return ua.Variant(uuid.UUID(obj.value), getattr(ua.VariantType, obj.valuetype))
         if obj.valuetype == "LocalizedText":
-            myargs = dict(obj.value)
-            myargs.pop("Encoding", None)
-            ltext = ua.LocalizedText(**dict(obj.value))
+            myargs = {key: value or None for key, value in obj.value if key in ("Locale", "Text")}
+            ltext = ua.LocalizedText(**myargs)
             return ua.Variant(ltext, ua.VariantType.LocalizedText)
         if obj.valuetype == "NodeId":
             return ua.Variant(ua.NodeId.from_string(obj.value))

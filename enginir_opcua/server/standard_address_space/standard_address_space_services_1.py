@@ -1559,6 +1559,7 @@ def create_standard_address_space_Services_1(server):
     attrs = ua.VariableAttributes(
         DisplayName=LocalizedText("StaticStringNodeIdPattern"),
         DataType=ua.NodeId(ua.ObjectIds.String),
+        Value=ua.Variant('', ua.VariantType.String),
         ValueRank=-1,
         )
     node = ua.AddNodesItem(

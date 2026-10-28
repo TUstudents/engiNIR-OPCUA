@@ -395,7 +395,6 @@ async def test_xml_datetime_array(opc, tmpdir):
         3,
         "myxmlvar-array",
         [
-            datetime.datetime.now(),
             datetime.datetime.now(datetime.UTC),
             datetime.datetime.now(timezone("Asia/Tokyo")),
         ],
@@ -649,7 +648,7 @@ async def test_xml_var_nillable(opc):
     _ = await opc.opc.import_xml(xmlstring=xml)
     var_string = opc.opc.get_node(ua.NodeId("test_xml.string.nillable", 1))
     var_bool = opc.opc.get_node(ua.NodeId("test_xml.bool.nillable", 1))
-    assert await var_string.read_value() is None
+    assert await var_string.read_value() == ""
     assert await var_bool.read_value() is None
     await opc.opc.delete_nodes([var_string, var_bool])
 

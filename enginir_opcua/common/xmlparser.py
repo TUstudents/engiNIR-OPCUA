@@ -6,29 +6,125 @@ import asyncio
 import base64
 import logging
 import re
+import uuid
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
+from enum import Enum
+from typing import Any
+
+from dateutil.tz import tzutc
 
 from enginir_opcua import ua
 
 from .ua_utils import string_to_val
 
+XSI_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"
+NODE_TAGS = frozenset(
+    ("UAObject", "UAVariable", "UAMethod", "UAView", "UAObjectType", "UAVariableType", "UADataType", "UAReferenceType")
+)
+INTEGER_TYPES = {
+    "SByte": (-(2**7), 2**7 - 1),
+    "Int16": (-(2**15), 2**15 - 1),
+    "Int32": (-(2**31), 2**31 - 1),
+    "Int64": (-(2**63), 2**63 - 1),
+    "Byte": (0, 2**8 - 1),
+    "UInt16": (0, 2**16 - 1),
+    "UInt32": (0, 2**32 - 1),
+    "UInt64": (0, 2**64 - 1),
+}
+FLOAT_SPELLINGS = {"INF": float("inf"), "-INF": float("-inf"), "+INF": float("inf"), "NaN": float("nan")}
+NULL_DATETIME = datetime(1, 1, 1, tzinfo=UTC)
 
-def ua_type_to_python(val, uatype_as_str):
+
+def xs_boolean(text: str) -> bool:
+    """
+    Parse an xs:boolean: true, false, 1 or 0 (Part 6, 5.3.1.2). Anything else raises ValueError.
+    """
+    value = text.strip()
+    if value in ("true", "1"):
+        return True
+    if value in ("false", "0"):
+        return False
+    raise ValueError(f"'{text}' is not an xs:boolean")
+
+
+def xs_integer(text: str, type_name: str) -> int:
+    value = int(text.strip())
+    low, high = INTEGER_TYPES[type_name]
+    if not low <= value <= high:
+        raise ValueError(f"{value} is out of range for {type_name}")
+    return value
+
+
+def xs_float(text: str) -> float:
+    value = text.strip()
+    if value in FLOAT_SPELLINGS:
+        return FLOAT_SPELLINGS[value]
+    if value.lower() in ("inf", "-inf", "nan", "infinity", "-infinity"):
+        raise ValueError(f"'{text}' is not an xs:double")
+    return float(value)
+
+
+def xs_datetime(text: str) -> datetime:
+    """
+    Parse an xs:dateTime. A value without a time zone is UTC. The earliest representable value is the null DateTime
+    (Part 6, 5.3.1.6).
+    """
+    value = text.strip()
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as ex:
+        raise ValueError(f"'{text}' is not an xs:dateTime") from ex
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(tzutc())
+
+
+def parse_scalar(text: str, type_name: str | type) -> Any:
+    """
+    Convert the text of an XML element to the Python value of a built-in type or enumeration (Part 6, 5.3.1, 5.3.3).
+    """
+    if isinstance(type_name, type) and issubclass(type_name, Enum):
+        value = text.strip()
+        number = int(value) if value.lstrip("-").isdigit() else int(value.rsplit("_", 1)[1])
+        return type_name(number)
+    name = type_name if isinstance(type_name, str) else type_name.__name__
+    if name == "Boolean":
+        return xs_boolean(text)
+    if name in INTEGER_TYPES:
+        return xs_integer(text, name)
+    if name in ("Float", "Double"):
+        return xs_float(text)
+    if name == "DateTime":
+        return xs_datetime(text)
+    if name in ("String", "CharArray"):
+        return text
+    if name == "ByteString":
+        return base64.b64decode("".join(text.split()))
+    if name == "Guid":
+        return uuid.UUID(text.strip())
+    if hasattr(ua.VariantType, name):
+        return string_to_val(text, getattr(ua.VariantType, name))
+    if hasattr(ua, name):
+        return string_to_val(text, getattr(ua, name))
+    raise ValueError(f"cannot convert '{text}' to {name}")
+
+
+def ua_type_to_python(val: str, uatype_as_str: str) -> Any:
     """
     Converts a string value to a python value according to ua_utils.
     """
-    if hasattr(ua.VariantType, uatype_as_str):
-        return string_to_val(val, getattr(ua.VariantType, uatype_as_str))
-    if hasattr(ua, uatype_as_str):
-        return string_to_val(val, getattr(ua, uatype_as_str))
-    raise ValueError
+    return parse_scalar(val, uatype_as_str)
 
 
-def _to_bool(val):
-    """
-    Easy access to boolean conversion.
-    """
-    return ua_type_to_python(val, "Boolean")
+def _to_bool(val: str) -> bool:
+    return xs_boolean(val)
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 class NodeData:
@@ -37,8 +133,10 @@ class NodeData:
         self.nodeid = None
         self.browsename = None
         self.displayname = None
-        self.symname = None  # FIXME: this param is never used, why?
+        self.has_displayname = False
+        self.symname = None
         self.parent = None
+        self.parent_attr = None
         self.parentlink = None
         self.desc = ""
         self.typedef = None
@@ -46,6 +144,8 @@ class NodeData:
         self.nodeclass = None
         self.eventnotifier = 0
         self.design_tool_only = False
+        self.writemask = None
+        self.containsnoloops = None
 
         # variable
         self.datatype = None
@@ -58,6 +158,10 @@ class NodeData:
         self.minsample = None
         self.historizing = False
 
+        # method
+        self.executable = None
+        self.userexecutable = None
+
         # referencetype
         self.inversename = ""
         self.abstract = False
@@ -66,6 +170,7 @@ class NodeData:
         # datatype
         self.definitions = []
         self.struct_type = ""
+        self.option_set = False
 
     def __str__(self):
         return f"NodeData(nodeid:{self.nodeid})"
@@ -73,15 +178,22 @@ class NodeData:
     __repr__ = __str__
 
 
+def _array_dimensions(text: str | None) -> list[int] | None:
+    if text is None or not text.strip():
+        return None
+    return [int(i) for i in text.split(",")]
+
+
 class Field:
     def __init__(self, data):
         self.datatype = data.get("DataType", "i=24")  # Default is BaseDataType
         self.name = data.get("Name")
         self.dname = data.get("DisplayName", "")
-        self.optional = bool(data.get("IsOptional", False))
+        self.optional = xs_boolean(data.get("IsOptional", "false"))
+        self.allow_subtypes = xs_boolean(data.get("AllowSubTypes", "false"))
         self.valuerank = int(data.get("ValueRank", -1))
-        self.arraydim = data.get("ArrayDimensions", None)  # FIXME: check type
-        self.value = int(data.get("Value", 0))
+        self.arraydim = data.get("ArrayDimensions", None)
+        self.value = int(data.get("Value", -1))
         self.desc = data.get("Description", "")
         self.max_str_len = int(data.get("MaxStringLength", 0))
 
@@ -104,6 +216,7 @@ class ExtObj:
         self.objname = None
         self.bodytype = None
         self.body = {}
+        self.body_namespace = None
 
     def __str__(self):
         return f"ExtObj({self.objname}, {self.body})"
@@ -111,10 +224,18 @@ class ExtObj:
     __repr__ = __str__
 
 
+def _choose_localized(entries: list[tuple[str, str | None]]) -> str | None:
+    for locale, text in entries:
+        if not locale:
+            return text
+    return entries[0][1] if entries else None
+
+
 class XMLParser:
-    def __init__(self):
+    def __init__(self, keep_empty_body_values: bool = False):
+        self.keep_empty_body_values = keep_empty_body_values
         self.logger = logging.getLogger(__name__)
-        self._retag = re.compile(r"(\{.*\})(.*)")
+        self._retag = re.compile(r"(\{.*\})?(.*)")
         self.root = None
         self.ns = {
             "base": "http://opcfoundation.org/UA/2011/03/UANodeSet.xsd",
@@ -137,38 +258,36 @@ class XMLParser:
             tree = ET.parse(xmlpath)
             self.root = tree.getroot()
 
+    def _children(self, name: str) -> list[ET.Element]:
+        assert self.root is not None
+        for child in self.root:
+            if local_name(child.tag) == name:
+                return list(child)
+        return []
+
     def get_used_namespaces(self):
         """
         Return the used namespace uris in this import file
         """
-        namespaces_uris = []
-        for child in self.root:
-            tag = self._retag.match(child.tag).groups()[1]
-            if tag == "NamespaceUris":
-                namespaces_uris = [ns_element.text for ns_element in child]
-                break
-        return namespaces_uris
+        return [ns_element.text for ns_element in self._children("NamespaceUris")]
+
+    def get_used_servers(self) -> list[str]:
+        return [el.text for el in self._children("ServerUris")]
 
     def get_aliases(self) -> dict:
         """
         Return the used node aliases in this import file
         """
-        aliases = {}
-        for child in self.root:
-            tag = self._retag.match(child.tag).groups()[1]
-            if tag == "Aliases":
-                for el in child:
-                    aliases[el.attrib["Alias"]] = el.text
-                break
-        return aliases
+        return {el.attrib["Alias"]: el.text for el in self._children("Aliases")}
 
     def get_node_datas(self):
         nodes = []
         for child in self.root:
-            tag = self._retag.match(child.tag).groups()[1]
-            if tag not in ["Aliases", "NamespaceUris", "Extensions", "Models"]:  # these XML tags don't contain nodes
-                node = self._parse_node(tag, child)
-                nodes.append(node)
+            tag = local_name(child.tag)
+            if tag in NODE_TAGS:
+                nodes.append(self._parse_node(tag, child))
+            else:
+                self.logger.debug("Skipping element %s: it does not define a node", tag)
         return nodes
 
     def _parse_node(self, nodetype, child):
@@ -181,8 +300,21 @@ class XMLParser:
             self._set_attr(key, val, obj)
         self.logger.debug("Parsing node: %s %s", obj.nodeid, obj.browsename)
         obj.displayname = obj.browsename  # give a default value to display name
+        names: list[tuple[str, str | None]] = []
+        descriptions: list[tuple[str, str | None]] = []
         for el in child:
-            self._parse_attr(el, obj)
+            tag = local_name(el.tag)
+            if tag == "DisplayName":
+                names.append((el.attrib.get("Locale", ""), el.text))
+            elif tag == "Description":
+                descriptions.append((el.attrib.get("Locale", ""), el.text))
+            else:
+                self._parse_attr(el, obj)
+        if names:
+            obj.displayname = _choose_localized(names)
+            obj.has_displayname = True
+        if descriptions:
+            obj.desc = _choose_localized(descriptions)
         return obj
 
     def _set_attr(self, key, val, obj):
@@ -194,119 +326,110 @@ class XMLParser:
             obj.symname = val
         elif key == "ParentNodeId":
             obj.parent = val
+            obj.parent_attr = val
         elif key == "DataType":
             obj.datatype = val
         elif key == "IsAbstract":
-            obj.abstract = _to_bool(val)
+            obj.abstract = xs_boolean(val)
         elif key == "Executable":
-            obj.executable = _to_bool(val)
+            obj.executable = xs_boolean(val)
+        elif key == "UserExecutable":
+            obj.userexecutable = xs_boolean(val)
         elif key == "EventNotifier":
             obj.eventnotifier = int(val)
         elif key == "ValueRank":
             obj.rank = int(val)
         elif key == "ArrayDimensions":
-            obj.dimensions = [int(i) for i in val.split(",")]
+            obj.dimensions = _array_dimensions(val)
         elif key == "MinimumSamplingInterval":
-            obj.minsample = float(val)
+            obj.minsample = xs_float(val)
         elif key == "AccessLevel":
             obj.accesslevel = int(val)
         elif key == "UserAccessLevel":
             obj.useraccesslevel = int(val)
+        elif key == "WriteMask":
+            obj.writemask = int(val)
+        elif key == "ContainsNoLoops":
+            obj.containsnoloops = xs_boolean(val)
         elif key == "Symmetric":
-            obj.symmetric = _to_bool(val)
+            obj.symmetric = xs_boolean(val)
         elif key == "Historizing":
-            obj.historizing = _to_bool(val)
+            obj.historizing = xs_boolean(val)
         elif key == "DesignToolOnly":
-            obj.design_tool_only = _to_bool(val)
+            obj.design_tool_only = xs_boolean(val)
         else:
             self.logger.info("Attribute not implemented: %s:%s", key, val)
 
     def _parse_attr(self, el, obj):
-        tag = self._retag.match(el.tag).groups()[1]
+        tag = local_name(el.tag)
 
-        if tag == "DisplayName":
-            obj.displayname = el.text
-        elif tag == "Description":
-            obj.desc = el.text
-        elif tag == "References":
+        if tag == "References":
             self._parse_refs(el, obj)
         elif tag == "Value":
             self._parse_contained_value(el, obj)
         elif tag == "InverseName":
             obj.inversename = el.text
         elif tag == "Definition":
-            if el.attrib.get("IsUnion", False):
+            if xs_boolean(el.attrib.get("IsUnion", "false")):
                 obj.struct_type = "IsUnion"
-            elif el.attrib.get("IsOptional", False):
+            elif xs_boolean(el.attrib.get("IsOptional", "false")):
                 obj.struct_type = "IsOptional"
+            obj.option_set = xs_boolean(el.attrib.get("IsOptionSet", "false"))
             for field in el:
-                field = self._parse_field(field)
-                obj.definitions.append(field)
-        elif tag == "Documentation" or tag == "Category":
-            # Only for documentation
+                obj.definitions.append(self._parse_field(field))
+        elif tag in ("Documentation", "Category", "Extensions", "RolePermissions", "Translation"):
             pass
         else:
             self.logger.info("Not implemented tag: %s", el)
 
     def _parse_field(self, el):
-        field = Field(el)
+        field = Field(el.attrib)
+        names: list[tuple[str, str | None]] = []
+        descriptions: list[tuple[str, str | None]] = []
         for child in el:
-            self._parse_attr(child, field)
+            tag = local_name(child.tag)
+            if tag == "DisplayName":
+                names.append((child.attrib.get("Locale", ""), child.text))
+            elif tag == "Description":
+                descriptions.append((child.attrib.get("Locale", ""), child.text))
+        if names:
+            field.dname = _choose_localized(names) or ""
+        if descriptions:
+            field.desc = _choose_localized(descriptions) or ""
         return field
 
     def _parse_contained_value(self, el, obj):
         """
         Parse the child of el as a constant.
         """
-        val_el = el.find(".//")  # should be only one child
+        val_el = next(iter(el), None)
         self._parse_value(val_el, obj)
 
     def _parse_value(self, val_el, obj):
         """
         Parse the node val_el as a constant.
         """
-        if val_el is not None and val_el.text is not None:
-            ntag = self._retag.match(val_el.tag).groups()[1]
-        else:
-            ntag = "Null"
-
-        obj.valuetype = ntag
-        if ntag == "Null":
+        if val_el is None:
+            obj.valuetype = "Null"
             obj.value = None
-        elif hasattr(ua.ua_binary.Primitives1, ntag):
-            # Elementary types have their parsing directly relying on ua_type_to_python.
-            obj.value = ua_type_to_python(val_el.text, ntag)
-        elif ntag == "DateTime":
-            obj.value = ua_type_to_python(val_el.text, ntag)
-        elif ntag == "ByteString":
-            if val_el.text is None:
-                mytext = b""
-            else:
-                mytext = val_el.text.encode()
-                mytext = base64.b64decode(mytext)
-            obj.value = mytext
-        elif ntag == "String" or ntag == "XmlElement":
-            # String and XMLElement are identical only type is different
-            mytext = val_el.text
-            if mytext is None:
-                # Support importing null strings.
-                mytext = ""
-            if ntag == "XmlElement":
-                obj.value = ua.XmlElement(mytext)
-            else:
-                obj.value = mytext
+            return
+        ntag = local_name(val_el.tag)
+        obj.valuetype = ntag
+        if val_el.attrib.get(XSI_NIL, "false") in ("true", "1"):
+            obj.value = None
+        elif ntag in INTEGER_TYPES or ntag in ("Boolean", "Float", "Double", "DateTime", "ByteString"):
+            obj.value = self._scalar(val_el, ntag)
+        elif ntag in ("String", "XmlElement"):
+            mytext = val_el.text or ""
+            obj.value = ua.XmlElement(mytext) if ntag == "XmlElement" else mytext
         elif ntag == "Guid":
-            self._parse_contained_value(val_el, obj)
-            # Override parsed string type to guid.
-            obj.valuetype = ntag
+            obj.value = self._child_text(val_el, "String")
         elif ntag == "NodeId":
-            id_el = val_el.find("uax:Identifier", self.ns)
-            if id_el is not None:
-                obj.value = id_el.text
+            obj.value = self._child_text(val_el, "Identifier")
         elif ntag == "ExpandedNodeId":
-            id_el = val_el.find("uax:Identifier", self.ns)
-            if id_el is not None:
-                obj.value = ua.NodeId.from_string(id_el.text)
+            identifier = self._child_text(val_el, "Identifier")
+            if identifier is not None:
+                obj.value = ua.NodeId.from_string(identifier)
                 if not isinstance(obj.value, ua.ExpandedNodeId):
                     obj.value = ua.ExpandedNodeId(obj.value.Identifier, obj.value.NamespaceIndex)
         elif ntag == "ExtensionObject":
@@ -318,23 +441,47 @@ class XMLParser:
         elif ntag == "ListOfExtensionObject":
             obj.value = self._parse_list_of_extension_object(val_el)
         elif ntag == "StatusCode":
-            code_el = val_el.find("uax:Code", self.ns)
-            val = code_el.text if code_el is not None else "0"
-            obj.value = ua.StatusCode(string_to_val(val, ua.VariantType.UInt32))
+            code = self._child_text(val_el, "Code")
+            obj.value = ua.StatusCode(xs_integer(code if code is not None else "0", "UInt32"))
         elif ntag == "QualifiedName":
             obj.value = self._parse_qualifed_name(val_el)
+        elif ntag == "Matrix":
+            obj.value = self._parse_matrix(val_el)
         elif ntag.startswith("ListOf"):
-            # Default case for "ListOf" types.
-            # Should stay after particular cases (e.g.: "ListOfLocalizedText").
             obj.value = []
-            for val_el in val_el:
+            for item in val_el:
                 tmp = NodeData()
-                self._parse_value(val_el, tmp)
+                self._parse_value(item, tmp)
                 obj.value.append(tmp.value)
         else:
-            # Missing according to ua.VariantType (also missing in string_to_val):
-            # DataValue, Variant, DiagnosticInfo.
-            self.logger.warning("Parsing value of type '%s' not implemented", ntag)
+            raise ValueError(f"Parsing value of type '{ntag}' is not implemented")
+
+    def _scalar(self, el, ntag: str) -> Any:
+        if not (el.text or "").strip():
+            return b"" if ntag == "ByteString" else None
+        return parse_scalar(el.text, ntag)
+
+    def _child_text(self, el, name: str) -> str | None:
+        for child in el:
+            if local_name(child.tag) == name:
+                return child.text
+        return None
+
+    def _parse_matrix(self, el) -> tuple[list[int], str, list]:
+        dimensions: list[int] = []
+        elements: list = []
+        element_type = "Null"
+        for child in el:
+            tag = local_name(child.tag)
+            if tag == "Dimensions":
+                dimensions = [xs_integer(item.text or "0", "Int32") for item in child]
+            elif tag == "Elements":
+                for item in child:
+                    tmp = NodeData()
+                    self._parse_value(item, tmp)
+                    element_type = tmp.valuetype
+                    elements.append(tmp.value)
+        return dimensions, element_type, elements
 
     def _get_text(self, el):
         txtlist = [txt.strip() for txt in el.itertext()]
@@ -357,22 +504,24 @@ class XMLParser:
         Parse an uax:ListOfExtensionObject Value
         Return a list of ExtObj
         """
-        value = []
-        for extension_object in el:
-            ext_obj = self._parse_ext_obj(extension_object)
-            value.append(ext_obj)
-        return value
+        return [self._parse_ext_obj(extension_object) for extension_object in el]
 
     def _parse_ext_obj(self, el):
         ext = ExtObj()
         for extension_object_part in el:
-            ntag = self._retag.match(extension_object_part.tag).groups()[1]
+            ntag = local_name(extension_object_part.tag)
             if ntag == "TypeId":
-                ntag = self._retag.match(extension_object_part.find("*").tag).groups()[1]
                 ext.typeid = self._get_text(extension_object_part)
             elif ntag == "Body":
-                ext.objname = self._retag.match(extension_object_part.find("*").tag).groups()[1]
-                ext.body = self._parse_body(extension_object_part)
+                inner = next(iter(extension_object_part), None)
+                if inner is None:
+                    continue
+                ext.objname = local_name(inner.tag)
+                ext.body_namespace = inner.tag[1:].split("}")[0] if inner.tag.startswith("{") else None
+                if ext.objname == "ByteString":
+                    ext.body = base64.b64decode("".join((inner.text or "").split()))
+                else:
+                    ext.body = self._parse_body(extension_object_part)
             else:
                 self.logger.warning("Unknown ntag: %s", ntag)
         return ext
@@ -380,34 +529,26 @@ class XMLParser:
     def _parse_body(self, el):
         body = []
         for body_item in el:
-            otag = self._retag.match(body_item.tag).groups()[1]
-            childs = [i for i in body_item]
-            if not childs:
-                val = self._get_text(body_item)
+            otag = local_name(body_item.tag)
+            if len(body_item):
+                body.append((otag, self._parse_body(body_item)))
             else:
-                val = self._parse_body(body_item)
-            if val:
-                body.append((otag, val))
+                text = self._get_text(body_item)
+                if text or self.keep_empty_body_values:
+                    body.append((otag, text))
         return body
 
     def _parse_qualifed_name(self, el):
-        name = None
-        ns = 0
-        nval = el.find("uax:Name", self.ns)
-        if nval is not None:
-            name = nval.text
-        nsval = el.find("uax:NamespaceIndex", self.ns)
-        if nsval is not None:
-            ns = string_to_val(nsval.text, ua.VariantType.UInt16)
-        v = ua.QualifiedName(name, ns)
-        return v
+        name = self._child_text(el, "Name")
+        namespace = self._child_text(el, "NamespaceIndex")
+        return ua.QualifiedName(name, xs_integer(namespace, "UInt16") if namespace is not None else 0)
 
     def _parse_refs(self, el, obj):
         parent, parentlink = obj.parent, None
 
         for ref in el:
             struct = RefStruct()
-            struct.forward = "IsForward" not in ref.attrib or ref.attrib["IsForward"] not in ("false", "False")
+            struct.forward = xs_boolean(ref.attrib.get("IsForward", "true"))
             struct.target = ref.text
             struct.reftype = ref.attrib["ReferenceType"]
             obj.refs.append(struct)
@@ -423,7 +564,7 @@ class XMLParser:
             # the case of asimple parent attribute without any reverse link
             obj.parentlink = "HasComponent"
         if not obj.parent:
-            obj.parent, obj.parentlink = parent, parentlink
+            obj.parent, obj.parentlink = parent, parent and parentlink
         if not obj.parent:
             self.logger.info("Could not find parent for node '%s'", obj.nodeid)
 
@@ -444,21 +585,15 @@ class XMLParser:
                 required_models.append(child.attrib)
         return required_models
 
-    def get_nodeset_namespaces(self) -> list[tuple[str, ua.String, ua.DateTime]]:
+    def get_nodeset_namespaces(self) -> list[tuple[str, str, datetime]]:
         """
         Get all namespaces that are registered with version and date_time
         """
-        ns = []
-        for model in self.root.findall("base:Models/base:Model", self.ns):
+        ns: list[tuple[str, str, datetime]] = []
+        for model in self._children("Models"):
             uri = model.attrib.get("ModelUri")
             if uri is not None:
-                version = model.attrib.get("Version", "")
-                date_time = model.attrib.get("PublicationDate")
-                if date_time is None:
-                    date_time = ua.DateTime(1, 1, 1)
-                elif date_time is not None and date_time[-1] == "Z":
-                    date_time = ua.DateTime.strptime(date_time, "%Y-%m-%dT%H:%M:%SZ")
-                else:
-                    date_time = ua.DateTime.strptime(date_time, "%Y-%m-%dT%H:%M:%S%z")
-                ns.append((uri, version, date_time))
+                published = model.attrib.get("PublicationDate")
+                date_time = NULL_DATETIME if published is None else xs_datetime(published)
+                ns.append((uri, model.attrib.get("Version", ""), date_time))
         return ns
