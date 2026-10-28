@@ -6,7 +6,7 @@ and browse address space
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, overload
 
@@ -978,18 +978,28 @@ class Node:
     ) -> Node:
         return await create_variable(self, nodeid, bname, val, varianttype, datatype)
 
-    async def add_object_type(self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str) -> Node:
-        return await create_object_type(self, nodeid, bname)
+    async def add_object_type(
+        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, is_abstract: bool = False
+    ) -> Node:
+        return await create_object_type(self, nodeid, bname, is_abstract)
 
     async def add_variable_type(
-        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, datatype: ua.NodeId | int
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        datatype: ua.NodeId | int,
+        is_abstract: bool = False,
     ) -> Node:
-        return await create_variable_type(self, nodeid, bname, datatype)
+        return await create_variable_type(self, nodeid, bname, datatype, is_abstract)
 
     async def add_data_type(
-        self, nodeid: ua.NodeId | str | int, bname: ua.QualifiedName | str, description: str | None = None
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        description: str | None = None,
+        is_abstract: bool = False,
     ) -> Node:
-        return await create_data_type(self, nodeid, bname, description=description)
+        return await create_data_type(self, nodeid, bname, description=description, is_abstract=is_abstract)
 
     async def add_property(
         self,
@@ -1001,8 +1011,15 @@ class Node:
     ) -> Node:
         return await create_property(self, nodeid, bname, val, varianttype, datatype)
 
-    async def add_method(self, *args: Any) -> Node:
-        return await create_method(self, *args)
+    async def add_method(
+        self,
+        nodeid: ua.NodeId | str | int,
+        bname: ua.QualifiedName | str,
+        callback: Callable[..., Any] | None = None,
+        inputs: list[Any] | None = None,
+        outputs: list[Any] | None = None,
+    ) -> Node:
+        return await create_method(self, nodeid, bname, callback, inputs, outputs)
 
     async def add_reference_type(
         self,

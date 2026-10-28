@@ -262,10 +262,10 @@ async def test_delete_nodes_recursive(opc):
 
 async def test_delete_nodes_recursive2(opc):
     obj = opc.opc.nodes.objects
-    fold = await obj.add_folder(2, "FolderToDeleteRoot")
+    fold = await obj.add_object(2, "FolderToDeleteRoot")
     mynodes = []
     for i in range(7):
-        nfold = await fold.add_folder(2, f"FolderToDeleteRoot{i}")
+        nfold = await fold.add_object(2, f"FolderToDeleteRoot{i}")
         var = await nfold.add_variable(2, "VarToDeleteR", 9.1)
         var = await nfold.add_property(2, "ProToDeleteR", 9.1)
         prop = await nfold.add_property(2, "ProToDeleteR2", 9.1)
@@ -2163,7 +2163,7 @@ async def test_object_meth_args(opc):
     meth = await custom_otype.add_method(
         ua.NodeId("ObjectWithMethodTestArgsTest", 2),
         ua.QualifiedName("ObjectWithMethodTestArgsTest", 2),
-        func,
+        func if hasattr(opc.opc, "iserver") else None,
         [ua.VariantType.Int64],
         [ua.VariantType.Int64],
     )
