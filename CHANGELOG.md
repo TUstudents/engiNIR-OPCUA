@@ -190,6 +190,9 @@ Variant and defaults:
   back flat.
 - `get_default_value()` returns the null values: DateTime 1601-01-01 UTC and the all-zero Guid instead of the current
   time and a random Guid.
+- Boolean fields of generated structures default to `False` instead of `True` (OPC 10000-6, 5.1.2), so
+  `ua.ReadRawModifiedDetails()` no longer asks for modified values and bounds, and `ua.MonitoringParameters()` no
+  longer discards the oldest value. Code that built these structures without setting the field must set it.
 - `WriteMask` has the members for bits 22 to 25.
 
 Encoding and decoding:

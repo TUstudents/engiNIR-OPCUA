@@ -2081,7 +2081,7 @@ class BitFieldDefinition:
 
     Name: 'ua.String' = None
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
-    Reserved: 'ua.Boolean' = True
+    Reserved: 'ua.Boolean' = False
     StartingBitPosition: 'ua.UInt32' = 0
     EndingBitPosition: 'ua.UInt32' = 0
 
@@ -2858,7 +2858,7 @@ class PublishedDataSetCustomSourceDataType(PublishedDataSetSourceDataType):
 
     data_type = NodeId(ObjectIds.PublishedDataSetCustomSourceDataType)
 
-    CyclicDataSet: 'ua.Boolean' = True
+    CyclicDataSet: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -2946,7 +2946,7 @@ class DataSetWriterDataType:
     data_type = NodeId(ObjectIds.DataSetWriterDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     DataSetWriterId: 'ua.UInt16' = 0
     DataSetFieldContentMask: 'ua.DataSetFieldContentMask' = field(default_factory=lambda:DataSetFieldContentMask(0))
     KeyFrameCount: 'ua.UInt32' = 0
@@ -3450,9 +3450,9 @@ class DtlsPubSubConnectionDataType:
 
     ClientCipherSuite: 'ua.String' = None
     ServerCipherSuites: 'list[ua.String]' = field(default_factory=list)
-    ZeroRTT: 'ua.Boolean' = True
+    ZeroRTT: 'ua.Boolean' = False
     CertificateGroupId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    VerifyClientCertificate: 'ua.Boolean' = True
+    VerifyClientCertificate: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -3687,7 +3687,7 @@ class JsonStatusMessage:
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
     Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    IsCyclic: 'ua.Boolean' = True
+    IsCyclic: 'ua.Boolean' = False
     Status: 'ua.PubSubState' = field(default_factory=lambda:PubSubState.Disabled)
     NextReportTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -3955,7 +3955,7 @@ class LldpManagementAddressTxPortType:
 
     AddressSubtype: 'ua.UInt32' = 0
     ManAddress: 'ua.String' = None
-    TxEnable: 'ua.Boolean' = True
+    TxEnable: 'ua.Boolean' = False
     AddrLen: 'ua.UInt32' = 0
     IfSubtype: 'ua.ManAddrIfSubtype' = field(default_factory=lambda:ManAddrIfSubtype.None_)
     IfId: 'ua.UInt32' = 0
@@ -4018,7 +4018,7 @@ class ReferenceDescriptionDataType:
 
     SourceNode: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ReferenceType: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     TargetNode: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
 
 
@@ -4036,7 +4036,7 @@ class ReferenceListEntryDataType:
     data_type = NodeId(ObjectIds.ReferenceListEntryDataType)
 
     ReferenceType: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     TargetNode: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
 
 
@@ -4257,7 +4257,7 @@ class StructureField:
     ValueRank: 'ua.Int32' = 0
     ArrayDimensions: 'list[ua.UInt32]' = field(default_factory=list)
     MaxStringLength: 'ua.UInt32' = 0
-    IsOptional: 'ua.Boolean' = True
+    IsOptional: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -4691,7 +4691,7 @@ class TimeZoneDataType:
     data_type = NodeId(ObjectIds.TimeZoneDataType)
 
     Offset: 'ua.Int16' = 0
-    DaylightSavingInOffset: 'ua.Boolean' = True
+    DaylightSavingInOffset: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -5208,7 +5208,7 @@ class PubSubGroupDataType:
     data_type = NodeId(ObjectIds.PubSubGroupDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     SecurityMode: 'ua.MessageSecurityMode' = field(default_factory=lambda:MessageSecurityMode.Invalid)
     SecurityGroupId: 'ua.String' = None
     SecurityKeyServices: 'list[ua.EndpointDescription]' = field(default_factory=list)
@@ -5258,7 +5258,7 @@ class WriterGroupDataType(PubSubGroupDataType):
     data_type = NodeId(ObjectIds.WriterGroupDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     SecurityMode: 'ua.MessageSecurityMode' = field(default_factory=lambda:MessageSecurityMode.Invalid)
     SecurityGroupId: 'ua.String' = None
     SecurityKeyServices: 'list[ua.EndpointDescription]' = field(default_factory=list)
@@ -5319,7 +5319,7 @@ class DataSetReaderDataType:
     data_type = NodeId(ObjectIds.DataSetReaderDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     PublisherId: 'ua.Variant' = field(default_factory=lambda: Variant())
     WriterGroupId: 'ua.UInt16' = 0
     DataSetWriterId: 'ua.UInt16' = 0
@@ -5367,7 +5367,7 @@ class ReaderGroupDataType(PubSubGroupDataType):
     data_type = NodeId(ObjectIds.ReaderGroupDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     SecurityMode: 'ua.MessageSecurityMode' = field(default_factory=lambda:MessageSecurityMode.Invalid)
     SecurityGroupId: 'ua.String' = None
     SecurityKeyServices: 'list[ua.EndpointDescription]' = field(default_factory=list)
@@ -5406,7 +5406,7 @@ class PubSubConnectionDataType:
     data_type = NodeId(ObjectIds.PubSubConnectionDataType)
 
     Name: 'ua.String' = None
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     PublisherId: 'ua.Variant' = field(default_factory=lambda: Variant())
     TransportProfileUri: 'ua.String' = None
     Address: 'type[ua.NetworkAddressDataType]' = field(default_factory=lambda: NetworkAddressDataType())
@@ -5433,7 +5433,7 @@ class PubSubConfigurationDataType:
 
     PublishedDataSets: 'list[ua.PublishedDataSetDataType]' = field(default_factory=list)
     Connections: 'list[ua.PubSubConnectionDataType]' = field(default_factory=list)
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -5515,7 +5515,7 @@ class PubSubConfiguration2DataType(PubSubConfigurationDataType):
 
     PublishedDataSets: 'list[ua.PublishedDataSetDataType]' = field(default_factory=list)
     Connections: 'list[ua.PubSubConnectionDataType]' = field(default_factory=list)
-    Enabled: 'ua.Boolean' = True
+    Enabled: 'ua.Boolean' = False
     SubscribedDataSets: 'list[ua.StandaloneSubscribedDataSetDataType]' = field(default_factory=list)
     DataSetClasses: 'list[ua.DataSetMetaDataType]' = field(default_factory=list)
     DefaultSecurityKeyServices: 'list[ua.EndpointDescription]' = field(default_factory=list)
@@ -5640,7 +5640,7 @@ class RegisteredServer:
     GatewayServerUri: 'ua.String' = None
     DiscoveryUrls: 'list[ua.String]' = field(default_factory=list)
     SemaphoreFilePath: 'ua.String' = None
-    IsOnline: 'ua.Boolean' = True
+    IsOnline: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6210,7 +6210,7 @@ class CloseSessionRequest:
 
     TypeId: 'ua.NodeId' = FourByteNodeId(ObjectIds.CloseSessionRequest_Encoding_DefaultBinary)
     RequestHeader: 'ua.RequestHeader' = field(default_factory=lambda: RequestHeader())
-    DeleteSubscriptions: 'ua.Boolean' = True
+    DeleteSubscriptions: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6392,7 +6392,7 @@ class VariableAttributes(NodeAttributes):
     AccessLevel: 'ua.Byte' = 0
     UserAccessLevel: 'ua.Byte' = 0
     MinimumSamplingInterval: 'ua.Duration' = 0
-    Historizing: 'ua.Boolean' = True
+    Historizing: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6423,8 +6423,8 @@ class MethodAttributes(NodeAttributes):
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
     WriteMask: 'ua.UInt32' = 0
     UserWriteMask: 'ua.UInt32' = 0
-    Executable: 'ua.Boolean' = True
-    UserExecutable: 'ua.Boolean' = True
+    Executable: 'ua.Boolean' = False
+    UserExecutable: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6453,7 +6453,7 @@ class ObjectTypeAttributes(NodeAttributes):
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
     WriteMask: 'ua.UInt32' = 0
     UserWriteMask: 'ua.UInt32' = 0
-    IsAbstract: 'ua.Boolean' = True
+    IsAbstract: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6494,7 +6494,7 @@ class VariableTypeAttributes(NodeAttributes):
     DataType: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ValueRank: 'ua.Int32' = 0
     ArrayDimensions: 'list[ua.UInt32]' = field(default_factory=list)
-    IsAbstract: 'ua.Boolean' = True
+    IsAbstract: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6527,8 +6527,8 @@ class ReferenceTypeAttributes(NodeAttributes):
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
     WriteMask: 'ua.UInt32' = 0
     UserWriteMask: 'ua.UInt32' = 0
-    IsAbstract: 'ua.Boolean' = True
-    Symmetric: 'ua.Boolean' = True
+    IsAbstract: 'ua.Boolean' = False
+    Symmetric: 'ua.Boolean' = False
     InverseName: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
 
 
@@ -6558,7 +6558,7 @@ class DataTypeAttributes(NodeAttributes):
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
     WriteMask: 'ua.UInt32' = 0
     UserWriteMask: 'ua.UInt32' = 0
-    IsAbstract: 'ua.Boolean' = True
+    IsAbstract: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6589,7 +6589,7 @@ class ViewAttributes(NodeAttributes):
     Description: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
     WriteMask: 'ua.UInt32' = 0
     UserWriteMask: 'ua.UInt32' = 0
-    ContainsNoLoops: 'ua.Boolean' = True
+    ContainsNoLoops: 'ua.Boolean' = False
     EventNotifier: 'ua.Byte' = 0
 
 
@@ -6764,7 +6764,7 @@ class AddReferencesItem:
 
     SourceNodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ReferenceTypeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     TargetServerUri: 'ua.String' = None
     TargetNodeId: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
     TargetNodeClass: 'ua.NodeClass' = field(default_factory=lambda:NodeClass.Unspecified)
@@ -6837,7 +6837,7 @@ class DeleteNodesItem:
     data_type = NodeId(ObjectIds.DeleteNodesItem)
 
     NodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    DeleteTargetReferences: 'ua.Boolean' = True
+    DeleteTargetReferences: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -6914,9 +6914,9 @@ class DeleteReferencesItem:
 
     SourceNodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ReferenceTypeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     TargetNodeId: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
-    DeleteBidirectional: 'ua.Boolean' = True
+    DeleteBidirectional: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -7026,7 +7026,7 @@ class BrowseDescription:
     NodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     BrowseDirection: 'ua.BrowseDirection' = field(default_factory=lambda:BrowseDirection.Forward)
     ReferenceTypeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IncludeSubtypes: 'ua.Boolean' = True
+    IncludeSubtypes: 'ua.Boolean' = False
     NodeClassMask: 'ua.UInt32' = 0
     ResultMask: 'ua.UInt32' = 0
 
@@ -7055,7 +7055,7 @@ class ReferenceDescription:
     data_type = NodeId(ObjectIds.ReferenceDescription)
 
     ReferenceTypeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     NodeId: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
     BrowseName: 'ua.QualifiedName' = field(default_factory=lambda: QualifiedName())
     DisplayName: 'ua.LocalizedText' = field(default_factory=lambda: LocalizedText())
@@ -7151,7 +7151,7 @@ class BrowseNextParameters:
     :vartype ContinuationPoints: ContinuationPoint
     """
 
-    ReleaseContinuationPoints: 'ua.Boolean' = True
+    ReleaseContinuationPoints: 'ua.Boolean' = False
     ContinuationPoints: 'list[ua.ContinuationPoint]' = field(default_factory=list)
 
 
@@ -7445,7 +7445,7 @@ class EndpointConfiguration:
     data_type = NodeId(ObjectIds.EndpointConfiguration)
 
     OperationTimeout: 'ua.Int32' = 0
-    UseBinaryEncoding: 'ua.Boolean' = True
+    UseBinaryEncoding: 'ua.Boolean' = False
     MaxStringLength: 'ua.Int32' = 0
     MaxByteStringLength: 'ua.Int32' = 0
     MaxArrayLength: 'ua.Int32' = 0
@@ -7491,7 +7491,7 @@ class NodeTypeDescription:
     data_type = NodeId(ObjectIds.NodeTypeDescription)
 
     TypeDefinitionNode: 'ua.ExpandedNodeId' = field(default_factory=lambda: ExpandedNodeId())
-    IncludeSubTypes: 'ua.Boolean' = True
+    IncludeSubTypes: 'ua.Boolean' = False
     DataToReturn: 'list[ua.QueryDataDescription]' = field(default_factory=list)
 
 
@@ -7532,7 +7532,7 @@ class NodeReference:
 
     NodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ReferenceTypeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsForward: 'ua.Boolean' = True
+    IsForward: 'ua.Boolean' = False
     ReferencedNodeIds: 'list[ua.NodeId]' = field(default_factory=list)
 
 
@@ -7824,7 +7824,7 @@ class QueryNextParameters:
     :vartype ContinuationPoint: ContinuationPoint
     """
 
-    ReleaseContinuationPoint: 'ua.Boolean' = True
+    ReleaseContinuationPoint: 'ua.Boolean' = False
     ContinuationPoint: 'ua.ContinuationPoint' = None
 
 
@@ -8052,11 +8052,11 @@ class ReadRawModifiedDetails(HistoryReadDetails):
 
     data_type = NodeId(ObjectIds.ReadRawModifiedDetails)
 
-    IsReadModified: 'ua.Boolean' = True
+    IsReadModified: 'ua.Boolean' = False
     StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
     EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
     NumValuesPerNode: 'ua.Counter' = 0
-    ReturnBounds: 'ua.Boolean' = True
+    ReturnBounds: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -8073,7 +8073,7 @@ class ReadAtTimeDetails(HistoryReadDetails):
     data_type = NodeId(ObjectIds.ReadAtTimeDetails)
 
     ReqTimes: 'list[ua.UtcTime]' = field(default_factory=list)
-    UseSimpleBounds: 'ua.Boolean' = True
+    UseSimpleBounds: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -8156,7 +8156,7 @@ class HistoryReadParameters:
 
     HistoryReadDetails: 'ua.ExtensionObject' = ExtensionObject()
     TimestampsToReturn: 'ua.TimestampsToReturn' = field(default_factory=lambda:TimestampsToReturn.Source)
-    ReleaseContinuationPoints: 'ua.Boolean' = True
+    ReleaseContinuationPoints: 'ua.Boolean' = False
     NodesToRead: 'list[ua.HistoryReadValueId]' = field(default_factory=list)
 
 
@@ -8347,7 +8347,7 @@ class DeleteRawModifiedDetails(HistoryUpdateDetails):
     data_type = NodeId(ObjectIds.DeleteRawModifiedDetails)
 
     NodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    IsDeleteModified: 'ua.Boolean' = True
+    IsDeleteModified: 'ua.Boolean' = False
     StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
     EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -8648,7 +8648,7 @@ class ReadEventDetails2(ReadEventDetails):
     StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
     EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
     Filter: 'ua.EventFilter' = field(default_factory=lambda: EventFilter())
-    ReadModified: 'ua.Boolean' = True
+    ReadModified: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -8696,11 +8696,11 @@ class AggregateConfiguration:
 
     data_type = NodeId(ObjectIds.AggregateConfiguration)
 
-    UseServerCapabilitiesDefaults: 'ua.Boolean' = True
-    TreatUncertainAsBad: 'ua.Boolean' = True
+    UseServerCapabilitiesDefaults: 'ua.Boolean' = False
+    TreatUncertainAsBad: 'ua.Boolean' = False
     PercentDataBad: 'ua.Byte' = 0
     PercentDataGood: 'ua.Byte' = 0
-    UseSlopedExtrapolation: 'ua.Boolean' = True
+    UseSlopedExtrapolation: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -8823,7 +8823,7 @@ class MonitoringParameters:
     SamplingInterval: 'ua.Duration' = 0
     Filter: 'ua.ExtensionObject' = ExtensionObject()
     QueueSize: 'ua.Counter' = 0
-    DiscardOldest: 'ua.Boolean' = True
+    DiscardOldest: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -9254,7 +9254,7 @@ class CreateSubscriptionParameters:
     RequestedLifetimeCount: 'ua.Counter' = 0
     RequestedMaxKeepAliveCount: 'ua.Counter' = 0
     MaxNotificationsPerPublish: 'ua.Counter' = 0
-    PublishingEnabled: 'ua.Boolean' = True
+    PublishingEnabled: 'ua.Boolean' = False
     Priority: 'ua.Byte' = 0
 
 
@@ -9407,7 +9407,7 @@ class SetPublishingModeParameters:
     :vartype SubscriptionIds: IntegerId
     """
 
-    PublishingEnabled: 'ua.Boolean' = True
+    PublishingEnabled: 'ua.Boolean' = False
     SubscriptionIds: 'list[ua.IntegerId]' = field(default_factory=list)
 
 
@@ -9710,7 +9710,7 @@ class PublishResult:
 
     SubscriptionId: 'ua.IntegerId' = 0
     AvailableSequenceNumbers: 'list[ua.Counter]' = field(default_factory=list)
-    MoreNotifications: 'ua.Boolean' = True
+    MoreNotifications: 'ua.Boolean' = False
     NotificationMessage: 'ua.NotificationMessage' = field(default_factory=lambda: NotificationMessage())
     Results: 'list[ua.StatusCode]' = field(default_factory=list)
     DiagnosticInfos: 'list[ua.DiagnosticInfo]' = field(default_factory=list)
@@ -9816,7 +9816,7 @@ class TransferSubscriptionsParameters:
     """
 
     SubscriptionIds: 'list[ua.IntegerId]' = field(default_factory=list)
-    SendInitialValues: 'ua.Boolean' = True
+    SendInitialValues: 'ua.Boolean' = False
 
 
 @dataclass(slots=True)
@@ -10394,7 +10394,7 @@ class SubscriptionDiagnosticsDataType:
     MaxKeepAliveCount: 'ua.UInt32' = 0
     MaxLifetimeCount: 'ua.UInt32' = 0
     MaxNotificationsPerPublish: 'ua.UInt32' = 0
-    PublishingEnabled: 'ua.Boolean' = True
+    PublishingEnabled: 'ua.Boolean' = False
     ModifyCount: 'ua.UInt32' = 0
     EnableCount: 'ua.UInt32' = 0
     DisableCount: 'ua.UInt32' = 0
