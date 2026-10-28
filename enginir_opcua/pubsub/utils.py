@@ -10,7 +10,7 @@ LOG_INTERVAL = 10.0
 
 
 def version_time_now() -> VersionTime:
-    # Generates seconds since year 2000 see. Part4 7.38
+    """Seconds since 2000-01-01, OPC 10000-4 v1.05, 7.43"""
     return VersionTime(
         (datetime.datetime.now(datetime.UTC) - datetime.datetime(2000, 1, 1, 0, 0, 0, 0, datetime.UTC)).total_seconds()
     )

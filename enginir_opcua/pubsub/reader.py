@@ -74,7 +74,7 @@ def status_to_status_code(status: UInt16 | None) -> StatusCode:
 
 def datavalue_from_variant(v: Variant, header: UadpDataSetMessageHeader, built_in_type: int = 0) -> DataValue:
     """Upgrade a Variant-encoded field of a Data Key Frame to DataValue for our callback. A Variant holding a
-    StatusCode is a Bad field, one holding a DataValue is an Uncertain field (Part 14, 7.2.4.5.4); a field that is
+    StatusCode is a Bad field, one holding a DataValue is an Uncertain field (OPC 10000-14 v1.05, 7.2.4.5.4); a field that is
     declared as a StatusCode or a DataValue itself is left alone."""
     if v.VariantType == VariantType.StatusCode and built_in_type != VariantType.StatusCode.value:
         return DataValue(
@@ -198,7 +198,7 @@ class DataSetReader(PubSubInformationModel):
                 logger.exception("%s: the SubscribedDataSet failed to handle the state %s", self._cfg.Name, state.name)
 
     def _is_new(self, header: UadpDataSetMessageHeader) -> bool:
-        """Part 14, 7.2.3: newer than the last processed message, by the modular difference"""
+        """OPC 10000-14 v1.05, 7.2.3: newer than the last processed message, by the modular difference"""
         timeout = float(self._cfg.MessageReceiveTimeout or 0) / 1000
         now = time.monotonic()
         if timeout > 0 and self._last_message_time is not None and now - self._last_message_time > 2 * timeout:

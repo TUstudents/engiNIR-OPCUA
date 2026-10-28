@@ -216,7 +216,7 @@ class PubSubConnection(PubSubInformationModel):
 
     def _groups_to_run(self) -> list[WriterGroup]:
         """The enabled writer groups in order of their priority, highest first; a group with an Address on a
-        multicast connection is in the Error state (Part 14, 7.3.2.2)"""
+        multicast connection is in the Error state (OPC 10000-14 v1.05, 7.3.2.2)"""
         groups = []
         for group in sorted(self._writer_groups, key=lambda w: int(w._cfg.Priority or 0), reverse=True):
             if self._network_settings.is_multicast() and group.get_destination_url() is not None:

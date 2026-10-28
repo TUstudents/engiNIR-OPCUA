@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class SubscribedDataSetMirror:
-    """Mirrors the fields of a DataSet as Variables below a parent node (Part 14, 6.2.10.3): the Variables are
+    """Mirrors the fields of a DataSet as Variables below a parent node (OPC 10000-14 v1.05, 6.2.10.3): the Variables are
     created once, the first time the reader is Operational, and are updated with every DataSetMessage"""
 
     def __init__(self, cfg: SubscribedDataSetMirrorDataType, node: Node | None):
@@ -152,7 +152,7 @@ class SubScribedTargetVariables:
             logger.warning(message, *args)
 
     async def _writable(self, node: Node) -> bool:
-        """Part 4, 5.10.4: whether the AccessLevel of the target allows writing the value"""
+        """OPC 10000-4 v1.05, 5.11.4: whether the AccessLevel of the target allows writing the value"""
         access = await node.read_attribute(AttributeIds.AccessLevel, raise_on_bad_status=False)
         level = access.Value.Value if access.Value is not None else None
         return isinstance(level, int) and is_bit_set(level, AccessLevel.CurrentWrite)

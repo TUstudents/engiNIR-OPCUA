@@ -156,7 +156,7 @@ class DataSetWriter(PubSubInformationModel):
             logger.warning(message, *args)
 
     def generate_promoted_fields(self, pds: PublishedDataSet, message: UadpDataSetMessage) -> list[Variant]:
-        """The values of the fields flagged as promoted, in the order of the metadata (Part 14, 6.2.3.2.5)"""
+        """The values of the fields flagged as promoted, in the order of the metadata (OPC 10000-14 v1.05, 6.2.3.2.5)"""
         data = getattr(message, "Data", None)
         if not isinstance(data, list):
             return []
@@ -404,7 +404,7 @@ class WriterGroup(PubSubInformationModel):
         return next((c for c in self._writer if c._cfg.Name == name), None)
 
     def get_destination_url(self) -> str | None:
-        """The Address of the datagram transport settings (Part 14, 6.4.1.3.4), if one is configured"""
+        """The Address of the datagram transport settings (OPC 10000-14 v1.05, 6.4.1.3.4), if one is configured"""
         settings = self._cfg.TransportSettings
         address = getattr(settings, "Address", None)
         url = getattr(address, "Url", None)
@@ -549,7 +549,7 @@ class WriterGroup(PubSubInformationModel):
             )
 
     async def run(self, sender: PubSubSender, ps: IPubSub) -> None:
-        """Publishes at the PublishingInterval on a fixed schedule until cancelled (Part 14, 6.2.6.2)"""
+        """Publishes at the PublishingInterval on a fixed schedule until cancelled (OPC 10000-14 v1.05, 6.2.6.2)"""
         if not self._cfg.Enabled:
             await self._set_state(PubSubState.Disabled)
             return

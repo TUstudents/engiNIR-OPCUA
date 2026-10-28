@@ -68,7 +68,7 @@ def _get_datatype_or_built_in(
     datatype: NodeId | VariantType | int, built_in: VariantType | None = None
 ) -> tuple[NodeId, Byte]:
     """
-    Returns the DataType NodeId and the corresponding BuiltIn number (Part 14, 6.2.3.2.4). The built-in type of a
+    Returns the DataType NodeId and the corresponding BuiltIn number (OPC 10000-14 v1.05, 6.2.3.2.4). The built-in type of a
     DataType that isn't a namespace 0 type of the table must be given, see `built_in_type_of`.
     """
     if isinstance(datatype, VariantType):
@@ -238,7 +238,7 @@ class DataSetMeta:
         return self._meta.Description
 
     def _update_version(self, major: bool) -> None:
-        """Part 14, 6.2.3.2.6: appending fields changes the minor version, any other change the major version, and
+        """OPC 10000-14 v1.05, 6.2.3.2.6: appending fields changes the minor version, any other change the major version, and
         a new major version is also the minor version"""
         version = self._meta.ConfigurationVersion
         now = version_time_now()
@@ -275,7 +275,7 @@ class DataSetMeta:
 
 
 def worst_status(values: list[DataValue]) -> StatusCode:
-    """The status of a DataSetMessage: the worst status of its fields, Bad before Uncertain (Part 14, 6.2.11.1)"""
+    """The status of a DataSetMessage: the worst status of its fields, Bad before Uncertain (OPC 10000-14 v1.05, 6.2.11.1)"""
     status = StatusCode(UInt32(StatusCodes.Good))
     for v in values:
         if v.StatusCode is None or v.StatusCode.is_good():
@@ -286,7 +286,7 @@ def worst_status(values: list[DataValue]) -> StatusCode:
 
 
 def select_value_parts(values: list[DataValue], mask: DataSetFieldContentMask) -> list[DataValue]:
-    """Copies of the values with only the parts of the DataSetFieldContentMask (Part 14, 6.2.4.2)"""
+    """Copies of the values with only the parts of the DataSetFieldContentMask (OPC 10000-14 v1.05, 6.2.4.2)"""
     ret = []
     for v in values:
         changes: dict[str, Any] = {}
@@ -313,7 +313,7 @@ class PubSubDataSource:
         """
         return all fields of a dataset as Variants, with the worst status of the fields. A field with a Bad status
         is a Variant holding its StatusCode, one with an Uncertain status a Variant holding its DataValue
-        (Part 14, 7.2.4.5.4)
+        (OPC 10000-14 v1.05, 7.2.4.5.4)
         """
         dt = DateTime.now(UTC)
         vars = await self.on_get_value()
@@ -353,7 +353,7 @@ class PubSubDataSource:
 
     async def get_raw(self, fields: list[FieldMetaData]) -> tuple[list[bytes], StatusCode, DateTime]:
         """
-        returns all values for a dataset as raw bytes, padded as the field metadata says (Part 14, 7.2.4.5.11). A
+        returns all values for a dataset as raw bytes, padded as the field metadata says (OPC 10000-14 v1.05, 7.2.4.5.11). A
         field without a value is sent as the default value of its type
         """
         dt = DateTime.now(UTC)
