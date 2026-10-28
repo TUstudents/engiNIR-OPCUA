@@ -25,10 +25,9 @@ enginir_opcua.sync module
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.tools module
---------------------------
+enginir_opcua.observer module
+-----------------------------
 
-.. automodule:: enginir_opcua.tools
+.. automodule:: enginir_opcua.observer
    :members:
-   :undoc-members:
    :show-inheritance:
