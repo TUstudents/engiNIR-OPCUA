@@ -1,4 +1,4 @@
-"""The NumericRange of OPC UA Part 4, 7.27: parsing, selecting for reads and composing for writes."""
+"""The NumericRange of OPC 10000-4 v1.05, 7.27: parsing, selecting for reads and composing for writes."""
 
 from __future__ import annotations
 

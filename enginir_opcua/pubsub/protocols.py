@@ -2,12 +2,12 @@
 Protocols which are used to decouple components from pubsub
 """
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..ua.uaprotocol_auto import PubSubState
-from ..ua.uatypes import Byte, ExtensionObject, String, UInt16, UInt32, UInt64
+from ..ua.uatypes import ExtensionObject, String
 from .dataset import DataSetMeta, DataSetValue, PublishedDataSet
-from .uadp import UadpNetworkMessage
+from .uadp import PublisherIdValue, UadpNetworkMessage
 
 
 class PubSubSender(Protocol):
@@ -15,15 +15,22 @@ class PubSubSender(Protocol):
     Implements sending Messages
     """
 
-    def send_uadp(self, msgs: list[UadpNetworkMessage]):
+    def send_uadp(self, msgs: list[UadpNetworkMessage], destination: Any = None, max_size: int = 0) -> list[int]:
         """
-        Sends a UadpMessage if supported!
+        Sends UADP messages, to the destination if given and to the connection's address otherwise. Messages larger
+        than max_size (when it is above 0) are not sent; their sizes are returned.
         """
         raise NotImplementedError
 
-    def get_publisher_id(self) -> Byte | UInt16 | UInt32 | UInt64 | String:
+    async def resolve_destination(self, url: str) -> Any:
         """
-        Returns the publisher id for creating messages
+        Resolves the address a WriterGroup sends to, once, before it starts publishing
+        """
+        raise NotImplementedError
+
+    def get_publisher_id(self) -> PublisherIdValue | None:
+        """
+        Returns the publisher id, with its type, for creating messages
         """
         raise NotImplementedError
 
@@ -42,7 +49,7 @@ class PubSubReceiver(Protocol):
     Receiver for Pubsub Messages
     """
 
-    async def got_uadp(self, msg: UadpNetworkMessage):
+    async def got_uadp(self, msg: UadpNetworkMessage) -> None:
         """Called when a msg is received"""
         raise NotImplementedError
 
@@ -50,11 +57,11 @@ class PubSubReceiver(Protocol):
 class SubscribedDataSet(Protocol):
     """Receiver for subscribed datasets"""
 
-    async def on_dataset_received(self, meta: DataSetMeta, fields: list[DataSetValue]):
+    async def on_dataset_received(self, meta: DataSetMeta, fields: list[DataSetValue]) -> None:
         """Called when a published dataset received an update"""
         raise NotImplementedError
 
-    async def on_state_change(self, meta: DataSetMeta, state: PubSubState):
+    async def on_state_change(self, meta: DataSetMeta, state: PubSubState) -> None:
         """Called when a DataSet state changes"""
         raise NotImplementedError
 

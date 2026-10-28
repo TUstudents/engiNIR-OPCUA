@@ -56,7 +56,7 @@ class UaStatusCodeError(UaError):
 
             UaStatusCodeError(0x80010000) => BadUnexpectedError()
 
-        The lookup ignores the low 16 bits, which are flags (Part 4, 7.38.1).
+        The lookup ignores the low 16 bits, which are flags (OPC 10000-4 v1.05, 7.38.1).
         """
 
         if args:

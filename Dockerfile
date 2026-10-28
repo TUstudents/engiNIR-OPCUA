@@ -5,4 +5,4 @@ COPY . .
 RUN pip install --no-cache-dir .
 
 EXPOSE 4840
-CMD ["enginir-uaserver"]
+CMD ["enginir-opcua", "server", "--url", "opc.tcp://0.0.0.0:4840"]

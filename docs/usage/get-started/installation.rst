@@ -34,45 +34,73 @@ It can be installed next to the :code:`asyncua` package, because the import pack
 Command Line Tools
 ==================
 
-The package installs these command line tools:
+The package installs one program, :code:`enginir-opcua`, with a subcommand for each job (also available as
+:code:`python -m enginir_opcua`):
 
-:code:`enginir-uabrowse`:
-    Browse OPC-UA node and print result
+:code:`enginir-opcua read`:
+    Read an attribute of a node, by default its value.
 
-:code:`enginir-uacall`:
-    Call method of a node
+:code:`enginir-opcua write`:
+    Write an attribute of a node, by default its value. Without :code:`--datatype` the text is converted to the DataType of
+    the node.
 
-:code:`enginir-uaclient`:
-    Connect to server and start python shell. root and objects nodes are available. Node specified in command line is available as mynode variable.
+:code:`enginir-opcua call`:
+    Call a method of a node.
 
-:code:`enginir-uadiscover`:
-    Performs OPC UA discovery and prints information on servers and endpoints.
+:code:`enginir-opcua ls` (also :code:`browse`):
+    Browse below a node and print the result.
 
-:code:`enginir-uageneratestructs`:
-    Generate a Python module from the xml structure definition (.bsd), the node argument is typically a children of i=93.
+:code:`enginir-opcua subscribe`:
+    Subscribe to data changes or events of a node and print them until stopped with Ctrl-C.
 
-:code:`enginir-uahistoryread`:
-    Read history of a node.
+:code:`enginir-opcua history`:
+    Read the history of a node.
 
-:code:`enginir-uals`:
-    Browse OPC-UA node and print result.
+:code:`enginir-opcua discover`:
+    Perform discovery and print the servers and endpoints.
 
-:code:`enginir-uaread` / :code:`enginir-uawrite`:
-    Read / Write attribute of a node, by default reads value of a node.
+:code:`enginir-opcua server`:
+    Run a demo server. It offers an endpoint **without security**, listens on 127.0.0.1 unless told otherwise and accepts
+    only anonymous read-only sessions; it is for trying things out. By importing XML definitions and using
+    :code:`enginir-opcua write` it is possible to expose data with it.
 
-:code:`enginir-uaserver`:
-    Run an example OPC-UA server. By importing xml definition and using enginir-uawrite command line, it is even possible to expose real data using this server.
+:code:`enginir-opcua shell`:
+    Connect to a server and open a Python shell (IPython if installed) with :code:`client`, :code:`root`, :code:`objects` and,
+    when :code:`-n` or :code:`-p` is given, :code:`mynode`.
 
-:code:`enginir-uasubscribe`:
-    Subscribe to a node and print results
+:code:`enginir-opcua generate-structs`:
+    Generate a Python module from a structure dictionary (pre-1.04 servers).
 
-These command line tools can be used from within the environment in which the package was installed. To get more information run:
+For the options of a command run:
 
 .. code-block:: console
 
-    <tool> --help
-    # For example
-    enginir-uaread --help
+    enginir-opcua --help
+    enginir-opcua read --help
+
+Common to the commands that connect: :code:`-u URL`, :code:`--timeout SECONDS`, :code:`--security`, :code:`--pki-dir`,
+:code:`--user` and :code:`--ask-password` (the password can also come from the environment variable
+:code:`ENGINIR_OPCUA_PASSWORD`; there is no option that takes it on the command line). The commands that work on a node take
+:code:`-n NODEID` and :code:`-p BROWSEPATH`. Errors are printed as one line on standard error, with exit status 1; a usage
+error gives 2.
+
+.. code-block:: console
+
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840 -n i=85
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -p "0:Objects,2:MyObject,2:MyVariable"
+    $ enginir-opcua write -u opc.tcp://admin@127.0.0.1:4840 -n "ns=2;i=3" 6.5
+    $ enginir-opcua write --array -n "ns=2;i=4" "1.5,2.5"
+    $ enginir-opcua call -n "ns=2;i=1" -m 2:Multiply 3 4
+
+Values for :code:`write` and :code:`call`: :code:`--datatype` is one of guess, bool, sbyte, byte, int16, uint16, int32,
+uint32, int64, uint64, float, double, string, datetime, guid, bytestring, xmlelement, nodeid, expandednodeid, qualifiedname,
+localizedtext and statuscode (and auto for :code:`write`). A list needs :code:`--array`, which splits the value at
+:code:`--separator` (default a comma); without it a comma is part of the text.
+
+The older scripts :code:`enginir-uaread`, :code:`enginir-uawrite`, :code:`enginir-uacall`, :code:`enginir-uals`,
+:code:`enginir-uabrowse`, :code:`enginir-uasubscribe`, :code:`enginir-uahistoryread`, :code:`enginir-uadiscover`,
+:code:`enginir-uaserver`, :code:`enginir-uaclient` and :code:`enginir-uageneratestructs` still work, print a notice that they
+are deprecated, and are removed in 4.0.0.
 
 
 More Tools for Development

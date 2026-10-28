@@ -1,4 +1,4 @@
-"""The Browse continuation points of one Session (Part 4, 7.9)."""
+"""The Browse continuation points of one Session (OPC 10000-4 v1.05, 7.9)."""
 
 from __future__ import annotations
 

@@ -33,6 +33,7 @@ from ..common.xmlimporter import XmlImporter
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
+from ..observer import Observer
 from ..ua.uaerrors import (
     BadCertificateInvalid,
     BadCertificateUntrusted,
@@ -94,6 +95,7 @@ class Client:
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
         allow_deprecated_policies: bool = False,
+        observer: Observer | None = None,
     ) -> None:
         """
         :param url: url of the server.
@@ -111,6 +113,8 @@ class Client:
         :param reconnect_request_timeout: how long requests block waiting for the
             connection to become ready while the supervisor is reconnecting.
         :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
+        :param observer: an :class:`enginir_opcua.observer.Observer` that is told about requests, state changes and
+            subscription events; also available as the ``observer`` property.
 
         Some other client parameters can be changed by setting
         attributes on the constructed object:
@@ -147,6 +151,8 @@ class Client:
             namespaces=lambda: self._namespace_uris, parents=(ua.default_types,)
         )
         self.uaclient.types = self.types
+        if observer is not None:
+            self.uaclient.observer = observer
         self.uaclient.pre_request_hook = self._wait_until_ready
         self.user_certificate: x509.Certificate | None = None
         self.user_private_key: PrivateKeyTypes | None = None
@@ -181,7 +187,7 @@ class Client:
         """extra check after the certificate validator accepted the server certificate, raises a ServiceError"""
         # Set before connect() to let a fresh client process resume the existing
         # server-side session via ActivateSession instead of creating a new one
-        # (spec Part 4 §6.7) — useful after a client crash.
+        # (OPC 10000-4 v1.05, 6.7) — useful after a client crash.
         self.session_state_path: Path | None = None
 
     async def __aenter__(self) -> "Client":
@@ -197,6 +203,15 @@ class Client:
         return f"Client({self.server_url.geturl()})"
 
     __repr__ = __str__
+
+    @property
+    def observer(self) -> Observer:
+        """The :class:`enginir_opcua.observer.Observer` of this client; the null observer unless one was set."""
+        return self.uaclient.observer
+
+    @observer.setter
+    def observer(self, observer: Observer) -> None:
+        self.uaclient.observer = observer
 
     @property
     def state(self) -> UaClientState:
@@ -576,8 +591,8 @@ class Client:
         """Run the full connect sequence: socket, hello, channel, session, activate.
 
         If `session_state_path` is set and a persisted session is found, attempt
-        ActivateSession on the existing authentication_token first (spec Part 4
-        §6.7). Fall back to CreateSession + ActivateSession when no state is
+        ActivateSession on the existing authentication_token first
+        (OPC 10000-4 v1.05, 6.7). Fall back to CreateSession + ActivateSession when no state is
         persisted or the server has expired the session.
         """
         await self.connect_socket()
@@ -610,7 +625,7 @@ class Client:
             raise
 
     async def _try_resume_persisted_session(self) -> bool:
-        """ActivateSession on a persisted token if one is on disk (spec Part 4 §6.7).
+        """ActivateSession on a persisted token if one is on disk (OPC 10000-4 v1.05, 6.7).
 
         Returns True when the session resumed; on failure clears the stale state and
         returns False so the caller falls back to CreateSession + ActivateSession.
@@ -901,7 +916,7 @@ class Client:
         desc.ApplicationType = ua.ApplicationType.Client
         params = ua.CreateSessionParameters()
         params.ServerUri = None
-        # at least 32 random bytes for server to prove possession of private key (specs part 4, 5.6.2.2)
+        # at least 32 random bytes for server to prove possession of private key (OPC 10000-4 v1.05, 5.7.2.2)
         nonce = create_nonce(32)
         params.ClientNonce = nonce
         params.ClientCertificate = self.security_policy.host_certificate or None
@@ -1225,7 +1240,7 @@ class Client:
     async def _teardown_transport_only(self) -> None:
         """Cancel the channel-renew loop and drop the socket; leave the session intact.
 
-        We deliberately do NOT call close_session here: spec Part 4 §6.7 reconnect
+        We deliberately do NOT call close_session here: OPC 10000-4 v1.05, 6.7 reconnect
         keeps the session alive server-side so ActivateSession on a new channel can
         reuse it. close_session only runs in the fallback path when the server
         rejects the reactivate.
@@ -1366,7 +1381,7 @@ class Client:
         certificate_chain = certificate_chain or []
         for cert in certificate_chain:
             params.UserIdentityToken.CertificateData += uacrypto.der_from_x509(cert)
-        # specs part 4, 5.6.3.1: the data to sign is created by appending
+        # OPC 10000-4 v1.05, 5.7.3.1: the data to sign is created by appending
         # the last serverNonce to the serverCertificate
         policy = self.server_policy(ua.UserTokenType.Certificate)
         sig, alg = security_policies.sign_asymmetric(self.user_private_key, challenge, policy.SecurityPolicyUri)
@@ -1379,7 +1394,7 @@ class Client:
         params.UserIdentityToken.UserName = username
         policy = self.server_policy(ua.UserTokenType.UserName)
         if not policy.SecurityPolicyUri or policy.SecurityPolicyUri == security_policies.SecurityPolicyNone.URI:
-            # see specs part 4, 7.36.3: if the token is NOT encrypted,
+            # see OPC 10000-4 v1.05, 7.40.4: if the token is NOT encrypted,
             # then the password only contains UTF-8 encoded password
             # and EncryptionAlgorithm is null
             if password:
@@ -1398,7 +1413,7 @@ class Client:
         if server_certificate is None:
             raise ua.UaError("The server certificate is needed to encrypt the password")
         pubkey = server_certificate.public_key()
-        # see specs part 4, 7.36.3: if the token is encrypted, password
+        # see OPC 10000-4 v1.05, 7.40.2.2: if the token is encrypted, password
         # shall be converted to UTF-8 and serialized with server nonce
         passwd = password.encode("utf8")
         if self._server_nonce is not None:

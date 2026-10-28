@@ -395,7 +395,7 @@ class UASocketProtocol(asyncio.Protocol):
         """
         Close secure channel.
         It seems to trigger a shutdown of socket in most servers, so be prepared to reconnect.
-        OPC UA specs Part 6, 7.1.4 say that Server does not send a CloseSecureChannel response
+        OPC 10000-6 v1.05, 7.1.4 say that Server does not send a CloseSecureChannel response
         and should just close socket.
         """
         self.logger.info("close_secure_channel")

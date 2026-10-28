@@ -62,7 +62,7 @@ class MessageSizeExceeded(TransportError):
 
 @dataclass
 class AbortedMessage:
-    """An Abort chunk (Part 6, 6.7.3): the Message of request_id is discarded and the channel stays open."""
+    """An Abort chunk (OPC 10000-6 v1.05, 6.7.3): the Message of request_id is discarded and the channel stays open."""
 
     request_id: int
     error: ua.ErrorMessage
@@ -106,7 +106,7 @@ def error_message_to_binary(status: int, reason: str = "") -> bytes:
 
 class FrameReader:
     """
-    Cuts the byte stream of a UA-TCP connection into whole messages (Part 6, 7.1.2.2).
+    Cuts the byte stream of a UA-TCP connection into whole messages (OPC 10000-6 v1.05, 7.1.2.2).
     The size of a message is checked against the limit before any of its body is waited for.
     """
 
@@ -243,7 +243,7 @@ class TransportLimits:
 
 class MessageChunk:
     """
-    Message Chunk, as described in OPC UA specs Part 6, 6.7.2.
+    Message Chunk, as described in OPC 10000-6 v1.05, 6.7.2.
     """
 
     def __init__(
@@ -344,7 +344,7 @@ class MessageChunk:
         it must be set by Secure Channel driver.
         """
         if message_type == ua.MessageType.SecureOpen:
-            # SecureOpen message must be in a single chunk (specs, Part 6, 6.7.2)
+            # SecureOpen message must be in a single chunk (OPC 10000-6 v1.05, 6.7.2)
             chunk = MessageChunk(security_policy.asymmetric_cryptography, body, message_type, ua.ChunkType.Single)
             assert isinstance(chunk.SecurityHeader, ua.AsymmetricAlgorithmHeader)
             chunk.SecurityHeader.SecurityPolicyURI = security_policy.URI
@@ -733,7 +733,7 @@ class SecureChannel:
             if seq_num != self._peer_sequence_number + 1:
                 wrap_limit = (1 << 32) - 1024
                 if seq_num < 1024 and self._peer_sequence_number >= wrap_limit:
-                    # The sequence number has wrapped around. See spec. part 6, 6.7.2
+                    # The sequence number has wrapped around. See OPC 10000-6 v1.05, 6.7.2
                     _logger.debug("Sequence number wrapped: %d -> %d", self._peer_sequence_number, seq_num)
                 else:
                     # Condition for monotonically increase is not met
@@ -747,7 +747,7 @@ class SecureChannel:
     def receive_from_header_and_body(self, header: ua.Header, body: Buffer) -> Any:
         """
         Convert MessageHeader and binary body to OPC UA TCP message (see OPC UA
-        specs Part 6, 7.1: Hello, Acknowledge or ErrorMessage), or a Message
+        OPC 10000-6 v1.05, 7.1: Hello, Acknowledge or ErrorMessage), or a Message
         object, or None (if intermediate chunk is received)
         """
         if header.MessageType == ua.MessageType.SecureOpen:

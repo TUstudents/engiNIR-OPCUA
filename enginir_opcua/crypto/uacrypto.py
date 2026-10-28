@@ -285,7 +285,7 @@ def sha256_size() -> int:
 def p_sha1(secret: bytes, seed: bytes, sizes: tuple[int, ...] = ()) -> tuple[bytes, ...]:
     """
     Derive one or more keys from secret and seed.
-    (See specs part 6, 6.7.5 and RFC 2246 - TLS v1.0)
+    (See OPC 10000-6 v1.05, 6.7.6 and RFC 2246 - TLS v1.0)
     Lengths of keys will match sizes argument
     """
     full_size = 0
@@ -308,7 +308,7 @@ def p_sha1(secret: bytes, seed: bytes, sizes: tuple[int, ...] = ()) -> tuple[byt
 def p_sha256(secret: bytes, seed: bytes, sizes: tuple[int, ...] = ()) -> tuple[bytes, ...]:
     """
     Derive one or more keys from secret and seed.
-    (See specs part 6, 6.7.5 and RFC 2246 - TLS v1.0)
+    (See OPC 10000-6 v1.05, 6.7.6 and RFC 2246 - TLS v1.0)
     Lengths of keys will match sizes argument
     """
     full_size = 0

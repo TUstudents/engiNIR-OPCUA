@@ -19,6 +19,7 @@ Usage Guide
     common/overview
     common/node-nodeid
     common/pki-directory
+    common/observer
 
 .. toctree::
     :maxdepth: 2
@@ -31,6 +32,12 @@ Usage Guide
     :caption: Server
 
     server/overview
+
+.. toctree::
+    :maxdepth: 2
+    :caption: PubSub
+
+    pubsub/overview
 
 .. toctree::
     :maxdepth: 2

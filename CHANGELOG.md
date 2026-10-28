@@ -10,7 +10,9 @@ All breaking changes are collected here and released together.
 Package and identity:
 - The import package is `enginir_opcua` and the distribution is `enginir-opcua`. There is no `asyncua` alias, so both
   packages can be installed side by side.
-- The command-line tools are `enginir-ua<tool>` (`enginir-uaread`, `enginir-uals`, `enginir-uaserver`, …).
+- The command line is one program, `enginir-opcua`, with the subcommands `read`, `write`, `call`, `ls`, `subscribe`,
+  `history`, `discover`, `server`, `shell` and `generate-structs`. The scripts `enginir-uaread`, `enginir-uals`,
+  `enginir-uaserver` and the others stay as deprecated aliases that print a notice; they are removed in 4.0.0.
 - The default application identity changed: server endpoint `opc.tcp://0.0.0.0:4840/enginir-opcua/server/`,
   ApplicationUri `urn:enginir:opcua:server` and `urn:enginir:opcua:client`, ProductUri `urn:enginir:opcua`,
   ManufacturerName `engiNIR`.
@@ -112,9 +114,47 @@ High availability:
   `RedundancySupport` is not used unless `HaConfig(allow_unsupported_redundancy=True)`.
   `HaSecurityConfig` takes user credentials. Unknown subscription names raise `KeyError`; `HaClient.status()` is new.
 
-Tools:
-- `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. `uaserver` is a demo without security and
-  says so; `--accept-all-logins` opts into permissive logins. The sync `Server` takes `user_manager`.
+Command line (`enginir-opcua`):
+- One command with subcommands replaces the eleven `enginir-ua*` scripts, which are deprecated aliases until 4.0.0.
+  `python -m enginir_opcua` works too, and the `tools/ua*` helper scripts of the repository are gone.
+- `--password` is gone; use `--ask-password` or `ENGINIR_OPCUA_PASSWORD`. A password in the URL is warned about.
+- Errors are one line on stderr with exit status 1, usage errors give 2, and Ctrl-C ends a command without a traceback.
+  `--timeout` is a float of seconds and defaults to 4 (it was an integer defaulting to 1); `--verbose LEVEL` is
+  `--log-level LEVEL`; the option `-i/--namespace` that did nothing is gone; `uals --depth` must be at least 1.
+- `write` and `call`: every `--datatype` that was offered works (`guid`, `bytestring` as hex, `xmlelement`,
+  `localizedtext`, `datetime` as ISO 8601, UTC without a zone), `write` reads the DataType of the node by default
+  (`--datatype auto`), and a comma no longer makes an array: pass `--array` (and `--separator`). `call` takes one
+  argument per `ARG` and refuses a node with several methods unless `-m` is given. The old `-l true|false|guess` forms
+  work in the old scripts only.
+- `server` is a demo: it prints a banner, listens on 127.0.0.1 by default (it was 0.0.0.0; the Docker image passes
+  `--url opc.tcp://0.0.0.0:4840`), and `--shell` keeps the server running while the shell is open. `shell` opens a
+  Python shell with `client`, `root`, `objects` and `mynode`. `--pki-dir` and `--security Policy,Mode` set up
+  secure connections; control characters in text from a server are printed escaped.
+
+Synchronous interface (`enginir_opcua.sync`):
+- Subscription handlers, state listeners and `connection_lost_callback` run on a handler thread, not on the loop, so
+  they may call the sync API; a sync call on the loop thread raises `RuntimeError` instead of deadlocking. The handler
+  queue is bounded (`handler_queue_maxsize`, 1000): the oldest call is dropped and `Observer.on_messages_dropped` is
+  called.
+- A call that times out is cancelled before `TimeoutError` is raised. `Subscription.next_event(timeout)` and iteration
+  are no longer cut by the wrapper timeout.
+- `ThreadLoop` is a daemon thread that can be started again after `stop()`, so `connect()` after `disconnect()` works
+  and nodes obtained before stay valid; still-connected clients are disconnected at exit. `ThreadLoop` is no longer a
+  `threading.Thread` subclass and `ThreadLoopNotRunning` is a `RuntimeError`.
+- The sync `Client` takes `auto_reconnect`, `reconnect_max_delay`, `reconnect_request_timeout`, `observer` and
+  `handler_queue_maxsize`, has `state` and `add_state_listener`, and no longer takes the unused `user_manager`. The
+  sync `Server.register_namespace` and `get_namespace_index` call their parameter `uri`. The signatures, the missing
+  methods and the docstrings of the sync classes follow the async ones; tuples and dicts come back as such.
+- `disconnect()` and `stop()` can be called twice.
+
+Observer:
+- `Client(observer=...)` and `client.observer` set an `Observer`. The module and its hooks are documented
+  (`on_messages_dropped` and `on_messages_lost` are new since 2.x).
+
+Documentation:
+- Spec references in docstrings are citations such as `OPC 10000-4 v1.05, 5.9.2`, not links. The section numbers were
+  renumbered where the 1.04 numbers were used (Part 4 inserted 5.4, so the service sets moved by one). The client and
+  server overviews and the sync, Observer and command-line pages are written.
 
 Status codes:
 - Status codes are matched by their top 16 bits, so `except ua.uaerrors.BadNodeIdUnknown` also catches a code with info
@@ -371,3 +411,44 @@ Node helpers:
   `ExclusiveLimitStateMachine`, `FileTransferStateMachine`, `ProgramStateMachine` and `ShelvedStateMachine` are removed.
 - `get_node_supertypes` returns the nearest supertype first; `get_nodes_of_namespace` can return namespace 0 and raises
   `UaError` for an unknown URI; `get_node_children` and `get_node_subtypes` list each node once.
+
+PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
+- A PublisherId is encoded with the type of its Variant (UInt64 uses type bits 011), so ids that were read from a file
+  or built as `Variant(5, VariantType.UInt16)` keep their type. `UadpHeader` refuses a PublisherId that is a plain `int`:
+  wrap it in `Byte`, `UInt16`, `UInt32`, `UInt64` or `String`. `OpcUdp.get_publisher_id()` returns a typed value.
+- UADP messages: the Valid flag, the PromotedFields size (bytes), Event DataSetMessages, header-only heartbeat key
+  frames, DataSetMessage sizes (padding no longer shifts the next message), the chunk layout and the discovery headers
+  follow Part 14. A receiver skips messages with an unknown version or reserved values (`UadpSkip`, counted by reason);
+  `UadpNetworkMessage.from_binary` raises `UadpSkip` for them, `decode_network_message` returns it. The classes
+  `UadpDiscoveryRequest`, `UadpDiscoveryResponse`, `UadpDataSetDeltaRaw` and the three `Uadp*Resp` classes are gone;
+  `UadpDiscoveryProbe` and `UadpDiscoveryAnnouncement` keep the headers and the body as bytes.
+- RawData fields are padded to `MaxStringLength` and `ArrayDimensions`; fields that can't be sent as RawData make the
+  DataSetMessage invalid (logged once). `PubSubDataSource.get_raw(fields)` takes the field metadata and no longer drops
+  fields without a value.
+- Sequence numbers start at 0 and roll over from 65535 to 0 (they used to skip 0 and 65535).
+- `MessageReceiveTimeout` is in milliseconds and restarts with every message; a reader is `PreOperational` until its
+  first key frame. DataSetMessages with a different major configuration version, a wrong number of fields, an
+  out-of-range delta index, a duplicate or older sequence number, or `Valid = false` are dropped and counted.
+  A null reader PublisherId matches every publisher. `ReaderGroup.set_name(name)` sets the name and
+  `ReaderGroup(cfg)` keeps `cfg`.
+- `Enabled` is honoured at every level, groups start in order of their `Priority`, publishing runs on a fixed
+  schedule, an interval of 0 or less is refused, `KeepAliveTime` and `MaxNetworkMessageSize` are applied (a message
+  above it isn't sent; a warning is logged once). `WriterGroup.new_uadp(priority=, address=)` sets the Priority and the
+  unicast destination.
+- UDP: loopback is applied for both values, a multicast subscriber joins the group on its `NetworkInterface` (an IP
+  address or an interface name) and binds to the group address, IPv6 URLs keep their brackets. A unicast subscriber binds
+  to its interface, to the URL's IP address or to loopback; it listens on all interfaces only with an explicit `0.0.0.0` or
+  `::`. A connection without readers opens no receive address. Datagrams are queued (256) and handled by one task;
+  malformed datagrams give a rate-limited warning on the module logger.
+- `PubSub.start()` raises the first startup error and leaves nothing running; `stop()` is repeatable and never raises
+  a cancellation; connections and datasets appear once in the address space, whatever their number; the remove methods
+  await the deletion of the right node, stop what runs and update the configuration; `load_binary_file` raises
+  `UaStatusCodeError(Bad_InvalidArgument)` for other files and `save_binary_file` writes a file it can load again.
+- `SubScribedTargetVariables` writes only to variables whose AccessLevel allows it (the write is counted and logged
+  once), applies `OverrideValueHandling` as in Part 14 Table 80 (also when the reader leaves Operational) and
+  counts fields without a target. Readers built from a configuration get their sinks from the server. The
+  AddReaderGroup, AddWriterGroup and RemoveGroup methods answer `Bad_NotImplemented`.
+- A Bad field is sent as a Variant holding its StatusCode, an Uncertain one as a Variant holding its DataValue.
+  `DataSetMeta.add_array` creates an array field, `remove_field` removes it, versions follow the changes, and
+  `PublishedDataItems.Create` no longer inverts the promoted flag. `DataSetField.get_datatype_name(types)` looks the type up
+  in the given registry.
