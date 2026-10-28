@@ -235,3 +235,17 @@ async def test_com89_f_enumeration_without_definition_uses_its_properties(opc, k
     await opc.opc.load_data_type_definitions()
     enum_cls = opc.opc.types.get(node.nodeid)
     assert {member.name: member.value for member in enum_cls} == expected
+
+
+async def test_com114_alias_whose_name_is_an_attribute_of_ua_is_registered(opc) -> None:
+    ns = await opc.opc.register_namespace("urn:test:com114")
+    alias = await opc.opc.get_node(ua.NodeId(ua.ObjectIds.UInt32)).add_data_type(ns, "Argument")
+    holder = ua.StructureField()
+    holder.Name = "Value"
+    holder.DataType = alias.nodeid
+    holder.ValueRank = ua.ValueRank.Scalar
+    holder_node, _ = await new_struct(opc.opc, ns, "Com114Holder", [holder])
+    await opc.opc.load_data_type_definitions()
+    assert opc.opc.types.get(alias.nodeid) is ua.UInt32
+    cls = opc.opc.types.get(holder_node.nodeid)
+    assert struct_from_binary(cls, Buffer(struct_to_binary(cls(Value=5)))).Value == 5
