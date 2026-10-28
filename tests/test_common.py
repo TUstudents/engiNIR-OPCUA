@@ -1214,7 +1214,7 @@ async def test_copy_node(opc):
     nodes = await copy_node(opc.opc.nodes.objects, dev_t)
     mydevice = nodes[0]
     assert ua.NodeClass.ObjectType == await mydevice.read_node_class()
-    assert 4 == len(await mydevice.get_children())
+    assert 3 == len(await mydevice.get_children())
     _ = await mydevice.get_child(["0:controller"])
     prop = await mydevice.get_child(["0:controller", "0:state"])
     assert ua.NodeId(ua.ObjectIds.PropertyType) == await prop.read_type_definition()
