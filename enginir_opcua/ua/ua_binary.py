@@ -95,6 +95,41 @@ def _can_be_empty(uatype: Any) -> bool:
     )
 
 
+def _per_class_cache[R](build: Callable[..., R]) -> Callable[..., R]:
+    """
+    Cache the codec built for a class on the class itself, so dropping a class (for example the classes of a
+    session registry) drops its codecs. Arguments that are not classes use one shared table.
+    """
+    shared: dict[Any, R] = {}
+    name = build.__name__
+
+    def cached(*args: Any) -> R:
+        owner = next((a for a in reversed(args) if isinstance(a, type) and a.__module__ != "builtins"), None)
+        try:
+            key = args if len(args) > 1 else args[0]
+            hash(key)
+        except TypeError:
+            return build(*args)
+        if owner is None:
+            table = shared
+        else:
+            table = owner.__dict__.get("__ua_codecs__")
+            if table is None:
+                table = {}
+                try:
+                    type.__setattr__(owner, "__ua_codecs__", table)
+                except (TypeError, AttributeError):
+                    table = shared
+        full = (name, key)
+        if full not in table:
+            table[full] = build(*args)
+        return table[full]
+
+    cached.__name__ = name
+    cached.__wrapped__ = build  # type: ignore[attr-defined]
+    return cached  # type: ignore[return-value]
+
+
 def get_string_encoding() -> str:
     return _string_encoding.get()
 
@@ -356,7 +391,7 @@ def _create_uatype_array_deserializer(vtype: ua.VariantType) -> Callable[[Any], 
     return deserialize
 
 
-@functools.cache
+@_per_class_cache
 def resolve_uatype(ftype: Any) -> tuple[Any, bool]:
     if isinstance(ftype, str):
         # Resolve string hint
@@ -430,7 +465,7 @@ def field_serializer(uatype: Any, is_optional: bool, dataclazz: type) -> Callabl
     return serializer
 
 
-@functools.cache
+@_per_class_cache
 def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
     """Given a dataclass, return a function that serializes instances of this dataclass"""
     if dataclazz is ua.LocalizedText:
@@ -537,7 +572,7 @@ def struct_to_binary(obj: Any) -> bytes:
     return serializer(obj)
 
 
-@functools.cache
+@_per_class_cache
 def create_enum_serializer(uatype: type) -> Callable[[Any], bytes]:
     if issubclass(uatype, IntFlag):
         typename = "UInt32"
@@ -559,7 +594,7 @@ def strip_optional(tp: Any) -> Any:
     return tp
 
 
-@functools.cache
+@_per_class_cache
 def create_type_serializer(uatype: type) -> Callable[[Any], bytes]:
     """Create a binary serialization function for the given UA type"""
     if not type_is_optional(uatype) and type_allow_subclass(uatype):
@@ -586,7 +621,7 @@ def to_binary(uatype: type, val: Any) -> bytes:
     return create_type_serializer(uatype)(val)
 
 
-@functools.cache
+@_per_class_cache
 def create_list_serializer(uatype: Any) -> Callable[[Iterable[Any] | None], bytes]:
     """
     Given a type, return a function that takes a list of instances
@@ -862,7 +897,7 @@ def extensionobject_to_binary(obj: Any) -> bytes:
     return b"".join(packet)
 
 
-@functools.cache
+@_per_class_cache
 def _create_list_deserializer(uatype: Any) -> Callable[[Buffer | IO], list[Any]]:
     # Resolve the element deserializer lazily so mutually-recursive dataclass
     # lists don't infinitely re-enter during codec construction.
@@ -884,7 +919,7 @@ def _create_list_deserializer(uatype: Any) -> Callable[[Buffer | IO], list[Any]]
     return _deserialize
 
 
-@functools.cache
+@_per_class_cache
 def _create_type_deserializer(uatype: Any, dataclazz: type) -> Callable[[Buffer | IO], Any]:
     uatype, is_optional = resolve_uatype(uatype)
 
@@ -940,7 +975,7 @@ def from_binary[T](uatype: type[T] | str, data: Buffer | IO) -> T:
     return _create_type_deserializer(uatype, type(None))(data)
 
 
-@functools.cache
+@_per_class_cache
 def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO], Any]:
     if isinstance(objtype, str):
         objtype = getattr(ua, objtype)

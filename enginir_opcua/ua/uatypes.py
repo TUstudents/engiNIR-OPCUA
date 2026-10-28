@@ -1371,11 +1371,11 @@ def get_default_value(vtype: VariantType) -> Any:
 basetype_by_datatype: dict[NodeId, str] = {}
 basetype_datatypes: dict[type, NodeId] = {}
 enums_by_datatype: dict[NodeId, type] = {}
-enums_datatypes: dict[type, NodeId] = {}
+enums_datatypes: weakref.WeakKeyDictionary[type, NodeId] = weakref.WeakKeyDictionary()
 extension_objects_by_datatype: dict[NodeId, type] = {}
 extension_objects_by_typeid: dict[NodeId, type] = {}
-datatype_by_extension_object: dict[type, NodeId] = {}
-typeid_by_extension_objects: dict[type, NodeId] = {}
+datatype_by_extension_object: weakref.WeakKeyDictionary[type, NodeId] = weakref.WeakKeyDictionary()
+typeid_by_extension_objects: weakref.WeakKeyDictionary[type, NodeId] = weakref.WeakKeyDictionary()
 
 TypeKey = Any
 

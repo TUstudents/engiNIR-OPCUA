@@ -155,3 +155,30 @@ async def test_com40_client_must_load_definitions_itself(restore_ua_registry: No
             assert (await holder.read_value()).alpha == 41
     finally:
         await server.stop()
+
+
+def test_com40_codecs_of_a_dropped_registry_do_not_keep_its_classes_alive() -> None:
+    import gc
+    import weakref
+
+    from enginir_opcua.common.structures104 import make_structure
+
+    reg, _ = registry("urn:a")
+    sdef = ua.StructureDefinition()
+    sdef.StructureType = ua.StructureType.Structure
+    field = ua.StructureField()
+    field.Name = "n"
+    field.IsOptional = False
+    field.ValueRank = -1
+    field.DataType = ua.NodeId(ua.ObjectIds.Int32)
+    sdef.Fields = [field]
+    cls = make_structure(ua.NodeId(10, 1), "Leaky", sdef, types=reg)["Leaky"]
+    reg.register_struct(ua.NodeId(10, 1), ua.NodeId(11, 1), cls, "Leaky")
+    with reg.encoding():
+        data = ua.ua_binary.extensionobject_to_binary(cls(n=3))
+    assert ua.ua_binary.extensionobject_from_binary(Buffer(data, types=reg)).n == 3
+    reference = weakref.ref(cls)
+    del cls, reg, sdef
+    delattr(ua, "Leaky")
+    gc.collect()
+    assert reference() is None
