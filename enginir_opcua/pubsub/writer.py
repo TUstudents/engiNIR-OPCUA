@@ -160,7 +160,7 @@ class DataSetWriter(PubSubInformationModel):
         if UadpDataSetMessageContentMask.SequenceNumber in msg_cfg.DataSetMessageContentMask:
             header.SequenceNo = UInt16(self._seq_no)
         if DataSetFieldContentMask.RawData in self._cfg.DataSetFieldContentMask:
-            data, status, dt = await pds.get_source().get_raw()
+            data, status, dt = await pds.get_source().get_raw(pds.dataset.get_config().Fields)
             ds = UadpDataSetRaw(header, b"".join(data))
         elif self._cfg.DataSetFieldContentMask == DataSetFieldContentMask(0):
             data, status, dt = await pds.get_source().get_variant()

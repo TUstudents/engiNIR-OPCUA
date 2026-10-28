@@ -33,6 +33,7 @@ from ..ua.uatypes import (
     UInt32,
     UInt64,
     Variant,
+    get_default_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -524,9 +525,9 @@ def _raw_element_to_binary(vtype: VariantType, value: Any, element: int, name: s
 def raw_field_to_binary(meta: FieldMetaData, value: Variant | None) -> bytes:
     """Encodes one field as RawData, padded to its maximum size (7.2.4.5.11)"""
     vtype, count, element = _raw_layout(meta)
-    if value is None or value.Value is None:
-        raise UaError(f"RawData field {meta.Name} has no value")
     name = str(meta.Name)
+    if value is None or value.Value is None:
+        value = Variant([], vtype, is_array=True) if count is not None else Variant(get_default_value(vtype), vtype)
     if count is None:
         if value.is_array:
             raise UaError(f"RawData field {name}: array given for a scalar field")

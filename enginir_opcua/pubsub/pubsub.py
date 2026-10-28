@@ -14,12 +14,12 @@ import anyio
 from ..common.utils import Buffer
 from ..ua import PubSubConfigurationDataType, String
 from ..ua.object_ids import ObjectIds
-from ..ua.ua_binary import extensionobject_from_binary, to_binary
+from ..ua.ua_binary import extensionobject_from_binary, extensionobject_to_binary
 from ..ua.uaerrors import BadInvalidArgument, UaError
-from ..ua.uaprotocol_auto import PubSubState, UABinaryFileDataType
+from ..ua.uaprotocol_auto import PublishedDataItemsDataType, PublishedDataSetDataType, PubSubState, UABinaryFileDataType
 from ..ua.uatypes import NodeId, Variant
 from .connection import PubSubConnection
-from .dataset import PublishedDataSet
+from .dataset import PublishedDataItems, PublishedDataSet
 from .information_model import PubSubInformationModel
 
 if TYPE_CHECKING:
@@ -42,8 +42,13 @@ class PubSub(PubSubInformationModel):
         self._server = server
         self._node = None
         if cfg is not None:
-            self._pds = [PublishedDataSet(pds) for pds in cfg.PublishedDataSets]
+            self._pds = [self._new_published_dataset(pds) for pds in cfg.PublishedDataSets]
             self._con = [PubSubConnection(c) for c in cfg.Connections]
+
+    def _new_published_dataset(self, cfg: PublishedDataSetDataType) -> PublishedDataSet:
+        if self._server is not None and isinstance(cfg.DataSetSource, PublishedDataItemsDataType):
+            return PublishedDataItems(cfg, self._server)
+        return PublishedDataSet(cfg)
 
     @classmethod
     def new(
@@ -164,7 +169,7 @@ class PubSub(PubSubInformationModel):
                 self._con.clear()
                 self._enabled = cfg.Enabled
                 for ds in cfg.PublishedDataSets:
-                    await self.add_published_dataset(PublishedDataSet(ds))
+                    await self.add_published_dataset(self._new_published_dataset(ds))
                 for con in cfg.Connections:
                     await self.add_connection(PubSubConnection(con))
                 return
@@ -177,6 +182,6 @@ class PubSub(PubSubInformationModel):
         cfg = PubSubConfigurationDataType(
             [pds._data for pds in self._pds], [con._cfg for con in self._con], self._enabled
         )
-        data = to_binary(UABinaryFileDataType, UABinaryFileDataType(Body=Variant(cfg)))
+        data = extensionobject_to_binary(UABinaryFileDataType(Body=Variant(cfg)))
         async with await anyio.open_file(file, mode="wb") as f:
             await f.write(data)

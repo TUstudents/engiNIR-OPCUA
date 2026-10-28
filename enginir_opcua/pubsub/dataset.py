@@ -4,19 +4,20 @@ A DataSet (ds) describes the data of pubsub
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..common import instantiate_util
 from ..common.methods import uamethod
 from ..common.node import Node
+from ..common.ua_utils import data_type_to_variant_type
 from ..pubsub.information_model import PubSubInformationModel
 from ..ua import DataSetMetaDataType, FieldMetaData, LocalizedText, ObjectIds, String
 from ..ua.attribute_ids import AttributeIds
 from ..ua.status_codes import StatusCodes
-from ..ua.ua_binary import pack_uatype
 from ..ua.uaerrors import UaStatusCodeError
 from ..ua.uaprotocol_auto import (
     ConfigurationVersionDataType,
@@ -35,38 +36,61 @@ from ..ua.uatypes import (
     Int32,
     NodeId,
     StatusCode,
+    TypeRegistry,
     UInt32,
     ValueRank,
     Variant,
     VariantType,
     default_types,
 )
+from .uadp import raw_field_to_binary
 from .utils import version_time_now
 
 if TYPE_CHECKING:
     from ..server.server import Server
 
 
-def _get_datatype_or_built_in(datatype: NodeId | VariantType | int) -> tuple[NodeId, Byte]:
+_ABSTRACT_BUILT_IN = (ObjectIds.Number, ObjectIds.Integer, ObjectIds.UInteger)
+_DERIVED_BUILT_IN = {
+    ObjectIds.Enumeration: VariantType.Int32,
+    ObjectIds.IntegerId: VariantType.UInt32,
+    ObjectIds.Counter: VariantType.UInt32,
+    ObjectIds.Duration: VariantType.Double,
+    ObjectIds.NumericRange: VariantType.String,
+    ObjectIds.UtcTime: VariantType.DateTime,
+    ObjectIds.LocaleId: VariantType.String,
+}
+_LAST_BUILT_IN_ID = 25
+
+
+def _get_datatype_or_built_in(
+    datatype: NodeId | VariantType | int, built_in: VariantType | None = None
+) -> tuple[NodeId, Byte]:
     """
-    Returns the DataType NodeId and the corresponding BuiltIn number if
-    possible to determine.
+    Returns the DataType NodeId and the corresponding BuiltIn number (Part 14, 6.2.3.2.4). The built-in type of a
+    DataType that isn't a namespace 0 type of the table must be given, see `built_in_type_of`.
     """
     if isinstance(datatype, VariantType):
-        dt = NodeId(Int32(datatype))
-        built_in = Byte(datatype.value)
-        return (dt, built_in)
-
-    if isinstance(datatype, int):  # Assume it's in ObjectIds
+        return NodeId(Int32(datatype)), Byte(datatype.value)
+    if isinstance(datatype, int):
         datatype = NodeId(Int32(datatype))
+    if built_in is not None:
+        return datatype, Byte(built_in.value)
+    identifier = datatype.Identifier
+    if datatype.NamespaceIndex != 0 or not isinstance(identifier, int):
+        return datatype, Byte(0)
+    if identifier <= _LAST_BUILT_IN_ID:
+        return datatype, Byte(identifier)
+    if identifier in _ABSTRACT_BUILT_IN:
+        return datatype, Byte(VariantType.Variant.value)
+    if identifier in _DERIVED_BUILT_IN:
+        return datatype, Byte(_DERIVED_BUILT_IN[identifier].value)
+    return datatype, Byte(0)
 
-    if datatype.NamespaceIndex == 0 and isinstance(datatype.Identifier, int) and datatype.Identifier < 24:
-        dt = datatype
-        built_in = Byte(datatype.Identifier)
-    else:
-        dt = datatype
-        built_in = Byte(0)
-    return (dt, built_in)
+
+async def built_in_type_of(server: Server, datatype: NodeId) -> VariantType:
+    """The built-in type a DataType is sent as, found through its supertypes in the server's address space"""
+    return await data_type_to_variant_type(server.get_node(datatype))
 
 
 class DataSetField:
@@ -81,11 +105,11 @@ class DataSetField:
             self._meta = meta
 
     @classmethod
-    def CreateScalar(cls, name: String, datatype: NodeId | VariantType):
+    def CreateScalar(cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None):
         """
         Creates a scalar Field with datatype and name
         """
-        datatype_nid, built_in = _get_datatype_or_built_in(datatype)
+        datatype_nid, built_in = _get_datatype_or_built_in(datatype, built_in_type)
         meta = FieldMetaData(
             Name=name,
             DataSetFieldId=uuid.uuid4(),
@@ -97,11 +121,11 @@ class DataSetField:
         return cls(meta)
 
     @classmethod
-    def CreateArray(cls, name: String, datatype: NodeId | VariantType):
+    def CreateArray(cls, name: String, datatype: NodeId | VariantType, built_in_type: VariantType | None = None):
         """
-        Creates a scalar Field with datatype and name
+        Creates a one dimensional array Field with datatype and name
         """
-        datatype_nid, built_in = _get_datatype_or_built_in(datatype)
+        datatype_nid, built_in = _get_datatype_or_built_in(datatype, built_in_type)
         meta = FieldMetaData(
             Name=name,
             DataSetFieldId=uuid.uuid4(),
@@ -156,13 +180,17 @@ class DataSetField:
     def get_config(self) -> FieldMetaData:
         return self._meta
 
-    def get_datatype_name(self) -> str:
+    def get_datatype_name(self, types: TypeRegistry | None = None) -> str:
         """
-        returns the name of DataType
+        returns the name of DataType, looked up in the registry of the session or server if given
         """
+        registry = types if types is not None else default_types
+        found = registry.find(self._meta.DataType)
+        if found is not None:
+            return found.__name__
         if self._meta.BuiltInType != 0:
             return VariantType(self._meta.BuiltInType).name
-        return default_types.get(self._meta.DataType).__name__
+        return str(self._meta.DataType)
 
 
 class DataSetMeta:
@@ -195,8 +223,9 @@ class DataSetMeta:
             meta.Description = description
         if name is not None:
             meta.Name = name
-        meta.ConfigurationVersion.MajorVersion = version_time_now()
-        meta.ConfigurationVersion.MinorVersion = version_time_now()
+        now = version_time_now()
+        meta.ConfigurationVersion.MajorVersion = now
+        meta.ConfigurationVersion.MinorVersion = now
         return cls(meta, dataset_fields)
 
     @property
@@ -207,28 +236,38 @@ class DataSetMeta:
     def Description(self) -> LocalizedText:
         return self._meta.Description
 
+    def _update_version(self, major: bool) -> None:
+        """Part 14, 6.2.3.2.6: appending fields changes the minor version, any other change the major version, and
+        a new major version is also the minor version"""
+        version = self._meta.ConfigurationVersion
+        now = version_time_now()
+        if major:
+            version.MajorVersion = now
+        version.MinorVersion = now
+
     def add_field(self, ds_field: DataSetField | FieldMetaData) -> None:
         if isinstance(ds_field, FieldMetaData):
             ds_field = DataSetField(ds_field)
         self._fields.append(ds_field)
         self._meta.Fields.append(ds_field._meta)
+        self._update_version(major=False)
 
     def add_scalar(self, name: String, datatype: NodeId | VariantType):
         self.add_field(DataSetField.CreateScalar(name, datatype))
 
     def add_array(self, name: String, datatype: NodeId | VariantType):
-        self.add_field(DataSetField.CreateScalar(name, datatype))
+        self.add_field(DataSetField.CreateArray(name, datatype))
 
     def get_field(self, name) -> DataSetField | None:
         return next((f for f in self._fields if f.Name == name), None)
 
     def remove_field(self, field_name: str) -> None:
-        f = next((f for f in self._fields if f.Name == field_name), None)
-        if f is not None:
-            del f
-            f = next((f for f in self._meta.Fields if f.Name == field_name), None)
-            if f is not None:
-                del f
+        removed = next((f for f in self._fields if f.Name == field_name), None)
+        if removed is None:
+            return
+        self._fields.remove(removed)
+        self._meta.Fields = [f for f in self._meta.Fields if f.Name != field_name]
+        self._update_version(major=True)
 
     def get_config(self) -> DataSetMetaDataType:
         return self._meta
@@ -239,43 +278,59 @@ class PubSubDataSource:
     Baseclass for all DataSources
     """
 
-    async def get_variant(self) -> tuple[list[Variant | None], StatusCode, DateTime]:
+    async def get_variant(self) -> tuple[list[Variant], StatusCode, DateTime]:
         """
-        return all variants for a dataset as Variant
+        return all fields of a dataset as Variants, with the worst status of the fields. A field with a Bad status
+        is a Variant holding its StatusCode, one with an Uncertain status a Variant holding its DataValue
+        (Part 14, 7.2.4.5.4)
         """
         dt = DateTime.now(UTC)
         vars = await self.on_get_value()
-        ret = [v.Value for v in vars]
+        ret: list[Variant] = []
         st = StatusCode(UInt32(StatusCodes.Good))
         for v in vars:
-            if v.StatusCode is not None and not v.StatusCode.is_good():
-                st = v.StatusCode
+            status = v.StatusCode
+            if status is None or status.is_good():
+                ret.append(v.Value)
+                continue
+            if status.is_bad():
+                ret.append(Variant(status, VariantType.StatusCode))
+            else:
+                ret.append(Variant(v, VariantType.DataValue))
+            if st.is_good() or (status.is_bad() and not st.is_bad()):
+                st = status
         return (ret, st, dt)
 
     async def get_value(self, status: bool, server_timestamp: bool, source_timestamp: bool) -> list[DataValue]:
         """
-        returns all values for a dataset as DataValues
+        returns all values for a dataset as DataValues, with only the parts asked for. The values the source holds
+        aren't changed.
         """
-        vars = await self.on_get_value()
-        for v in vars:
+        ret = []
+        for v in await self.on_get_value():
+            changes: dict[str, Any] = {}
             if not status:
-                v.StatusCode = None
+                changes["StatusCode"] = None
             if not server_timestamp:
-                v.ServerTimestamp = None
+                changes["ServerTimestamp"] = None
+                changes["ServerPicoseconds"] = None
             if not source_timestamp:
-                v.SourceTimestamp = None
-        return vars
+                changes["SourceTimestamp"] = None
+                changes["SourcePicoseconds"] = None
+            ret.append(dataclasses.replace(v, **changes))
+        return ret
 
-    async def get_raw(self) -> tuple[list[bytes], StatusCode, DateTime]:
+    async def get_raw(self, fields: list[FieldMetaData]) -> tuple[list[bytes], StatusCode, DateTime]:
         """
-        returns all values for a dataset as rawbytes
+        returns all values for a dataset as raw bytes, padded as the field metadata says (Part 14, 7.2.4.5.11). A
+        field without a value is sent as the default value of its type
         """
         dt = DateTime.now(UTC)
         vars = await self.on_get_value()
-        ret = [pack_uatype(v.Value.VariantType, v.Value.Value) for v in vars if v.Value is not None]
-
+        ret = []
         st = StatusCode(UInt32(StatusCodes.Good))
-        for v in vars:
+        for meta, v in zip(fields, vars, strict=True):
+            ret.append(raw_field_to_binary(meta, v.Value))
             if v.StatusCode is not None and not v.StatusCode.is_good():
                 st = v.StatusCode
         return ret, st, dt
@@ -573,7 +628,7 @@ class PublishedDataItems(PubSubInformationModel):
             items.PublishedData.append(
                 PublishedVariableDataType(v.SourceNode, AttributeIds.Value, SubstituteValue=v.SubstituteValue)
             )
-            flags = DataSetFieldFlags(0) if v.Promoted else DataSetFieldFlags.PromotedField
+            flags = DataSetFieldFlags.PromotedField if v.Promoted else DataSetFieldFlags(0)
             meta = FieldMetaData(
                 Name=v.Name,
                 DataSetFieldId=uuid.uuid4(),
@@ -584,9 +639,16 @@ class PublishedDataItems(PubSubInformationModel):
                 datatype = v.DataType
             else:
                 datatype = await server.get_node(v.SourceNode).read_data_type()
-            meta.DataType, meta.BuiltInType = _get_datatype_or_built_in(datatype)
-            fields.append(DataSetField(meta))
-        meta = DataSetMetaDataType(Name=name, Fields=fields, DataSetClassId=uuid.uuid4())
+            built_in = await built_in_type_of(server, datatype)
+            meta.DataType, meta.BuiltInType = _get_datatype_or_built_in(datatype, built_in)
+            fields.append(meta)
+        now = version_time_now()
+        meta = DataSetMetaDataType(
+            Name=name,
+            Fields=fields,
+            DataSetClassId=uuid.uuid4(),
+            ConfigurationVersion=ConfigurationVersionDataType(MajorVersion=now, MinorVersion=now),
+        )
         s = cls(
             PublishedDataSetDataType(Name=name, DataSetSource=items, DataSetMetaData=meta),
             server,
