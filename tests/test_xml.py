@@ -92,8 +92,6 @@ async def disposable_opc(request):
 
 async def test_xml_import_companion_specifications(disposable_opc):
     opc = disposable_opc
-    if opc.opc is not opc.server:
-        pytest.skip("AddNodes of a Session needs a hierarchical parent reference, the nodesets use ConnectsTo")
     await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
     nodes = await opc.opc.import_xml(NODESET_DI)
     nodes += await opc.opc.import_xml(NODESET_IA)

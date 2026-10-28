@@ -1563,10 +1563,15 @@ class TypeRegistry:
         )
 
     def restore(self, saved: tuple[Any, ...]) -> None:
-        for table, content in zip(
-            (self._datatypes, self._class_datatype, self._encodings, self._class_encoding, self._names, self._named),
-            saved,
-        ):
+        tables: tuple[dict[Any, Any], ...] = (
+            self._datatypes,
+            self._class_datatype,
+            self._encodings,
+            self._class_encoding,
+            self._names,
+            self._named,
+        )
+        for table, content in zip(tables, saved):
             table.clear()
             table.update(content)
 

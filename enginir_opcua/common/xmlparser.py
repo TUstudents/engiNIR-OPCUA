@@ -171,6 +171,7 @@ class NodeData:
         self.definitions = []
         self.struct_type = ""
         self.option_set = False
+        self.has_definition = False
 
     def __str__(self):
         return f"NodeData(nodeid:{self.nodeid})"
@@ -375,6 +376,7 @@ class XMLParser:
             elif xs_boolean(el.attrib.get("IsOptional", "false")):
                 obj.struct_type = "IsOptional"
             obj.option_set = xs_boolean(el.attrib.get("IsOptionSet", "false"))
+            obj.has_definition = True
             for field in el:
                 obj.definitions.append(self._parse_field(field))
         elif tag in ("Documentation", "Category", "Extensions", "RolePermissions", "Translation"):

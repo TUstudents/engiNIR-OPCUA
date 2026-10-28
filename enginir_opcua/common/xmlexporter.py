@@ -12,6 +12,7 @@ import logging
 import xml.etree.ElementTree as Et
 from collections import OrderedDict
 from dataclasses import is_dataclass
+from datetime import UTC
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -24,6 +25,10 @@ from .. import Node
 from ..ua import object_ids as o_ids
 from .ua_utils import get_base_data_type
 from .utils import fields_with_resolved_types
+
+UINTEGER_TYPES = frozenset(
+    (ua.ObjectIds.Byte, ua.ObjectIds.UInt16, ua.ObjectIds.UInt32, ua.ObjectIds.UInt64, ua.ObjectIds.UInteger)
+)
 
 
 class XmlExporter:
@@ -44,6 +49,7 @@ class XmlExporter:
         self.server = server
         self.aliases = {}
         self._addr_idx_to_xml_idx = {}
+        self._models_written = False
 
         node_write_attributes = OrderedDict()
         node_write_attributes["xmlns:xsi"] = "http://www.w3.org/2001/XMLSchema-instance"
@@ -56,7 +62,7 @@ class XmlExporter:
         if self._export_values:
             self.logger.warning("Exporting values of variables is limited and can result in invalid xmls.")
 
-    async def build_etree(self, node_list, add_all_namespaces=False):
+    async def build_etree(self, node_list, add_all_namespaces=False, model_uris=None):
         """
         Create an XML etree object from a list of nodes;
         Namespaces used by nodes are always exported for consistency.
@@ -67,10 +73,13 @@ class XmlExporter:
         """
         self.logger.info("Building XML etree")
 
+        node_list = list(node_list)
         await self._add_namespaces(node_list, add_all_namespaces)
         # add all nodes in the list to the XML etree
         for node in node_list:
             await self.node_to_etree(node)
+        if model_uris:
+            await self._add_model_els(model_uris)
         # add aliases to the XML etree
         self._add_alias_els()
 
@@ -90,12 +99,9 @@ class XmlExporter:
         """
         self.logger.info("Building XML etree chunked")
 
+        node_list = list(node_list)
         await self._add_namespaces(node_list, add_all_namespaces)
-        # add all nodes in the list to the XML etree
-        for i, chunk in enumerate(self._chunked_iterable(list, chunk_size)):
-            await self.server.disconnect()
-            await self.server.connect()
-            # add all nodes in the list to the XML etree
+        for chunk in self._chunked_iterable(node_list, chunk_size):
             for node in chunk:
                 await self.node_to_etree(node)
 
@@ -107,8 +113,7 @@ class XmlExporter:
             # add all namespaces
             ns_array = await self.server.get_namespace_array()
             self._addr_idx_to_xml_idx = {count: count for count in range(len(ns_array))}
-            # write namespaces to xml
-            self._add_namespace_uri_els(ns_array)
+            self._add_namespace_uri_els(ns_array[1:])
         else:
             ns_array = await self.server.get_namespace_array()
             idxs = await self._get_ns_idxs_of_nodes(nodes)
@@ -141,17 +146,50 @@ class XmlExporter:
                 self.logger.exception("Error retrieving browse name of node %s", node)
                 raise
 
-            node_idxs.extend(ref.NodeId.NamespaceIndex for ref in await node.get_references())
+            for ref in await node.get_references():
+                node_idxs.append(ref.NodeId.NamespaceIndex)
+                node_idxs.append(ref.ReferenceTypeId.NamespaceIndex)
             if node.nodeid.NamespaceIndex != 0:
                 try:
                     node_idxs.append((await node.read_data_type()).NamespaceIndex)
                 except ua.UaStatusCodeError:
                     pass
+            node_idxs.extend(await self._indices_in_attributes(node))
             node_idxs = list(set(node_idxs))  # remove duplicates
             for i in node_idxs:
                 if i != 0 and i not in idxs:
                     idxs.append(i)
         return idxs
+
+    async def _indices_in_attributes(self, node) -> list[int]:
+        found: list[int] = []
+        try:
+            definition = await node.read_data_type_definition()
+        except ua.UaError:
+            definition = None
+        if isinstance(definition, ua.StructureDefinition):
+            found.extend(field.DataType.NamespaceIndex for field in definition.Fields)
+            found.append(definition.BaseDataType.NamespaceIndex)
+        if self._export_values:
+            try:
+                value = await node.read_data_value(raise_on_bad_status=False)
+            except ua.UaError:
+                return found
+            if value.Value is not None:
+                self._collect_value_indices(value.Value.Value, found, 0)
+        return found
+
+    def _collect_value_indices(self, value: Any, found: list[int], depth: int) -> None:
+        if depth > 20 or value is None:
+            return
+        if isinstance(value, ua.NodeId | ua.QualifiedName):
+            found.append(value.NamespaceIndex)
+        elif isinstance(value, list | tuple):
+            for item in value:
+                self._collect_value_indices(item, found, depth + 1)
+        elif is_dataclass(value) and not isinstance(value, type):
+            for name in getattr(value, "__dataclass_fields__", {}):
+                self._collect_value_indices(getattr(value, name, None), found, depth + 1)
 
     def _add_idxs_from_uris(self, idxs, uris, ns_array):
         for uri in uris:
@@ -207,8 +245,10 @@ class XmlExporter:
             await self.add_etree_datatype(node)
         elif node_class is ua.NodeClass.Method:
             await self.add_etree_method(node)
+        elif node_class is ua.NodeClass.View:
+            await self.add_etree_view(node)
         else:
-            self.logger.info("Exporting node class not implemented: %s ", node_class)
+            raise UaInvalidParameterError(f"Exporting node class {node_class} is not implemented")
 
     def _add_sub_el(self, el, name, text):
         child_el = Et.SubElement(el, name)
@@ -249,9 +289,20 @@ class XmlExporter:
         self._add_sub_el(node_el, "DisplayName", displayname)
         if desc not in (None, ""):
             self._add_sub_el(node_el, "Description", desc)
-        # FIXME: add WriteMask and UserWriteMask
         await self._add_ref_els(node_el, node)
+        write_mask = await self._read_optional(node, ua.AttributeIds.WriteMask)
+        user_write_mask = await self._read_optional(node, ua.AttributeIds.UserWriteMask)
+        if write_mask:
+            node_el.attrib["WriteMask"] = str(int(write_mask))
+        if user_write_mask is not None and user_write_mask != (write_mask or 0):
+            node_el.attrib["UserWriteMask"] = str(int(user_write_mask))
         return node_el
+
+    async def _read_optional(self, node, attribute: ua.AttributeIds) -> Any:
+        value = await node.read_attribute(attribute, raise_on_bad_status=False)
+        if value is None or value.Value is None:
+            return None
+        return value.Value.Value
 
     async def add_etree_object(self, node):
         """
@@ -261,6 +312,17 @@ class XmlExporter:
         var = await node.read_attribute(ua.AttributeIds.EventNotifier)
         if var.Value.Value != 0:
             obj_el.attrib["EventNotifier"] = str(var.Value.Value)
+
+    async def add_etree_view(self, node):
+        """
+        Add a UA view element to the XML etree
+        """
+        view_el = await self._add_node_common("UAView", node)
+        notifier = await self._read_optional(node, ua.AttributeIds.EventNotifier)
+        if notifier:
+            view_el.attrib["EventNotifier"] = str(int(notifier))
+        if await self._read_optional(node, ua.AttributeIds.ContainsNoLoops):
+            view_el.attrib["ContainsNoLoops"] = "true"
 
     async def add_etree_object_type(self, node):
         """
@@ -302,15 +364,13 @@ class XmlExporter:
         accesslevel = (await node.read_attribute(ua.AttributeIds.AccessLevel)).Value.Value
         useraccesslevel = (await node.read_attribute(ua.AttributeIds.UserAccessLevel)).Value.Value
 
-        # We only write these values if they are different from defaults
-        # Not sure where default is defined....
-        if accesslevel not in (0, ua.AccessLevel.CurrentRead.mask):
+        if accesslevel != ua.AccessLevel.CurrentRead.mask:
             var_el.attrib["AccessLevel"] = str(accesslevel)
-        if useraccesslevel not in (0, ua.AccessLevel.CurrentRead.mask):
+        if useraccesslevel != accesslevel:
             var_el.attrib["UserAccessLevel"] = str(useraccesslevel)
 
         var = await node.read_attribute(ua.AttributeIds.MinimumSamplingInterval, raise_on_bad_status=False)
-        if var.Value.Value:
+        if var is not None and var.Value is not None and var.Value.Value:
             var_el.attrib["MinimumSamplingInterval"] = str(var.Value.Value)
         var = await node.read_attribute(ua.AttributeIds.Historizing)
         if var.Value.Value:
@@ -340,42 +400,66 @@ class XmlExporter:
         var = await obj.read_attribute(ua.AttributeIds.InverseName, raise_on_bad_status=False)
         if var is not None and var.Value.Value is not None and var.Value.Value.Text is not None:
             self._add_sub_el(obj_el, "InverseName", var.Value.Value.Text)
+        if await self._read_optional(obj, ua.AttributeIds.Symmetric):
+            obj_el.attrib["Symmetric"] = "true"
+        if await self._read_optional(obj, ua.AttributeIds.IsAbstract):
+            obj_el.attrib["IsAbstract"] = "true"
 
     async def add_etree_datatype(self, obj):
         """
         Add a UA data type element to the XML etree
         """
         obj_el = await self._add_node_common("UADataType", obj)
+        if await self._read_optional(obj, ua.AttributeIds.IsAbstract):
+            obj_el.attrib["IsAbstract"] = "true"
         dv = await obj.read_attribute(ua.AttributeIds.DataTypeDefinition, raise_on_bad_status=False)
-        if dv is not None and dv.Value.Value:
+        if dv is not None and dv.Value is not None and dv.Value.Value:
             sdef = dv.Value.Value
-            # FIXME: can probably get that name somewhere else
-            bname = await obj.read_attribute(ua.AttributeIds.BrowseName)
-            bname = bname.Value.Value
+            bname = (await obj.read_attribute(ua.AttributeIds.BrowseName)).Value.Value
             sdef_el = Et.SubElement(obj_el, "Definition")
-            sdef_el.attrib["Name"] = bname.Name
+            sdef_el.attrib["Name"] = self._bname_to_string(bname)
+            supers = await obj.get_references(ua.ObjectIds.HasSubtype, ua.BrowseDirection.Inverse)
+            parent = supers[0].NodeId if supers else None
             if isinstance(sdef, ua.StructureDefinition):
-                if sdef.StructureType == ua.StructureType.Union:
+                if sdef.StructureType in (ua.StructureType.Union, ua.StructureType.UnionWithSubtypedValues):
                     sdef_el.attrib["IsUnion"] = "true"
-                elif sdef.StructureType == ua.StructureType.StructureWithOptionalFields:
-                    sdef_el.attrib["IsOptional"] = "true"
-                self._structure_fields_to_etree(sdef_el, sdef)
+                inherited = await self._inherited_field_names(parent)
+                self._structure_fields_to_etree(sdef_el, sdef, inherited)
             elif isinstance(sdef, ua.EnumDefinition):
+                if parent is not None and parent.NamespaceIndex == 0 and parent.Identifier in UINTEGER_TYPES:
+                    sdef_el.attrib["IsOptionSet"] = "true"
                 self._enum_fields_to_etree(sdef_el, sdef)
             else:
                 self.logger.warning("Unknown DataTypeSpecification element: %s", sdef)
 
-    def _structure_fields_to_etree(self, sdef_el, sdef):
+    async def _inherited_field_names(self, parent: ua.NodeId | None) -> set[str]:
+        if parent is None or parent.NamespaceIndex == 0:
+            return set()
+        try:
+            definition = await self.server.get_node(parent).read_data_type_definition()
+        except ua.UaError:
+            return set()
+        return {field.Name for field in definition.Fields} if isinstance(definition, ua.StructureDefinition) else set()
+
+    def _structure_fields_to_etree(self, sdef_el, sdef, inherited: set[str] = frozenset()):
+        subtyped = sdef.StructureType in (
+            ua.StructureType.StructureWithSubtypedValues,
+            ua.StructureType.UnionWithSubtypedValues,
+        )
         for field in sdef.Fields:
+            if field.Name in inherited:
+                continue
             field_el = Et.SubElement(sdef_el, "Field")
             field_el.attrib["Name"] = field.Name
             field_el.attrib["DataType"] = self._node_to_string(field.DataType)
             if field.ValueRank != -1:
                 field_el.attrib["ValueRank"] = str(int(field.ValueRank))
             if field.ArrayDimensions:
-                field_el.attrib["ArrayDimensions"] = ", ".join([str(i) for i in field.ArrayDimensions])
+                field_el.attrib["ArrayDimensions"] = ",".join([str(i) for i in field.ArrayDimensions])
+            if field.MaxStringLength:
+                field_el.attrib["MaxStringLength"] = str(field.MaxStringLength)
             if field.IsOptional:
-                field_el.attrib["IsOptional"] = "true"
+                field_el.attrib["AllowSubTypes" if subtyped else "IsOptional"] = "true"
             if field.Description and field.Description.Text not in (None, ""):
                 self._add_sub_el(field_el, "Description", field.Description.Text)
 
@@ -384,6 +468,9 @@ class XmlExporter:
             field_el = Et.SubElement(sdef_el, "Field")
             field_el.attrib["Name"] = field.Name
             field_el.attrib["Value"] = str(field.Value)
+            display = field.DisplayName.Text if field.DisplayName else None
+            if display not in (None, "", field.Name):
+                self._add_sub_el(field_el, "DisplayName", display)
             if field.Description and field.Description.Text not in (None, ""):
                 self._add_sub_el(field_el, "Description", field.Description.Text)
 
@@ -393,6 +480,56 @@ class XmlExporter:
             self._add_sub_el(nuris_el, "Uri", uri)
         self.etree.getroot().insert(0, nuris_el)
 
+    async def _namespace_metadata(self) -> dict[str, dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        try:
+            children = await self.server.nodes.namespaces.get_children()
+        except ua.UaError:
+            return found
+        for child in children:
+            try:
+                uri = await (await child.get_child("NamespaceUri")).read_value()
+                version = await (await child.get_child("NamespaceVersion")).read_value()
+                published = await (await child.get_child("NamespacePublicationDate")).read_value()
+            except ua.UaError:
+                continue
+            model_version = None
+            try:
+                model_version = await (await child.get_child("ModelVersion")).read_value()
+            except ua.UaError:
+                pass
+            found[uri] = {"Version": version, "PublicationDate": published, "ModelVersion": model_version}
+        return found
+
+    @staticmethod
+    def _model_attributes(uri: str, meta: dict[str, Any] | None) -> dict[str, str]:
+        attributes = {"ModelUri": uri}
+        if meta is None:
+            return attributes
+        if meta["Version"]:
+            attributes["Version"] = meta["Version"]
+        published = meta["PublicationDate"]
+        if published is not None and published.year > 1601:
+            attributes["PublicationDate"] = published.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if meta["ModelVersion"]:
+            attributes["ModelVersion"] = meta["ModelVersion"]
+        return attributes
+
+    async def _add_model_els(self, model_uris) -> None:
+        metadata = await self._namespace_metadata()
+        ns_array = await self.server.get_namespace_array()
+        used = [ns_array[i] for i in sorted(self._addr_idx_to_xml_idx) if i < len(ns_array)]
+        models_el = Et.Element("Models")
+        for uri in model_uris:
+            model_el = Et.SubElement(models_el, "Model", self._model_attributes(uri, metadata.get(uri)))
+            for other in used:
+                if other != uri:
+                    Et.SubElement(model_el, "RequiredModel", self._model_attributes(other, metadata.get(other)))
+        root = self.etree.getroot()
+        assert root is not None
+        root.insert(1, models_el)
+        self._models_written = True
+
     def _add_alias_els(self):
         aliases_el = Et.Element("Aliases")
         ordered_keys = list(self.aliases.keys())
@@ -401,8 +538,7 @@ class XmlExporter:
             name = self.aliases[nodeid]
             ref_el = Et.SubElement(aliases_el, "Alias", Alias=name)
             ref_el.text = self._node_to_string(nodeid)
-        # insert behind the namespace element
-        self.etree.getroot().insert(1, aliases_el)
+        self.etree.getroot().insert(2 if self._models_written else 1, aliases_el)
 
     async def _add_ref_els(self, parent_el, obj):
         refs = await obj.get_references()
@@ -418,7 +554,8 @@ class XmlExporter:
                 ref_el.attrib["IsForward"] = "false"
             ref_el.text = self._node_to_string(ref.NodeId)
 
-            self.aliases[ref.ReferenceTypeId] = ref_name
+            if ref.ReferenceTypeId.NamespaceIndex == 0 and ref.ReferenceTypeId.Identifier in o_ids.ObjectIdNames:
+                self.aliases[ref.ReferenceTypeId] = ref_name
 
     async def member_to_etree(self, el, name, dtype, val):
         member_el = Et.SubElement(el, "uax:" + name)
@@ -564,7 +701,7 @@ class XmlExporter:
                     dtype = dtype_node.nodeid
                 except (AttributeError, KeyError):
                     self.logger.debug("could not find field type %s in registered types", field.type)
-                    return
+                    continue
             await self.member_to_etree(struct_el, field.name, dtype, getattr(val, field.name))
 
 

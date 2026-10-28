@@ -210,26 +210,9 @@ class ReferenceTypeAttributes(auto.ReferenceTypeAttributes):
 
 @dataclass(slots=True)
 class DataTypeAttributes(auto.DataTypeAttributes):
-    DataTypeDefinition: uatypes.ExtensionObject = field(default_factory=auto.ExtensionObject)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "SpecifiedAttributes",
-            (
-                ana.DisplayName
-                | ana.Description
-                | ana.WriteMask
-                | ana.UserWriteMask
-                | ana.IsAbstract
-                | ana.DataTypeDefinition
-            ),
-        )
-
-
-nid = uatypes.FourByteNodeId(auto.ObjectIds.DataTypeAttributes_Encoding_DefaultBinary)
-uatypes.extension_objects_by_typeid[nid] = DataTypeAttributes
-uatypes.typeid_by_extension_objects[DataTypeAttributes] = nid
+    SpecifiedAttributes: uatypes.UInt32 = (
+        ana.DisplayName | ana.Description | ana.WriteMask | ana.UserWriteMask | ana.IsAbstract
+    )
 
 
 @dataclass(slots=True)

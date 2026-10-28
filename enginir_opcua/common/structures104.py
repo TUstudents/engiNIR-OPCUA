@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import keyword
 import logging
 import re
@@ -8,7 +9,6 @@ import typing
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, make_dataclass
-from datetime import UTC, datetime
 from enum import Enum, IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
@@ -50,7 +50,7 @@ def new_struct_field(
         raise ValueError(f"DataType of a field must be a NodeId, not {dtype} of type {type(dtype)}")
     if array:
         field.ValueRank = ua.ValueRank.OneDimension
-        field.ArrayDimensions = [1]  # type: ignore
+        field.ArrayDimensions = [0]  # type: ignore
     else:
         field.ValueRank = ua.ValueRank.Scalar
         field.ArrayDimensions = None
@@ -126,8 +126,12 @@ async def new_enum(
     edef = ua.EnumDefinition()
     counter = 0
     for item in fields:
-        field = item if isinstance(item, ua.EnumField) else new_enum_field(item)
-        field.Value = counter
+        if isinstance(item, ua.EnumField):
+            field = copy.copy(item)
+            counter = field.Value
+        else:
+            field = new_enum_field(item)
+            field.Value = counter
         counter += 1
         edef.Fields.append(field)
     if option_set:
@@ -178,13 +182,13 @@ def _default_value_for(uatype: str, optional: bool = False) -> Any:
     if uatype == "String":
         return ua.String()
     if uatype == "Guid":
-        return uuid.uuid4()
+        return uuid.UUID(int=0)
     if uatype in ("ByteString", "CharArray", "Char"):
         return b""
     if uatype == "Boolean":
         return False
     if uatype == "DateTime":
-        return datetime.now(UTC)
+        return ua.get_win_epoch()
     if uatype in _NUMERIC_TYPES:
         return getattr(ua, uatype)(0)
     if isinstance(cls, type) and issubclass(cls, Enum):
@@ -681,8 +685,8 @@ async def load_data_type_definitions(
 
     # Load enums and option sets in parallel - they are independent of each other
     enum_results, optionset_results = await asyncio.gather(
-        load_enums(server),
-        load_enums(server, server.nodes.option_set_type, True),
+        load_enums(server, overwrite_existing=overwrite_existing),
+        load_enums(server, server.nodes.option_set_type, True, overwrite_existing),
     )
     new_objects.update(enum_results)
     new_objects.update(optionset_results)
@@ -691,7 +695,7 @@ async def load_data_type_definitions(
         base_node = server.nodes.base_structure_type
 
     parser = RecursiveParser(server)
-    dtypes = await parser.parse(base_node)
+    dtypes = await parser.parse(base_node, overwrite_existing)
 
     # Topological sort: O(n+e) instead of comparison-based O(n^2 log n)
     dtypes = _topological_sort_dtypes(dtypes)
@@ -736,6 +740,10 @@ def make_enum(name: str, edef: ua.EnumDefinition, option_set: bool) -> dict[str,
         return {name: cls}
     for n, sfield in enumerate(edef.Fields):
         fieldname = clean_name(sfield.Name)
+        if fieldname in members:
+            raise ua.UaError(
+                f"Enumeration {name}: the fields '{sfield.Name}' and another one both become '{fieldname}'"
+            )
         if hasattr(sfield, "Value"):
             value = sfield.Value if not option_set else (1 << sfield.Value)
         else:

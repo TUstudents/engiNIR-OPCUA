@@ -1534,13 +1534,16 @@ class Client:
         importer = XmlImporter(self, strict_mode=strict_mode, auto_load_definitions=auto_load_definitions)
         return await importer.import_xml(path, xmlstring)
 
-    async def export_xml(self, nodes: Iterable[Node], path: str, export_values: bool = False) -> None:
+    async def export_xml(
+        self, nodes: Iterable[Node], path: str, export_values: bool = False, model_uris: list[str] | None = None
+    ) -> None:
         """
         Export defined nodes to xml
         :param export_values: exports values from variants
+        :param model_uris: namespaces that are written as models, with their version and required models
         """
         exp = XmlExporter(self, export_values=export_values)
-        await exp.build_etree(nodes)
+        await exp.build_etree(nodes, model_uris=model_uris)
         await exp.write_xml(path)
 
     async def register_namespace(self, uri: str) -> int:
