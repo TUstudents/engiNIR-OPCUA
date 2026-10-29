@@ -61,6 +61,18 @@ def warn(text: object) -> None:
     print(clean(text), file=sys.stderr)
 
 
+def shown_url(url: str) -> str:
+    """The URL without the password of its user info, for messages."""
+    parsed = urlparse(url)
+    if parsed.password is None:
+        return url
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    user = f"{parsed.username}@" if parsed.username else ""
+    return parsed._replace(netloc=f"{user}{host}").geturl()
+
+
 def _status_name(status: ua.StatusCode | None) -> str:
     return status.name if status is not None else "Good"
 
@@ -459,7 +471,7 @@ async def _list_children(node: Node, depth: int, layout: str, indent: str = "") 
 
 async def _ls(client: Client, args: argparse.Namespace) -> int:
     node = await resolve_node(client, args, default=ROOT_NODE)
-    say(f"Browsing node {node} at {args.url}\n")
+    say(f"Browsing node {node} at {shown_url(args.url)}\n")
     await _list_children(node, args.depth, args.format)
     return 0
 
@@ -502,7 +514,7 @@ async def _history(client: Client, args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     start = str_to_datetime(args.start, now - timedelta(days=1))
     end = str_to_datetime(args.end, now)
-    say(f"Reading the history of node {node} at {args.url}; start at {start}, end at {end}\n")
+    say(f"Reading the history of node {node} at {shown_url(args.url)}; start at {start}, end at {end}\n")
     if args.events:
         for event in await node.read_event_history(start, end, numvalues=args.limit):
             say(event)
@@ -582,7 +594,7 @@ def _print_block(title: str, rows: list[tuple[str, Any]]) -> None:
 
 async def _discover(args: argparse.Namespace) -> int:
     client = Client(args.url, timeout=args.timeout)
-    say(f"Performing discovery at {args.url}\n")
+    say(f"Performing discovery at {shown_url(args.url)}\n")
     if args.network:
         try:
             result = await client.connect_and_find_servers_on_network()
@@ -741,7 +753,7 @@ def _server(args: argparse.Namespace) -> int:
     populate = " --populate adds a writable variable and a method." if args.populate else ""
     if not args.config:
         warn(
-            f"This is a demo server. It offers an endpoint without security at {args.url}"
+            f"This is a demo server. It offers an endpoint without security at {shown_url(args.url)}"
             f" and, by default, accepts only anonymous read-only sessions.{logins}{populate}"
             " Do not use it to expose real data on a network you do not trust."
         )

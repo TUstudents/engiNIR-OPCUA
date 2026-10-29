@@ -690,3 +690,22 @@ def test_tool3_the_server_command_help_says_it_is_a_demo() -> None:
     assert "DEMO" in result.stdout
     assert "no security" in result.stdout
     assert "127.0.0.1" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("opc.tcp://alice:secret@host:4840/path", "opc.tcp://alice@host:4840/path"),
+        ("opc.tcp://host:4840", "opc.tcp://host:4840"),
+        ("opc.tcp://alice@host", "opc.tcp://alice@host"),
+    ],
+)
+def test_printed_urls_drop_the_password(url, shown):
+    assert tools.shown_url(url) == shown
+
+
+def test_discover_does_not_print_the_password_of_the_url(capsys, tool_server):
+    secret_url = URL.replace("opc.tcp://", "opc.tcp://alice:secret@")
+    _, out, err = run(capsys, "discover", "-u", secret_url)
+    assert "alice@" in out
+    assert "secret" not in out + err
