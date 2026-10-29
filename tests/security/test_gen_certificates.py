@@ -523,3 +523,13 @@ async def test_cry11_setup_leaves_no_temporary_files(tmp_path: Path) -> None:
     key_file, cert_file = tmp_path / "key.pem", tmp_path / "cert.der"
     await setup_self_signed_certificate(key_file, cert_file, APP_URI, HOST, CLIENT_USE, SUBJECT)
     assert sorted([path.name async for path in anyio.Path(tmp_path).iterdir()]) == ["cert.der", "key.pem"]
+
+
+def test_parse_subject_name_reads_the_part_12_form() -> None:
+    from enginir_opcua.crypto.cert_gen import parse_subject_name
+
+    name = parse_subject_name('CN=Application/O="A/B=C"/OU=Group/DC=example/L=Town/S=State/C=DE')
+    assert name.rfc4514_string() == "C=DE,ST=State,L=Town,DC=example,OU=Group,O=A/B=C,CN=Application"
+    for bad in ("", "XX=1", "CN", "CN=", 'CN="open'):
+        with pytest.raises(ValueError):
+            parse_subject_name(bad)

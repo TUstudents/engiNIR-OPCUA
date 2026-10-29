@@ -6,6 +6,7 @@ import pytest
 
 from enginir_opcua import Client, ua
 from enginir_opcua.client.client import UaClientState
+from enginir_opcua.common import conditions
 
 from .support import (
     NONE_POLICY_URI,
@@ -140,6 +141,45 @@ async def test_subscription_delivers_events(client: Client) -> None:
     await subscription.delete()
 
 
+async def test_alarms_are_refreshed_and_acknowledged_by_our_client(client: Client) -> None:
+    """Part 9: subscribing refreshes, and our Acknowledge helper works against the reference server's alarms."""
+    collector = Collector()
+    subscription = await client.create_subscription(200, collector)
+    namespaces = await client.get_namespace_array()
+    alarms = ua.NodeId("Alarms", namespaces.index(ALARMS_NAMESPACE_URI))
+    start = ua.NodeId("Alarms.Start", alarms.NamespaceIndex)
+    await client.get_node(alarms).call_method(start, ua.Variant(30, ua.VariantType.UInt32))
+    await subscription.subscribe_alarms_and_conditions(client.nodes.server, ua.ObjectIds.AlarmConditionType)
+    await wait_for(lambda: any(event.EventType == conditions.REFRESH_END for event in collector.events))
+    assert any(event.EventType == conditions.REFRESH_START for event in collector.events)
+
+    def condition_events() -> list[Any]:
+        return [event for event in collector.events if getattr(event, "NodeId", None) is not None]
+
+    await wait_for(lambda: any(event.Retain and not event.__dict__["AckedState/Id"] for event in condition_events()))
+    acknowledged: ua.NodeId | None = None
+    for _attempt in range(20):
+        open_events = [e for e in condition_events() if e.Retain and not e.__dict__["AckedState/Id"]]
+        if not open_events:
+            await asyncio.sleep(0.5)
+            continue
+        event = open_events[-1]
+        try:
+            await conditions.acknowledge(client, event.NodeId, event.EventId, "interop")
+        except ua.UaStatusCodeError as error:
+            assert error.code in (
+                ua.StatusCodes.BadEventIdUnknown,
+                ua.StatusCodes.BadConditionBranchAlreadyAcked,
+            ), error
+            await asyncio.sleep(0.3)
+            continue
+        acknowledged = event.NodeId
+        break
+    assert acknowledged is not None
+    await wait_for(lambda: any(e.NodeId == acknowledged and e.__dict__["AckedState/Id"] for e in condition_events()))
+    await subscription.delete()
+
+
 async def test_channel_token_renewal_with_short_requested_lifetime(
     matrix_case: tuple[SecurityCase, str], reference_server_url: str, identity: ClientIdentity
 ) -> None:
@@ -239,3 +279,35 @@ async def test_history_read_when_the_server_exposes_history(client: Client) -> N
 async def test_load_data_type_definitions_of_the_server_types(client: Client, restore_ua_registry: None) -> None:
     definitions = await client.load_data_type_definitions()
     assert definitions
+
+
+async def test_our_client_reads_the_trust_list_of_the_reference_server(
+    reference_server_url: str, identity: ClientIdentity
+) -> None:
+    from enginir_opcua.common.utils import Buffer
+    from enginir_opcua.ua.ua_binary import struct_from_binary
+
+    case = next(case for case in SECURITY_CASES if case.name == "basic256sha256-encrypt")
+    client = await connect(reference_server_url, identity, case, "username")
+    try:
+        trust_list = client.get_node(
+            ua.NodeId(ua.ObjectIds.ServerConfiguration_CertificateGroups_DefaultApplicationGroup_TrustList)
+        )
+        try:
+            handle = await trust_list.call_method(
+                ua.QualifiedName("OpenWithMasks", 0), ua.Variant(15, ua.VariantType.UInt32)
+            )
+        except ua.UaStatusCodeError as refused:
+            assert refused.code in (ua.StatusCodes.BadUserAccessDenied, ua.StatusCodes.BadSecurityModeInsufficient)
+            return
+        content = b""
+        while chunk := await trust_list.call_method(
+            ua.QualifiedName("Read", 0),
+            ua.Variant(handle, ua.VariantType.UInt32),
+            ua.Variant(8192, ua.VariantType.Int32),
+        ):
+            content += chunk
+        await trust_list.call_method(ua.QualifiedName("Close", 0), ua.Variant(handle, ua.VariantType.UInt32))
+        assert struct_from_binary(ua.TrustListDataType, Buffer(content)).SpecifiedLists == 15
+    finally:
+        await client.disconnect()

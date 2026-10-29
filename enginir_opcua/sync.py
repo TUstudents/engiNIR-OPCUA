@@ -27,8 +27,10 @@ from enginir_opcua import client, common, server, ua
 from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_builder, xmlexporter
 from enginir_opcua.common.events import Event
 from enginir_opcua.crypto import security_policies, uacrypto
+from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.observer import Observer
+from enginir_opcua.server.file_transfer import FileProvider
 from enginir_opcua.server.user_managers import UserManager
 
 _logger = logging.getLogger(__name__)
@@ -1169,6 +1171,50 @@ class Server(_Owner):
     @syncmethod
     def reload_trust_store(self) -> None: ...
 
+    # --- File transfer and certificate management (Part 20, Part 12) ---
+    @syncmethod
+    def add_file(
+        self,
+        parent: SyncNode | ua.NodeId,
+        name: str,
+        provider: FileProvider | str | Path,
+        *,
+        writable: bool = False,
+        max_size: int | None = None,
+        mime_type: str | None = None,
+        max_byte_string_length: int | None = None,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def add_directory(
+        self,
+        parent: SyncNode | ua.NodeId,
+        name: str,
+        root: str | Path,
+        *,
+        writable: bool = False,
+        max_file_size: int | None = None,
+        max_entries: int = 10_000,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> SyncNode: ...
+
+    @syncmethod
+    def refresh_directory(self, directory: SyncNode | ua.NodeId) -> None: ...
+
+    @syncmethod
+    def enable_push_management(
+        self,
+        *,
+        max_trust_list_size: int = 65_535,
+        min_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
+        activity_timeout: float = 60.0,
+    ) -> Any: ...
+
+    # --- end of File transfer and certificate management ---
+
     def set_identity_tokens(self, tokens: list[type]) -> None:
         return self.aio_obj.set_identity_tokens(tokens)
 
@@ -1753,6 +1799,7 @@ class Subscription:
         | Iterable[SyncNode | ua.NodeId | str | int] = ua.ObjectIds.ConditionType,
         evfilter: ua.EventFilter | None = None,
         queuesize: int = 0,
+        refresh: bool = True,
     ) -> int: ...
 
     @syncmethod

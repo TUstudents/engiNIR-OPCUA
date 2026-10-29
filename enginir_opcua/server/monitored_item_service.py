@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import logging
 import math
+import secrets
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class MonitoredItemData:
         self.overflowed: bool = False
         self.links: set[int] = set()
         self.overflow_entry: ua.EventFieldList | None = None
+        self.condition_events_lost: bool = False
 
 
 class MonitoredItemService:
@@ -94,6 +96,9 @@ class MonitoredItemService:
 
     def item_count(self) -> int:
         return len(self._monitored_items)
+
+    def disabled_count(self) -> int:
+        return sum(1 for mdata in self._monitored_items.values() if mdata.mode == ua.MonitoringMode.Disabled)
 
     def delete_all_monitored_items(self) -> None:
         self.delete_monitored_items([mdata.monitored_item_id for mdata in self._monitored_items.values()])
@@ -424,10 +429,16 @@ class MonitoredItemService:
         entries = [entry for entry in queue if entry is not mdata.overflow_entry]
         excess = len(entries) - size + 1
         if excess <= 0:
+            if mdata.condition_events_lost and excess <= -1 and target is None:
+                # Part 9, 5.11.4: ask for a refresh once the queue is out of overflow
+                mdata.condition_events_lost = False
+                queue.append(self._refresh_required_notification(mdata))
             queue.append(notification)
             mdata.overflowed = False
             return
         first_discard = not mdata.overflowed
+        if first_discard:
+            self.isub.counters.event_queue_overflow_count += 1  # J: diagnostics (SRV-93)
         mdata.overflowed = True
         discarded = entries[:excess] if mdata.discard_oldest else entries[len(entries) - excess :]
         queue[:] = [entry for entry in queue if not any(entry is gone for gone in discarded)]
@@ -458,6 +469,15 @@ class MonitoredItemService:
         event.ReceiveTime = now
         return self._field_list(mdata, event)
 
+    def _refresh_required_notification(self, mdata: MonitoredItemData) -> ua.EventFieldList:
+        now = datetime.now(UTC)
+        event: Any = event_objects.RefreshRequiredEvent(ua.NodeId(ua.ObjectIds.Server), "Refresh required", 100)
+        event.EventId = secrets.token_bytes(16)
+        event.SourceName = "Server"
+        event.Time = now
+        event.ReceiveTime = now
+        return self._field_list(mdata, event)
+
     def _field_list(self, mdata: MonitoredItemData, event: Any) -> ua.EventFieldList:
         fieldlist = ua.EventFieldList()
         fieldlist.ClientHandle = mdata.client_handle
@@ -480,6 +500,7 @@ class MonitoredItemService:
         if size == 1:
             queue[:] = [notification]
             return
+        self.isub.counters.monitoring_queue_overflow_count += excess  # J: diagnostics (SRV-93)
         if mdata.discard_oldest:
             del queue[:excess]
             queue.append(notification)
@@ -692,7 +713,20 @@ class MonitoredItemService:
             return True
         return data_type == BASE_DATA_TYPE or is_subtype(self.aspace, data_type, NUMBER)
 
-    async def trigger_event(self, event: Any, mid: int | None = None, notifiers: list[ua.NodeId] | None = None) -> bool:
+    def event_item_ids(self) -> list[int]:
+        return [mid for mid, mdata in self._monitored_items.items() if self._is_event_item(mdata)]
+
+    def item_node(self, mid: int) -> ua.NodeId | None:
+        mdata = self._monitored_items.get(mid)
+        return mdata.read_value_id.NodeId if mdata is not None and mdata.read_value_id is not None else None
+
+    async def trigger_event(
+        self,
+        event: Any,
+        mid: int | None = None,
+        notifiers: list[ua.NodeId] | None = None,
+        bypass_where: bool = False,
+    ) -> bool:
         nodes = notifiers if notifiers is not None else [event.emitting_node]
         mids = [item for node in nodes for item in self._monitored_events.get(node, [])]
         if mid is not None:
@@ -702,10 +736,10 @@ class MonitoredItemService:
             return False
         self.logger.debug("%s has subscription for events %s from node: %s", self, event, event.emitting_node)
         for item in list(mids):
-            await self._trigger_event(event, item)
+            await self._trigger_event(event, item, bypass_where)
         return True
 
-    async def _trigger_event(self, event: Any, mid: int) -> None:
+    async def _trigger_event(self, event: Any, mid: int, bypass_where: bool = False) -> None:
         if mid not in self._monitored_items:
             self.logger.debug(
                 "Could not find monitored items for id %s for event %s in subscription %s", mid, event, self
@@ -714,11 +748,14 @@ class MonitoredItemService:
         mdata = self._monitored_items[mid]
         if mdata.mode == ua.MonitoringMode.Disabled:
             return
-        if mdata.where_clause_evaluator is None or not mdata.where_clause_evaluator.eval(event):
+        # Part 9, 4.5: the refresh events ignore the content filter (bypass_where)
+        if not bypass_where and (mdata.where_clause_evaluator is None or not mdata.where_clause_evaluator.eval(event)):
             self.logger.info("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
             return
         fieldlist = self._field_list(mdata, event)
         self._push(mdata, fieldlist)
+        if mdata.overflowed and isinstance(event, event_objects.Condition):
+            mdata.condition_events_lost = True
         self._fire_triggers(mdata)
 
     def _is_subtype(self, candidate: ua.NodeId, ancestor: ua.NodeId) -> bool:

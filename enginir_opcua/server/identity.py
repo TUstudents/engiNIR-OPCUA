@@ -209,6 +209,7 @@ def x509_user_certificate(
     server_certificate: bytes | None,
     nonce: bytes,
     validator: CertificateValidator | None,
+    peer: str | None = None,
 ) -> x509.Certificate:
     """The validated user certificate of an X509 token after its proof of possession, or a ServiceError."""
     expected = token_signature_algorithm(matched.policy_uri)
@@ -234,6 +235,7 @@ def x509_user_certificate(
         raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
     outcome = validator.validate_user_certificate(data, matched.policy_uri)
     if not outcome.accepted:
+        validator.keep_rejected(outcome, peer, background=True)
         _logger.warning(
             "Rejected the user certificate %s: %s (%s)",
             outcome.subject,

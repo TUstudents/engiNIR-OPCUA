@@ -162,9 +162,68 @@ def generate_app_certificate_signing_request(
 
     name_attributes: list[x509.NameAttribute] = _names_to_nameattributes(names)
     name_attributes.insert(0, x509.NameAttribute(NameOID.COMMON_NAME, common_name))
+    return generate_signing_request(private_key, x509.Name(name_attributes), subject_alt_names, extended)
 
+
+SUBJECT_NAME_OIDS: dict[str, x509.ObjectIdentifier] = {
+    "CN": NameOID.COMMON_NAME,
+    "O": NameOID.ORGANIZATION_NAME,
+    "OU": NameOID.ORGANIZATIONAL_UNIT_NAME,
+    "DC": NameOID.DOMAIN_COMPONENT,
+    "L": NameOID.LOCALITY_NAME,
+    "S": NameOID.STATE_OR_PROVINCE_NAME,
+    "C": NameOID.COUNTRY_NAME,
+}
+
+
+def parse_subject_name(text: str) -> x509.Name:
+    """
+    Parse the subject of OPC 10000-12, 7.9.4: name=value pairs separated by "/", with the names CN, O, OU, DC, L, S
+    or C; a value that holds "/" or "=" is enclosed in double quotes.
+    :raises ValueError: for anything else
+    """
+    pairs: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for character in text:
+        if character == '"':
+            quoted = not quoted
+            current.append(character)
+        elif character == "/" and not quoted:
+            pairs.append("".join(current))
+            current = []
+        else:
+            current.append(character)
+    if quoted:
+        raise ValueError("unterminated quote in the subject name")
+    pairs.append("".join(current))
+    attributes: list[x509.NameAttribute] = []
+    for pair in pairs:
+        if not pair:
+            continue
+        name, separator, value = pair.partition("=")
+        oid = SUBJECT_NAME_OIDS.get(name.strip())
+        if not separator or oid is None:
+            raise ValueError(f"{pair!r} is not a name=value pair with a known name")
+        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        if not value:
+            raise ValueError(f"the value of {name} is empty")
+        attributes.append(x509.NameAttribute(oid, value))
+    if not attributes:
+        raise ValueError("the subject name is empty")
+    return x509.Name(attributes)
+
+
+def generate_signing_request(
+    private_key: rsa.RSAPrivateKey,
+    subject: x509.Name,
+    subject_alt_names: list[x509.GeneralName],
+    extended: list[x509.ObjectIdentifier],
+) -> x509.CertificateSigningRequest:
+    """A certificate signing request for an application with the SAN, key usage and extended key usage of OPC 10000-6, 6.2.2."""
     builder = x509.CertificateSigningRequestBuilder()
-    builder = builder.subject_name(x509.Name(name_attributes))
+    builder = builder.subject_name(subject)
     builder = builder.add_extension(x509.SubjectAlternativeName(subject_alt_names), critical=False)
     builder = builder.add_extension(
         x509.KeyUsage(

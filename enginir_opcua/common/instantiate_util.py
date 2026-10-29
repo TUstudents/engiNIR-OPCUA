@@ -5,6 +5,7 @@ Instantiate a new node and its child nodes from a node type.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import Any
 
 import enginir_opcua
@@ -45,11 +46,13 @@ async def instantiate(
     dname: ua.LocalizedText | None = None,
     idx: int = 0,
     instantiate_optional: bool = True,
+    optional: Collection[str] | None = None,
 ) -> list[enginir_opcua.Node]:
     """
     Instantiate an ObjectType or VariableType below a parent node. The new node, listed first in the result,
     gets the children its type and the supertypes declare with the ModellingRules Mandatory (and Optional
-    if instantiate_optional). Placeholders are not instantiated. If a step fails the nodes made so far are removed.
+    if instantiate_optional). With optional, the Optional children named there are created even when
+    instantiate_optional is False; a name is the BrowseName path below the new node, joined by "/". Placeholders are not instantiated. If a step fails the nodes made so far are removed.
     """
     rdesc = await _rdesc_from_node(parent, node_type)
     rdesc.TypeDefinition = node_type.nodeid
@@ -76,6 +79,7 @@ async def instantiate(
             created,
             dname=dname,
             instantiate_optional=instantiate_optional,
+            optional=frozenset(optional or ()),
         )
     except BaseException:
         await remove_created(parent.session, created)
@@ -118,6 +122,8 @@ async def _instantiate_node(
     dname: ua.LocalizedText | None = None,
     is_declaration: bool = False,
     instantiate_optional: bool = True,
+    optional: frozenset[str] = frozenset(),
+    path: str = "",
 ) -> None:
     addnode = ua.AddNodesItem()
     addnode.RequestedNewNodeId = nodeid
@@ -162,7 +168,8 @@ async def _instantiate_node(
             if rule != _MANDATORY:
                 if rule != _OPTIONAL:
                     _logger.info("Instantiate: treating the rule %s of %s as Optional", rule, c_rdesc.BrowseName)
-                if not instantiate_optional:
+                child_path = f"{path}/{c_rdesc.BrowseName.Name}" if path else str(c_rdesc.BrowseName.Name)
+                if not instantiate_optional and child_path not in optional:
                     continue
             if added.NodeIdType is ua.NodeIdType.String:
                 child_id = ua.NodeId(f"{added.Identifier!s}.{c_rdesc.BrowseName.Name}", added.NamespaceIndex)
@@ -179,4 +186,6 @@ async def _instantiate_node(
                 created,
                 is_declaration=True,
                 instantiate_optional=instantiate_optional,
+                optional=optional,
+                path=f"{path}/{c_rdesc.BrowseName.Name}" if path else str(c_rdesc.BrowseName.Name),
             )

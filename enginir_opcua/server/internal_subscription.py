@@ -18,6 +18,7 @@ from enginir_opcua.common import utils
 from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
+from .diagnostics_counters import SubscriptionCounters
 from .monitored_item_service import MonitoredItemLimits, MonitoredItemService
 
 if TYPE_CHECKING:
@@ -98,6 +99,7 @@ class InternalSubscription:
         self._keep_alive_counter = data.RevisedMaxKeepAliveCount
         self._lifetime_counter = data.RevisedLifetimeCount
         self.served_at = next(_SERVE_ORDER)
+        self.counters = SubscriptionCounters()  # J: diagnostics (SRV-93)
         self._task: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -168,6 +170,11 @@ class InternalSubscription:
 
     async def set_publishing_mode(self, enabled: bool) -> None:
         self.logger.info("set publishing mode to %s for subscription %s", enabled, self.data.SubscriptionId)
+        if enabled != self._publishing_enabled:  # J: diagnostics (SRV-93)
+            if enabled:
+                self.counters.enable_count += 1
+            else:
+                self.counters.disable_count += 1
         self._publishing_enabled = enabled
         self.reset_lifetime()
 
@@ -183,8 +190,11 @@ class InternalSubscription:
         assert self.pub_request_callback is not None
         requestdata = self.pub_request_callback(self.data.SubscriptionId)
         if requestdata is None:
+            if self.state is not SubscriptionState.LATE:
+                self.counters.late_publish_request_count += 1  # J: diagnostics (SRV-93)
             self.state = SubscriptionState.LATE
             return None
+        self.counters.publish_request_count += 1  # J: diagnostics (SRV-93)
         self.reset_lifetime()
         return requestdata
 
@@ -206,6 +216,7 @@ class InternalSubscription:
             if self._has_notifications() or not self._message_sent:
                 return self._take_request()
             self.state = SubscriptionState.KEEPALIVE
+            self.counters.keep_alive_entered_count += 1  # J: diagnostics (SRV-93)
             self._keep_alive_counter = self.data.RevisedMaxKeepAliveCount
         if self._has_notifications() or self._keep_alive_counter <= 1:
             return self._take_request()
@@ -222,6 +233,7 @@ class InternalSubscription:
             return False
         if self.state is not SubscriptionState.LATE or self._closing:
             return False
+        self.counters.publish_request_count += 1  # J: diagnostics (SRV-93)
         self.reset_lifetime()
         await self._send_and_flush(requestdata)
         return True
@@ -307,6 +319,7 @@ class InternalSubscription:
 
     def _pop_triggered_datachanges(self, result: ua.PublishResult, budget: int) -> int:
         items = self._take(self._triggered_datachanges, budget)
+        self.counters.data_change_notifications_count += len(items)  # J: diagnostics (SRV-93)
         if items:
             notif = ua.DataChangeNotification()
             notif.MonitoredItems = items
@@ -315,6 +328,7 @@ class InternalSubscription:
 
     def _pop_triggered_events(self, result: ua.PublishResult, budget: int) -> None:
         items = self._take(self._triggered_events, budget)
+        self.counters.event_notifications_count += len(items)  # J: diagnostics (SRV-93)
         if items:
             notif = ua.EventNotificationList()
             notif.Events = items
@@ -339,13 +353,16 @@ class InternalSubscription:
         if not self._not_acknowledged_results:
             return False
         del self._not_acknowledged_results[next(iter(self._not_acknowledged_results))]
+        self.counters.discarded_message_count += 1  # J: diagnostics (SRV-93)
         return True
 
     def republish(self, sequence_number: int) -> ua.NotificationMessage:
+        self.counters.republish_request_count += 1  # J: diagnostics (SRV-93)
         result = self._not_acknowledged_results.get(sequence_number)
         if result is None:
             self.logger.info("republish of unavailable message %s in subscription %s", sequence_number, self)
             raise utils.ServiceError(ua.StatusCodes.BadMessageNotAvailable)
+        self.counters.republish_message_count += 1  # J: diagnostics (SRV-93)
         return result.NotificationMessage
 
     async def enqueue_datachange_event(self, mid: int, eventdata: ua.MonitoredItemNotification, maxsize: int) -> None:

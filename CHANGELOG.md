@@ -107,6 +107,35 @@ File transfer (OPC 10000-5, Annex C):
   `adopt`, `get_mime_type`, `FileTransferError`, `InvalidStateError`. `client/ua_file.py` is a deprecated wrapper,
   removed in 4.0.0.
 
+Server file transfer (OPC 10000-20):
+- New: `Server.add_file(parent, name, provider, writable=, max_size=, mime_type=, write_role=)` serves a path or a
+  `FileProvider` (`PathFile`, `MemoryFile`) as a FileType Object, and `Server.add_directory(parent, name, root, ...)`
+  serves a directory tree as a FileDirectoryType Object with CreateDirectory, CreateFile, Delete and MoveOrCopy.
+  Handles belong to a Session and are released when it ends; one writer or many readers; bounded handles, read and
+  write sizes and entries. Names, symbolic links and resolved paths are checked so nothing leaves the root.
+  `Server.refresh_directory()` picks up changes made outside OPC UA.
+- `ServerCapabilities/MaxByteStringLength` has a value (`InternalServer.max_byte_string_length`, default 1 MiB).
+- `InternalSession.add_close_listener(callback)` calls `callback(session, reason)` when a Session ends.
+
+Certificate management over OPC UA (OPC 10000-12, 7.10, push model):
+- New: `Server.enable_push_management()` (needs `set_pki_directory`) serves the ServerConfiguration Object: TrustLists
+  (a FileType of `TrustListDataType`, `OpenWithMasks`, `CloseAndUpdate`, `AddCertificate`, `RemoveCertificate`),
+  `UpdateCertificate`, `CreateSigningRequest` (a new key waits in `own/pending/`), `GetRejectedList`,
+  `GetCertificates`, `ApplyChanges` and `CancelChanges`. Changes are queued in one transaction and written to the PKI
+  directory all or nothing at `ApplyChanges`; a new certificate is used by new channels, open channels close after the
+  answer, and clients that are no longer trusted are disconnected. TrustListUpdated and CertificateUpdated audit events
+  are raised.
+- Breaking: only a user with `UserRole.SecurityAdmin` over a SignAndEncrypt channel may call them
+  (`enable_push_management(min_security_mode=)` relaxes it to Sign). `CertificateUserManager.add_security_admin()`
+  maps a certificate to that role. The optional ServerConfiguration nodes that are not supported (ConfigurationFile,
+  KeyCredentialConfiguration, ResetToServerDefaults, ...) are removed from the address space.
+- Breaking: a certificate is kept in `rejected/certs` only when it is valid but untrusted and its peer proved
+  possession of the key (the validator no longer writes the folder; `CertificateValidator.keep_rejected()` does); one
+  peer address keeps at most 10 files. A chain-incomplete or expired certificate is no longer kept.
+- The own certificate of a PKI directory is the newest one that has a key in `own/private`, not the first key by name.
+- `TrustStore` can read its lists back, replace or change them (`write_lists`, `write_certificate`,
+  `remove_certificate_files`) with a `FileJournal` that undoes the writes, and counts its loads (`generation`).
+
 High availability:
 - `HaClient` keeps a Healthy active server whatever the others report, uses the best Degraded server when none is
   Healthy, never resets a connected standby for its ServiceLevel, and disconnects a server in maintenance
@@ -315,6 +344,32 @@ Monitored items and events (OPC 10000-4, 5.13):
   EventNotifier bits; the default Message is a LocalizedText; DaylightSavingInOffset is set only while DST applies.
   68 fields of the generated event classes now declare built-in types.
 
+Alarms and Conditions (OPC 10000-9):
+- New server API: `await server.create_condition(source, condition_type, name, **options)` creates a Condition or
+  Alarm Object (ConditionId = its NodeId, referenced with HasCondition) and returns a handle with `activate()`,
+  `deactivate()`, `update_value()` (level, deviation and off-normal alarms, with deadbands), `acknowledge()`,
+  `confirm()`, `add_comment()`, `enable()`, `disable()`, `shelve_timed()`, `shelve_one_shot()`, `unshelve()` and
+  more. Every change raises one Event with all fields and sets Retain as Part 9 says. Branches (previous states) are
+  opt-in with `branches=True`. Also `server.delete_condition()`, `server.get_condition()`, `server.conditions` and
+  `server.refresh_required()`. Rate-of-change alarms can be created but have no value logic.
+- The Methods Enable, Disable, AddComment, Acknowledge, Confirm, TimedShelve, OneShotShelve, Unshelve (and the
+  `2` variants with a Comment), ConditionRefresh and ConditionRefresh2 work, with the Part 9 result codes. They can be
+  called on the ConditionId with the well-known MethodId. `bind_condition_methods` is removed: ConditionRefresh is
+  always available (it used to answer `Bad_NotExecutable` even when bound). RefreshStart, RefreshEnd and
+  RefreshRequired ignore the content filter and reach every Event item of the Subscription; refreshing another
+  session's Subscription gives `Bad_UserAccessDenied`; retained Conditions and branches are replayed with their EventId.
+  An Event queue overflow that loses Condition Events is followed by a RefreshRequiredEvent.
+- New client helpers in `enginir_opcua.common.conditions`: `acknowledge`, `confirm`, `add_comment`, `enable`,
+  `disable`, shelving calls, `condition_refresh`, `condition_refresh2` (falls back to ConditionRefresh),
+  `condition_event_filter` and `ConditionTracker` (the current-alarm algorithm of Part 9, 4.5).
+  `Subscription.subscribe_alarms_and_conditions()` now calls ConditionRefresh after subscribing; pass
+  `refresh=False` for the old behaviour.
+- Method nodes of the standard address space, of imported NodeSets without an `Executable` attribute and of
+  instantiated types are executable (the NodeSet default is true); they used to be refused with `Bad_NotExecutable`.
+  Method callbacks can read the calling session in `enginir_opcua.server.internal_session.current_call_session`.
+  `instantiate(..., optional=[names])` creates the named Optional children even with `instantiate_optional=False`.
+- Condition Events always have the ConditionId (`NodeId`) field; EventIds are 16 random bytes.
+
 History (OPC 10000-11):
 - `HistoryStorageInterface` is replaced for custom backends: reads take a `TimeDomain` and return a `Page`; saves are
   `save_node_value()` and `save_event()`; new `has_node()`, `has_event()`, `flush()` and `stores_server_timestamp`.
@@ -466,3 +521,28 @@ PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
   `DataSetMeta.add_array` creates an array field, `remove_field` removes it, versions follow the changes, and
   `PublishedDataItems.Create` no longer inverts the promoted flag. `DataSetField.get_datatype_name(types)` looks the type up
   in the given registry.
+
+Server infrastructure (workstream J):
+- Reverse connect (OPC 10000-6, 7.1.2.6 and 7.1.3). `Server.add_reverse_connect(client_url, endpoint_url=None,
+  retry_interval=5.0)` connects out to a listening client, sends a ReverseHello, keeps one such socket open per client
+  and reconnects with a back-off; `remove_reverse_connect()` ends it. `Client.listen_reverse(listen_url, server_uri,
+  endpoint_url=None)` waits for that server, also when the connection is lost and the session is reactivated;
+  `ReverseConnectListener` shares one listening port between several clients (`Client.use_reverse_listener`). A
+  ReverseHello of an unknown server is refused with `Bad_TcpEndpointUrlInvalid`. `ua.ReverseHello` and
+  `ua.MessageType.ReverseHello` are new.
+- Diagnostics (OPC 10000-5, 6.3.3). `Server.diagnostics` keeps the counters of `ServerDiagnosticsSummary`, which the
+  standard nodes now return instead of a null value; `EnabledFlag` (default FALSE, writable by Admin and
+  SecurityAdmin, or `server.diagnostics.enabled`) adds `SessionDiagnosticsArray`, `SubscriptionDiagnosticsArray`,
+  `SessionSecurityDiagnosticsArray` and an Object per Session. The security diagnostics are returned only to a
+  SecurityAdmin on a SignAndEncrypt channel, and to a Session about itself. `SamplingIntervalDiagnosticsArray` is no
+  longer in the address space.
+- Model change events (OPC 10000-3, 9.32). A request that adds or deletes nodes or references raises one
+  `GeneralModelChangeEvent` from the Server Object; `async with server.model_change():` batches several calls into
+  one event. A node that has a `NodeVersion` property gets a new value. `Server.model_change_events` is `"all"` (every
+  changed node, the default) or `"versioned"` (only nodes with a `NodeVersion`).
+- `enginir_opcua.common.programs.ProgramStateMachine` makes a Program of ProgramStateMachineType (OPC 10000-10) with the
+  control Methods you supply, `Executable` that follows the state, `ProgramTransitionEvent`s, `ProgramDiagnostic`,
+  recycle and instance counts, and deletion rules. Breaking: `ProgramStateMachine` of `common/statemachine.py` was a stub
+  that raised `NotImplementedError` and is removed there.
+- A structure field named `Encoding` (`SessionSecurityDiagnosticsDataType`) is encoded as a field and no longer as the
+  encoding byte.

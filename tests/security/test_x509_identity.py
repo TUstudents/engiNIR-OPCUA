@@ -18,6 +18,7 @@ from enginir_opcua.server.user_managers import CertificateUserManager, Permissiv
 from tests.conftest import find_free_port
 from tests.harness import PKI
 from tests.pki import Identity, live_ca, live_identity
+from tests.waiting import wait_until
 
 RSA_SHA1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
 
@@ -321,13 +322,15 @@ async def test_pki_user_directory_keeps_the_rejected_user_certificate_and_reload
     users = tmp_path / "users"
     srv = await _start(PermissiveUserManager(), user_pki_directory=users)
     try:
-        client = await _client(srv, user_pki)
+        client = await _client(srv, user_pki, chain=True)
         with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
             await client.connect()
         await client.disconnect()
+        await wait_until(lambda: len(list((users / "rejected" / "certs").glob("*.der"))) == 2)
         rejected = sorted((users / "rejected" / "certs").glob("*.der"))
-        assert [path.read_bytes() for path in rejected] == [user_pki.user.der]
-        rejected[0].rename(users / "trusted" / "certs" / rejected[0].name)
+        assert sorted(path.read_bytes() for path in rejected) == sorted([user_pki.user.der, user_pki.ca.der])
+        for path in rejected:
+            path.rename(users / "trusted" / "certs" / path.name)
         await srv.reload_trust_store()
         client = await _client(srv, user_pki)
         async with client:

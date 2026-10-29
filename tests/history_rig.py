@@ -4,7 +4,7 @@ from typing import Any
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.common.node import Node
-from enginir_opcua.server.history import HistoryStorageInterface
+from enginir_opcua.server.history import HAS_HISTORY_READ, HistoryStorageInterface
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -24,7 +24,16 @@ class HistoryRig:
 
     async def history_variable(self, name: str, values: list[tuple[float, Any]], **kwargs: Any) -> Node:
         node = await self.server.nodes.objects.add_variable(ua.NodeId(name, self.ns), f"{self.ns}:{name}", 0)
-        await self.server.historize_node_data_change(node, period=kwargs.pop("period", None), **kwargs)
+        if kwargs.pop("sample", False):
+            await self.server.historize_node_data_change(node, period=kwargs.pop("period", None), **kwargs)
+        else:
+            # Register the node with the storage without the sampling subscription: its initial notification would
+            # store the variable's current value at the current time, racing with the reads of the test.
+            manager = self.server.iserver.history_manager
+            await manager.storage.new_historized_node(node.nodeid, kwargs.pop("period", None), kwargs.pop("count", 0))
+            await manager._add_bit(node.nodeid, ua.AttributeIds.AccessLevel, HAS_HISTORY_READ, True)
+            await manager._add_bit(node.nodeid, ua.AttributeIds.UserAccessLevel, HAS_HISTORY_READ, True)
+            await manager._set_trusted(node.nodeid, ua.AttributeIds.Historizing, True, ua.VariantType.Boolean)
         for seconds, value in values:
             await self.save(node, seconds, value)
         return node

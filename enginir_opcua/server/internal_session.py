@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import inspect
 import logging
 import secrets
 import time
@@ -38,6 +40,10 @@ if TYPE_CHECKING:
     from .internal_server import InternalServer
 
 _logger = logging.getLogger(__name__)
+
+current_call_session: contextvars.ContextVar[InternalSession | None] = contextvars.ContextVar(
+    "current_call_session", default=None
+)
 
 CLIENT_NONCE_MIN_LENGTH = 32
 CLIENT_NONCE_MAX_LENGTH = 128
@@ -171,6 +177,7 @@ class Session:
             continuation_points=self.continuation_points,
             history_points=self.history_points,
         )
+        self.services.channel_security_mode = self.channel_security.mode
         self.services.publish_callback = self.forward_publish_response
         self.services.publish_request_callback = self.get_publish_request
 
@@ -270,6 +277,7 @@ class Session:
                     uacrypto.der_from_x509(self.iserver.certificate) if self.iserver.certificate is not None else None,
                     self.nonce,
                     self.iserver.user_certificate_validator(),
+                    self.bound_channel.peer_address if self.bound_channel is not None else None,
                 )
                 certificate = uacrypto.der_from_x509(user_certificate)
         except (ServiceError, ua.uaerrors.UaStatusCodeError):
@@ -334,7 +342,7 @@ class Session:
         if not self.subscription_ids() and not service.has_pending_notice(self.id):
             self.flush_publish_queue(ua.StatusCodes.BadNoSubscription)
 
-    async def close(self, delete_subscriptions: bool) -> None:
+    async def close(self, delete_subscriptions: bool, reason: ua.StatusCode | None = None) -> None:
         if self.state == SessionState.Closed:
             return
         _logger.info("close session %s", self.name)
@@ -342,6 +350,9 @@ class Session:
         self.continuation_points.clear()
         self.history_points.clear()
         self.manager.forget(self)
+        await self.services.run_close_listeners(
+            reason if reason is not None else ua.StatusCode(ua.StatusCodes.BadSessionClosed)
+        )
         self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
         self.iserver.subscription_service.drop_pending_notices(self.id)
         if delete_subscriptions:
@@ -379,6 +390,7 @@ class SessionManager:
 
     def forget(self, session: Session) -> None:
         self.sessions.pop(session.token, None)
+        self.iserver.diagnostics.session_forgotten(session)  # J: diagnostics (SRV-93)
 
     def has_session(self, channel_id: int) -> bool:
         return any(s.bound_channel_id == channel_id for s in self.sessions.values())
@@ -434,7 +446,7 @@ class SessionManager:
             raise ServiceError(ua.StatusCodes.BadTooManySessions)
         oldest = min(unactivated, key=lambda s: s.created_at)
         _logger.warning("At max_sessions=%s, closing the oldest unactivated session %s", self.max_sessions, oldest)
-        await oldest.close(False)
+        await oldest.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
 
     async def create_session(
         self, channel: SessionChannel, params: ua.CreateSessionParameters, sockname: tuple[str, int] | None = None
@@ -462,6 +474,7 @@ class SessionManager:
         )
         session.client_certificate = params.ClientCertificate
         self.sessions[session.token] = session
+        self.iserver.diagnostics.session_created(session, params)  # J: diagnostics (SRV-93)
         result = ua.CreateSessionResult()
         result.SessionId = session.id
         result.AuthenticationToken = session.token
@@ -550,19 +563,21 @@ class SessionManager:
         if moving:
             session.move_to(channel)
         session.touch()
+        self.iserver.diagnostics.session_activated(session, params)  # J: diagnostics (SRV-93)
         _logger.info("Activated session %s for user %s", session.name, user)
         return result
 
     async def close_session(self, channel: SessionChannel, token: ua.NodeId, delete_subscriptions: bool) -> None:
         session = self.resolve(channel, token, requires_activated=False)
-        await session.close(delete_subscriptions)
+        await session.close(delete_subscriptions, ua.StatusCode(ua.StatusCodes.Good))
 
     async def on_channel_closed(self, channel: SessionChannel) -> None:
         for session in list(self.sessions.values()):
             if session.bound_channel_id != channel.channel_id:
                 continue
             if session.state == SessionState.Created:
-                await session.close(False)
+                self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
+                await session.close(False, ua.StatusCode(ua.StatusCodes.BadSecureChannelClosed))
             else:
                 session.unbind()
 
@@ -580,7 +595,8 @@ class SessionManager:
             session.services.user = session.user
             return True
         _logger.info("The user certificate of session %s expired, closing the session", session.name)
-        await session.close(False)
+        self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
+        await session.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
         return False
 
     async def sweep(self) -> float:
@@ -596,7 +612,8 @@ class SessionManager:
                 remaining = session.revised_timeout_ms / 1000 - session.idle_seconds(now)
             if remaining <= 0:
                 _logger.info("Session %s expired", session.name)
-                await session.close(False)
+                self.iserver.diagnostics.session_ended(session, "timeout")  # J: diagnostics (SRV-93)
+                await session.close(False, ua.StatusCode(ua.StatusCodes.BadTimeout))
             else:
                 wait = min(wait, remaining)
         return max(wait, 0.05)
@@ -623,7 +640,7 @@ class SessionManager:
                 pass
             self._sweep_task = None
         for session in list(self.sessions.values()):
-            await session.close(False)
+            await session.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
 
 
 class InternalSession(AbstractSession):
@@ -663,6 +680,26 @@ class InternalSession(AbstractSession):
         )
         self.publish_callback: Callable[..., Any] | None = None
         self.publish_request_callback: Callable[..., Any] | None = None
+        self.channel_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.None_
+        self._close_listeners: list[Callable[[InternalSession, ua.StatusCode], Any]] = []
+
+    def add_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
+        """Call `callback(session, reason)` (reason: a StatusCode; Good for CloseSession) when the Session closes, expires or is deleted; it may be a coroutine function."""
+        self._close_listeners.append(callback)
+
+    def remove_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
+        if callback in self._close_listeners:
+            self._close_listeners.remove(callback)
+
+    async def run_close_listeners(self, reason: ua.StatusCode) -> None:
+        listeners, self._close_listeners = self._close_listeners, []
+        for listener in listeners:
+            try:
+                outcome = listener(self, reason)
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:
+                self.logger.exception("A close listener of session %s failed", self.name)
 
     def __str__(self) -> str:
         return f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id})"
@@ -680,7 +717,11 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
-        results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        token = current_call_session.set(self)
+        try:
+            results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostRead, ServerItemCallback(params, results, user, self.external)
         )
@@ -723,23 +764,32 @@ class InternalSession(AbstractSession):
         return self.iserver.view_service.translate_browsepaths_to_nodeids(params)
 
     async def add_nodes(self, params: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
-        return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
+        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+            return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        return await self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
+        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+            return await self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
 
     async def add_references(self, params: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
+        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+            return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
 
     async def delete_references(self, params: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
-        return self.iserver.node_mgt_service.delete_references(params, trusted=not self.external)
+        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+            return self.iserver.node_mgt_service.delete_references(params, trusted=not self.external)
 
     def add_method_callback(self, methodid: ua.NodeId, callback: Callable[..., Any]) -> ua.StatusCode:
         return self.aspace.add_method_callback(methodid, callback)
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         """COROUTINE"""
-        return await self.iserver.method_service.call(params, trusted=not self.external)
+        # Part 9, 5.5.7 and 5.7.3: Condition Methods need the calling Session (ownership of a Subscription, ClientUserId)
+        token = current_call_session.set(self)
+        try:
+            return await self.iserver.method_service.call(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
 
     async def create_subscription(
         self,

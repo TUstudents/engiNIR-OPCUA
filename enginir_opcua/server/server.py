@@ -5,6 +5,7 @@ High level interface to pure python OPC-UA server
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import socket
@@ -33,14 +34,18 @@ from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import pki, security_policies, uacrypto, validator
-from ..crypto.permission_rules import SimpleRoleRuleset
+from ..crypto.permission_rules import SimpleRoleRuleset, UserRole
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
 from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
-from .binary_server_asyncio import BinaryServer
+from .binary_server_asyncio import BinaryServer, ReverseConnection
+from .certificate_manager import CertificateManager
+from .conditions import Condition
+from .diagnostics import DiagnosticsCollector
 from .event_generator import EventGenerator
+from .file_transfer import FileProvider
 from .internal_server import InternalServer
 from .user_managers import UserManager
 
@@ -120,6 +125,7 @@ class Server:
         self.application_type: ua.ApplicationType = ua.ApplicationType.ClientAndServer
         self.iserver: InternalServer = iserver if iserver else InternalServer(user_manager=user_manager)
         self.bserver: BinaryServer | None = None
+        self._reverse_connections: list[ReverseConnection] = []
         self.socket_address: tuple[str, int] | None = None
         self._discovery_clients: dict[str, Client] = {}
         self._discovery_configurations: dict[str, ua.DiscoveryConfiguration | None] = {}
@@ -127,6 +133,7 @@ class Server:
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
         self._default_validator: CertificateValidator | None = None
+        self._certificate_manager: CertificateManager | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
         self.allow_deprecated_policies: bool = allow_deprecated_policies
         # the secure endpoints are enabled by default, the None endpoint only when asked for
@@ -641,6 +648,8 @@ class Server:
             ipaddress, port = self._get_bind_socket_info()
             self.bserver = BinaryServer(self.iserver, ipaddress, port, self.limits)
             self.bserver.set_policies(self._policies)
+            for connection in self._reverse_connections:
+                self.bserver.add_reverse_connection(connection)
             await self.bserver.start()
         except Exception as exp:
             _logger.exception("%s error starting server", self)
@@ -1060,6 +1069,97 @@ class Server:
         nodeids = [node.nodeid for node in nodes]
         return [self.iserver.read_attribute_value(nodeid, attr) for nodeid in nodeids]
 
+    # --- File transfer and certificate management (Part 20, Part 12) ---
+    async def add_file(
+        self,
+        parent: Node | ua.NodeId,
+        name: str,
+        provider: FileProvider | str | Path,
+        *,
+        writable: bool = False,
+        max_size: int | None = None,
+        mime_type: str | None = None,
+        max_byte_string_length: int | None = None,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> Node:
+        """
+        Make a file visible to clients as a FileType Object below `parent`. `provider` is a path to a regular file
+        or an object with the FileProvider operations (MemoryFile keeps the content in memory). Clients open it
+        with Open and move the content with Read and Write; a handle belongs to one Session. With `writable` a
+        client whose role is at least `write_role` may open it for writing, up to `max_size` bytes.
+        """
+        return await self.iserver.file_service.add_file(
+            _get_node(self.iserver.isession, parent),
+            name,
+            provider,
+            writable=writable,
+            max_size=max_size,
+            mime_type=mime_type,
+            max_byte_string_length=max_byte_string_length,
+            write_role=write_role,
+            namespace=namespace,
+        )
+
+    async def add_directory(
+        self,
+        parent: Node | ua.NodeId,
+        name: str,
+        root: str | Path,
+        *,
+        writable: bool = False,
+        max_file_size: int | None = None,
+        max_entries: int = 10_000,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> Node:
+        """
+        Make the directory `root` visible as a FileDirectoryType Object below `parent` (name it "FileSystem" for the
+        root of a tree). Clients can create, delete, move and copy files and directories below `root` when `writable`
+        is set and their role is at least `write_role`. No path from a client can leave `root`.
+        """
+        return await self.iserver.file_service.add_directory(
+            _get_node(self.iserver.isession, parent),
+            name,
+            root,
+            writable=writable,
+            max_file_size=max_file_size,
+            max_entries=max_entries,
+            write_role=write_role,
+            namespace=namespace,
+        )
+
+    async def refresh_directory(self, directory: Node | ua.NodeId) -> None:
+        """Bring the Objects of a directory and everything below it in line with the file system."""
+        await self.iserver.file_service.refresh_directory(_get_node(self.iserver.isession, directory))
+
+    async def enable_push_management(
+        self,
+        *,
+        max_trust_list_size: int = 65_535,
+        min_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
+        activity_timeout: float = 60.0,
+    ) -> CertificateManager:
+        """
+        Let a SecurityAdmin replace the certificate and the trust lists of this server over OPC UA (OPC 10000-12,
+        7.10, push management): the ServerConfiguration Object with UpdateCertificate, CreateSigningRequest,
+        GetRejectedList, GetCertificates, ApplyChanges and CancelChanges, and the TrustLists of its
+        CertificateGroups. Call it after init() and set_pki_directory (and set_user_pki_directory for the user
+        TrustList), because every change is written to the PKI directory. The Methods need a user whose role is
+        SecurityAdmin and a channel with at least `min_security_mode`.
+        """
+        manager = CertificateManager(
+            self,
+            max_trust_list_size=max_trust_list_size,
+            min_security_mode=min_security_mode,
+            activity_timeout=activity_timeout,
+        )
+        await manager.enable()
+        self._certificate_manager = manager
+        return manager
+
+    # --- end of File transfer and certificate management ---
+
     def set_trust_store(self, trust_store: TrustStore) -> None:
         """
         Set the trusted certificates, issuer certificates and revocation lists that client certificates are
@@ -1152,3 +1252,106 @@ class Server:
             self._pubsub = PubSub(server=self)
             await self._pubsub.init_information_model()
         return self._pubsub
+
+    # --- Diagnostics, programs, reverse connect, model change ---
+
+    def add_reverse_connect(
+        self, client_url: str, endpoint_url: str | None = None, retry_interval: float = 5.0
+    ) -> ReverseConnection:
+        """
+        Connect to a client that listens at client_url and let it open the SecureChannel on that socket (reverse
+        connect, OPC 10000-6 v1.05, 7.1.2.6 and 7.1.3). The server sends a ReverseHello with its application URI and
+        endpoint_url (default: the endpoint of the server), keeps one such socket open for the client at all times and
+        reconnects after retry_interval seconds when the client refuses or the connection fails. Can be called before
+        or after start. Returns the handle for remove_reverse_connect.
+        """
+        connection = ReverseConnection(
+            client_url,
+            endpoint_url if endpoint_url is not None else (lambda: self.endpoint.geturl()),
+            lambda: self._application_uri,
+            retry_interval,
+        )
+        if any(
+            c.client_url == client_url and c.endpoint_url == connection.endpoint_url for c in self._reverse_connections
+        ):
+            raise ValueError(f"Reverse connection to {client_url} exists")
+        self._reverse_connections.append(connection)
+        if self.bserver is not None:
+            self.bserver.add_reverse_connection(connection)
+        return connection
+
+    def remove_reverse_connect(self, connection: ReverseConnection) -> None:
+        self._reverse_connections.remove(connection)
+        if self.bserver is not None:
+            self.bserver.remove_reverse_connection(connection)
+
+    def model_change(self) -> contextlib.AbstractAsyncContextManager[None]:
+        """
+        Collect the model changes (AddNodes, DeleteNodes, AddReferences, DeleteReferences) of everything done in the
+        block, by this task and the tasks it starts, into one GeneralModelChangeEvent raised when the block ends:
+
+            async with server.model_change():
+                await folder.add_object(2, "A")
+                await folder.add_object(2, "B")
+
+        Without a block every call is a request of its own and raises its own event.
+        """
+        return self.iserver.model_changes.request()
+
+    @property
+    def model_change_events(self) -> str:
+        """
+        "all" (default): a model change event names every changed Node. "versioned": only Nodes that have a
+        NodeVersion Property, the literal reading of OPC 10000-3 v1.05, 9.32.2. The NodeVersion of a named Node
+        that has the Property is updated in both modes.
+        """
+        return self.iserver.model_change_events
+
+    @model_change_events.setter
+    def model_change_events(self, mode: str) -> None:
+        if mode not in ("all", "versioned"):
+            raise ValueError("model_change_events is 'all' or 'versioned'")
+        self.iserver.model_change_events = mode
+
+    @property
+    def diagnostics(self) -> DiagnosticsCollector:
+        """
+        The server diagnostics (OPC 10000-5 v1.05, 6.3.3): `enabled` is the EnabledFlag of Server/ServerDiagnostics,
+        which a client with the Admin or SecurityAdmin role can write too; `summary()` returns the counters of
+        ServerDiagnosticsSummary. The counters run always, the Session and Subscription details only while enabled.
+        """
+        return self.iserver.diagnostics
+
+    # --- Alarms and Conditions (Part 9) ---
+
+    async def create_condition(
+        self,
+        source: Node | ua.NodeId | None,
+        condition_type: Node | ua.NodeId | int,
+        name: str,
+        **options: Any,
+    ) -> Condition:
+        """
+        Create a Condition or Alarm instance of a ConditionType below its source and return its handle.
+        Options: node_id, namespace, notifier, confirmable, shelving, suppression, branches (default off),
+        severity, condition_class, quality, comment_max_length, limits, deadbands, severities (dicts keyed by
+        HighHigh, High, Low, LowLow), input_node, follow_input, normal_value, normal_node, setpoint_node,
+        max_time_shelved (milliseconds).
+        """
+        return await self.iserver.condition_manager.create(source, condition_type, name, **options)
+
+    async def delete_condition(self, condition: Condition) -> None:
+        await self.iserver.condition_manager.delete(condition)
+
+    def get_condition(self, condition_id: ua.NodeId | Node) -> Condition | None:
+        return self.iserver.condition_manager.get(condition_id)
+
+    @property
+    def conditions(self) -> list[Condition]:
+        return list(self.iserver.condition_manager.conditions.values())
+
+    async def refresh_required(self, subscription_ids: list[int] | None = None) -> None:
+        """Tell clients that their Condition state may be out of date (RefreshRequiredEvent, Part 9, 5.11.4)."""
+        await self.iserver.condition_manager.refresh_required(subscription_ids)
+
+    # --- end Alarms and Conditions ---

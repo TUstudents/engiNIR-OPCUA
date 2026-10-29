@@ -6,10 +6,11 @@ StatusCode. Only the steps the table marks as suppressible can be suppressed, by
 logged and reported in the outcome.
 """
 
+import asyncio
 import ipaddress
 import logging
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 
@@ -89,6 +90,8 @@ class Outcome:
     step: Step | None = None
     subject: str = ""
     detail: str = ""
+    untrusted_chain: tuple[bytes, ...] = ()
+    """The DER certificates of a peer that is valid in every step but not trusted; see CertificateValidator.keep_rejected."""
 
     def raise_for_status(self) -> None:
         if not self.accepted:
@@ -178,6 +181,7 @@ class _Validation:
         self.now = now
         self.chain: list[x509.Certificate] = []
         self.suppressed: list[SuppressedError] = []
+        self.skip_trust = False
 
     def run(self, data: bytes) -> x509.Certificate:
         received = self.parse(data)
@@ -416,7 +420,7 @@ class _Validation:
         return problems
 
     def check_trust(self) -> None:
-        if any(self.snapshot.is_trusted(certificate) for certificate in self.chain):
+        if self.skip_trust or any(self.snapshot.is_trusted(certificate) for certificate in self.chain):
             return
         end = self.chain[-1]
         if not self.snapshot.trusted and not self.snapshot.pinned:
@@ -660,28 +664,48 @@ class CertificateValidator:
         return self._trust_store
 
     def validate_application_certificate(self, chain: bytes, context: ValidationContext) -> Outcome:
-        """Validate the certificate a peer sent, followed by any intermediate CA certificates it appended."""
+        """
+        Validate the certificate a peer sent, followed by any intermediate CA certificates it appended. A rejection
+        because the certificate is not trusted carries the chain in `untrusted_chain` when every other step passes;
+        the caller keeps it with keep_rejected once the peer has proved that it holds the key.
+        """
         validation = _Validation(self, context, self._trust_store.snapshot, self._clock())
         try:
             leaf = validation.run(chain)
         except _Rejected as rejection:
-            self._keep_rejected(chain)
-            return self._rejected(rejection, tuple(validation.suppressed))
+            outcome = self._rejected(rejection, tuple(validation.suppressed))
+            if rejection.status == ua.StatusCodes.BadCertificateUntrusted and rejection.step is Step.TRUST:
+                outcome = replace(outcome, untrusted_chain=self._valid_but_untrusted(chain, context))
+            return outcome
         return Outcome(True, leaf, tuple(validation.suppressed))
 
-    def _keep_rejected(self, chain: bytes) -> None:
+    def _valid_but_untrusted(self, chain: bytes, context: ValidationContext) -> tuple[bytes, ...]:
+        validation = _Validation(self, context, self._trust_store.snapshot, self._clock())
+        validation.skip_trust = True
         try:
+            validation.run(chain)
             pieces = split_certificate_chain(bytes(chain))[: self.max_chain_length]
-        except UaError:
+        except (_Rejected, UaError):
+            return ()
+        return tuple(bytes(piece) for piece in pieces)
+
+    def keep_rejected(self, outcome: Outcome, peer: str | None = None, *, background: bool = False) -> None:
+        """
+        Keep the certificates of an untrusted peer in the rejected store (Part 12, 7.8.3.2), for an administrator to
+        trust. Call it only after the peer proved possession of the key, for example when the signature of
+        OpenSecureChannel verified. `peer` (an address) bounds how many files one peer may leave.
+        """
+        if not outcome.untrusted_chain:
             return
-        parsed: list[bytes] = []
-        for piece in pieces:
+        if background:
             try:
-                x509.load_der_x509_certificate(piece)
-            except ValueError:
-                continue
-            parsed.append(piece)
-        self._trust_store.record_rejected(parsed)
+                asyncio.get_running_loop().run_in_executor(
+                    None, self._trust_store.record_rejected, outcome.untrusted_chain, peer
+                )
+                return
+            except RuntimeError:
+                pass
+        self._trust_store.record_rejected(outcome.untrusted_chain, peer)
 
     def validate_user_certificate(self, chain: bytes, policy_uri: str | None) -> Outcome:
         """

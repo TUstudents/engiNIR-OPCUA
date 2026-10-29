@@ -966,6 +966,7 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
 async def test_process_reports_the_connection_should_close_on_a_limit_error():
     processor = UaProcessor.__new__(UaProcessor)
     processor.name = "peer"
+    processor.iserver = Mock()
     processor._transport = Mock()
     connection = Mock()
     connection.receive_from_header_and_body.side_effect = TransportError(ua.StatusCodes.BadTcpMessageTooLarge)
@@ -1007,3 +1008,12 @@ async def test_default_application_identity_is_enginir() -> None:
     assert srv.manufacturer_name == "engiNIR"
     assert clt.application_uri == "urn:enginir:opcua:client"
     assert clt.product_uri == "urn:enginir:opcua"
+
+
+async def test_srv85_server_capabilities_publish_max_byte_string_length() -> None:
+    """Part 5, 6.3.2: ServerCapabilities holds MaxByteStringLength, so clients can size their chunks."""
+    server = Server(allow_no_security=True)
+    server.iserver.max_byte_string_length = 4096
+    await server.init()
+    node = server.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength))
+    assert await node.read_value() == 4096

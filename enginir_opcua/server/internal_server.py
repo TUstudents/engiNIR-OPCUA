@@ -26,10 +26,13 @@ from ..crypto import uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
-from .event_generator import EventGenerator
+from .conditions import ConditionManager
+from .diagnostics import DiagnosticsCollector
+from .file_transfer import FileService
 from .history import HistoryManager
 from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
+from .model_change import ModelChangeNotifier
 from .service_dispatch import Dispatcher
 from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
@@ -101,7 +104,6 @@ class InternalServer:
         self._channel_id_counter = 5
         self.allow_plaintext_password = False
         self.identity_guard = IdentityGuard()
-        self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
@@ -154,6 +156,8 @@ class InternalServer:
         self.max_browse_continuation_points: int = 10
         self.max_browse_references_per_node: int = 10_000
         self.max_translate_matches: int = 1_000
+        self.max_byte_string_length: int = 1_048_576
+        self._file_service: FileService | None = None
         self.certificate: Any = None
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
@@ -166,6 +170,9 @@ class InternalServer:
         self.asyncio_transports: list[Any] = []
         self.subscription_service: SubscriptionService = SubscriptionService(self.aspace, iserver=self)
         self.history_manager = HistoryManager(self)
+        # --- Alarms and Conditions (Part 9) ---
+        self.condition_manager = ConditionManager(self)
+        # --- end Alarms and Conditions ---
         if user_manager is None:
             user_manager = AnonymousReadOnlyUserManager()
         self.user_manager: UserManager = user_manager
@@ -179,6 +186,9 @@ class InternalServer:
         self.application_hook: ApplicationHook | None = None
         """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
+        self.diagnostics = DiagnosticsCollector(self)  # J: diagnostics (SRV-91)
+        self.model_changes = ModelChangeNotifier(self)  # J: model change events (SRV-96)
+        self.model_change_events: str = "all"
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())
         self.isession: InternalSession = self.session_manager.new_in_process_session()
@@ -190,29 +200,22 @@ class InternalServer:
         self.match_discovery_source_ip: bool = True
         self.supported_tokens = (ua.AnonymousIdentityToken, ua.X509IdentityToken, ua.UserNameIdentityToken)
 
+    # --- File transfer and certificate management (Part 20, Part 12) ---
+    @property
+    def file_service(self) -> FileService:
+        if self._file_service is None:
+            self._file_service = FileService(self)
+        return self._file_service
+
+    # --- end of File transfer and certificate management ---
+
     async def init(self, shelffile: Path | None = None) -> None:
         await self.load_standard_address_space(shelffile)
         await self._address_space_fixes()
         await self.setup_nodes()
+        await self.diagnostics.install()  # J: diagnostics (SRV-91)
         await self.history_manager.init()
-        if self.bind_condition_methods:
-            await self.setup_condition_methods()
-
-    async def setup_condition_methods(self) -> None:
-        for etype in (ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType):
-            evgen = EventGenerator(self.isession)
-            await evgen.init(etype, add_generates_event=False)
-            # don't use isinstance(int), it also matches bool
-            if isinstance(self.bind_condition_methods, int):
-                evgen.event.Severity = self.bind_condition_methods
-            self.subscription_service.standard_events[etype] = evgen
-
-        self.isession.add_method_callback(
-            ua.NodeId(ua.ObjectIds.ConditionType_ConditionRefresh), self.subscription_service.condition_refresh
-        )
-        self.isession.add_method_callback(
-            ua.NodeId(ua.ObjectIds.ConditionType_ConditionRefresh2), self.subscription_service.condition_refresh
-        )
+        await self.condition_manager.init()
 
     async def setup_nodes(self) -> None:
         """
@@ -248,6 +251,9 @@ class InternalServer:
             ),
             ua.ObjectIds.Server_ServerCapabilities_MaxMonitoredItemsQueueSize: ua.Variant(
                 self.max_monitored_item_queue_size, ua.VariantType.UInt32
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength: ua.Variant(
+                self.max_byte_string_length, ua.VariantType.UInt32
             ),
         }
         for nodeid, variant in capabilities.items():
@@ -325,6 +331,7 @@ class InternalServer:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
         self.session_manager.start()
+        self.model_changes.enabled = True  # J: model change events (SRV-96)
 
     async def set_server_state(self, state: ua.ServerState) -> None:
         status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
@@ -336,6 +343,7 @@ class InternalServer:
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
+        self.model_changes.enabled = False  # J: model change events (SRV-96)
         if self.time_task:
             self._time_task_stop.set()
             await self.time_task
@@ -344,6 +352,8 @@ class InternalServer:
         for sub_id, sub in list(self.subscription_service.subscriptions.items()):
             await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
+        await self.diagnostics.stop()  # J: diagnostics (SRV-91)
+        await self.condition_manager.stop()  # Alarms and Conditions (Part 9)
 
     async def _set_current_time_loop(self) -> None:
         while not self._time_task_stop.is_set():

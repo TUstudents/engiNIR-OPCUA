@@ -26,8 +26,11 @@ if TYPE_CHECKING:
     from enginir_opcua.client.ua_session import UaSession
     from enginir_opcua.server.internal_session import InternalSession
 
+from .conditions import condition_refresh2
 from .events import Event, get_filter_from_event_type
 from .node import Node
+
+_logger = logging.getLogger(__name__)
 
 
 class SubscriptionItemData:
@@ -1029,12 +1032,16 @@ class Subscription:
         evtypes: Node | ua.NodeId | str | int | Iterable[Node | ua.NodeId | str | int] = ua.ObjectIds.ConditionType,
         evfilter: ua.EventFilter | None = None,
         queuesize: int = 0,
+        refresh: bool = True,
     ) -> int:
         """
         Subscribe to alarm and condition events from a node. Default node is Server node.
         In many servers the server node is the only one you can subscribe to.
         If evtypes is not provided, evtype defaults to ConditionType.
         If evtypes is a list or tuple of custom event types, the events will be filtered to the supplied types.
+        With refresh (the default) the retained Conditions are requested right after the item is created
+        (ConditionRefresh2, else ConditionRefresh; OPC 10000-9, 4.5). A server that refuses the refresh only
+        gets a warning in the log.
         A handle (integer value) is returned which can be used to modify/cancel the subscription.
 
         :param sourcenode: int, str, ua.NodeId or Node
@@ -1044,7 +1051,13 @@ class Subscription:
         MaxUInt32 for max queue size
         :return: Handle for changing/cancelling of the subscription
         """
-        return await self.subscribe_events(sourcenode, evtypes, evfilter, queuesize)
+        handle = await self.subscribe_events(sourcenode, evtypes, evfilter, queuesize)
+        if refresh:
+            try:
+                await condition_refresh2(self.server, self, handle)
+            except ua.UaStatusCodeError as error:
+                _logger.warning("ConditionRefresh failed after subscribing: %s", error)
+        return handle
 
     @overload
     async def _subscribe(
