@@ -18,7 +18,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from enginir_opcua import Client, Node, Server, ua, uamethod
-from enginir_opcua.crypto import security_policies
+from enginir_opcua.config import ServerConfig
+from enginir_opcua.crypto import security_policies, uacrypto
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Client as SyncClient
 from enginir_opcua.sync import SyncNode, ThreadLoop
@@ -664,12 +666,20 @@ async def _tick(demo: _DemoServer) -> None:
 
 
 async def _start_demo_server(args: argparse.Namespace) -> _DemoServer:
+    if args.config:
+        return await _start_configured_server(args)
     server = Server(user_manager=PermissiveUserManager() if args.accept_all_logins else None, allow_no_security=True)
     server.allow_plaintext_password = args.accept_all_logins
     await server.init()
     server.set_endpoint(args.url)
     if args.pki_dir:
         await server.set_pki_directory(args.pki_dir)
+        certificate = server.iserver.certificate
+        if certificate is not None:
+            warn(
+                f"PKI directory {args.pki_dir}: application certificate, thumbprint "
+                f"{certificate_thumbprint(uacrypto.der_from_x509(certificate)).hex()}"
+            )
     if args.certificate:
         await server.load_certificate(args.certificate)
     if args.private_key:
@@ -687,18 +697,54 @@ async def _start_demo_server(args: argparse.Namespace) -> _DemoServer:
     return demo
 
 
+async def _start_configured_server(args: argparse.Namespace) -> _DemoServer:
+    server = Server(config=ServerConfig.from_toml(args.config))
+    await server.init()
+    server.disable_clock(args.disable_clock)
+    for path in args.xml or []:
+        await server.import_xml(path)
+    demo = _DemoServer(server)
+    if args.populate:
+        await _populate(server, demo)
+    await server.start()
+    if args.populate:
+        demo.ticker = asyncio.get_running_loop().create_task(_tick(demo))
+    return demo
+
+
+def _check_config_options(args: argparse.Namespace) -> None:
+    conflicting = [
+        name
+        for name, given in (
+            ("--url", args.url != DEMO_URL),
+            ("--certificate", bool(args.certificate)),
+            ("--private-key", bool(args.private_key)),
+            ("--pki-dir", bool(args.pki_dir)),
+            ("--accept-all-logins", args.accept_all_logins),
+        )
+        if given
+    ]
+    if conflicting:
+        raise UsageError(f"--config replaces {', '.join(conflicting)}; put these settings in the file")
+
+
 def _server(args: argparse.Namespace) -> int:
+    if args.config:
+        _check_config_options(args)
+        config = ServerConfig.from_toml(args.config)
+        warn(f"Serving {config.endpoint} with the {config.profile} profile from {args.config}.")
     logins = (
         " INSECURE: --accept-all-logins accepts every user name and password and lets anonymous users write."
         if args.accept_all_logins
         else ""
     )
     populate = " --populate adds a writable variable and a method." if args.populate else ""
-    warn(
-        f"This is a demo server. It offers an endpoint without security at {args.url}"
-        f" and, by default, accepts only anonymous read-only sessions.{logins}{populate}"
-        " Do not use it to expose real data on a network you do not trust."
-    )
+    if not args.config:
+        warn(
+            f"This is a demo server. It offers an endpoint without security at {args.url}"
+            f" and, by default, accepts only anonymous read-only sessions.{logins}{populate}"
+            " Do not use it to expose real data on a network you do not trust."
+        )
     with ThreadLoop(timeout=None) as tloop:
         demo = tloop.post(_start_demo_server(args))
         try:
@@ -876,6 +922,12 @@ def _server_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--certificate", help="Server certificate")
     parser.add_argument("--private-key", "--private_key", dest="private_key", help="Server private key")
     parser.add_argument("--pki-dir", metavar="DIR", help="PKI directory of the server")
+    parser.add_argument(
+        "--config",
+        metavar="FILE",
+        help="Serve from a server configuration file (see enginir-opcua init server) instead of the demo settings;"
+        " it excludes --url, --certificate, --private-key, --pki-dir and --accept-all-logins",
+    )
     parser.add_argument(
         "--accept-all-logins",
         action="store_true",

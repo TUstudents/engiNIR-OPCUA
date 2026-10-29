@@ -554,6 +554,54 @@ def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
     assert b"Traceback" not in err
 
 
+def _no_shell(monkeypatch):
+    seen = {}
+
+    def shell(namespace, banner=""):
+        seen["code"] = tools.main(["read", "-u", seen["url"], "-n", "i=2259"])
+
+    monkeypatch.setattr(tools, "open_shell", shell)
+    return seen
+
+
+def test_tool11_server_serves_from_a_config_file(capsys, monkeypatch, tmp_path):
+    url = f"opc.tcp://127.0.0.1:{find_free_port()}/cfg/"
+    config = tmp_path / "server.toml"
+    config.write_text(f'[server]\nprofile = "development"\nendpoint = "{url}"\npki = "pki"\n')
+    seen = _no_shell(monkeypatch)
+    seen["url"] = url
+    assert tools.main(["server", "--config", str(config), "--shell"]) == 0
+    _out, err = capsys.readouterr()
+    assert seen["code"] == 0
+    assert str(config) in err and "development profile" in err
+    assert (tmp_path / "pki" / "own" / "certs" / "application.der").exists()
+
+
+def test_tool11_a_config_and_other_server_options_exclude_each_other(capsys, tmp_path):
+    config = tmp_path / "server.toml"
+    config.write_text("[server]\n")
+    for extra in (["--url", "opc.tcp://127.0.0.1:4999"], ["--pki-dir", str(tmp_path)], ["--accept-all-logins"]):
+        code = tools.main(["server", "--config", str(config), *extra])
+        assert code == 2
+        assert "--config" in capsys.readouterr().err
+
+
+def test_tool11_a_broken_config_names_the_setting(capsys, tmp_path):
+    config = tmp_path / "server.toml"
+    config.write_text('[server]\nendpoint = "nope"\n')
+    code, _, err = run(capsys, "server", "--config", str(config))
+    assert code == 1 and "server.endpoint" in err and str(config) in err
+
+
+def test_tool11_the_demo_server_prints_the_certificate_it_generated(capsys, monkeypatch, tmp_path):
+    url = f"opc.tcp://127.0.0.1:{find_free_port()}"
+    seen = _no_shell(monkeypatch)
+    seen["url"] = url
+    assert tools.main(["server", "--shell", "-u", url, "--pki-dir", str(tmp_path / "pki")]) == 0
+    _out, err = capsys.readouterr()
+    assert "application certificate, thumbprint " in err
+
+
 def test_tool2_ctrl_c_in_server_exits_cleanly():
     port = find_free_port()
     process = subprocess.Popen(
