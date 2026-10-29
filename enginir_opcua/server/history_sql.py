@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import sqlite3
 import time as monotonic
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -75,6 +77,10 @@ class HistorySQLite(HistoryStorageInterface):
         self._tables: set[str] = set()
         self._retention: dict[str, _Retention] = {}
         self._event_columns: dict[str, set[str]] = {}
+        self._table_locks: dict[str, asyncio.Lock] = {}
+
+    def _lock(self, table: str) -> asyncio.Lock:
+        return self._table_locks.setdefault(table, asyncio.Lock())
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self._db_file)
@@ -221,7 +227,8 @@ class HistorySQLite(HistoryStorageInterface):
         await self._db.commit()
         self._tables.add(table)
         self._retention[table] = _Retention(period, count)
-        await self._load_event_columns(table)
+        async with self._lock(table):
+            await self._load_event_columns(table)
 
     async def _load_event_columns(self, table: str) -> set[str]:
         async with self._db.execute(f"PRAGMA table_info({quote_identifier(table)})") as cursor:
@@ -239,9 +246,13 @@ class HistorySQLite(HistoryStorageInterface):
             column = FIELD_PREFIX + name
             existing = lowered.get(column.lower())
             if existing is None:
-                await self._db.execute(
-                    f"ALTER TABLE {quote_identifier(table)} ADD COLUMN {quote_identifier(column)} BLOB"
-                )
+                try:
+                    await self._db.execute(
+                        f"ALTER TABLE {quote_identifier(table)} ADD COLUMN {quote_identifier(column)} BLOB"
+                    )
+                except sqlite3.OperationalError as error:
+                    if "duplicate column name" not in str(error):
+                        raise
                 known.add(column)
                 lowered[column.lower()] = column
                 usable.append(column)
@@ -253,22 +264,29 @@ class HistorySQLite(HistoryStorageInterface):
 
     async def save_event(self, source_id: ua.NodeId, fields: dict[str, ua.Variant], time: datetime) -> None:
         table = event_table(source_id)
-        columns = await self._ensure_columns(table, sorted(fields))
-        values = [variant_to_binary(fields[column[len(FIELD_PREFIX) :]]) for column in columns]
-        event_type = fields.get("EventType")
-        column_text = "".join(f", {quote_identifier(column)}" for column in columns)
-        marks = ", ?" * len(columns)
-        await self._db.execute(
-            f'INSERT INTO {quote_identifier(table)} ("_Time", "_EventType"{column_text}) VALUES (?, ?{marks})',
-            (to_ticks(time), str(event_type.Value) if event_type is not None else None, *values),
-        )
-        await self._retain(table)
+        async with self._lock(table):
+            columns = await self._ensure_columns(table, sorted(fields))
+            values = [variant_to_binary(fields[column[len(FIELD_PREFIX) :]]) for column in columns]
+            event_type = fields.get("EventType")
+            column_text = "".join(f", {quote_identifier(column)}" for column in columns)
+            marks = ", ?" * len(columns)
+            await self._db.execute(
+                f'INSERT INTO {quote_identifier(table)} ("_Time", "_EventType"{column_text}) VALUES (?, ?{marks})',
+                (to_ticks(time), str(event_type.Value) if event_type is not None else None, *values),
+            )
+            await self._retain(table)
 
     async def read_event_history(self, source_id: ua.NodeId, domain: TimeDomain) -> Page:
         table = event_table(source_id)
         if table not in self._tables:
             return Page([], False)
-        columns = sorted(self._event_columns.get(table) or await self._load_event_columns(table))
+        known = self._event_columns.get(table)
+        if known is None:
+            async with self._lock(table):
+                known = self._event_columns.get(table)
+                if known is None:
+                    known = await self._load_event_columns(table)
+        columns = sorted(known)
         retention = self._retention.get(table)
         where, args = self._conditions('"_Time"', domain, retention.cutoff() if retention else None)
         order = "DESC" if domain.backward else "ASC"
