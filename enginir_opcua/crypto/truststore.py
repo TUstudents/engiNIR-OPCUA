@@ -11,10 +11,12 @@ import logging
 import os
 import threading
 import time
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
+from typing import ClassVar
 
 import anyio
 from cryptography import x509
@@ -87,6 +89,8 @@ class TrustStore:
     extensions are ignored, and a file that does not parse is skipped with a warning.
     """
 
+    _instances: ClassVar["weakref.WeakSet[TrustStore]"] = weakref.WeakSet()
+
     def __init__(
         self,
         trust_locations: Sequence[Path] = (),
@@ -129,6 +133,7 @@ class TrustStore:
         self._load_signature: tuple[tuple[str, int, int], ...] | None = None
         self._last_refresh = float("-inf")
         self.refresh_interval = 1.0
+        TrustStore._instances.add(self)
 
     @property
     def trust_locations(self) -> list[Path]:
@@ -332,6 +337,21 @@ class TrustStore:
             except OSError:
                 entries.append((str(location), -1, -1))
         return tuple(sorted(entries))
+
+    @classmethod
+    def reload_pki_directory(cls, root: str | Path) -> int:
+        """Load again every store of this process that was made from the PKI directory; returns how many."""
+        base = Path(root).absolute()
+        count = 0
+        for store in list(cls._instances):
+            if store._pki_root is not None and store._pki_root.absolute() == base and store._load_signature is not None:
+                try:
+                    store.load_blocking()
+                except (ConfigurationError, OSError) as error:
+                    _logger.warning("Could not read the trust lists of %s again: %s", base, error)
+                else:
+                    count += 1
+        return count
 
     def refresh_if_changed(self) -> bool:
         """

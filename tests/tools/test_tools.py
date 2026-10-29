@@ -98,7 +98,7 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
     return code, captured.out, captured.err
 
 
-def test_tool1_every_command_is_registered_and_k_names_are_reserved():
+def test_tool1_every_command_is_registered():
     names = set(tools.COMMANDS)
     assert {
         "read",
@@ -111,9 +111,12 @@ def test_tool1_every_command_is_registered_and_k_names_are_reserved():
         "server",
         "shell",
         "generate-structs",
+        "init",
+        "trust",
+        "pki",
+        "pair",
+        "user",
     } <= names
-    assert not names & tools.RESERVED_COMMANDS
-    assert tools.RESERVED_COMMANDS == {"init", "trust", "pki", "pair"}
 
 
 def test_tool1_browse_is_an_alias_of_ls(capsys, tool_server):

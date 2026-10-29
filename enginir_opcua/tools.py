@@ -27,7 +27,6 @@ from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 PASSWORD_VARIABLE = "ENGINIR_OPCUA_PASSWORD"
 PROGRAM = "enginir-opcua"
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-RESERVED_COMMANDS = frozenset({"init", "trust", "pki", "pair"})
 DEFAULT_URL = "opc.tcp://localhost:4840"
 DEMO_URL = "opc.tcp://127.0.0.1:4840"
 ROOT_NODE = "i=84"
@@ -1070,3 +1069,6 @@ def uaclient() -> None:
 
 def uageneratestructs() -> None:
     _legacy("enginir-uageneratestructs", "generate-structs")
+
+
+from enginir_opcua import cli_setup  # noqa: E402,F401
