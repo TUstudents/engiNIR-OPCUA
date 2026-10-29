@@ -1,5 +1,3 @@
-"""EventFilter validation and results, WhereClause operators and the select clause operands."""
-
 from __future__ import annotations
 
 import logging
@@ -10,9 +8,13 @@ from typing import Any
 import pytest
 
 from enginir_opcua import Server, ua
+from enginir_opcua.common.event_objects import BaseEvent
 from enginir_opcua.common.events import Event
 from enginir_opcua.server.content_filter import WhereClauseEvaluator
 from tests.monitoring import create_items, item_request, make_server, modify_items, open_subscription, publish
+
+"""EventFilter validation and results, WhereClause operators and the select clause operands."""
+
 
 OP = ua.FilterOperator
 BASE_EVENT = ua.NodeId(ua.ObjectIds.BaseEventType)
@@ -520,3 +522,22 @@ async def test_srv60_overflow_event_content(server: Server) -> None:
     assert len(overflow[6].Value) == 16
     assert overflow[7].Value.Text
     assert notifications[1].EventFields[7].Value.Text == "two"
+
+
+def test_where_clause():
+    cf = ua.ContentFilter()
+    el = ua.ContentFilterElement()
+    op = ua.SimpleAttributeOperand()
+    op.AttributeId = ua.AttributeIds.Value
+    op.BrowsePath.append(ua.QualifiedName("property", 2))
+    el.FilterOperands.append(op)
+    for i in range(10):
+        op = ua.LiteralOperand(Value=ua.Variant(i))
+        el.FilterOperands.append(op)
+    el.FilterOperator = ua.FilterOperator.InList
+    cf.Elements.append(el)
+    wce = WhereClauseEvaluator(logging.getLogger(__name__), None, cf)
+    ev = BaseEvent()
+    ev._freeze = False
+    ev.property = 3
+    assert wce.eval(ev)

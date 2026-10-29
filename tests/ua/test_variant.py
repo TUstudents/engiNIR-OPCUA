@@ -5,7 +5,12 @@ import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
-from enginir_opcua.ua.ua_binary import variant_from_binary, variant_to_binary
+from enginir_opcua.ua import flatten, get_shape
+from enginir_opcua.ua.ua_binary import (
+    _reshape,
+    variant_from_binary,
+    variant_to_binary,
+)
 from enginir_opcua.ua.uatypes import datatype_to_varianttype
 
 
@@ -161,3 +166,190 @@ def test_null_xml_element_scalar_round_trips() -> None:
     assert variant_from_binary(Buffer(variant_to_binary(variant))) == ua.Variant(
         ua.XmlElement(), ua.VariantType.XmlElement
     )
+
+
+def test_variant_array_none():
+    v = ua.Variant(None, VariantType=ua.VariantType.Int32, is_array=True)
+    data = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(data))
+    assert v == v2
+    assert v2.is_array
+    assert v2.Dimensions is None
+
+    v = ua.Variant(None, VariantType=ua.VariantType.Null, is_array=True)
+    data = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(data))
+    assert v == v2
+    assert v2.is_array
+    assert v2.Dimensions is None
+
+    v = ua.Variant(None, VariantType=ua.VariantType.Null, Dimensions=[0, 0])
+    data = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(data))
+    assert v2 == ua.Variant(None, VariantType=ua.VariantType.Null, is_array=True)
+    assert v2.is_array
+    assert v2.Dimensions is None
+
+
+def test_variant_empty_list():
+    v = ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True)
+    data = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(data))
+    assert v == v2
+    assert v2.is_array
+    assert v2.Dimensions is None
+
+    v = ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True, Dimensions=[0])
+    data = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(data))
+    assert v2 == ua.Variant([], VariantType=ua.VariantType.Int32, is_array=True)
+    assert v2.is_array
+    assert v2.Dimensions is None
+
+
+def test_variant_dimensions():
+    arry = [
+        [[1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]],
+        [[5.0, 5.0, 5.0, 5.0], [7.0, 8.0, 9.0, 01.0], [1.0, 1.0, 1.0, 1.0]],
+    ]
+    v = ua.Variant(arry)
+    assert [2, 3, 4] == v.Dimensions
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v == v2
+    assert v.Dimensions == v2.Dimensions
+
+    # very special case
+    arry = [[[], [], []], [[], [], []]]
+    v = ua.Variant(arry, ua.VariantType.UInt32)
+    assert [2, 3, 0] == v.Dimensions
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v2.Dimensions is None
+    assert v2.Value == []
+
+
+def test_flatten():
+    arry = [
+        [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+        [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+    ]
+    l2 = flatten(arry)
+    dims = get_shape(arry)
+    assert [2, 3, 4] == dims
+    assert arry != l2
+
+    l3 = _reshape(l2, (2, 3, 4))
+    assert arry == l3
+
+    arry = [[[], [], []], [[], [], []]]
+    l2 = flatten(arry)
+    dims = get_shape(arry)
+    assert dims == [2, 3, 0]
+
+    arry = [1, 2, 3, 4]
+    l2 = flatten(arry)
+    dims = get_shape(arry)
+    assert dims == [4]
+    assert arry == l2
+
+
+def test_reshape_rejects_oversized_dimensions():
+    with pytest.raises(ua.UaError, match="exceeds MAX_RESHAPE_ELEMENTS"):
+        _reshape([1, 2, 3], [50_000_000])
+
+
+def test_custom_variant():
+    with pytest.raises(ua.UaError):
+        v = ua.Variant(b"ljsdfljds", ua.VariantTypeCustom(89))
+    v = ua.Variant(b"ljsdfljds", ua.VariantTypeCustom(61))
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v.VariantType == v2.VariantType
+    assert v == v2
+
+
+def test_custom_variant_array():
+    v = ua.Variant([b"ljsdfljds", b"lkjsdljksdf"], ua.VariantTypeCustom(40))
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v.VariantType == v2.VariantType
+    assert v == v2
+
+
+def test_variant_to_binary_type_mismatch_error():
+    """Float stored as Int32 must raise a clear UaError (issue #1614)."""
+    v = ua.Variant(1.5, ua.VariantType.Int32)
+    with pytest.raises(ua.UaError, match=r"Cannot pack VariantType\.Int32.*1\.5.*float"):
+        variant_to_binary(v)
+
+    v_arr = ua.Variant([1, 2.5], ua.VariantType.Int32)
+    with pytest.raises(ua.UaError, match=r"Cannot pack VariantType\.Int32"):
+        variant_to_binary(v_arr)
+
+
+def test_variant():
+    dv = ua.Variant(True, ua.VariantType.Boolean)
+    assert dv.Value is True
+    assert isinstance(dv.Value, bool)
+    now = datetime.now(UTC)
+    v = ua.Variant(now)
+    assert v.Value == now
+    assert v.VariantType == ua.VariantType.DateTime
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v.Value == v2.Value
+    assert v.VariantType == v2.VariantType
+    # commonity method:
+    assert v == ua.Variant(v)
+
+
+def test_variant_array():
+    v = ua.Variant([1, 2, 3, 4, 5])
+    assert v.Value[1] == 2
+    # assert v.VarianType, ua.VariantType.Int64) # we do not care, we should aonly test for sutff that matter
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v.Value == v2.Value
+    assert v.VariantType == v2.VariantType
+    assert v2.Dimensions is None
+
+    now = datetime.now(UTC)
+    v = ua.Variant([now])
+    assert v.Value[0] == now
+    assert v.VariantType == ua.VariantType.DateTime
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+    assert v.Value == v2.Value
+    assert v.VariantType == v2.VariantType
+    assert v2.Dimensions is None
+
+
+def test_variant_array_dim():
+    v = ua.Variant([1, 2, 3, 4, 5, 6], Dimensions=[2, 3])
+    assert v.Value[1] == 2
+    assert v.Dimensions == [2, 3]
+
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v)))
+
+    assert _reshape(v.Value, (2, 3)) == v2.Value
+    assert v.VariantType == v2.VariantType
+    assert v.Dimensions == v2.Dimensions
+    assert v2.Dimensions == [2, 3]
+
+
+def test_variant_intenum():
+    ase = ua.AxisScaleEnumeration(ua.AxisScaleEnumeration.Linear)  # Just pick an existing IntEnum class
+    vAse = ua.Variant(ase)
+    assert vAse.VariantType == ua.VariantType.Int32
+
+
+def test_builtin_type_variant():
+    v = ua.Variant(ua.Int16(4))
+    assert v.VariantType == ua.VariantType.Int16
+    v = ua.Variant(ua.UInt64(4))
+    assert v.VariantType == ua.VariantType.UInt64
+    b = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(b))
+    assert v == v2
+    v = ua.Variant(ua.Byte(4))
+    assert v.VariantType == ua.VariantType.Byte
+    v = ua.Variant(ua.ByteString(b"hj"))
+    assert v.VariantType == ua.VariantType.ByteString
+    v = ua.Variant(4, ua.Byte)
+    assert v.VariantType == ua.VariantType.Byte
+    v = ua.Variant(None, ua.String)
+    assert v.VariantType == ua.VariantType.String

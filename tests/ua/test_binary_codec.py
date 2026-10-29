@@ -2,14 +2,20 @@ import array
 import io
 import struct
 import typing
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, ClassVar, Optional
 
 import pytest
 
 from enginir_opcua import ua
+from enginir_opcua.common.connection import (
+    MessageChunk,
+)
 from enginir_opcua.common.utils import Buffer
+from enginir_opcua.crypto.security_policies import SecurityPolicyNone
 from enginir_opcua.ua import ua_binary
 from enginir_opcua.ua.ua_binary import (
     _reshape,
@@ -20,10 +26,12 @@ from enginir_opcua.ua.ua_binary import (
     nodeid_from_binary,
     nodeid_to_binary,
     pack_uatype_array,
+    struct_from_binary,
     struct_to_binary,
     to_binary,
     unpack_uatype_array,
     variant_from_binary,
+    variant_to_binary,
 )
 
 UNKNOWN_TYPE_ID = bytes.fromhex("01 02 0500")
@@ -413,3 +421,186 @@ def test_ua53_localizedtext_empty_fields_decode_as_null() -> None:
     text = from_binary(ua.LocalizedText, Buffer(bytes.fromhex("02 01000000 61")))
     assert text.Text == "a"
     assert text.Locale is None
+
+
+def test_null_guid():
+    with pytest.raises(ua.UaError):
+        n = ua.NodeId(b"000000", 0, NodeIdType=ua.NodeIdType.Guid)
+    n = ua.NodeId(uuid.UUID("00000000-0000-0000-0000-000000000000"), 0, NodeIdType=ua.NodeIdType.Guid)
+    assert n.is_null()
+    assert n.has_null_identifier()
+
+    with pytest.raises(ua.UaError):
+        n = ua.NodeId(b"000000", 1, NodeIdType=ua.NodeIdType.Guid)
+    n = ua.NodeId(uuid.UUID("00000000-0000-0000-0000-000000000000"), 1, NodeIdType=ua.NodeIdType.Guid)
+    assert not n.is_null()
+    assert n.has_null_identifier()
+
+    n = ua.NodeId(uuid.UUID("00000000-0000-0000-0000-000001000000"), 1, NodeIdType=ua.NodeIdType.Guid)
+    assert not n.is_null()
+    assert not n.has_null_identifier()
+
+
+def test_null_string():
+    v = ua.Variant(None, ua.VariantType.String)
+    b = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(b))
+    assert v.Value == v2.Value
+    v = ua.Variant("", ua.VariantType.String)
+    b = variant_to_binary(v)
+    v2 = variant_from_binary(ua.utils.Buffer(b))
+    assert v.Value == v2.Value
+
+
+def test_empty_extension_object():
+    obj = ua.ExtensionObject()
+    obj2 = extensionobject_from_binary(ua.utils.Buffer(extensionobject_to_binary(obj)))
+    assert type(obj) is type(obj2)
+    assert obj == obj2
+
+
+def test_extension_object():
+    obj = ua.UserNameIdentityToken()
+    obj.UserName = "admin"
+    obj.Password = b"pass"
+    obj2 = extensionobject_from_binary(ua.utils.Buffer(extensionobject_to_binary(obj)))
+    assert type(obj) is type(obj2)
+    assert obj.UserName == obj2.UserName
+    assert obj.Password == obj2.Password
+    v1 = ua.Variant(obj)
+    v2 = variant_from_binary(ua.utils.Buffer(variant_to_binary(v1)))
+    assert type(v1) is type(v2)
+    assert v1.VariantType == v2.VariantType
+
+
+def test_unknown_extension_object():
+    obj = ua.ExtensionObject(
+        Body=b"example of data in custom format",
+        TypeId=ua.NodeId.from_string("ns=3;i=42"),
+    )
+
+    data = ua.utils.Buffer(extensionobject_to_binary(obj))
+    obj2 = extensionobject_from_binary(data)
+    assert type(obj2) is ua.ExtensionObject
+    assert obj2.TypeId == obj.TypeId
+    assert obj2.Body == b"example of data in custom format"
+
+
+def test_extension_object_missing_length():
+    obj = ua.DataChangeNotification()
+    binary = bytearray(extensionobject_to_binary(obj))
+
+    # Patch the binary to replace the correct length with -1 (i.e. missing),
+    # which some old OPC/UA implementations mistakenly do.
+    # Bytes 0-4 are the node ID, byte 4 is the encoding mask, so the length
+    # is bytes 5-8.
+    binary[5:9] = b"\xff\xff\xff\xff"
+
+    obj2 = extensionobject_from_binary(ua.utils.Buffer(bytes(binary)))
+    assert type(obj) is type(obj2)
+    assert obj.MonitoredItems == obj2.MonitoredItems
+    assert obj.DiagnosticInfos == obj2.DiagnosticInfos
+
+
+def test_datetime():
+    now = datetime.now(UTC)
+    epch = ua.datetime_to_win_epoch(now)
+    dt = ua.win_epoch_to_datetime(epch)
+    assert now == dt
+    # python's datetime has a range from Jan 1, 0001 to the end of year 9999
+    # windows' filetime has a range from Jan 1, 1601 to approx. year 30828
+    # let's test an overlapping range [Jan 1, 1601 - Dec 31, 9999]
+    dt = datetime(1601, 1, 1, tzinfo=UTC)
+    assert ua.win_epoch_to_datetime(ua.datetime_to_win_epoch(dt)) == dt
+    dt = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+    assert ua.win_epoch_to_datetime(ua.datetime_to_win_epoch(dt)) == dt
+    epch = 128930364000001000
+    dt = ua.win_epoch_to_datetime(epch)
+    epch2 = ua.datetime_to_win_epoch(dt)
+    assert epch == epch2
+    epch = 0
+    assert ua.datetime_to_win_epoch(ua.win_epoch_to_datetime(epch)) == epch
+    # Test if values that are out of range are either min or max
+    assert ua.datetime_to_win_epoch(datetime.min) == 0
+    assert ua.datetime_to_win_epoch(datetime.max) == ua.MAX_INT64
+
+
+def test_datavalue():
+    dv = ua.DataValue(123, SourceTimestamp=datetime.now(UTC))
+    assert dv.Value == ua.Variant(123)
+    assert type(dv.Value) is ua.Variant
+    dv = ua.DataValue("abc", SourceTimestamp=datetime.now(UTC))
+    assert dv.Value == ua.Variant("abc")
+    assert isinstance(dv.SourceTimestamp, datetime)
+
+
+def test_message_chunk():
+    pol = SecurityPolicyNone()
+    chunks = MessageChunk.message_to_chunks(pol, b"123", 65536)
+    assert len(chunks) == 1
+    seq = 0
+    for chunk in chunks:
+        seq += 1
+        chunk.SequenceHeader.SequenceNumber = seq
+    chunk2 = MessageChunk.from_binary(pol, ua.utils.Buffer(chunks[0].to_binary()))
+    assert chunks[0].to_binary() == chunk2.to_binary()
+
+    # for policy None, MessageChunk overhead is 12+4+8 = 24 bytes
+    # Let's pack 11 bytes into 28-byte chunks. The message must be split as 4+4+3
+    chunks = MessageChunk.message_to_chunks(pol, b"12345678901", 28)
+    assert len(chunks) == 3
+    assert chunks[0].Body == b"1234"
+    assert chunks[1].Body == b"5678"
+    assert chunks[2].Body == b"901"
+    for chunk in chunks:
+        seq += 1
+        chunk.SequenceHeader.SequenceNumber = seq
+        assert len(chunk.to_binary()) <= 28
+
+
+def test_bin_data_type_def():
+    ad = ua.AddNodesItem()
+    ad.ParentNodeId = ua.NodeId(22)
+    dta = ua.DataTypeAttributes()
+    dta.DisplayName = ua.LocalizedText("titi")
+    ad.NodeAttributes = dta
+
+    data = struct_to_binary(ad)
+    ad2 = struct_from_binary(ua.AddNodesItem, ua.utils.Buffer(data))
+    assert ad.ParentNodeId == ad2.ParentNodeId
+    assert ad.NodeAttributes.DisplayName == ad2.NodeAttributes.DisplayName
+
+
+def test_bin_datattributes():
+    dta = ua.DataTypeAttributes()
+    dta.DisplayName = ua.LocalizedText("titi")
+
+    data = struct_to_binary(dta)
+    dta2 = struct_from_binary(ua.DataTypeAttributes, ua.utils.Buffer(data))
+    assert dta.DisplayName == dta2.DisplayName
+
+
+def test_browse():
+    data = b"\x01\x00\x12\x02\xe0S2\xb3\x8f\n\xd7\x01\x04\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\x03\x00\x00\x00\x00#\x01@U\x00\x00\x00\x00\x00\x00\x07\x00\x00\x00Objects\x02\x07\x00\x00\x00Objects\x01\x00\x00\x00@=\x00\x00\x00\x00\x00#\x01@V\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00Types\x02\x05\x00\x00\x00Types\x01\x00\x00\x00@=\x00\x00\x00\x00\x00#\x01@W\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00Views\x02\x05\x00\x00\x00Views\x01\x00\x00\x00@=\x00\x00\x00\x00\xff\xff\xff\xff"
+    _ = struct_from_binary(ua.BrowseResponse, ua.utils.Buffer(data))
+
+
+def test_session_security_diagnostics_roundtrip():
+    """Regression test: SessionSecurityDiagnosticsDataType has a bare
+    'Encoding: Byte' annotation (not quoted as 'ua.Byte'). With
+    from __future__ import annotations in uaprotocol_auto.py, this becomes
+    a forward reference that get_type_hints() must resolve using the
+    module globals. Previously, passing {"ua": ua} as globalns replaced
+    the module globals entirely, causing NameError: name 'Byte' is not defined.
+    """
+    obj = ua.SessionSecurityDiagnosticsDataType(
+        ClientUserIdOfSession="testuser",
+        ClientUserIdHistory=["user1", "user2"],
+        AuthenticationMechanism="Anonymous",
+        TransportProtocol="opc.tcp",
+        SecurityPolicyUri="http://opcfoundation.org/UA/SecurityPolicy#None",
+        ClientCertificate=b"\x00\x01\x02",
+    )
+    data = struct_to_binary(obj)
+    obj2 = struct_from_binary(ua.SessionSecurityDiagnosticsDataType, ua.utils.Buffer(data))
+    assert obj == obj2
