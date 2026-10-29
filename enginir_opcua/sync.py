@@ -988,6 +988,9 @@ class Server(_Owner):
     __repr__ = __str__
 
     allow_plaintext_password = _aio_property("allow_plaintext_password")
+    max_string_length = _aio_property("max_string_length")
+    max_byte_string_length = _aio_property("max_byte_string_length")
+    max_array_length = _aio_property("max_array_length")
     types = _aio_property("types", writable=False)
 
     def get_root_node(self) -> SyncNode:

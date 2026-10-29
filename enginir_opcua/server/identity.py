@@ -235,7 +235,7 @@ def x509_user_certificate(
         raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
     outcome = validator.validate_user_certificate(data, matched.policy_uri)
     if not outcome.accepted:
-        validator.keep_rejected(outcome, peer, background=True)
+        validator.keep_rejected(outcome, peer)
         _logger.warning(
             "Rejected the user certificate %s: %s (%s)",
             outcome.subject,

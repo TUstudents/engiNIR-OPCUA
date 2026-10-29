@@ -223,6 +223,9 @@ class Server:
         iserver.max_monitored_items = limits.max_monitored_items
         iserver.max_monitored_items_per_subscription = limits.max_monitored_items_per_subscription
         iserver.hello_timeout_seconds = limits.hello_timeout_seconds
+        iserver.max_string_length = limits.max_string_length
+        iserver.max_byte_string_length = limits.max_byte_string_length
+        iserver.max_array_length = limits.max_array_length
         self.limits = TransportLimits(
             max_recv_buffer=limits.max_buffer_size,
             max_send_buffer=limits.max_buffer_size,
@@ -536,6 +539,33 @@ class Server:
     @allow_plaintext_password.setter
     def allow_plaintext_password(self, allow: bool) -> None:
         self.iserver.allow_plaintext_password = allow
+
+    @property
+    def max_string_length(self) -> int:
+        """Longest String in a request from a client, in bytes (MaxStringLength); set before `init()`."""
+        return self.iserver.max_string_length
+
+    @max_string_length.setter
+    def max_string_length(self, value: int) -> None:
+        self.iserver.max_string_length = value
+
+    @property
+    def max_byte_string_length(self) -> int:
+        """Longest ByteString in a request from a client, in bytes (MaxByteStringLength); set before `init()`."""
+        return self.iserver.max_byte_string_length
+
+    @max_byte_string_length.setter
+    def max_byte_string_length(self, value: int) -> None:
+        self.iserver.max_byte_string_length = value
+
+    @property
+    def max_array_length(self) -> int:
+        """Most elements in an array value of a request from a client (MaxArrayLength); set before `init()`."""
+        return self.iserver.max_array_length
+
+    @max_array_length.setter
+    def max_array_length(self, value: int) -> None:
+        self.iserver.max_array_length = value
 
     def set_endpoint(self, url: str) -> None:
         """Set the endpoint URL: opc.tcp://host[:port][/path]. A URL without scheme or host is refused."""

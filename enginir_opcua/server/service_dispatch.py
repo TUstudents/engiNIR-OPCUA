@@ -12,7 +12,7 @@ from enginir_opcua import ua
 
 from ..common.utils import Buffer, ServiceError
 from ..crypto.permission_rules import ROLE_RANK, UserRole
-from ..ua.ua_binary import nodeid_from_binary, struct_from_binary
+from ..ua.ua_binary import DecodeLimits, decode_limits, nodeid_from_binary, struct_from_binary
 from .internal_session import Session, SessionChannel, current_call_session
 
 if TYPE_CHECKING:
@@ -74,6 +74,7 @@ class ServiceEntry:
     permission: Permission
     requires: Requires = Requires.ActivatedSession
     operations: OperationBound | None = None
+    checks_values: bool = False
 
 
 def entry(
@@ -84,6 +85,7 @@ def entry(
     permission: Permission,
     requires: Requires = Requires.ActivatedSession,
     operations: OperationBound | None = None,
+    checks_values: bool = False,
 ) -> ServiceEntry:
     type_id = ua.NodeId(getattr(ua.ObjectIds, f"{request_type}Request_Encoding_DefaultBinary"))
     if isinstance(parameters, type):
@@ -94,7 +96,7 @@ def entry(
 
     else:
         decode = parameters
-    return ServiceEntry(request_type, type_id, decode, handler, permission, requires, operations)
+    return ServiceEntry(request_type, type_id, decode, handler, permission, requires, operations, checks_values)
 
 
 def status_of(error: Exception) -> int:
@@ -179,11 +181,25 @@ class Dispatcher:
                 session.enter_request()
                 counted = True
                 self._check_permission(service, session, channel, body)
+            iserver = self.iserver
+            limits_token = decode_limits.set(
+                DecodeLimits(
+                    iserver.max_string_length,
+                    iserver.max_byte_string_length,
+                    iserver.max_array_length,
+                    variant_values=not service.checks_values,
+                )
+            )
             try:
                 params = service.decode(body)
+            except ua.uaerrors.BadEncodingLimitsExceeded as error:
+                _logger.info("%s request over an encoding limit: %s", service.name, error)
+                raise ServiceError(ua.StatusCodes.BadEncodingLimitsExceeded) from None
             except Exception:
                 _logger.warning("Undecodable %s body", service.name, exc_info=True)
                 raise ServiceError(ua.StatusCodes.BadDecodingError) from None
+            finally:
+                decode_limits.reset(limits_token)
             self._check_operations(service, params)
             context = ServiceContext(self.iserver, channel, session, header, seqhdr)
             response = await service.handler(context, params)

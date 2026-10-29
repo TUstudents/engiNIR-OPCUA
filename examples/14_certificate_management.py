@@ -54,9 +54,7 @@ async def main() -> None:
             else:
                 raise SystemExit("the guest must not be trusted yet")
 
-            async with asyncio.timeout(10):
-                while not (rejected := await call(admin, SERVER_CONFIGURATION, "GetRejectedList")):
-                    await asyncio.sleep(0.05)
+            rejected = await call(admin, SERVER_CONFIGURATION, "GetRejectedList")
             print("rejected certificates:", len(rejected))
             await call(
                 admin,

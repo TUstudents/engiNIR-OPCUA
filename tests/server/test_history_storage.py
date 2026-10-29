@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator
@@ -12,7 +13,7 @@ from enginir_opcua.common import sql_injection
 from enginir_opcua.common.node import Node
 from enginir_opcua.common.sql_injection import quote_identifier
 from enginir_opcua.server.history import HistoryDict, TimeDomain, to_ticks
-from enginir_opcua.server.history_sql import HistorySQLite
+from enginir_opcua.server.history_sql import HistorySQLite, event_table
 
 
 def future() -> datetime:
@@ -237,6 +238,50 @@ async def test_srv22_sql_event_columns_use_browse_names(history: HistorySQLite) 
     again = await history.read_event_history(source, TimeDomain(None, None, 10))
     assert len(again.entries) == 3
     assert "severity" not in again.entries[2].value
+
+
+async def test_srv69_sql_read_during_first_saves_loses_no_event(
+    history: HistorySQLite, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The event column cache is not replaced by a read while the first columns are being added."""
+    source = ua.NodeId(2254)
+    await history.new_historized_event(source, None)
+    stop = asyncio.Event()
+
+    async def reader() -> None:
+        while not stop.is_set():
+            await history.read_event_history(source, TimeDomain(None, None, 100))
+            await asyncio.sleep(0)
+
+    task = asyncio.create_task(reader())
+    saves = [
+        history.save_event(
+            source,
+            {"Severity": ua.Variant(n, ua.VariantType.UInt16), "Machine/Speed": ua.Variant(float(n))},
+            BASE + timedelta(seconds=n),
+        )
+        for n in range(20)
+    ]
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await asyncio.gather(*saves)
+    finally:
+        stop.set()
+        await task
+    page = await history.read_event_history(source, TimeDomain(None, None, 100))
+    assert [entry.value["Severity"].Value for entry in page.entries] == list(range(20))
+    assert "duplicate column" not in caplog.text
+    assert "dropped" not in caplog.text
+
+
+async def test_srv69_sql_adding_an_existing_column_is_harmless(history: HistorySQLite) -> None:
+    source = ua.NodeId(2255)
+    await history.new_historized_event(source, None)
+    await history._db.execute(f'ALTER TABLE {quote_identifier(event_table(source))} ADD COLUMN "f:Severity" BLOB')
+    history._event_columns[event_table(source)] = set()
+    await history.save_event(source, {"Severity": ua.Variant(1, ua.VariantType.UInt16)}, BASE)
+    page = await history.read_event_history(source, TimeDomain(None, None, 10))
+    assert len(page.entries) == 1
 
 
 async def test_srv22_sql_old_file_is_refused(tmp_path: Path) -> None:

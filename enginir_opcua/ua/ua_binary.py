@@ -13,7 +13,7 @@ import sys
 import typing
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import Field, fields, is_dataclass
+from dataclasses import Field, dataclass, fields, is_dataclass
 from enum import Enum, IntFlag
 from io import BytesIO
 from types import UnionType
@@ -22,7 +22,7 @@ from typing import IO, Any, get_args, get_origin
 from enginir_opcua import ua
 
 from ..common.utils import Buffer, NotEnoughData
-from .uaerrors import BadTcpMessageTypeInvalid, UaError
+from .uaerrors import BadEncodingLimitsExceeded, BadTcpMessageTypeInvalid, UaError
 from .uatypes import (
     type_allow_subclass,
     type_from_list,
@@ -176,6 +176,29 @@ class _DateTime:
         return ua.win_epoch_to_datetime(epch)
 
 
+@dataclass(frozen=True, slots=True)
+class DecodeLimits:
+    """
+    Limits a receiver puts on the data it decodes (Part 4, 5.3). `max_string_length` and `max_byte_string_length` are
+    byte counts, `max_array_length` counts the elements of a Variant array (all dimensions together). With
+    `variant_values` False the contents of Variants are not checked here, because the service checks them value by
+    value (Write and Call).
+    """
+
+    max_string_length: int
+    max_byte_string_length: int
+    max_array_length: int
+    variant_values: bool = True
+
+
+decode_limits: contextvars.ContextVar[DecodeLimits | None] = contextvars.ContextVar("decode_limits", default=None)
+
+
+def _check_length(length: int, limit: int, what: str) -> None:
+    if length > limit:
+        raise BadEncodingLimitsExceeded(f"{what} length {length} exceeds the limit of {limit}")
+
+
 class _Bytes:
     @staticmethod
     def pack(data: bytes | None) -> bytes:
@@ -189,6 +212,9 @@ class _Bytes:
         length = Primitives.Int32.unpack(data)
         if length == -1:
             return None
+        limits = decode_limits.get()
+        if limits is not None:
+            _check_length(length, limits.max_byte_string_length, "ByteString")
         return _read(data, length)
 
 
@@ -201,9 +227,13 @@ class _String:
 
     @staticmethod
     def unpack(data: Buffer | IO) -> str | None:
-        b = _Bytes.unpack(data)
-        if b is None:
-            return b
+        length = Primitives.Int32.unpack(data)
+        if length == -1:
+            return None
+        limits = decode_limits.get()
+        if limits is not None:
+            _check_length(length, limits.max_string_length, "String")
+        b = _read(data, length)
         return b.decode(
             get_string_encoding(), errors="surrogateescape"
         )  # not need to be strict here, this is user data
@@ -821,12 +851,28 @@ def variant_to_binary(var: ua.Variant) -> bytes:
 
 @_bounded
 def variant_from_binary(data: Buffer | IO) -> ua.Variant:
+    limits = decode_limits.get()
+    if limits is not None and not limits.variant_values:
+        token = decode_limits.set(None)
+        try:
+            return _variant_from_binary(data, None)
+        finally:
+            decode_limits.reset(token)
+    return _variant_from_binary(data, limits)
+
+
+def _variant_from_binary(data: Buffer | IO, limits: DecodeLimits | None) -> ua.Variant:
     dimensions = None
     array = False
     encoding = _read(data, 1)[0]
     int_type = encoding & 0b00111111
     vtype = ua.datatype_to_varianttype(int_type)
     if is_bit_set(encoding, 7):
+        if limits is not None and isinstance(data, Buffer):
+            at = data.cur_pos
+            count = Primitives.Int32.unpack(data)
+            data.rewind(at)
+            _check_length(count, limits.max_array_length, "Array")
         value = unpack_uatype_array(vtype, data)
         array = True
     else:
