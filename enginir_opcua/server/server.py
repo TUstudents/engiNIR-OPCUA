@@ -33,7 +33,7 @@ from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..crypto import pki, security_policies, uacrypto, validator
-from ..crypto.permission_rules import SimpleRoleRuleset
+from ..crypto.permission_rules import SimpleRoleRuleset, UserRole
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
@@ -41,6 +41,7 @@ from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
 from .event_generator import EventGenerator
+from .file_transfer import FileProvider
 from .internal_server import InternalServer
 from .user_managers import UserManager
 
@@ -1059,6 +1060,72 @@ class Server:
         """
         nodeids = [node.nodeid for node in nodes]
         return [self.iserver.read_attribute_value(nodeid, attr) for nodeid in nodeids]
+
+    # --- File transfer and certificate management (Part 20, Part 12) ---
+    async def add_file(
+        self,
+        parent: Node | ua.NodeId,
+        name: str,
+        provider: FileProvider | str | Path,
+        *,
+        writable: bool = False,
+        max_size: int | None = None,
+        mime_type: str | None = None,
+        max_byte_string_length: int | None = None,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> Node:
+        """
+        Make a file visible to clients as a FileType Object below `parent`. `provider` is a path to a regular file
+        or an object with the FileProvider operations (MemoryFile keeps the content in memory). Clients open it
+        with Open and move the content with Read and Write; a handle belongs to one Session. With `writable` a
+        client whose role is at least `write_role` may open it for writing, up to `max_size` bytes.
+        """
+        return await self.iserver.file_service.add_file(
+            _get_node(self.iserver.isession, parent),
+            name,
+            provider,
+            writable=writable,
+            max_size=max_size,
+            mime_type=mime_type,
+            max_byte_string_length=max_byte_string_length,
+            write_role=write_role,
+            namespace=namespace,
+        )
+
+    async def add_directory(
+        self,
+        parent: Node | ua.NodeId,
+        name: str,
+        root: str | Path,
+        *,
+        writable: bool = False,
+        max_file_size: int | None = None,
+        max_entries: int = 10_000,
+        write_role: UserRole = UserRole.User,
+        namespace: int | None = None,
+    ) -> Node:
+        """
+        Make the directory `root` visible as a FileDirectoryType Object below `parent` (name it "FileSystem" for the
+        root of a tree). Clients can create, delete, move and copy files and directories below `root` when `writable`
+        is set and their role is at least `write_role`. No path from a client can leave `root`.
+        """
+        return await self.iserver.file_service.add_directory(
+            _get_node(self.iserver.isession, parent),
+            name,
+            root,
+            writable=writable,
+            max_file_size=max_file_size,
+            max_entries=max_entries,
+            write_role=write_role,
+            namespace=namespace,
+        )
+
+    async def refresh_directory(self, directory: Node | ua.NodeId) -> None:
+        """Bring the Objects of a directory and everything below it in line with the file system."""
+        await self.iserver.file_service.refresh_directory(_get_node(self.iserver.isession, directory))
+
+    # --- end of File transfer and certificate management ---
 
     def set_trust_store(self, trust_store: TrustStore) -> None:
         """

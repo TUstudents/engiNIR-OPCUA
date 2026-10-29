@@ -711,7 +711,11 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
-        results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        token = current_call_session.set(self)
+        try:
+            results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostRead, ServerItemCallback(params, results, user, self.external)
         )

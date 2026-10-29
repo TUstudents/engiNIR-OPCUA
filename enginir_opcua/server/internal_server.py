@@ -27,6 +27,7 @@ from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
 from .event_generator import EventGenerator
+from .file_transfer import FileService
 from .history import HistoryManager
 from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
@@ -155,6 +156,7 @@ class InternalServer:
         self.max_browse_references_per_node: int = 10_000
         self.max_translate_matches: int = 1_000
         self.max_byte_string_length: int = 1_048_576
+        self._file_service: FileService | None = None
         self.certificate: Any = None
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
@@ -190,6 +192,15 @@ class InternalServer:
         self.match_discovery_endpoint_url: bool = True
         self.match_discovery_source_ip: bool = True
         self.supported_tokens = (ua.AnonymousIdentityToken, ua.X509IdentityToken, ua.UserNameIdentityToken)
+
+    # --- File transfer and certificate management (Part 20, Part 12) ---
+    @property
+    def file_service(self) -> FileService:
+        if self._file_service is None:
+            self._file_service = FileService(self)
+        return self._file_service
+
+    # --- end of File transfer and certificate management ---
 
     async def init(self, shelffile: Path | None = None) -> None:
         await self.load_standard_address_space(shelffile)
