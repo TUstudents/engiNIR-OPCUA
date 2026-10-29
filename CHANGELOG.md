@@ -107,6 +107,35 @@ File transfer (OPC 10000-5, Annex C):
   `adopt`, `get_mime_type`, `FileTransferError`, `InvalidStateError`. `client/ua_file.py` is a deprecated wrapper,
   removed in 4.0.0.
 
+Server file transfer (OPC 10000-20):
+- New: `Server.add_file(parent, name, provider, writable=, max_size=, mime_type=, write_role=)` serves a path or a
+  `FileProvider` (`PathFile`, `MemoryFile`) as a FileType Object, and `Server.add_directory(parent, name, root, ...)`
+  serves a directory tree as a FileDirectoryType Object with CreateDirectory, CreateFile, Delete and MoveOrCopy.
+  Handles belong to a Session and are released when it ends; one writer or many readers; bounded handles, read and
+  write sizes and entries. Names, symbolic links and resolved paths are checked so nothing leaves the root.
+  `Server.refresh_directory()` picks up changes made outside OPC UA.
+- `ServerCapabilities/MaxByteStringLength` has a value (`InternalServer.max_byte_string_length`, default 1 MiB).
+- `InternalSession.add_close_listener(callback)` calls `callback(session, reason)` when a Session ends.
+
+Certificate management over OPC UA (OPC 10000-12, 7.10, push model):
+- New: `Server.enable_push_management()` (needs `set_pki_directory`) serves the ServerConfiguration Object: TrustLists
+  (a FileType of `TrustListDataType`, `OpenWithMasks`, `CloseAndUpdate`, `AddCertificate`, `RemoveCertificate`),
+  `UpdateCertificate`, `CreateSigningRequest` (a new key waits in `own/pending/`), `GetRejectedList`,
+  `GetCertificates`, `ApplyChanges` and `CancelChanges`. Changes are queued in one transaction and written to the PKI
+  directory all or nothing at `ApplyChanges`; a new certificate is used by new channels, open channels close after the
+  answer, and clients that are no longer trusted are disconnected. TrustListUpdated and CertificateUpdated audit events
+  are raised.
+- Breaking: only a user with `UserRole.SecurityAdmin` over a SignAndEncrypt channel may call them
+  (`enable_push_management(min_security_mode=)` relaxes it to Sign). `CertificateUserManager.add_security_admin()`
+  maps a certificate to that role. The optional ServerConfiguration nodes that are not supported (ConfigurationFile,
+  KeyCredentialConfiguration, ResetToServerDefaults, ...) are removed from the address space.
+- Breaking: a certificate is kept in `rejected/certs` only when it is valid but untrusted and its peer proved
+  possession of the key (the validator no longer writes the folder; `CertificateValidator.keep_rejected()` does); one
+  peer address keeps at most 10 files. A chain-incomplete or expired certificate is no longer kept.
+- The own certificate of a PKI directory is the newest one that has a key in `own/private`, not the first key by name.
+- `TrustStore` can read its lists back, replace or change them (`write_lists`, `write_certificate`,
+  `remove_certificate_files`) with a `FileJournal` that undoes the writes, and counts its loads (`generation`).
+
 High availability:
 - `HaClient` keeps a Healthy active server whatever the others report, uses the best Degraded server when none is
   Healthy, never resets a connected standby for its ServiceLevel, and disconnects a server in maintenance

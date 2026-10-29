@@ -618,3 +618,10 @@ async def test_get_certificates_lists_the_server_certificate(rig: Rig) -> None:
     types, certificates = await call(client, SERVER_CONFIGURATION, "GetCertificates", node_id(None))
     assert list(types) == [RSA_TYPE]
     assert bytes(certificates[0]).startswith(server_der(rig))
+
+
+async def test_the_minimum_security_mode_can_be_relaxed_to_sign(rig: Rig) -> None:
+    assert rig.server._certificate_manager is not None
+    rig.server._certificate_manager.min_security_mode = ua.MessageSecurityMode.Sign
+    client = await rig.connect("secadmin", ua.MessageSecurityMode.Sign)
+    await call(client, SERVER_CONFIGURATION, "GetRejectedList")
