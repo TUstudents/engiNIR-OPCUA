@@ -8,6 +8,7 @@ import pytest
 
 from enginir_opcua import Server, ua
 from enginir_opcua.common.session_interface import AbstractSession
+from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.server.internal_session import InternalSession
 from tests.conftest import find_free_port
 from tests.harness import SessionProbe
@@ -416,3 +417,74 @@ async def test_srv30_retransmission_queue_is_bounded_per_session(srv: Server) ->
         assert await _republish_has_data(probe, token, sub_id, numbers[-1])
     finally:
         probe.close()
+
+
+async def test_srv82_close_listeners_run_when_the_session_closes(srv: Server) -> None:
+    """A listener registered on the services of a Session runs once when the Session closes."""
+    probe = await SessionProbe.open(srv.endpoint.geturl())
+    try:
+        token = await _activated(probe)
+        session = srv.iserver.session_manager.sessions[token]
+        closed: list[ua.NodeId] = []
+
+        async def listener(internal: InternalSession) -> None:
+            closed.append(internal.session_id)
+
+        session.services.add_close_listener(listener)
+        assert not closed
+        await probe.close_session(token)
+        await wait_until(lambda: closed == [session.id])
+    finally:
+        probe.close()
+
+
+async def test_srv82_close_listener_error_does_not_stop_the_others(srv: Server) -> None:
+    probe = await SessionProbe.open(srv.endpoint.geturl())
+    try:
+        token = await _activated(probe)
+        session = srv.iserver.session_manager.sessions[token]
+        calls: list[str] = []
+
+        def failing(internal: InternalSession) -> None:
+            calls.append("failing")
+            raise RuntimeError("listener failure")
+
+        session.services.add_close_listener(failing)
+        session.services.add_close_listener(lambda internal: calls.append("second"))
+        await probe.close_session(token)
+        await wait_until(lambda: calls == ["failing", "second"])
+    finally:
+        probe.close()
+
+
+async def test_current_call_session_is_set_during_a_method_call() -> None:
+    """The callback of a Method sees the Session, its user and the security mode of its channel."""
+    from enginir_opcua import Client
+    from enginir_opcua.server.internal_session import current_call_session
+    from enginir_opcua.server.user_managers import PermissiveUserManager
+
+    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
+    srv.allow_plaintext_password = True
+    await srv.init()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    await srv.start()
+
+    seen: list[tuple[object, ua.MessageSecurityMode, bool]] = []
+
+    async def callback(parent: ua.NodeId) -> list[ua.Variant]:
+        session = current_call_session.get()
+        assert session is not None
+        seen.append((session.user.role, session.channel_security_mode, session.external))
+        return []
+
+    method = await srv.nodes.objects.add_method(2, "WhoCalls", callback, [], [])
+    try:
+        async with Client(srv.endpoint.geturl().replace("opc.tcp://", "opc.tcp://admin@")) as client:
+            await client.nodes.objects.call_method(method.nodeid)
+    finally:
+        await srv.stop()
+    assert len(seen) == 1
+    assert seen[0][0] == UserRole.Admin
+    assert seen[0][1] == ua.MessageSecurityMode.None_
+    assert seen[0][2] is True
+    assert current_call_session.get() is None

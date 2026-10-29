@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import inspect
 import logging
 import secrets
 import time
@@ -44,6 +46,11 @@ CLIENT_NONCE_MAX_LENGTH = 128
 SERVER_NONCE_LENGTH = 32
 TOKEN_LENGTH = 32
 SESSION_ID_NAMESPACE = 1
+
+# J shared: current_call_session (agent A implements)
+current_call_session: contextvars.ContextVar[InternalSession | None] = contextvars.ContextVar(
+    "current_call_session", default=None
+)
 
 
 class SessionState(Enum):
@@ -171,6 +178,7 @@ class Session:
             continuation_points=self.continuation_points,
             history_points=self.history_points,
         )
+        self.services.channel_security_mode = channel.security.mode
         self.services.publish_callback = self.forward_publish_response
         self.services.publish_request_callback = self.get_publish_request
 
@@ -342,6 +350,7 @@ class Session:
         self.continuation_points.clear()
         self.history_points.clear()
         self.manager.forget(self)
+        await self.services.run_close_listeners()
         self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
         self.iserver.subscription_service.drop_pending_notices(self.id)
         if delete_subscriptions:
@@ -663,6 +672,26 @@ class InternalSession(AbstractSession):
         )
         self.publish_callback: Callable[..., Any] | None = None
         self.publish_request_callback: Callable[..., Any] | None = None
+        self.channel_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.None_
+        self._close_listeners: list[Callable[[InternalSession], Any]] = []
+
+    def add_close_listener(self, callback: Callable[[InternalSession], Any]) -> None:
+        """Call `callback(session)` when the Session closes, expires or is deleted; it may be a coroutine function."""
+        self._close_listeners.append(callback)
+
+    def remove_close_listener(self, callback: Callable[[InternalSession], Any]) -> None:
+        if callback in self._close_listeners:
+            self._close_listeners.remove(callback)
+
+    async def run_close_listeners(self) -> None:
+        listeners, self._close_listeners = self._close_listeners, []
+        for listener in listeners:
+            try:
+                outcome = listener(self)
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:
+                self.logger.exception("A close listener of session %s failed", self.name)
 
     def __str__(self) -> str:
         return f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id})"
@@ -739,7 +768,11 @@ class InternalSession(AbstractSession):
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         """COROUTINE"""
-        return await self.iserver.method_service.call(params, trusted=not self.external)
+        token = current_call_session.set(self)
+        try:
+            return await self.iserver.method_service.call(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
 
     async def create_subscription(
         self,
