@@ -61,3 +61,6 @@ __pycache__/
 
 # certificates and keys the examples generate
 /examples/certificates/generated/
+
+# PKI folders that examples and the quick setup create at runtime
+pki/

@@ -9,10 +9,10 @@ from enginir_opcua import ua
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.cert_gen import generate_private_key, generate_self_signed_app_certificate
 from enginir_opcua.crypto.security_policies import VerifierAesCbc, VerifierHMac256
-from tests.harness import EXAMPLES
+from tests.harness import PKI_FILES
 
-LEAF = (EXAMPLES / "certificate-example.der").read_bytes()
-SECOND = (EXAMPLES / "certificates" / "peer-certificate-example-1.der").read_bytes()
+LEAF = (PKI_FILES / "certificate-example.der").read_bytes()
+SECOND = (PKI_FILES / "certificates" / "peer-certificate-example-1.der").read_bytes()
 APP_URI = "urn:foobar:myserver"
 
 

@@ -581,3 +581,17 @@ Quick setup (workstream K):
   `socket_address` that is not loopback (SRV-105).
 - A private key that the PKI directory generates is encrypted when a password is given (CRY-32). The default client
   name is `engiNIR OPC UA Client` (CLI-71).
+
+Examples (workstream K):
+- The inherited `examples/` directory is removed with everything in it, including the keys and certificates that were
+  committed there (they remain in the history). The new set is 16 files, `01_secure_pair.py` to
+  `16_reverse_connect.py`, one per task: the quick-setup pair, users and roles, subscriptions with reconnect, methods,
+  custom types, events and history, an instrument server from the DI and ADI models, file transfer, an HA client,
+  PubSub, the sync API, a limit alarm, diagnostics, certificate management over OPC UA, the development profile and
+  reverse connect.
+- Each example uses a temporary PKI directory and generates its certificates, pairs the two sides in code, ends by
+  itself and prints `OK <name>`. Only `15_development_profile.py` uses NoSecurity, on 127.0.0.1. `tests/examples/`
+  runs every example as a subprocess (marked `slow`).
+- The Quick Setup page (`docs/usage/get-started/quick-setup.rst`) describes the profiles, configuration files, the users
+  file and the `init`, `trust`, `pki`, `pair` and `user` commands, and lists the examples. The minimal server and client
+  pages and the README quick start use `Server.quickstart` and `Client.quickstart`.

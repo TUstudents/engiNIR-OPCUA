@@ -28,6 +28,7 @@ from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua import UaError
 from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.conftest import find_free_port
+from tests.harness import PKI_FILES
 from tests.pki import (
     APPLICATION_URI,
     BOTH_USAGES,
@@ -731,10 +732,9 @@ that some OPC UA servers might provide, improving compatibility.
 """
 
 
-BASE_DIR = Path(__file__).parent.parent.parent
-EXAMPLE_CERT_PATH = BASE_DIR / "examples" / "certificate-example.der"
-EXAMPLE_CERT_3072_PATH = BASE_DIR / "examples" / "certificate-3072-example.der"
-PEER_CERT_PATH = BASE_DIR / "examples" / "certificates" / "peer-certificate-example-1.der"
+EXAMPLE_CERT_PATH = PKI_FILES / "certificate-example.der"
+EXAMPLE_CERT_3072_PATH = PKI_FILES / "certificate-3072-example.der"
+PEER_CERT_PATH = PKI_FILES / "certificates" / "peer-certificate-example-1.der"
 
 
 def create_cert_chain():

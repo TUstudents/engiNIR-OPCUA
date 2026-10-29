@@ -62,7 +62,8 @@ the bind rules below.
 Publisher and subscriber
 ------------------------
 
-A standalone publisher (the full examples are in ``examples/pubsub``):
+A standalone publisher (a publisher and a subscriber that run in one process are in
+`10_pubsub.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/10_pubsub.py>`_):
 
 .. code-block:: python
 
