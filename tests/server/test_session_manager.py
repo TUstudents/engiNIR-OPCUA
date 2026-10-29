@@ -240,6 +240,19 @@ async def test_srv8_watchdog_rereads_the_revised_timeout(srv: Server) -> None:
         probe.close()
 
 
+async def test_srv82_close_listener_gets_the_timeout_reason(srv: Server) -> None:
+    probe = await SessionProbe.open(srv.endpoint.geturl())
+    try:
+        token = await _activated(probe)
+        session = srv.iserver.session_manager.sessions[token]
+        reasons: list[int] = []
+        session.services.add_close_listener(lambda internal, reason: reasons.append(reason.value))
+        session.revised_timeout_ms = 200
+        await wait_until(lambda: reasons == [ua.StatusCodes.BadTimeout])
+    finally:
+        probe.close()
+
+
 async def test_srv40_in_process_session_has_the_abstract_session_signatures() -> None:
     """The service set of the in-process session is that of AbstractSession."""
     for name in ("transfer_subscriptions", "create_subscription"):
@@ -426,14 +439,17 @@ async def test_srv82_close_listeners_run_when_the_session_closes(srv: Server) ->
         token = await _activated(probe)
         session = srv.iserver.session_manager.sessions[token]
         closed: list[ua.NodeId] = []
+        reasons: list[int] = []
 
-        async def listener(internal: InternalSession) -> None:
+        async def listener(internal: InternalSession, reason: ua.StatusCode) -> None:
             closed.append(internal.session_id)
+            reasons.append(reason.value)
 
         session.services.add_close_listener(listener)
         assert not closed
         await probe.close_session(token)
         await wait_until(lambda: closed == [session.id])
+        assert reasons == [ua.StatusCodes.Good]
     finally:
         probe.close()
 
@@ -445,12 +461,12 @@ async def test_srv82_close_listener_error_does_not_stop_the_others(srv: Server) 
         session = srv.iserver.session_manager.sessions[token]
         calls: list[str] = []
 
-        def failing(internal: InternalSession) -> None:
+        def failing(internal: InternalSession, reason: ua.StatusCode) -> None:
             calls.append("failing")
             raise RuntimeError("listener failure")
 
         session.services.add_close_listener(failing)
-        session.services.add_close_listener(lambda internal: calls.append("second"))
+        session.services.add_close_listener(lambda internal, reason: calls.append("second"))
         await probe.close_session(token)
         await wait_until(lambda: calls == ["failing", "second"])
     finally:
