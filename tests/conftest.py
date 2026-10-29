@@ -582,14 +582,21 @@ def tampered_responses(monkeypatch: pytest.MonkeyPatch) -> ResponseTampering:
     return tampering
 
 
-@pytest.fixture
-async def two_sessions() -> AsyncIterator[TwoSessions]:
+@pytest.fixture(scope="module", name="_two_user_server")
+async def start_two_user_server() -> AsyncIterator[tuple[Server, int]]:
     port = find_free_port()
     srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     srv.allow_plaintext_password = True
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
+    yield srv, port
+    await srv.stop()
+
+
+@pytest.fixture
+async def two_sessions(_two_user_server: tuple[Server, int]) -> AsyncIterator[TwoSessions]:
+    srv, port = _two_user_server
     alice = Client(f"opc.tcp://alice:{TWO_SESSION_USERS['alice']}@127.0.0.1:{port}")
     bob = Client(f"opc.tcp://bob:{TWO_SESSION_USERS['bob']}@127.0.0.1:{port}")
     await alice.connect()
@@ -597,11 +604,10 @@ async def two_sessions() -> AsyncIterator[TwoSessions]:
     yield TwoSessions(server=srv, alice=alice, bob=bob)
     await bob.disconnect()
     await alice.disconnect()
-    await srv.stop()
+    srv.iserver.identity_guard.records.clear()
 
 
-@pytest.fixture
-async def signing_server() -> AsyncIterator[Server]:
+async def _start_signing_server() -> Server:
     srv = Server(allow_no_security=True, user_manager=TwoUserManager())
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
@@ -611,5 +617,27 @@ async def signing_server() -> AsyncIterator[Server]:
     await srv.load_private_key(PKI.server.key)
     srv.set_trust_store(PKI.trust_store())
     await srv.start()
+    return srv
+
+
+@pytest.fixture
+async def signing_server() -> AsyncIterator[Server]:
+    srv = await _start_signing_server()
     yield srv
     await srv.stop()
+
+
+@pytest.fixture(scope="module", name="_signing_server_for_module")
+async def start_signing_server_for_module() -> AsyncIterator[Server]:
+    srv = await _start_signing_server()
+    yield srv
+    await srv.stop()
+
+
+@pytest.fixture
+async def shared_signing_server(_signing_server_for_module: Server) -> AsyncIterator[Server]:
+    guard = _signing_server_for_module.iserver.identity_guard
+    original_sleep = guard.sleep
+    yield _signing_server_for_module
+    guard.sleep = original_sleep
+    guard.records.clear()

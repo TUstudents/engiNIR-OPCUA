@@ -114,25 +114,25 @@ def _corrupt_signature(monkeypatch: pytest.MonkeyPatch, user_token: bool) -> Non
 
 
 async def test_cry7_bad_client_signature_is_application_signature_invalid(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 5.7.3: Bad_ApplicationSignatureInvalid for a missing or invalid clientSignature."""
     _corrupt_signature(monkeypatch, user_token=False)
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadApplicationSignatureInvalid):
         await client.connect()
     await client.disconnect()
 
 
 async def test_cry7_bad_x509_token_signature_is_user_signature_invalid(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 5.7.3: Bad_UserSignatureInvalid for a missing or invalid userTokenSignature."""
-    await signing_server.stop()
-    signing_server.set_identity_tokens([ua.UserNameIdentityToken, ua.X509IdentityToken])
-    await signing_server.start()
+    await shared_signing_server.stop()
+    shared_signing_server.set_identity_tokens([ua.UserNameIdentityToken, ua.X509IdentityToken])
+    await shared_signing_server.start()
     _corrupt_signature(monkeypatch, user_token=True)
-    client: Client = await signing_client(signing_server)
+    client: Client = await signing_client(shared_signing_server)
     await client.load_client_certificate(str(PKI.peer1.certificate))
     await client.load_private_key(PKI.peer1.key)
     with pytest.raises(ua.uaerrors.BadUserSignatureInvalid):

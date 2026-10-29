@@ -40,14 +40,14 @@ def _secret(password: str, nonce: bytes) -> bytes:
     return ua.ua_binary.Primitives.Bytes.pack(password.encode("utf8") + nonce)
 
 
-async def test_signing_server_accepts_correct_token(signing_server: Server) -> None:
-    client = await signing_client(signing_server)
+async def test_signing_server_accepts_correct_token(shared_signing_server: Server) -> None:
+    client = await signing_client(shared_signing_server)
     async with client:
         assert await client.nodes.server_state.read_value() == ua.ServerState.Running
 
 
 async def test_srv6_password_bound_to_another_nonce_is_rejected(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.2.2: the encrypted secret ends with the current server nonce; any other nonce is a replay."""
 
@@ -56,14 +56,14 @@ async def test_srv6_password_bound_to_another_nonce_is_rejected(
         token.Password = uacrypto.encrypt_rsa_oaep(public_key, _secret(PASSWORD, b"\x00" * 32))
 
     _rewrite_user_token(monkeypatch, replay)
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
 
 
 async def test_cry8_rsa15_password_is_rejected_on_basic256sha256(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.2: the secret is encrypted with the algorithm of the UserTokenPolicy's SecurityPolicy."""
 
@@ -72,14 +72,14 @@ async def test_cry8_rsa15_password_is_rejected_on_basic256sha256(
         return uacrypto.encrypt_rsa15(public_key, _secret(password, client._server_nonce or b"")), RSA_15
 
     monkeypatch.setattr(Client, "_encrypt_password", encrypt_with_rsa15)
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
 
 
 async def test_srv6_plaintext_password_is_rejected_when_policy_requires_encryption(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.4: a UserTokenPolicy with a SecurityPolicy other than None requires an encrypted password."""
 
@@ -88,28 +88,30 @@ async def test_srv6_plaintext_password_is_rejected_when_policy_requires_encrypti
         token.EncryptionAlgorithm = None
 
     _rewrite_user_token(monkeypatch, plaintext)
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
 
 
-async def test_srv6_unknown_policy_id_is_rejected(signing_server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_srv6_unknown_policy_id_is_rejected(
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Part 4, 7.40.1: the PolicyId has to name one of the endpoint's UserTokenPolicies."""
 
     def unknown_policy(token: ua.UserNameIdentityToken, server_certificate: bytes) -> None:
         token.PolicyId = "no-such-policy"
 
     _rewrite_user_token(monkeypatch, unknown_policy)
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
 
 
-async def test_srv6_token_without_password_goes_to_the_user_manager(signing_server: Server) -> None:
+async def test_srv6_token_without_password_goes_to_the_user_manager(shared_signing_server: Server) -> None:
     """A token without a password carries no secret to encrypt; the user manager decides about it."""
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     client.set_password("")
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await client.connect()
@@ -144,11 +146,11 @@ SECRET_FAILURES: dict[str, Callable[[bytes, bytes], bytes]] = {
 
 @pytest.mark.parametrize("failure", sorted(SECRET_FAILURES))
 async def test_srv48_all_secret_failures_give_identity_token_invalid(
-    failure: str, signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    failure: str, shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.2.1 and 7.40.2.2: every defect of the secret is Bad_IdentityTokenInvalid."""
     _craft_secret(monkeypatch, SECRET_FAILURES[failure])
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -156,7 +158,7 @@ async def test_srv48_all_secret_failures_give_identity_token_invalid(
 
 @pytest.mark.parametrize("failure", sorted(SECRET_FAILURES))
 async def test_srv48_every_check_runs_whichever_one_fails(
-    failure: str, signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    failure: str, shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.2.1: validation takes the same work whichever check fails; the nonce is always compared."""
     comparisons: list[int] = []
@@ -168,7 +170,7 @@ async def test_srv48_every_check_runs_whichever_one_fails(
 
     monkeypatch.setattr(identity, "hmac", SimpleNamespace(compare_digest=counting))
     _craft_secret(monkeypatch, SECRET_FAILURES[failure])
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadIdentityTokenInvalid):
         await client.connect()
     await client.disconnect()
@@ -176,18 +178,18 @@ async def test_srv48_every_check_runs_whichever_one_fails(
 
 
 async def test_srv48_secret_with_zero_padding_is_accepted(
-    signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Part 4, 7.40.2.2: bytes after the data are zero padding and are fine."""
     _craft_secret(monkeypatch, lambda pw, nonce: _with_length(pw + nonce, len(pw + nonce), bytes(16)))
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     async with client:
         assert await client.nodes.server_state.read_value() == ua.ServerState.Running
 
 
-async def test_srv6_wrong_password_is_user_access_denied(signing_server: Server) -> None:
+async def test_srv6_wrong_password_is_user_access_denied(shared_signing_server: Server) -> None:
     """Part 4, 5.7.3.3: a valid token with a wrong password is Bad_UserAccessDenied."""
-    client = await signing_client(signing_server)
+    client = await signing_client(shared_signing_server)
     client.set_password("wrong")
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await client.connect()

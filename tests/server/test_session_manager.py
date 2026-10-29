@@ -13,6 +13,7 @@ from enginir_opcua.common.session_interface import AbstractSession
 from enginir_opcua.server.internal_session import InternalSession
 from tests.conftest import find_free_port
 from tests.harness import SessionProbe
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -201,7 +202,7 @@ async def test_srv42_session_timeout_keeps_its_subscriptions(srv: Server) -> Non
         token = (await probe.create_session(timeout_ms=300)).AuthenticationToken
         await probe.activate(token)
         sub_id = await _create_subscription(probe, token)
-        await asyncio.sleep(1.5)
+        await wait_until(lambda: token not in srv.iserver.session_manager.sessions)
         with pytest.raises(ua.uaerrors.BadSessionIdInvalid):
             await probe.read_server_state(token)
         assert sub_id in await _subscription_ids(srv)
@@ -233,7 +234,7 @@ async def test_srv8_watchdog_rereads_the_revised_timeout(srv: Server) -> None:
         token = await _activated(probe)
         session = srv.iserver.session_manager.sessions[token]
         session.revised_timeout_ms = 200
-        await asyncio.sleep(2.5)
+        await wait_until(lambda: token not in srv.iserver.session_manager.sessions)
         with pytest.raises(ua.uaerrors.BadSessionIdInvalid):
             await probe.read_server_state(token)
     finally:

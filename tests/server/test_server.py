@@ -31,6 +31,7 @@ from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.ua.ua_binary import uatcp_to_binary
 from tests.conftest import find_free_port
 from tests.harness import give_identity
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
@@ -44,6 +45,10 @@ async def registrant():
     return srv
 
 
+async def _registered_count(client: Client, expected: int) -> bool:
+    return len(await client.find_servers()) >= expected
+
+
 async def test_discovery(registrant, discovery_server):
     client = Client(discovery_server.endpoint.geturl())
     async with client:
@@ -51,8 +56,7 @@ async def test_discovery(registrant, discovery_server):
         new_app_uri = "urn:enginir:opcua:server:test_discovery"
         await give_identity(registrant, new_app_uri, discovery_server)
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), 0)
-        # let server register registration
-        await asyncio.sleep(0.5)
+        await wait_until(lambda: _registered_count(client, len(servers) + 1))
         new_servers = await client.find_servers()
         assert len(new_servers) - len(servers) == 1
         assert new_app_uri not in [s.ApplicationUri for s in servers]
@@ -66,13 +70,10 @@ async def test_unregister_discovery(registrant, discovery_server):
         await give_identity(registrant, new_app_uri, discovery_server)
         # register without automatic renewal
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
-        await asyncio.sleep(0.5)
         # unregister, no automatic renewal to stop
         await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
-        await asyncio.sleep(0.5)
         # reregister with automatic renewal
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=60)
-        await asyncio.sleep(0.5)
         # unregister, cancel scheduled renewal
         await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
 
@@ -87,7 +88,7 @@ async def test_find_servers2(registrant, discovery_server):
         new_app_uri2 = "urn:enginir:opcua:test_discovery2"
         await give_identity(registrant, new_app_uri2, discovery_server)
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=0)
-        await asyncio.sleep(0.1)  # let server register registration
+        await wait_until(lambda: _registered_count(client, len(servers) + 2))
         new_servers = await client.find_servers()
         assert len(new_servers) - len(servers) == 2
         assert new_app_uri1 not in [s.ApplicationUri for s in servers]
@@ -145,7 +146,6 @@ async def test_historize_variable(server):
     o = server.nodes.objects
     var = await o.add_variable(3, "test_hist", 1.0)
     await server.iserver.enable_history_data_change(var, timedelta(days=1))
-    await asyncio.sleep(1)
     await var.write_value(2.0)
     await var.write_value(3.0)
     await server.iserver.disable_history_data_change(var)

@@ -28,9 +28,9 @@ class Clock:
 
 
 @pytest.fixture
-def delays(signing_server: Server) -> Delays:
+def delays(shared_signing_server: Server) -> Delays:
     recorded = Delays()
-    signing_server.iserver.identity_guard.sleep = recorded.sleep
+    shared_signing_server.iserver.identity_guard.sleep = recorded.sleep
     return recorded
 
 
@@ -50,36 +50,36 @@ async def _fail(server: Server, times: int) -> None:
             await _login(server, "wrong")
 
 
-async def test_srv39_repeated_bad_passwords_are_delayed(signing_server: Server, delays: Delays) -> None:
+async def test_srv39_repeated_bad_passwords_are_delayed(shared_signing_server: Server, delays: Delays) -> None:
     """Part 4, 5.7.3.1: from the sixth attempt of a peer on, every answer waits 1 s, doubling."""
-    await _fail(signing_server, 5)
+    await _fail(shared_signing_server, 5)
     assert delays.slept == []
-    await _fail(signing_server, 3)
+    await _fail(shared_signing_server, 3)
     assert delays.slept == [1.0, 2.0, 4.0]
 
 
-async def test_srv39_valid_token_is_delayed_after_five_failures(signing_server: Server, delays: Delays) -> None:
+async def test_srv39_valid_token_is_delayed_after_five_failures(shared_signing_server: Server, delays: Delays) -> None:
     """Part 4, 5.7.3.1: the delay applies to a correct password too, which is not answered at once."""
-    await _fail(signing_server, 5)
-    await _login(signing_server)
+    await _fail(shared_signing_server, 5)
+    await _login(shared_signing_server)
     assert delays.slept == [1.0]
 
 
-async def test_srv39_success_resets_the_counter(signing_server: Server, delays: Delays) -> None:
+async def test_srv39_success_resets_the_counter(shared_signing_server: Server, delays: Delays) -> None:
     """Part 4, 5.7.3.1: a successful login clears the failures of the peer."""
-    await _fail(signing_server, 5)
-    await _login(signing_server)
-    await _login(signing_server)
-    await _fail(signing_server, 5)
+    await _fail(shared_signing_server, 5)
+    await _login(shared_signing_server)
+    await _login(shared_signing_server)
+    await _fail(shared_signing_server, 5)
     assert delays.slept == [1.0]
 
 
 async def test_srv39_secured_login_is_recorded_under_the_application_uri(
-    signing_server: Server, delays: Delays
+    shared_signing_server: Server, delays: Delays
 ) -> None:
     """Part 4, 5.7.3.1: a failed secured login is recorded under the ApplicationUri of the client certificate."""
-    await _fail(signing_server, 1)
-    assert list(signing_server.iserver.identity_guard.records) == [f"uri:{CLIENT_APPLICATION_URI}"]
+    await _fail(shared_signing_server, 1)
+    assert list(shared_signing_server.iserver.identity_guard.records) == [f"uri:{CLIENT_APPLICATION_URI}"]
 
 
 async def test_srv39_key_is_the_ip_address_when_unsecured() -> None:
@@ -150,7 +150,7 @@ def test_srv39_failures_expire_after_ten_minutes() -> None:
     assert guard.begin("uri:old") == 0.0
 
 
-async def test_srv39_wait_is_an_await_that_leaves_other_requests_alone(signing_server: Server) -> None:
+async def test_srv39_wait_is_an_await_that_leaves_other_requests_alone(shared_signing_server: Server) -> None:
     """Part 4, 5.7.3.1: the delay is a wait on the request's own task, other Sessions keep working."""
     release = asyncio.Event()
     waiting = asyncio.Event()
@@ -159,11 +159,11 @@ async def test_srv39_wait_is_an_await_that_leaves_other_requests_alone(signing_s
         waiting.set()
         await release.wait()
 
-    working = await signing_client(signing_server, "bob")
+    working = await signing_client(shared_signing_server, "bob")
     async with working:
-        await _fail(signing_server, 5)
-        signing_server.iserver.identity_guard.sleep = hold
-        delayed = asyncio.create_task(_login(signing_server))
+        await _fail(shared_signing_server, 5)
+        shared_signing_server.iserver.identity_guard.sleep = hold
+        delayed = asyncio.create_task(_login(shared_signing_server))
         await asyncio.wait_for(waiting.wait(), 10)
         assert await working.nodes.server_state.read_value() == ua.ServerState.Running
         assert not delayed.done()

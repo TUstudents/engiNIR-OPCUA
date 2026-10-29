@@ -6,6 +6,7 @@ import pytest
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.ua.uaerrors import BadSessionIdInvalid, BadTooManySessions
 from tests.conftest import find_free_port, port_num
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -66,7 +67,7 @@ async def test_client_connection_lost():
         myhandler = LostSubHandler()
         _ = await cl.create_subscription(1, myhandler)
         await srv.stop()
-        await asyncio.sleep(2)
+        await wait_until(lambda: myhandler.status.value == ua.StatusCodes.BadShutdown)
         with pytest.raises(ConnectionError):
             # check if connection is alive
             await cl.check_connection()
@@ -101,7 +102,7 @@ async def test_client_connection_lost_callback():
     async with Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1) as cl:
         cl.connection_lost_callback = clb.clb
         await srv.stop()
-        await asyncio.sleep(2)
+        await wait_until(lambda: clb.called)
         assert clb.called
         assert isinstance(clb.ex, Exception)
 
@@ -121,7 +122,7 @@ async def test_session_watchdog():
         client._renew_channel_task.cancel()
     if client._supervisor_task is not None:
         client._supervisor_task.cancel()
-    await asyncio.sleep(3)  # Wait for the watchdog to terminate the session due to inactivity
+    await wait_until(lambda: not srv.iserver.session_manager.sessions)
     with pytest.raises(BadSessionIdInvalid):
         server_time_node = client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime))
         await server_time_node.read_value()

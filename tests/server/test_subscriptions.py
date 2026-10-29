@@ -15,6 +15,7 @@ import enginir_opcua
 from enginir_opcua import Client, ua
 from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary
 from tests.conftest import Opc
+from tests.waiting import wait_until
 
 
 class MySubHandler:
@@ -135,7 +136,7 @@ async def test_subscription_count(opc, handler_class):
     for i in range(nb):
         val = await var.read_value()
         await var.write_value(val + 1)
-    await sleep(0.2)  # let last event arrive
+    await wait_until(lambda: myhandler.datachange_count >= nb + 1)
     assert nb + 1 == myhandler.datachange_count
     await sub.delete()
     await opc.opc.delete_nodes([var])
@@ -155,7 +156,7 @@ async def test_subscription_count_list(opc, handler_class):
         val = copy(val)
         val.append(i)
         await var.write_value(copy(val))
-    await sleep(0.2)  # let last event arrive
+    await wait_until(lambda: myhandler.datachange_count >= nb + 1)
     assert nb + 1 == myhandler.datachange_count
     await sub.delete()
     await opc.opc.delete_nodes([var])
@@ -193,7 +194,7 @@ async def test_subscription_count_empty(opc, handler_class):
         await var.write_value(val, ua.VariantType.Double)
         if not val:
             break
-    await sleep(0.2)  # let last event arrive
+    await wait_until(lambda: myhandler.datachange_count >= 4)
     assert 4 == myhandler.datachange_count
     await sub.delete()
     await opc.opc.delete_nodes([var])
@@ -366,10 +367,10 @@ async def test_monitored_item_enabled_after_disabled_reports_initial_sample(opc)
     assert myhandler.datachange_count == 0
     results = await sub.set_monitoring_mode(ua.MonitoringMode.Reporting)
     assert all(res.is_good() for res in results)
-    await sleep(0.3)
+    await wait_until(lambda: myhandler.datachange_count >= 1)
     assert myhandler.datachange_count == 1
     await v.write_value(456)
-    await sleep(0.3)
+    await wait_until(lambda: myhandler.datachange_count >= 2)
     assert myhandler.datachange_count == 2
     await sub.unsubscribe(handle)
     await sub.delete()
@@ -387,7 +388,7 @@ async def test_publishing_disabled_queues_until_reenabled(opc):
     v = await o.add_variable(3, "SubscriptionVariablePublishingMode", 123)
     sub = await opc.opc.create_subscription(100, myhandler)
     handle = await sub.subscribe_data_change(v)
-    await sleep(0.3)
+    await wait_until(lambda: myhandler.datachange_count >= 1)
     assert myhandler.datachange_count == 1
     results = await sub.set_publishing_mode(False)
     assert all(res.is_good() for res in results)
@@ -396,7 +397,7 @@ async def test_publishing_disabled_queues_until_reenabled(opc):
     assert myhandler.datachange_count == 1
     results = await sub.set_publishing_mode(True)
     assert all(res.is_good() for res in results)
-    await sleep(0.3)
+    await wait_until(lambda: myhandler.datachange_count >= 2)
     assert myhandler.datachange_count == 2
     await sub.unsubscribe(handle)
     await sub.delete()
@@ -1000,7 +1001,7 @@ async def test_several_different_events(opc):
     for i in range(3):
         await evgen1.trigger()
         await evgen2.trigger()
-    await sleep(1)  # ToDo: replace
+    await wait_until(lambda: len(myhandler.results) >= 3)
     assert 3 == len(myhandler.results)
     ev = myhandler.results[-1]
     assert etype1.nodeid == ev.EventType
@@ -1008,7 +1009,7 @@ async def test_several_different_events(opc):
     for i in range(4):
         await evgen1.trigger()
         await evgen2.trigger()
-    await sleep(1)  # ToDo: replace
+    await wait_until(lambda: len(myhandler.results) >= 11)
     ev1s = [ev for ev in myhandler.results if ev.EventType == etype1.nodeid]
     ev2s = [ev for ev in myhandler.results if ev.EventType == etype2.nodeid]
     assert 11 == len(myhandler.results)
@@ -1065,7 +1066,7 @@ async def test_several_different_events_2(opc):
         await evgen3.trigger()
     evgen3.event.PropertyNum3 = 9999
     await evgen3.trigger()
-    await sleep(1)
+    await wait_until(lambda: len(myhandler.results) >= 7)
     ev1s = [ev for ev in myhandler.results if ev.EventType == etype1.nodeid]
     ev2s = [ev for ev in myhandler.results if ev.EventType == etype2.nodeid]
     ev3s = [ev for ev in myhandler.results if ev.EventType == etype3.nodeid]
