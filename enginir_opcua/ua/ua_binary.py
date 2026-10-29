@@ -525,6 +525,9 @@ def field_serializer(uatype: Any, is_optional: bool, dataclazz: type) -> Callabl
     return serializer
 
 
+_ENCODING_MASK_TYPES = (ua.Byte, ua.UInt32)
+
+
 @_per_class_cache
 def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
     """Given a dataclass, return a function that serializes instances of this dataclass"""
@@ -567,13 +570,18 @@ def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
         return enc
 
     encoding_functions = [
-        (f.name, field_serializer(*resolve_uatype(resolved_fieldtypes[f.name]), dataclazz)) for f in data_fields
+        (
+            f.name,
+            resolved_fieldtypes[f.name] in _ENCODING_MASK_TYPES,
+            field_serializer(*resolve_uatype(resolved_fieldtypes[f.name]), dataclazz),
+        )
+        for f in data_fields
     ]
 
     def serialize(obj: Any) -> bytes:
         parts: list[bytes] = []
-        for name, serializer in encoding_functions:
-            if name == "Encoding":
+        for name, is_encoding_byte, serializer in encoding_functions:
+            if name == "Encoding" and is_encoding_byte:
                 parts.append(serializer(enc_value(obj)))
             else:
                 parts.append(serializer(getattr(obj, name)))
@@ -1123,7 +1131,7 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
         kwargs: dict[str, Any] = {}
         enc: int = 0
         for field, optional_enc_bit, deserialize_field in dc_field_deserializers:
-            if field.name == "Encoding":
+            if field.name == "Encoding" and resolved_fieldtypes[field.name] in _ENCODING_MASK_TYPES:
                 enc = deserialize_field(data)
                 if enc & unassigned_bits_mask:
                     raise UaError(f"{objtype.__name__} has unassigned encoding bits {enc & unassigned_bits_mask:#x}")
