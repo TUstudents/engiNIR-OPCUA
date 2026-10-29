@@ -101,7 +101,7 @@ async def test_srv4_transfer_moves_queue_and_binding_to_the_new_session(two_sess
     assert sub.subscription_id is not None
     await sub.subscribe_data_change(var)
     isub = internal(two_sessions, sub.subscription_id)
-    await wait_until(lambda: handler.values)
+    await wait_until(lambda: bool(handler.values))
     isub._not_acknowledged_results[99] = ua.PublishResult(NotificationMessage=ua.NotificationMessage(SequenceNumber=99))
     alice2 = await second_client(two_sessions)
     try:
@@ -206,7 +206,7 @@ async def test_srv11_expired_last_subscription_answers_the_queued_publish_reques
     sub = await two_sessions.alice.create_subscription(3_600_000, handler)
     assert sub.subscription_id is not None
     session = server_session(two_sessions, two_sessions.alice)
-    await wait_until(lambda: session.publish_queue)
+    await wait_until(lambda: bool(session.publish_queue))
     assert session.publish_queue
     isub = internal(two_sessions, sub.subscription_id)
     isub.state = SubscriptionState.KEEPALIVE
@@ -227,7 +227,7 @@ async def test_cli55_deleting_the_last_subscription_answers_the_queued_publish_r
     sub = await two_sessions.alice.create_subscription(3_600_000, handler)
     assert sub.subscription_id is not None
     session = server_session(two_sessions, two_sessions.alice)
-    await wait_until(lambda: session.publish_queue)
+    await wait_until(lambda: bool(session.publish_queue))
     assert session.publish_queue
     two_sessions.alice.uaclient.session.pause_publish()
     results = await two_sessions.alice.uaclient.delete_subscriptions([sub.subscription_id])
