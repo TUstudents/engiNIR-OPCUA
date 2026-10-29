@@ -39,7 +39,13 @@ from ..common.connection import (
 )
 from ..common.utils import wait_for
 from ..crypto import security_policies
-from ..crypto.validator import CertificateValidator, PeerRole, ValidationContext, check_application_uri
+from ..crypto.validator import (
+    CertificateValidator,
+    PeerRole,
+    ValidationContext,
+    check_application_uri,
+    untrusted_hint,
+)
 from ..observer import NULL_OBSERVER, Observer
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
@@ -137,7 +143,10 @@ class UASocketProtocol(asyncio.Protocol):
         )
         outcome = self.certificate_validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
-            self.certificate_validator.keep_rejected(outcome, self.validation_host_name, background=True)
+            self.certificate_validator.keep_rejected(outcome, self.validation_host_name)
+            hint = untrusted_hint("server", outcome, self.certificate_validator.trust_store)
+            if hint is not None:
+                raise ua.UaStatusCodeError(outcome.status, f"{hint} ({outcome.detail})")
         outcome.raise_for_status()
         if self.expected_application_uri is not None and outcome.leaf is not None:
             check_application_uri(outcome.leaf, self.expected_application_uri).raise_for_status()

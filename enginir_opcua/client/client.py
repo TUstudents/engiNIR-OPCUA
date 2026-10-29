@@ -33,7 +33,14 @@ from ..common.xmlimporter import XmlImporter
 from ..config import ClientConfig, check_certificate_uri, password_from_environment, quickstart_client_config
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
-from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
+from ..crypto.validator import (
+    ApplicationHook,
+    CertificateValidator,
+    PeerRole,
+    ValidationContext,
+    check_application_uri,
+    untrusted_hint,
+)
 from ..observer import Observer
 from ..ua.uaerrors import (
     BadCertificateInvalid,
@@ -519,6 +526,7 @@ class Client:
             self._discovered_endpoints = endpoints
             endpoint = Client.find_endpoint(endpoints, mode, policy.URI, self.server_url.geturl())
             server_certificate = uacrypto.x509_from_der(endpoint.ServerCertificate)
+            await self._keep_endpoint_certificate(endpoint)
         elif not isinstance(server_certificate, uacrypto.CertProperties):
             server_certificate = uacrypto.CertProperties(server_certificate)
         if not isinstance(certificate, uacrypto.CertProperties):
@@ -532,6 +540,31 @@ class Client:
             private_key = uacrypto.CertProperties(private_key, password=private_key_password)
         return await self._set_security(
             policy, certificate, private_key, server_certificate, mode, chain, pin_server_certificate
+        )
+
+    async def _keep_endpoint_certificate(self, endpoint: ua.EndpointDescription) -> None:
+        """
+        Keep the certificate of a server that the endpoint list offered and the trust store does not trust in the
+        rejected store, so that an administrator can trust it (`enginir-opcua trust`) before the first secure
+        connect. The server has not proven yet that it holds the key; only the secure connect does.
+        """
+        if self.certificate_validator is not None or self.trust_store is None or not endpoint.ServerCertificate:
+            return
+        await self._prepare_certificate_validation()
+        validator = self._default_validator
+        if validator is None:
+            return
+        host = self.server_url.hostname
+        outcome = validator.validate_application_certificate(
+            endpoint.ServerCertificate, ValidationContext(PeerRole.SERVER, endpoint.SecurityPolicyUri, host_name=host)
+        )
+        if outcome.accepted or not outcome.untrusted_chain:
+            return
+        validator.keep_rejected(outcome, host)
+        _logger.info(
+            "The server certificate came from the endpoint list and the server has not proven yet that it holds the "
+            "key; it is kept in the rejected certificates so that it can be trusted. %s",
+            untrusted_hint("server", outcome, validator.trust_store),
         )
 
     async def _set_security(
@@ -956,7 +989,10 @@ class Client:
         params.RequestedLifetime = self.secure_channel_timeout
         # length should be equal to the length of key of symmetric encryption
         params.ClientNonce = create_nonce(self.security_policy.secure_channel_nonce_length)
-        result = await self.uaclient.open_secure_channel(params)
+        try:
+            result = await self.uaclient.open_secure_channel(params)
+        except BadSecurityChecksFailed as error:
+            raise self._refused_channel(error) from error
         self._check_secure_channel_nonce(result.ServerNonce)
         if self.secure_channel_timeout != result.SecurityToken.RevisedLifetime:
             _logger.info(
@@ -965,6 +1001,16 @@ class Client:
                 result.SecurityToken.RevisedLifetime,
             )
             self.secure_channel_timeout = result.SecurityToken.RevisedLifetime
+
+    def _refused_channel(self, error: BadSecurityChecksFailed) -> BadSecurityChecksFailed:
+        certificate = getattr(self.security_policy, "host_certificate", None)
+        if not certificate:
+            return error
+        thumbprint = uacrypto.certificate_thumbprint(certificate).hex()
+        return BadSecurityChecksFailed(
+            f"the server refused the secure channel, probably because it does not trust this client's certificate "
+            f"{thumbprint}; trust it on the server: enginir-opcua trust {thumbprint} --pki <server pki>"
+        )
 
     async def close_secure_channel(self) -> None:
         return await self.uaclient.close_secure_channel()

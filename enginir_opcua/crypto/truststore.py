@@ -219,7 +219,7 @@ class TrustStore:
 
     def copy(self) -> "TrustStore":
         """A store with the same locations and the certificates of none: it has to be loaded."""
-        return TrustStore(
+        copied = TrustStore(
             self._trust_locations,
             self._crl_locations,
             self._issuer_locations,
@@ -229,6 +229,9 @@ class TrustStore:
             max_rejected=self._max_rejected,
             max_rejected_per_peer=self._max_rejected_per_peer,
         )
+        copied._pki_root = self._pki_root
+        copied.refresh_interval = self.refresh_interval
+        return copied
 
     def record_rejected(self, certificates: Sequence[bytes], peer: str | None = None) -> None:
         """

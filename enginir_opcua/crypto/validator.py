@@ -9,6 +9,7 @@ logged and reported in the outcome.
 import asyncio
 import ipaddress
 import logging
+import shlex
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -23,7 +24,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from enginir_opcua import ua
 from enginir_opcua.crypto.security_policies import SecurityPolicy, SecurityPolicyNone, policy_class_for_uri
 from enginir_opcua.crypto.truststore import StoreSnapshot, TrustStore
-from enginir_opcua.crypto.uacrypto import split_certificate_chain
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint, split_certificate_chain
 from enginir_opcua.ua.uaerrors import ConfigurationError, UaError, UaStatusCodeError
 
 _logger = logging.getLogger(__name__)
@@ -588,6 +589,30 @@ def _rejected(rejection: _Rejected, suppressed: tuple[SuppressedError, ...]) -> 
         rejection.detail,
     )
     return Outcome(False, None, suppressed, rejection.status, rejection.step, rejection.subject, rejection.detail)
+
+
+def untrusted_hint(peer: str, outcome: Outcome, trust_store: TrustStore | None) -> str | None:
+    """
+    A sentence for the operator when a certificate of `peer` ("client" or "server") was refused only because it is
+    not trusted: its thumbprint and the command that trusts it. None for any other outcome.
+    """
+    if (
+        outcome.accepted
+        or outcome.status != ua.StatusCodes.BadCertificateUntrusted
+        or outcome.step is not Step.TRUST
+        or not outcome.untrusted_chain
+    ):
+        return None
+    thumbprint = certificate_thumbprint(outcome.untrusted_chain[0]).hex()
+    root = trust_store.pki_root if trust_store is not None else None
+    if root is not None:
+        action = f"trust it with: enginir-opcua trust {thumbprint} --pki {shlex.quote(str(root))}"
+    else:
+        owner = "server" if peer == "client" else "client"
+        action = f"add it to the trusted certificates of the {owner}'s trust store"
+    if peer == "client":
+        return f"client certificate {thumbprint} ({outcome.subject}) rejected: it is not trusted; {action}"
+    return f"server certificate {thumbprint} ({outcome.subject}) is not trusted; {action}"
 
 
 def check_application_uri(certificate: x509.Certificate, application_uri: str) -> Outcome:
