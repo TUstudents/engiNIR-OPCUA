@@ -23,8 +23,8 @@ from enginir_opcua.server.user_managers import (
     UserManager,
 )
 from tests.conftest import find_free_port
-from tests.harness import EXAMPLES, TWO_SESSION_USERS, SessionProbe, TwoUserManager, make_certificate, signing_client
-from tests.pki import CLIENT_APPLICATION_URI
+from tests.harness import PKI_FILES, TWO_SESSION_USERS, SessionProbe, TwoUserManager, make_certificate, signing_client
+from tests.pki import CLIENT_APPLICATION_URI, make_identity
 
 PASSWORD = TWO_SESSION_USERS["alice"]
 RSA_15 = "http://www.w3.org/2001/04/xmlenc#rsa-1_5"
@@ -378,7 +378,7 @@ async def test_srv7_custom_manager_without_token_types_keeps_all_configured_toke
     }
 
 
-USER_CERTIFICATE = (EXAMPLES / "certificates" / "peer-certificate-example-1.der").read_bytes()
+USER_CERTIFICATE = (PKI_FILES / "certificates" / "peer-certificate-example-1.der").read_bytes()
 
 
 @pytest.fixture
@@ -637,7 +637,7 @@ def test_srv39_key_is_the_application_uri_of_the_certificate() -> None:
 
 def test_srv39_key_falls_back_to_the_address_without_a_uri() -> None:
     """Part 4, 5.7.3.1: a certificate without an ApplicationUri leaves the address as the key."""
-    certificate = (EXAMPLES / "certificates" / "peer-certificate-example-1.der").read_bytes()
+    certificate = make_identity("without-uri", uri=None).der
     security = ChannelSecurity(certificate, SecurityPolicyBasic256Sha256.URI, ua.MessageSecurityMode.Sign)
     assert peer_key(security, "10.1.2.3") == "ip:10.1.2.3"
 

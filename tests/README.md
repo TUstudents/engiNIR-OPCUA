@@ -21,7 +21,7 @@ Tests that reproduce a review finding carry its ID in the name, for example `tes
 
 ## Certificates in tests
 
-Tests that connect with security generate their certificates: `tests/pki.py` builds them (`make_identity`, `make_ca`, `make_crl`, `sha1_signed`) and `generated_pki()` returns a set of server and client certificates, written once per run to a temporary directory. The committed certificates under `examples/` are expired and have no key usage, so no test connects with them. Never commit a key for a test.
+Tests that connect with security generate their certificates: `tests/pki.py` builds them (`make_identity`, `make_ca`, `make_crl`, `sha1_signed`) and `generated_pki()` returns a set of server and client certificates, written once per run to a temporary directory. `PKI_FILES` in `tests/harness.py` is a generated directory with fixed file names (`certificate-example.der`, `private-key-example.pem`, `certificates/peer-certificate-example-1.der` and so on) for the tests that read a certificate or key from a path. `examples/` holds no keys or certificates. Never commit a key for a test.
 
 The library trusts nothing by default, so a test trusts explicitly: `server.set_trust_store(PKI.trust_store())` for the client certificates of the server, and either `client.set_trust_store(PKI.trust_store())` or a server certificate passed to `set_security` (which pins it) for the client. A server that offers the None policy asks for it with `Server(allow_no_security=True)`; one that offers Basic128Rsa15 or Basic256 with `Server(allow_deprecated_policies=True)`. Never weaken the validator to make a test pass: name the step in `suppress` when a test needs it.
 
