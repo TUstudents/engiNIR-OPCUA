@@ -391,6 +391,9 @@ History (OPC 10000-11):
   event history includes the events of the sources below it.
 
 Crypto:
+- The server writes the certificate of a refused peer to `rejected/certs` before it sends the error, so `GetRejectedList`
+  right after a failed connect lists it. `CertificateValidator.keep_rejected()` lost its `background` argument and
+  writes synchronously; a vanished rejected folder is logged at debug level only.
 - Verifiers raise `ua.uaerrors.SignatureError` and decryption failures `ua.uaerrors.DecryptionError` (both
   `UaError`); `uacrypto.InvalidSignature` is gone.
 - A bad ActivateSession client signature is answered with `Bad_ApplicationSignatureInvalid`, a bad or missing X509

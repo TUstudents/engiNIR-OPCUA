@@ -6,7 +6,6 @@ StatusCode. Only the steps the table marks as suppressible can be suppressed, by
 logged and reported in the outcome.
 """
 
-import asyncio
 import ipaddress
 import logging
 import shlex
@@ -720,7 +719,7 @@ class CertificateValidator:
             return ()
         return tuple(bytes(piece) for piece in pieces)
 
-    def keep_rejected(self, outcome: Outcome, peer: str | None = None, *, background: bool = False) -> None:
+    def keep_rejected(self, outcome: Outcome, peer: str | None = None) -> None:
         """
         Keep the certificates of an untrusted peer in the rejected store (Part 12, 7.8.3.2), for an administrator to
         trust. Call it only after the peer proved possession of the key, for example when the signature of
@@ -728,14 +727,6 @@ class CertificateValidator:
         """
         if not outcome.untrusted_chain:
             return
-        if background:
-            try:
-                asyncio.get_running_loop().run_in_executor(
-                    None, self._trust_store.record_rejected, outcome.untrusted_chain, peer
-                )
-                return
-            except RuntimeError:
-                pass
         self._trust_store.record_rejected(outcome.untrusted_chain, peer)
 
     def validate_user_certificate(self, chain: bytes, policy_uri: str | None) -> Outcome:

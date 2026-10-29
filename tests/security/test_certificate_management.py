@@ -550,7 +550,9 @@ async def test_the_pending_key_is_usable_from_another_session(rig: Rig) -> None:
     assert await update_certificate(second, signed.public_bytes(serialization.Encoding.DER))
 
 
-async def test_get_rejected_list_returns_valid_but_untrusted_certificates(rig: Rig, tmp_path: Path) -> None:
+async def test_srv111_get_rejected_list_right_after_a_refused_connect_has_the_certificate(
+    rig: Rig, tmp_path: Path
+) -> None:
     client = await rig.connect("secadmin")
     stranger = Client(rig.url, timeout=3)
     await stranger.set_pki_directory(tmp_path / "stranger")
@@ -559,7 +561,6 @@ async def test_get_rejected_list_returns_valid_but_untrusted_certificates(rig: R
     with pytest.raises(ua.UaError):
         await stranger.connect()
     der = (tmp_path / "stranger" / "own" / "certs" / "application.der").read_bytes()
-    await wait_until(lambda: any((rig.root / "rejected" / "certs").glob("*.der")))
     result = await call(client, SERVER_CONFIGURATION, "GetRejectedList")
     listed = [bytes(item) for item in result or []]
     assert der in listed

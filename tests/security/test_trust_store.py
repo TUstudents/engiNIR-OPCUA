@@ -984,3 +984,17 @@ async def test_a_store_without_locations_never_refreshes() -> None:
     store = TrustStore()
     await store.load()
     assert not store.refresh_if_changed()
+
+
+async def test_srv111_a_missing_rejected_folder_skips_the_write_with_a_debug_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    validator = await pki_validator(write_pki_layout(tmp_path))
+    shutil.rmtree(tmp_path / "rejected")
+    chain = make_identity("gone").der
+    with caplog.at_level(logging.DEBUG):
+        outcome = validator.validate_application_certificate(chain, CONTEXT)
+        validator.keep_rejected(outcome)
+    store_records = [r for r in caplog.records if r.name == "enginir_opcua.crypto.truststore"]
+    assert [r.levelno for r in store_records] == [logging.DEBUG]
+    assert "is gone" in store_records[0].getMessage()
