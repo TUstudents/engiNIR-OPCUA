@@ -606,3 +606,9 @@ Examples (workstream K):
 - The Quick Setup page (`docs/usage/get-started/quick-setup.rst`) describes the profiles, configuration files, the users
   file and the `init`, `trust`, `pki`, `pair` and `user` commands, and lists the examples. The minimal server and client
   pages and the README quick start use `Server.quickstart` and `Client.quickstart`.
+
+API freeze (before 3.0.0rc1):
+- `Client.init_pki()` and `Server.init_pki()` (and the sync twins) create the PKI directory and the self-signed
+  application certificate of a quick-setup object before the first `connect()` or `init()` and return the certificate;
+  calling them again returns the same one. A program that pairs a client and a server in code no longer needs
+  `pki.create_directories` and `pki.load_own_credentials` (CLI-84).

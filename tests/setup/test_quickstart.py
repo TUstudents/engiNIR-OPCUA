@@ -228,3 +228,40 @@ def test_the_sync_twins_of_quickstart(tmp_path: Path) -> None:
             client.disconnect()
     finally:
         server.stop()
+
+
+async def test_cli84_init_pki_creates_the_client_certificate_before_connect(tmp_path: Path, port: int) -> None:
+    client = Client.quickstart(f"opc.tcp://127.0.0.1:{port}/quick/", pki=tmp_path / "client-pki")
+    certificate = await client.init_pki()
+    assert (tmp_path / "client-pki" / "own" / "certs" / pki.CERTIFICATE_NAME).exists()
+    assert client.application_uri in pki_uris(certificate)
+    assert await client.init_pki() == certificate
+
+
+async def test_cli84_init_pki_needs_a_pki_directory() -> None:
+    with pytest.raises(ConfigurationError, match="init_pki"):
+        await Client("opc.tcp://127.0.0.1:4840/").init_pki()
+    with pytest.raises(ConfigurationError, match="init_pki"):
+        await Server().init_pki()
+
+
+async def test_cli84_init_pki_creates_the_server_certificate_before_init(tmp_path: Path, port: int) -> None:
+    server = Server.quickstart(f"opc.tcp://127.0.0.1:{port}/quick/", pki=tmp_path / "server-pki")
+    certificate = await server.init_pki()
+    assert (tmp_path / "server-pki" / "own" / "certs" / pki.CERTIFICATE_NAME).exists()
+    assert server.get_application_uri() in pki_uris(certificate)
+    assert await server.init_pki() == certificate
+    await server.init()
+    assert server.iserver.certificate == certificate
+
+
+async def test_cli84_a_pair_without_the_pki_helpers(tmp_path: Path, port: int) -> None:
+    url = f"opc.tcp://127.0.0.1:{port}/quick/"
+    server = Server.quickstart(url, pki=tmp_path / "server-pki")
+    client = Client.quickstart(url, pki=tmp_path / "client-pki")
+    await client.init_pki()
+    await server.init()
+    trust(tmp_path / "server-pki", tmp_path / "client-pki")
+    trust(tmp_path / "client-pki", tmp_path / "server-pki")
+    async with server, client:
+        assert await client.nodes.root.read_browse_name() == ua.QualifiedName("Root", 0)

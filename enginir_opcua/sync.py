@@ -685,6 +685,9 @@ class Client(_Owner):
         self.aio_obj.set_trust_store(trust_store)
 
     @syncmethod
+    def init_pki(self) -> x509.Certificate: ...
+
+    @syncmethod
     def set_pki_directory(
         self, root: str | Path, create: bool = True, private_key_password: str | bytes | None = None
     ) -> None: ...
@@ -1195,6 +1198,9 @@ class Server(_Owner):
 
     def set_trust_store(self, trust_store: TrustStore) -> None:
         return self.aio_obj.set_trust_store(trust_store)
+
+    @syncmethod
+    def init_pki(self) -> x509.Certificate: ...
 
     @syncmethod
     def set_pki_directory(

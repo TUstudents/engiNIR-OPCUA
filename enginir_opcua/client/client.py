@@ -251,20 +251,38 @@ class Client:
         """
         return cls(config=quickstart_client_config(url, profile, pki, username, password, overrides))
 
+    async def init_pki(self) -> x509.Certificate:
+        """
+        Create the PKI directory of the configuration (Client.quickstart, `pki=`) and its self-signed application
+        certificate now instead of at the first connect(), and return the certificate. A program that pairs this
+        client with a server in code needs the certificate to put it into the server's trusted/certs first. Calling it
+        again returns the same certificate; an existing certificate is never replaced.
+        """
+        config = self._config
+        if config is None or config.pki is None:
+            raise ConfigurationError(
+                "client.pki: init_pki needs a PKI directory; create the client with Client.quickstart"
+            )
+        return await self._load_config_pki(config)
+
+    async def _load_config_pki(self, config: ClientConfig) -> x509.Certificate:
+        assert config.pki is not None
+        password = password_from_environment("client.private_key_password_env", config.private_key_password_env)
+        try:
+            await self.set_pki_directory(config.pki, create=config.create_pki, private_key_password=password)
+        except ConfigurationError as error:
+            raise ConfigurationError(f"client.pki: {error}") from None
+        assert self._own_credentials is not None
+        check_certificate_uri(self._own_credentials.certificate, self.application_uri, "client", config.pki)
+        return self._own_credentials.certificate
+
     async def _apply_config(self) -> None:
         config = self._config
         if config is None or self._config_applied:
             return
         policy_type = config.policy_type()
         if policy_type is not ua.SecurityPolicyType.NoSecurity:
-            assert config.pki is not None
-            password = password_from_environment("client.private_key_password_env", config.private_key_password_env)
-            try:
-                await self.set_pki_directory(config.pki, create=config.create_pki, private_key_password=password)
-            except ConfigurationError as error:
-                raise ConfigurationError(f"client.pki: {error}") from None
-            assert self._own_credentials is not None
-            check_certificate_uri(self._own_credentials.certificate, self.application_uri, "client", config.pki)
+            await self._load_config_pki(config)
             policy_name, _, mode_name = (config.security or "").partition(",")
             policy = getattr(security_policies, f"SecurityPolicy{policy_name.replace('_', '')}")
             await self.set_security(

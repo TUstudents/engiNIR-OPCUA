@@ -14,7 +14,10 @@ A secure pair
 :meth:`Server.quickstart() <enginir_opcua.server.server.Server.quickstart>` and
 :meth:`Client.quickstart() <enginir_opcua.client.client.Client.quickstart>` return a configured object that is not yet
 started. The PKI directory is created on ``await server.init()`` (the client creates its own at the first
-``connect()``), each with a self-signed application certificate whose ApplicationUri matches the configuration.
+``connect()``), each with a self-signed application certificate whose ApplicationUri matches the configuration. To
+have the certificate earlier, for example to hand it to the other side before anything connects, call
+``await client.init_pki()`` or ``await server.init_pki()``: it creates the directory and the certificate, returns the
+certificate and can be called again.
 
 **Nothing is trusted automatically.** Before a secure connection can work, each side has to trust the other's
 certificate; this is the one step that cannot be skipped. The example does it in code; on a command line you use

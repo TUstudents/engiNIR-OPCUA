@@ -12,7 +12,7 @@ import socket
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import ParseResult, urlparse
 
 import anyio
@@ -245,6 +245,21 @@ class Server:
             raise ConfigurationError(f"server.pki: {error}") from None
         assert self.iserver.certificate is not None
         check_certificate_uri(self.iserver.certificate, self._application_uri, "server", config.pki)
+
+    async def init_pki(self) -> x509.Certificate:
+        """
+        Create the PKI directory of the configuration (Server.quickstart, `pki=`) and its self-signed application
+        certificate now, and return the certificate. init() does the same; call this first to hand the certificate
+        to a client before the server starts. Calling it again returns the same certificate.
+        """
+        config = self._config
+        if config is None or config.pki is None:
+            raise ConfigurationError(
+                "server.pki: init_pki needs a PKI directory; create the server with Server.quickstart"
+            )
+        await self._apply_pki(config)
+        assert self.iserver.certificate is not None
+        return cast("x509.Certificate", self.iserver.certificate)
 
     async def init(self, shelf_file: Path | None = None) -> None:
         await self.iserver.init(shelf_file)
