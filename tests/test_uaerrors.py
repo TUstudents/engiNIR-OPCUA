@@ -43,3 +43,11 @@ def test_ua4_status_code_errors_codes() -> None:
     assert error.code == status_code_bad_internal
     assert uaerrors.UaStatusCodeErrors([0, 0]).code is None
     assert "BadInternalError" in str(error)
+
+
+def test_com_78_detail_keyword_is_accepted() -> None:
+    error = UaStatusCodeError(0x80010000, detail="why")
+    assert isinstance(error, uaerrors.BadUnexpectedError)
+    assert error.detail == "why"
+    assert "why" in str(error)
+    assert uaerrors.BadInternalError(detail="x").detail == "x"

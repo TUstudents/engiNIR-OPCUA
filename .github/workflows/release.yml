@@ -7,20 +7,57 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Check the tag against the version in pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "The tag ${GITHUB_REF_NAME} does not match version ${version} in pyproject.toml (expected v${version})" >&2
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+      - name: ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy enginir_opcua tests
+      - name: Fast tests
+        run: uv run pytest -q -m "not slow"
+
   github-release:
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           generate_release_notes: true
 
   pypi:
     runs-on: ubuntu-latest
+    needs: test
     if: startsWith(github.ref, 'refs/tags/')
     environment:
       name: pypi

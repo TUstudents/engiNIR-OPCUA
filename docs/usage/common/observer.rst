@@ -52,8 +52,9 @@ The hooks
     0 means a keep-alive message (or a message that held nothing the client knew).
 
 ``on_messages_dropped(subscription_id, count)``
-    The client dropped received messages because the application did not take them fast enough (the inbox of the subscription
-    was full). Data was lost *in the client*. In the sync wrapper it is also called when the handler thread's queue
+    The client dropped received messages or events because the application did not take them fast enough (the inbox of the
+    subscription or its iterator queue was full), or because the handler lacks the method for them. Data was lost *in the
+    client*. In the sync wrapper it is also called when the handler thread's queue
     overflows (``subscription_id`` is then ``None``).
 
 ``on_messages_lost(subscription_id, count)``

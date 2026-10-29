@@ -264,11 +264,17 @@ def test_tool5_ls_formats(capsys, tool_server):
     _, names, _ = run(capsys, "ls", "-u", URL, "-n", holder, "--format", "name")
     _, values, _ = run(capsys, "ls", "-u", URL, "-n", holder, "--format", "value")
     _, long, _ = run(capsys, "ls", "-u", URL, "-n", holder, "-l")
+    # The first line names the server URL, whose random port may contain "42"; only the listing counts.
+    names, values, long = (_listing(out) for out in (names, values, long))
     assert "Int32" in names and "42" not in names
     assert "42" in values
     assert "DataType" in long and "Timestamp" in long
     _, legacy, _ = run(capsys, "ls", "-u", URL, "-n", holder, "-l", "0")
-    assert "42" not in legacy
+    assert "42" not in _listing(legacy)
+
+
+def _listing(out: str) -> str:
+    return "\n".join(line for line in out.splitlines() if not line.startswith("Browsing node "))
 
 
 def test_tool5_ls_depth_two_indents_children(capsys, tool_server):

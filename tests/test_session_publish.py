@@ -34,7 +34,10 @@ async def _activated(probe: SessionProbe) -> ua.NodeId:
 async def _subscription(probe: SessionProbe, token: ua.NodeId, interval: float = 100) -> int:
     request = ua.CreateSubscriptionRequest()
     request.Parameters = ua.CreateSubscriptionParameters(
-        RequestedPublishingInterval=interval, RequestedLifetimeCount=3000, RequestedMaxKeepAliveCount=100
+        RequestedPublishingInterval=interval,
+        RequestedLifetimeCount=3000,
+        RequestedMaxKeepAliveCount=100,
+        PublishingEnabled=True,
     )
     return (await probe.send(token, request, ua.CreateSubscriptionResponse)).Parameters.SubscriptionId
 
@@ -175,6 +178,7 @@ async def test_srv30_retransmission_queue_is_bounded_per_session(srv: Server) ->
         item.RequestedParameters.ClientHandle = 1
         item.RequestedParameters.SamplingInterval = 0
         item.RequestedParameters.QueueSize = 10
+        item.RequestedParameters.DiscardOldest = True
         create = ua.CreateMonitoredItemsRequest()
         create.Parameters = ua.CreateMonitoredItemsParameters(
             SubscriptionId=sub_id, TimestampsToReturn=ua.TimestampsToReturn.Both, ItemsToCreate=[item]

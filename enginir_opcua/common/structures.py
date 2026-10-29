@@ -119,11 +119,12 @@ class {self.name}:
     def build_class(self, env: dict[str, Any]) -> type:
         spec: dict[str, tuple[str, Any]] = {}
         for sfield in self._fields_with_encoding():
-            annotation = sfield.annotation()
+            annotation = sfield.resolved_annotation(env)
             if sfield.name == "Encoding":
                 spec[sfield.name] = (annotation, None)
             elif sfield.is_optional:
-                spec[sfield.name] = (f"typing.Optional[{annotation}]", None)
+                optional = f"typing.Optional[{annotation}]" if isinstance(annotation, str) else annotation | None
+                spec[sfield.name] = (optional, None)
             elif sfield.array:
                 spec[sfield.name] = (annotation, field(default_factory=list))
             else:
@@ -160,6 +161,12 @@ class Field:
         if uatype == "list[ua.Char]":
             uatype = "ua.String"
         return uatype
+
+    def resolved_annotation(self, env: dict[str, Any]) -> Any:
+        found = env.get(self.uatype or "")
+        if not isinstance(found, type):
+            return self.annotation()
+        return list[found] if self.array else found  # type: ignore[valid-type]
 
 
 def _lookup_type(name: str, env: dict[str, Any]) -> Any:
@@ -201,17 +208,6 @@ class StructGenerator:
         root = obj.getroot()
         self._make_model(root)
 
-    def _is_array_field(self, name: str) -> bool:
-        if name.startswith("NoOf"):
-            return True
-        if name.startswith("__") and name.endswith("Length"):
-            # Codesys syntax
-            return True
-        if name.startswith("#"):
-            # BR syntax
-            return True
-        return False
-
     def _make_model(self, root: ET.Element) -> None:
         enums = {}
         for child in root:
@@ -229,15 +225,18 @@ class StructGenerator:
         for child in root:
             if child.tag.endswith("StructuredType"):
                 struct = Struct(child.get("Name"))
-                array = False
-                # these lines can be reduced in >= Python3.8 with root.iterfind("{*}Field") and similar
+                length_fields = {
+                    xmlfield.get("LengthField")
+                    for xmlfield in child
+                    if xmlfield.tag.endswith("Field") and xmlfield.get("LengthField")
+                }
                 for xmlfield in child:
                     if xmlfield.tag.endswith("Field"):
                         name = xmlfield.get("Name")
                         _clean_name = clean_name(name)
-                        if self._is_array_field(name):
-                            array = True
+                        if name in length_fields:
                             continue
+                        array = bool(xmlfield.get("LengthField"))
                         _type = xmlfield.get("TypeName") or ""
                         if ":" in _type:
                             _type = _type.split(":")[1]
@@ -256,7 +255,6 @@ class StructGenerator:
                         if array:
                             field.array = True
                             field.value = "field(default_factory=list)"
-                            array = False
                         struct.fields.append(field)
                 self.model.append(struct)
 
@@ -272,8 +270,8 @@ class StructGenerator:
     def _make_registration(self) -> str:
         code = "\n\n"
         for struct in self.model:
-            if isinstance(struct, EnumType):
-                continue  # No registration required for enums
+            if isinstance(struct, EnumType) or struct.typeid is None:
+                continue
             code += (
                 f"ua.register_extension_object('{struct.name}',"
                 f" ua.NodeId.from_string('{struct.typeid}'), {struct.name})\n"
@@ -323,24 +321,16 @@ async def load_type_definitions(
             if desc.BrowseName != ua.QualifiedName("Opc.Ua"):
                 nodes.append(server.get_node(desc.NodeId))
 
-    structs_dict = {}
+    types = server.types
+    structs_dict: dict[str, Any] = {}
     generators = []
     for node in nodes:
         xml = await node.read_value()
         generator = StructGenerator()
         generators.append(generator)
         generator.make_model_from_string(xml)
-        # generate and execute new code on the fly
         generator.get_python_classes(structs_dict)
-        # same but using a file that is imported. This can be useful for debugging library
-        # name = node.read_browse_name().Name
-        # Make sure structure names do not contain characters that cannot be used in Python class file names
-        # name = clean_name(name)
-        # name = "structures_" + node.read_browse_name().Name
-        # generator.save_and_import(name + ".py", append_to=structs_dict)
 
-        # register classes
-        # every children of our node should represent a class
         for ndesc in await node.get_children_descriptions():
             ndesc_node = server.get_node(ndesc.NodeId)
             ref_desc_list = await ndesc_node.get_references(
@@ -352,15 +342,13 @@ async def load_type_definitions(
                     _logger.warning("%s is found as child of binary definition node but is not found in xml", name)
                     continue
                 nodeid = ref_desc_list[0].NodeId
-                ua.register_extension_object(name, nodeid, structs_dict[name])
-                # save the typeid if user want to create static file for type definition
+                data_types = await server.get_node(nodeid).get_references(
+                    refs=ua.ObjectIds.HasEncoding, direction=ua.BrowseDirection.Inverse
+                )
+                types.register_struct(data_types[0].NodeId if data_types else None, nodeid, structs_dict[name], name)
                 generator.set_typeid(name, nodeid.to_string())
 
-        from enginir_opcua.ua.uatypes import _set_ua_attribute
-
-        for key, val in structs_dict.items():
-            if isinstance(val, EnumMeta) and key != "IntEnum":
-                _set_ua_attribute(key, val, getattr(val, "data_type", None))
+        await _register_enums(server, structs_dict)
 
     return generators, structs_dict
 
@@ -373,23 +361,42 @@ def _generate_python_class(model: list[Any], env: dict[str, Any] | None = None) 
     received from the server is ever executed.
     """
     if env is None:
-        env = ua.__dict__
+        env = {}
     for element in model:
         env[element.name] = element.build_class(env)
     return env
 
 
+async def _register_enums(server: Any, classes: dict[str, Any]) -> None:
+    from enginir_opcua.ua.uatypes import _set_ua_attribute
+
+    enum_nodes = {
+        clean_name(desc.BrowseName.Name): desc.NodeId
+        for desc in await server.nodes.enum_data_type.get_children_descriptions(refs=ua.ObjectIds.HasSubtype)
+    }
+    for name, cls in classes.items():
+        if not isinstance(cls, EnumMeta) or name == "IntEnum":
+            continue
+        nodeid = enum_nodes.get(name)
+        if nodeid is None:
+            _set_ua_attribute(name, cls, None)
+        elif server.types.find_own(nodeid) is None:
+            server.types.register_enum(nodeid, cls, name)
+
+
 async def load_enums(server: Any, env: dict[str, Any] | None = None, force: bool = False) -> dict[str, Any]:
     """
-    Read enumeration data types on server and generate python Enums in ua scope for them
+    Read enumeration data types on server, generate python Enums for them and register them in the type registry
+    of the server or client
     """
     model = []
+    nodeids: dict[str, ua.NodeId] = {}
 
     for desc in await server.nodes.enum_data_type.get_children_descriptions(refs=ua.ObjectIds.HasSubtype):
         enum_name = desc.BrowseName.Name
         enum_node = server.get_node(desc.NodeId)
-        if not force and hasattr(ua, enum_name):
-            _logger.debug("Enum type %s is already in ua namespace, ignoring", enum_name)
+        if not force and server.types.find_own(desc.NodeId) is not None:
+            _logger.debug("Enum type %s is already registered, ignoring", enum_name)
             continue
         c = None
         for child_desc in await enum_node.get_children_descriptions(refs=ua.ObjectIds.HasProperty):
@@ -402,7 +409,11 @@ async def load_enums(server: Any, env: dict[str, Any] | None = None, force: bool
                 _logger.warning("Unexpected children of node %s: %s", desc, child_desc)
         if c is not None:
             model.append(c)
-    return _generate_python_class(model, env=env)
+            nodeids[c.name] = desc.NodeId
+    classes = _generate_python_class(model, env=env)
+    for element in model:
+        server.types.register_enum(nodeids[element.name], classes[element.name], element.name)
+    return classes
 
 
 async def _get_enum_values(name: str, node: Node) -> EnumType:

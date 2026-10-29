@@ -609,6 +609,7 @@ class Subscription:
                 pass
             if event is not None:
                 self.dropped_events += 1
+                self._observe(lambda: self._observer.on_messages_dropped(self.subscription_id, 1))
                 self._warn_limited(
                     "queue",
                     "Subscription %s: event queue full, dropped the oldest event (%s dropped so far)",
@@ -640,6 +641,7 @@ class Subscription:
             args = (event.notification,)
         if method is None:
             self.dropped_events += 1
+            self._observe(lambda: self._observer.on_messages_dropped(self.subscription_id, 1))
             return
         try:
             result = method(*args)
@@ -1231,9 +1233,7 @@ class Subscription:
                 failed.append((h, status))
         if failed:
             detail = ", ".join(f"{h}: {status}" for h, status in failed)
-            error = ua.UaStatusCodeError(failed[0][1].value)
-            error.detail = f"unsubscribe failed for handles {detail}"
-            raise error
+            raise ua.UaStatusCodeError(failed[0][1].value, detail=f"unsubscribe failed for handles {detail}")
 
     async def modify_monitored_item(
         self,

@@ -448,7 +448,67 @@ def _resolve_type_in_dataclass_context(ftype: Any, dataclazz: type) -> Any:
         return ftype
 
 
+def _matrix_rank_and_element(uatype: Any) -> tuple[int, Any]:
+    rank = 0
+    while type_is_list(uatype):
+        uatype = type_from_list(uatype)
+        rank += 1
+    return rank, uatype
+
+
+def _is_matrix(uatype: Any) -> bool:
+    return type_is_list(uatype) and type_is_list(type_from_list(uatype))
+
+
+def _matrix_dimensions(value: Any, rank: int) -> list[int]:
+    dims: list[int] = []
+    level = value
+    for _ in range(rank):
+        dims.append(len(level))
+        if not level:
+            dims.extend([0] * (rank - len(dims)))
+            break
+        level = level[0]
+    return dims
+
+
+def _resolve_matrix_element(uatype: Any, dataclazz: type) -> Any:
+    rank, element = _matrix_rank_and_element(uatype)
+    element = _resolve_type_in_dataclass_context(element, dataclazz)
+    for _ in range(rank):
+        element = typing.cast(Any, list[element])  # type: ignore[valid-type]
+    return element
+
+
+@_per_class_cache
+def create_matrix_serializer(uatype: Any) -> Callable[[Any], bytes]:
+    """Inline matrix of a Structure field (OPC 10000-6, 5.2.5, Table 28): the dimensions, then the flat values."""
+    rank, element = _matrix_rank_and_element(uatype)
+    element_serializer: Callable[[Any], bytes] | None = None
+
+    def serialize(value: Any) -> bytes:
+        nonlocal element_serializer
+        if element_serializer is None:
+            element_serializer = create_type_serializer(element)
+        dims = _matrix_dimensions(value, rank) if value else [0] * rank
+        flat = value if min(dims) > 0 else []
+        for _ in range(rank - 1):
+            flat = [item for sub in flat for item in sub]
+        expected = math.prod(dims) if min(dims) > 0 else 0
+        if len(flat) != expected:
+            raise UaError(f"Matrix of rank {rank} is not rectangular")
+        head = Primitives.Int32.pack(rank) + b"".join(Primitives.Int32.pack(dim) for dim in dims)
+        return head + b"".join(element_serializer(item) for item in flat)
+
+    return serialize
+
+
 def field_serializer(uatype: Any, is_optional: bool, dataclazz: type) -> Callable[[Any], bytes]:
+    if _is_matrix(uatype):
+        matrix = create_matrix_serializer(_resolve_matrix_element(uatype, dataclazz))
+        if is_optional:
+            return lambda val: b"" if val is None else matrix(val)
+        return matrix
     if type_is_list(uatype):
         ft = type_from_list(uatype)
         ft = _resolve_type_in_dataclass_context(ft, dataclazz)
@@ -599,6 +659,8 @@ def create_type_serializer(uatype: type) -> Callable[[Any], bytes]:
     """Create a binary serialization function for the given UA type"""
     if not type_is_optional(uatype) and type_allow_subclass(uatype):
         return extensionobject_to_binary
+    if _is_matrix(uatype):
+        return create_matrix_serializer(uatype)
     if type_is_list(uatype):
         return create_list_serializer(type_from_list(uatype))
     if issubclass(uatype, Enum):
@@ -920,6 +982,33 @@ def _create_list_deserializer(uatype: Any) -> Callable[[Buffer | IO], list[Any]]
 
 
 @_per_class_cache
+def _create_matrix_deserializer(uatype: Any) -> Callable[[Buffer | IO], list[Any]]:
+    rank, element = _matrix_rank_and_element(uatype)
+    element_deserializer: Callable[[Any], Any] | None = None
+    element_size = 1
+
+    def _deserialize(data: Buffer | IO) -> list[Any]:
+        nonlocal element_deserializer, element_size
+        dims = unpack_uatype_array(ua.VariantType.Int32, data)
+        if not dims:
+            return []
+        if len(dims) != rank:
+            raise UaError(f"Matrix has {len(dims)} dimensions, the field has rank {rank}")
+        if min(dims) <= 0:
+            return []
+        total = math.prod(dims)
+        if total > MAX_RESHAPE_ELEMENTS:
+            raise UaError(f"Matrix dimensions {dims} exceed MAX_RESHAPE_ELEMENTS={MAX_RESHAPE_ELEMENTS}")
+        if element_deserializer is None:
+            element_deserializer = _create_type_deserializer(element, type(None))
+            element_size = 0 if _can_be_empty(resolve_uatype(element)[0]) else 1
+        _check_array_count(data, total, element_size)
+        return _split([element_deserializer(data) for _ in range(total)], dims)
+
+    return _deserialize
+
+
+@_per_class_cache
 def _create_type_deserializer(uatype: Any, dataclazz: type) -> Callable[[Buffer | IO], Any]:
     uatype, is_optional = resolve_uatype(uatype)
 
@@ -927,6 +1016,8 @@ def _create_type_deserializer(uatype: Any, dataclazz: type) -> Callable[[Buffer 
         array, uatype = types_or_list_from_union(uatype)
         if not array:
             return _create_type_deserializer(uatype, uatype)
+    if _is_matrix(uatype):
+        return _create_matrix_deserializer(_resolve_matrix_element(uatype, dataclazz))
     if type_is_list(uatype):
         utype = type_from_list(uatype)
         utype = _resolve_type_in_dataclass_context(utype, dataclazz)
@@ -987,7 +1078,10 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     if issubclass(objtype, ua.UaUnion):
         union_type: type[ua.UaUnion] = objtype  # type: ignore[assignment]
         typefields = fields(union_type)
-        union_field_deserializers = [_create_type_deserializer(t, union_type) for t in union_type._union_types]
+        union_field_deserializers = [
+            extensionobject_from_binary if type_allow_subclass(t) else _create_type_deserializer(t, union_type)
+            for t in union_type._union_types
+        ]
         byte_decode = next(_create_type_deserializer(f.type, type(None)) for f in typefields if f.name == "Encoding")
 
         @_bounded
