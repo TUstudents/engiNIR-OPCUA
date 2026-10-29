@@ -1,14 +1,16 @@
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 
 from enginir_opcua import Server, ua
-from enginir_opcua.common.connection import error_message_to_binary
+from enginir_opcua.common.connection import error_message_to_binary, reverse_hello_to_binary
 from enginir_opcua.common.utils import Buffer
-from enginir_opcua.ua.ua_binary import struct_from_binary
+from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 from tests.conftest import find_free_port
 from tests.harness import RawPeer
+from tests.waiting import wait_until
 
 HELLO = ua.Hello(ReceiveBufferSize=65536, SendBufferSize=65536)
 
@@ -215,3 +217,110 @@ def test_srv95_target_is_added_once_and_needs_an_opc_tcp_url() -> None:
         server.add_reverse_connect("opc.tcp://127.0.0.1:1")
     with pytest.raises(ValueError):
         server.add_reverse_connect("http://127.0.0.1:1")
+
+
+async def make_client_listener(server_uri: str = "urn:srv", endpoint: str = "opc.tcp://srv:4840/x", **settings: Any):
+    from enginir_opcua.client.ua_client import ReverseConnectListener
+
+    listener = ReverseConnectListener("opc.tcp://127.0.0.1:0", **settings)
+    target = listener.target(server_uri, endpoint)
+    await listener.start()
+    return listener, target
+
+
+async def accept_reverse_hello(listener, server_uri: str, endpoint: str) -> RawPeer:
+    peer = await RawPeer.connect("127.0.0.1", listener.port)
+    await peer.send(reverse_hello_to_binary(server_uri, endpoint))
+    return peer
+
+
+async def test_cli61_listener_parks_a_matching_reverse_hello_and_hands_it_over() -> None:
+    """Part 6, 7.1.3: the client may keep the socket for later; the announced EndpointUrl is passed back."""
+    listener, target = await make_client_listener()
+    try:
+        peer = await accept_reverse_hello(listener, "urn:srv", "OPC.TCP://SRV/x")
+        await wait_until(target.has_parked)
+        transport, endpoint = await target.accept(1.0)
+        assert endpoint == "OPC.TCP://SRV/x"
+        transport.close()
+        await peer.close()
+    finally:
+        await listener.stop()
+
+
+@pytest.mark.parametrize(
+    ("server_uri", "endpoint"),
+    [("urn:other", "opc.tcp://srv:4840/x"), ("urn:srv", "opc.tcp://srv:4840/y"), ("u" * 4096, "opc.tcp://srv:4840/x")],
+    ids=["server_uri", "endpoint_url", "too_long"],
+)
+async def test_cli61_unknown_server_gets_endpoint_url_invalid(server_uri: str, endpoint: str) -> None:
+    """Part 6, 7.1.2.6: a ReverseHello of an unknown server or of 4096 bytes or more is refused."""
+    listener, target = await make_client_listener()
+    try:
+        peer = await accept_reverse_hello(listener, server_uri, endpoint) if len(server_uri) < 4096 else None
+        if peer is None:
+            peer = await RawPeer.connect("127.0.0.1", listener.port)
+            body = struct_to_binary(ua.ReverseHello(server_uri, endpoint))
+            await peer.send_message(b"RHE", body)
+        error = await peer.receive_error()
+        assert error.Error.value == ua.StatusCodes.BadTcpEndpointUrlInvalid
+        assert await peer.is_closed_by_peer()
+        assert not target.has_parked()
+    finally:
+        await listener.stop()
+
+
+async def test_cli61_no_reverse_hello_closes_the_socket_after_the_deadline() -> None:
+    """Part 6, 7.1.3, Table 78: a client closes a socket that sends no ReverseHello."""
+    listener, _ = await make_client_listener(rhe_deadline=0.3)
+    try:
+        peer = await RawPeer.connect("127.0.0.1", listener.port)
+        assert await peer.is_closed_by_peer(timeout=3)
+    finally:
+        await listener.stop()
+
+
+async def test_cli61_first_message_hello_is_type_invalid() -> None:
+    """Part 6, 7.1.3: only a ReverseHello may open a reverse socket."""
+    listener, _ = await make_client_listener()
+    try:
+        peer = await RawPeer.connect("127.0.0.1", listener.port)
+        await peer.send_hello(HELLO)
+        assert (await peer.receive_error()).Error.value == ua.StatusCodes.BadTcpMessageTypeInvalid
+        assert await peer.is_closed_by_peer()
+    finally:
+        await listener.stop()
+
+
+async def test_cli61_second_socket_of_a_parked_server_gets_server_too_busy() -> None:
+    """Part 6, 7.1.3, Table 78: a client that cannot keep another socket answers Bad_ServerTooBusy."""
+    listener, target = await make_client_listener()
+    try:
+        first = await accept_reverse_hello(listener, "urn:srv", "opc.tcp://srv:4840/x")
+        await wait_until(target.has_parked)
+        second = await accept_reverse_hello(listener, "urn:srv", "opc.tcp://srv:4840/x")
+        assert (await second.receive_error()).Error.value == ua.StatusCodes.BadServerTooBusy
+        assert target.has_parked()
+        await first.close()
+    finally:
+        await listener.stop()
+
+
+async def test_cli61_parked_socket_is_dropped_when_the_server_closes_it() -> None:
+    """Part 6, 7.1.3: a parked socket that the peer closed is no longer offered."""
+    listener, target = await make_client_listener()
+    try:
+        peer = await accept_reverse_hello(listener, "urn:srv", "opc.tcp://srv:4840/x")
+        await wait_until(target.has_parked)
+        await peer.close()
+        await wait_until(lambda: not target.has_parked())
+    finally:
+        await listener.stop()
+
+
+def test_cli61_listener_needs_an_opc_tcp_url() -> None:
+    """Part 6, 7.1.3: the Server needs a host and port to connect to."""
+    from enginir_opcua.client.ua_client import ReverseConnectListener
+
+    with pytest.raises(ValueError):
+        ReverseConnectListener("http://127.0.0.1:1")
