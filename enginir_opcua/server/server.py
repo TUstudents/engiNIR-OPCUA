@@ -33,7 +33,16 @@ from ..common.subscription import Subscription
 from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
-from ..config import parse_opc_tcp_url
+from ..config import (
+    ServerConfig,
+    check_certificate_uri,
+    is_loopback,
+    parse_opc_tcp_url,
+    password_from_environment,
+    quickstart_server_config,
+    server_user_manager,
+    with_default_port,
+)
 from ..crypto import pki, security_policies, uacrypto, validator
 from ..crypto.permission_rules import SimpleRoleRuleset, UserRole
 from ..crypto.truststore import TrustStore
@@ -117,7 +126,22 @@ class Server:
         *,
         allow_no_security: bool = False,
         allow_deprecated_policies: bool = False,
+        config: ServerConfig | None = None,
     ) -> None:
+        """
+        :param config: a ServerConfig (see Server.quickstart). It replaces `iserver`, `user_manager`,
+            `allow_no_security` and `allow_deprecated_policies`; the PKI directory it names is read or created in
+            `init()`.
+        """
+        self._config: ServerConfig | None = config
+        if config is not None:
+            if iserver is not None or user_manager is not None or allow_no_security or allow_deprecated_policies:
+                raise ConfigurationError(
+                    "server: config replaces iserver, user_manager, allow_no_security and allow_deprecated_policies; "
+                    "put the user manager in the config"
+                )
+            config.validate()
+            user_manager = server_user_manager(config)
         self.endpoint: ParseResult = urlparse("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
         self._application_uri: str = "urn:enginir:opcua:server"
         self.product_uri: str = "urn:enginir:opcua"
@@ -159,10 +183,71 @@ class Server:
             max_message_size=max_msg_sz,
         )
         self._pubsub: PubSub | None = None
+        if config is not None:
+            self._apply_config(config)
+
+    @classmethod
+    def quickstart(
+        cls,
+        endpoint: str,
+        profile: str = "secure",
+        pki: str | Path | None = "./pki",
+        users: str | Path | UserManager | None = None,
+        **overrides: Any,
+    ) -> Server:
+        """
+        A server for one of the two profiles, not initialised and not started. "secure": Basic256Sha256,
+        Aes128Sha256RsaOaep and Aes256Sha256RsaPss with SignAndEncrypt, any network. "development": loopback only,
+        also without security. `pki` is the PKI directory (created at `init()` with a self-signed certificate, and
+        nothing is trusted); `users` a users file or a user manager; `overrides` any other ServerConfig field.
+        """
+        return cls(config=quickstart_server_config(endpoint, profile, pki, users, overrides))
+
+    def _apply_config(self, config: ServerConfig) -> None:
+        self.endpoint = with_default_port(parse_opc_tcp_url(config.endpoint, "server.endpoint"))
+        self.name = config.name
+        self._application_uri = config.application_uri
+        self.product_uri = config.product_uri
+        self.manufacturer_name = config.manufacturer_name
+        self._security_policy = config.policy_types()
+        limits = config.limits
+        iserver = self.iserver
+        iserver.session_manager.max_sessions = limits.max_sessions
+        iserver.max_connections = limits.max_connections
+        iserver.min_session_timeout_ms = limits.min_session_timeout_ms
+        iserver.max_session_timeout_ms = limits.max_session_timeout_ms
+        iserver.max_subscriptions = limits.max_subscriptions
+        iserver.max_subscriptions_per_session = limits.max_subscriptions_per_session
+        iserver.min_publishing_interval_ms = limits.min_publishing_interval_ms
+        iserver.max_publishing_interval_ms = limits.max_publishing_interval_ms
+        iserver.max_monitored_items = limits.max_monitored_items
+        iserver.max_monitored_items_per_subscription = limits.max_monitored_items_per_subscription
+        iserver.hello_timeout_seconds = limits.hello_timeout_seconds
+        self.limits = TransportLimits(
+            max_recv_buffer=limits.max_buffer_size,
+            max_send_buffer=limits.max_buffer_size,
+            max_chunk_count=math.ceil(limits.max_message_size / limits.max_buffer_size),
+            max_message_size=limits.max_message_size,
+        )
+        if config.profile == "development":
+            self.socket_address = (self.endpoint.hostname or "127.0.0.1", self.endpoint.port or 4840)
+
+    async def _apply_pki(self, config: ServerConfig) -> None:
+        if config.pki is None:
+            return
+        password = password_from_environment("server.private_key_password_env", config.private_key_password_env)
+        try:
+            await self.set_pki_directory(config.pki, create=config.create_pki, private_key_password=password)
+        except ConfigurationError as error:
+            raise ConfigurationError(f"server.pki: {error}") from None
+        assert self.iserver.certificate is not None
+        check_certificate_uri(self.iserver.certificate, self._application_uri, "server", config.pki)
 
     async def init(self, shelf_file: Path | None = None) -> None:
         await self.iserver.init(shelf_file)
         await self.set_application_uri(self._application_uri)
+        if self._config is not None:
+            await self._apply_pki(self._config)
         sa_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerArray))
         await sa_node.write_value([self._application_uri])
         # TODO: ServiceLevel is 255 default, should be calculated in later Versions
@@ -642,6 +727,7 @@ class Server:
         """
         Start to listen on network
         """
+        self._check_development_bind()
         if self.iserver.certificate is not None:
             # Log warnings about the certificate
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
@@ -685,6 +771,21 @@ class Server:
                 "No client certificate is trusted, so no client can connect with security: "
                 "configure the trusted certificates with set_trust_store"
             )
+
+    def _check_development_bind(self) -> None:
+        config = self._config
+        if config is None or config.profile != "development":
+            return
+        host = self._get_bind_socket_info()[0]
+        if host is None or not is_loopback(host):
+            raise ConfigurationError(
+                f"server.endpoint: the development profile only listens on loopback addresses, but socket_address "
+                f"is {self.socket_address}"
+            )
+        _logger.warning(
+            "development profile: %s offers a connection without security; it is meant for this machine only",
+            self.endpoint.geturl(),
+        )
 
     def _get_bind_socket_info(self) -> tuple[str | None, int | None]:
         if self.socket_address is not None:

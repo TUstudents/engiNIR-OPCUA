@@ -618,3 +618,89 @@ class ClientConfig:
         except ConfigurationError as error:
             raise _with_source(source, error) from None
         return config
+
+
+def with_default_port(parsed: ParseResult) -> ParseResult:
+    if parsed.port is not None:
+        return parsed
+    host = parsed.hostname or ""
+    return parsed._replace(netloc=f"[{host}]:4840" if ":" in host else f"{host}:4840")
+
+
+def server_user_manager(config: ServerConfig) -> UserManager | None:
+    """The user manager a server configuration asks for, or none for the default."""
+    if config.user_manager is not None:
+        return config.user_manager
+    users = config.effective_users_file()
+    if users is None:
+        return None
+    from .server.user_managers import FileUserManager
+
+    return FileUserManager(users, anonymous=config.anonymous)
+
+
+def password_from_environment(setting: str, variable: str | None) -> str | None:
+    if variable is None:
+        return None
+    password = os.environ.get(variable)
+    if password is None:
+        raise ConfigurationError(f"{setting}: the environment variable {variable} is not set")
+    return password
+
+
+def check_certificate_uri(certificate: Any, application_uri: str, role: str, directory: str | Path) -> None:
+    """The application certificate has to carry the ApplicationUri and be valid now (OPC 10000-6, 6.2.2)."""
+    from datetime import UTC, datetime
+
+    from cryptography import x509
+
+    try:
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        found = names.get_values_for_type(x509.UniformResourceIdentifier)
+    except x509.ExtensionNotFound:
+        found = []
+    if application_uri not in found:
+        shown = ", ".join(found) if found else "none"
+        raise ConfigurationError(
+            f"{role}.pki: the certificate in {Path(directory) / 'own' / 'certs'} has the application URI {shown}, "
+            f"the application's is {application_uri}; set {role}.application_uri to the first or use a new PKI directory"
+        )
+    now = datetime.now(UTC)
+    if certificate.not_valid_after_utc < now:
+        raise ConfigurationError(
+            f"{role}.pki: the certificate in {Path(directory) / 'own' / 'certs'} expired on "
+            f"{certificate.not_valid_after_utc:%Y-%m-%d}; replace it or use a new PKI directory"
+        )
+
+
+def quickstart_server_config(
+    endpoint: str, profile: str, pki: str | Path | None, users: Any, overrides: dict[str, Any]
+) -> ServerConfig:
+    _unknown_overrides(ServerConfig, "server", overrides)
+    values: dict[str, Any] = {"endpoint": endpoint, "profile": profile, "pki": pki}
+    if isinstance(users, (str, os.PathLike)):
+        values["users_file"] = users
+    elif users is not None:
+        values["user_manager"] = users
+    values.update(overrides)
+    values.setdefault("application_uri", default_application_uri("server"))
+    config = ServerConfig(**values)
+    config.validate()
+    return config
+
+
+def quickstart_client_config(
+    url: str,
+    profile: str,
+    pki: str | Path | None,
+    username: str | None,
+    password: str | None,
+    overrides: dict[str, Any],
+) -> ClientConfig:
+    _unknown_overrides(ClientConfig, "client", overrides)
+    values: dict[str, Any] = {"url": url, "profile": profile, "pki": pki, "username": username, "password": password}
+    values.update(overrides)
+    values.setdefault("application_uri", default_application_uri("client"))
+    config = ClientConfig(**values)
+    config.validate()
+    return config

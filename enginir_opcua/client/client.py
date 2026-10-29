@@ -30,6 +30,7 @@ from ..common.ua_utils import value_to_datavalue
 from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
+from ..config import ClientConfig, check_certificate_uri, password_from_environment, quickstart_client_config
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator, check_application_uri
@@ -100,7 +101,7 @@ class Client:
 
     def __init__(
         self,
-        url: str,
+        url: str | None = None,
         timeout: float = 4,
         watchdog_intervall: float = 1.0,
         auto_reconnect: bool = False,
@@ -108,6 +109,7 @@ class Client:
         reconnect_request_timeout: float = 60.0,
         allow_deprecated_policies: bool = False,
         observer: Observer | None = None,
+        config: ClientConfig | None = None,
     ) -> None:
         """
         :param url: url of the server.
@@ -127,11 +129,25 @@ class Client:
         :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
         :param observer: an :class:`enginir_opcua.observer.Observer` that is told about requests, state changes and
             subscription events; also available as the ``observer`` property.
+        :param config: a :class:`enginir_opcua.config.ClientConfig` (see Client.quickstart); give it instead of
+            `url`. Its timeout and auto_reconnect replace the parameters; the PKI directory and the security are
+            applied at the first connect().
 
         Some other client parameters can be changed by setting
         attributes on the constructed object:
         See the source code for the exhaustive list.
         """
+        self._config: ClientConfig | None = config
+        self._config_applied = False
+        if config is not None:
+            if url is not None:
+                raise ConfigurationError("client: the url comes from the config; leave the url argument out")
+            config.validate()
+            url = config.url
+            timeout = config.timeout
+            auto_reconnect = config.auto_reconnect
+        elif url is None:
+            raise ConfigurationError("client.url: give the URL of the server, or a config")
         self._username: str | None = None
         self._password: str | None = None
         self.strip_url_credentials: bool = True
@@ -202,6 +218,54 @@ class Client:
         # (OPC 10000-4 v1.05, 6.7) — useful after a client crash.
         self.session_state_path: Path | None = None
         self._reverse: _ReverseConfig | None = None
+        if config is not None:
+            self.name = self.description = config.name
+            self.application_uri = config.application_uri
+            self.session_timeout = config.session_timeout_ms
+            if config.username is not None:
+                self._username = config.username
+                self._password = config.effective_password()
+
+    @classmethod
+    def quickstart(
+        cls,
+        url: str,
+        profile: str = "secure",
+        pki: str | Path | None = "./pki",
+        username: str | None = None,
+        password: str | None = None,
+        **overrides: Any,
+    ) -> "Client":
+        """
+        A client for one of the two profiles, not connected. "secure": Basic256Sha256 with SignAndEncrypt.
+        "development": the server has to be on this machine, and the default is no security. `pki` is the PKI
+        directory (created at the first connect() with a self-signed certificate; the server certificate has to be
+        in its trusted/certs, see `enginir-opcua trust`); `overrides` any other ClientConfig field.
+        """
+        return cls(config=quickstart_client_config(url, profile, pki, username, password, overrides))
+
+    async def _apply_config(self) -> None:
+        config = self._config
+        if config is None or self._config_applied:
+            return
+        policy_type = config.policy_type()
+        if policy_type is not ua.SecurityPolicyType.NoSecurity:
+            assert config.pki is not None
+            password = password_from_environment("client.private_key_password_env", config.private_key_password_env)
+            try:
+                await self.set_pki_directory(config.pki, create=config.create_pki, private_key_password=password)
+            except ConfigurationError as error:
+                raise ConfigurationError(f"client.pki: {error}") from None
+            assert self._own_credentials is not None
+            check_certificate_uri(self._own_credentials.certificate, self.application_uri, "client", config.pki)
+            policy_name, _, mode_name = (config.security or "").partition(",")
+            policy = getattr(security_policies, f"SecurityPolicy{policy_name.replace('_', '')}")
+            await self.set_security(
+                policy,
+                mode=ua.MessageSecurityMode[mode_name],
+                server_certificate=str(config.server_certificate) if config.server_certificate else None,
+            )
+        self._config_applied = True
 
     def listen_reverse(
         self,
@@ -626,6 +690,7 @@ class Client:
         _logger.info("connect (auto_reconnect=%s)", auto_reconnect)
         if self.uaclient.state is not UaClientState.DISCONNECTED:
             raise ConnectionError("already connected")
+        await self._apply_config()
         if auto_reconnect is not None:
             self._auto_reconnect = auto_reconnect
         if reconnect_max_delay is not None:
