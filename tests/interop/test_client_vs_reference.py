@@ -279,3 +279,35 @@ async def test_history_read_when_the_server_exposes_history(client: Client) -> N
 async def test_load_data_type_definitions_of_the_server_types(client: Client, restore_ua_registry: None) -> None:
     definitions = await client.load_data_type_definitions()
     assert definitions
+
+
+async def test_our_client_reads_the_trust_list_of_the_reference_server(
+    reference_server_url: str, identity: ClientIdentity
+) -> None:
+    from enginir_opcua.common.utils import Buffer
+    from enginir_opcua.ua.ua_binary import struct_from_binary
+
+    case = next(case for case in SECURITY_CASES if case.name == "basic256sha256-encrypt")
+    client = await connect(reference_server_url, identity, case, "username")
+    try:
+        trust_list = client.get_node(
+            ua.NodeId(ua.ObjectIds.ServerConfiguration_CertificateGroups_DefaultApplicationGroup_TrustList)
+        )
+        try:
+            handle = await trust_list.call_method(
+                ua.QualifiedName("OpenWithMasks", 0), ua.Variant(15, ua.VariantType.UInt32)
+            )
+        except ua.UaStatusCodeError as refused:
+            assert refused.code in (ua.StatusCodes.BadUserAccessDenied, ua.StatusCodes.BadSecurityModeInsufficient)
+            return
+        content = b""
+        while chunk := await trust_list.call_method(
+            ua.QualifiedName("Read", 0),
+            ua.Variant(handle, ua.VariantType.UInt32),
+            ua.Variant(8192, ua.VariantType.Int32),
+        ):
+            content += chunk
+        await trust_list.call_method(ua.QualifiedName("Close", 0), ua.Variant(handle, ua.VariantType.UInt32))
+        assert struct_from_binary(ua.TrustListDataType, Buffer(content)).SpecifiedLists == 15
+    finally:
+        await client.disconnect()

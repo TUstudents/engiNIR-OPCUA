@@ -136,6 +136,8 @@ class UASocketProtocol(asyncio.Protocol):
             PeerRole.SERVER, self._channel.security_policy.URI, host_name=self.validation_host_name
         )
         outcome = self.certificate_validator.validate_application_certificate(chain, context)
+        if not outcome.accepted:
+            self.certificate_validator.keep_rejected(outcome, self.validation_host_name, background=True)
         outcome.raise_for_status()
         if self.expected_application_uri is not None and outcome.leaf is not None:
             check_application_uri(outcome.leaf, self.expected_application_uri).raise_for_status()

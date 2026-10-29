@@ -10,6 +10,7 @@ The PKI directory of an application: the folders, and the application certificat
 
 import ipaddress
 import logging
+import re
 import socket
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from enginir_opcua.crypto import cert_gen, uacrypto
+from enginir_opcua.crypto.file_journal import FileJournal
 from enginir_opcua.crypto.truststore import CERTIFICATE_EXTENSIONS
 from enginir_opcua.ua.uaerrors import ConfigurationError
 
@@ -107,9 +109,10 @@ async def load_own_credentials(
     create: bool = True,
 ) -> OwnCredentials:
     """
-    Load the application certificate, its chain and its key from own/. When own/certs holds no certificate and
-    create is set, a self-signed application certificate and its key are generated there, readable by the owner
-    only for the key. An existing certificate is never replaced.
+    Load the application certificate, its chain and its key from own/. The certificate is the one whose key is in
+    own/private; when several certificates match a key, the one that became valid last. When own/certs holds no
+    certificate and create is set, a self-signed application certificate and its key are generated there, readable
+    by the owner only for the key. An existing certificate is never replaced.
     """
     certificate_files = await anyio.to_thread.run_sync(_files, root / "own" / "certs", CERTIFICATE_EXTENSIONS)
     key_files = await anyio.to_thread.run_sync(_files, root / "own" / "private", KEY_EXTENSIONS)
@@ -122,15 +125,25 @@ async def load_own_credentials(
         return await _generate(root, key_files, application_uri, host_names, usage, password)
     if not key_files:
         raise ConfigurationError(f"{root / 'own' / 'private'} holds no private key for the certificate in own/certs")
-    key = await uacrypto.load_private_key(key_files[0], password)
-    if not isinstance(key, RSAPrivateKey):
-        raise ConfigurationError(f"The private key {key_files[0]} is not an RSA key")
+    keys: list[tuple[Path, RSAPrivateKey]] = []
+    for key_file in key_files:
+        key = await uacrypto.load_private_key(key_file, password)
+        if isinstance(key, RSAPrivateKey):
+            keys.append((key_file, key))
+        elif len(key_files) == 1:
+            raise ConfigurationError(f"The private key {key_file} is not an RSA key")
+        else:
+            _logger.warning("Ignoring the private key %s, it is not an RSA key", key_file)
+    if not keys:
+        raise ConfigurationError(f"{root / 'own' / 'private'} holds no RSA private key")
     certificates: list[x509.Certificate] = []
     for file_name in certificate_files:
         certificates.extend(await uacrypto.load_certificates(file_name))
-    leaf = next((certificate for certificate in certificates if _same_key(certificate, key)), None)
-    if leaf is None:
-        raise ConfigurationError(f"No certificate in {root / 'own' / 'certs'} belongs to the key {key_files[0]}")
+    matching = [(certificate, key) for certificate in certificates for _, key in keys if _same_key(certificate, key)]
+    if not matching:
+        names = ", ".join(str(key_file) for key_file, _ in keys)
+        raise ConfigurationError(f"No certificate in {root / 'own' / 'certs'} belongs to the key {names}")
+    leaf, key = max(matching, key=lambda pair: pair[0].not_valid_before_utc)
     return OwnCredentials(leaf, _chain_of(leaf, certificates), key)
 
 
@@ -162,3 +175,76 @@ async def _generate(
 
 SERVER_USAGE = [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
 CLIENT_USAGE = [ExtendedKeyUsageOID.CLIENT_AUTH]
+
+
+def _pending_path(root: Path, name: str) -> Path:
+    return root / "own" / "pending" / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', name)}.pem"
+
+
+def save_pending_key(root: Path, name: str, key: RSAPrivateKey, journal: FileJournal | None = None) -> None:
+    """Keep a new private key until its certificate arrives. One key per name; an earlier one is replaced."""
+    journal = journal or FileJournal()
+    journal.create_directory(root / "own" / "pending", 0o700)
+    journal.write(_pending_path(root, name), cert_gen.dump_private_key_as_pem(key), 0o600)
+
+
+def load_pending_key(root: Path, name: str) -> RSAPrivateKey | None:
+    path = _pending_path(root, name)
+    try:
+        key = serialization.load_pem_private_key(path.read_bytes(), None)
+    except (FileNotFoundError, ValueError):
+        return None
+    return key if isinstance(key, RSAPrivateKey) else None
+
+
+def discard_pending_key(root: Path, name: str, journal: FileJournal | None = None) -> None:
+    (journal or FileJournal()).remove(_pending_path(root, name))
+
+
+def write_own_credentials(
+    root: Path,
+    certificate: x509.Certificate,
+    chain: Sequence[x509.Certificate],
+    key: RSAPrivateKey,
+    previous: x509.Certificate | None,
+    journal: FileJournal,
+) -> None:
+    """
+    Make a certificate, its chain and its key the application credentials: the key, then the certificate, are
+    written over `application.pem` and `application.der`, and the files of the previous certificate and of its key
+    are removed. Blocking; undo through the journal.
+    """
+    certificates, private = root / "own" / "certs", root / "own" / "private"
+    journal.create_directory(certificates)
+    journal.create_directory(private, 0o700)
+    journal.write(private / KEY_NAME, cert_gen.dump_private_key_as_pem(key), 0o600)
+    journal.write(certificates / CERTIFICATE_NAME, certificate.public_bytes(serialization.Encoding.DER), 0o644)
+    for intermediate in chain:
+        der = intermediate.public_bytes(serialization.Encoding.DER)
+        journal.write(certificates / f"{uacrypto.certificate_thumbprint(der).hex()}.der", der, 0o644)
+    if previous is None:
+        return
+    for entry in _files(certificates, CERTIFICATE_EXTENSIONS):
+        if entry.name == CERTIFICATE_NAME:
+            continue
+        try:
+            if previous in _load_certificates_sync(entry):
+                journal.remove(entry)
+        except ValueError:
+            continue
+    for entry in _files(private, KEY_EXTENSIONS):
+        if entry.name == KEY_NAME:
+            continue
+        try:
+            old = serialization.load_pem_private_key(entry.read_bytes(), None)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(old, RSAPrivateKey) and _same_key(previous, old):
+            journal.remove(entry)
+
+
+def _load_certificates_sync(path: Path) -> list[x509.Certificate]:
+    content = path.read_bytes()
+    if path.suffix.lower() == ".pem":
+        return x509.load_pem_x509_certificates(content)
+    return [x509.load_der_x509_certificate(content)]

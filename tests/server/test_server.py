@@ -1008,3 +1008,12 @@ async def test_default_application_identity_is_enginir() -> None:
     assert srv.manufacturer_name == "engiNIR"
     assert clt.application_uri == "urn:enginir:opcua:client"
     assert clt.product_uri == "urn:enginir:opcua"
+
+
+async def test_srv85_server_capabilities_publish_max_byte_string_length() -> None:
+    """Part 5, 6.3.2: ServerCapabilities holds MaxByteStringLength, so clients can size their chunks."""
+    server = Server(allow_no_security=True)
+    server.iserver.max_byte_string_length = 4096
+    await server.init()
+    node = server.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength))
+    assert await node.read_value() == 4096

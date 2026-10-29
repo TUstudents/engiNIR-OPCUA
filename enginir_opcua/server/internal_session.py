@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import logging
 import secrets
 import time
@@ -276,6 +277,7 @@ class Session:
                     uacrypto.der_from_x509(self.iserver.certificate) if self.iserver.certificate is not None else None,
                     self.nonce,
                     self.iserver.user_certificate_validator(),
+                    self.bound_channel.peer_address if self.bound_channel is not None else None,
                 )
                 certificate = uacrypto.der_from_x509(user_certificate)
         except (ServiceError, ua.uaerrors.UaStatusCodeError):
@@ -340,7 +342,7 @@ class Session:
         if not self.subscription_ids() and not service.has_pending_notice(self.id):
             self.flush_publish_queue(ua.StatusCodes.BadNoSubscription)
 
-    async def close(self, delete_subscriptions: bool) -> None:
+    async def close(self, delete_subscriptions: bool, reason: ua.StatusCode | None = None) -> None:
         if self.state == SessionState.Closed:
             return
         _logger.info("close session %s", self.name)
@@ -348,6 +350,9 @@ class Session:
         self.continuation_points.clear()
         self.history_points.clear()
         self.manager.forget(self)
+        await self.services.run_close_listeners(
+            reason if reason is not None else ua.StatusCode(ua.StatusCodes.BadSessionClosed)
+        )
         self.flush_publish_queue(ua.StatusCodes.BadSessionClosed)
         self.iserver.subscription_service.drop_pending_notices(self.id)
         if delete_subscriptions:
@@ -441,7 +446,7 @@ class SessionManager:
             raise ServiceError(ua.StatusCodes.BadTooManySessions)
         oldest = min(unactivated, key=lambda s: s.created_at)
         _logger.warning("At max_sessions=%s, closing the oldest unactivated session %s", self.max_sessions, oldest)
-        await oldest.close(False)
+        await oldest.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
 
     async def create_session(
         self, channel: SessionChannel, params: ua.CreateSessionParameters, sockname: tuple[str, int] | None = None
@@ -564,7 +569,7 @@ class SessionManager:
 
     async def close_session(self, channel: SessionChannel, token: ua.NodeId, delete_subscriptions: bool) -> None:
         session = self.resolve(channel, token, requires_activated=False)
-        await session.close(delete_subscriptions)
+        await session.close(delete_subscriptions, ua.StatusCode(ua.StatusCodes.Good))
 
     async def on_channel_closed(self, channel: SessionChannel) -> None:
         for session in list(self.sessions.values()):
@@ -572,7 +577,7 @@ class SessionManager:
                 continue
             if session.state == SessionState.Created:
                 self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
-                await session.close(False)
+                await session.close(False, ua.StatusCode(ua.StatusCodes.BadSecureChannelClosed))
             else:
                 session.unbind()
 
@@ -591,7 +596,7 @@ class SessionManager:
             return True
         _logger.info("The user certificate of session %s expired, closing the session", session.name)
         self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
-        await session.close(False)
+        await session.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
         return False
 
     async def sweep(self) -> float:
@@ -608,7 +613,7 @@ class SessionManager:
             if remaining <= 0:
                 _logger.info("Session %s expired", session.name)
                 self.iserver.diagnostics.session_ended(session, "timeout")  # J: diagnostics (SRV-93)
-                await session.close(False)
+                await session.close(False, ua.StatusCode(ua.StatusCodes.BadTimeout))
             else:
                 wait = min(wait, remaining)
         return max(wait, 0.05)
@@ -635,7 +640,7 @@ class SessionManager:
                 pass
             self._sweep_task = None
         for session in list(self.sessions.values()):
-            await session.close(False)
+            await session.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
 
 
 class InternalSession(AbstractSession):
@@ -670,12 +675,31 @@ class InternalSession(AbstractSession):
         self.subscription_service: SubscriptionService = submgr
         self.name: str = name
         self.user: User = user
-        self.channel_security_mode: ua.MessageSecurityMode | None = None
         self.session_id: ua.NodeId = (
             session_id if session_id is not None else internal_server.session_manager.next_session_id()
         )
         self.publish_callback: Callable[..., Any] | None = None
         self.publish_request_callback: Callable[..., Any] | None = None
+        self.channel_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.None_
+        self._close_listeners: list[Callable[[InternalSession, ua.StatusCode], Any]] = []
+
+    def add_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
+        """Call `callback(session, reason)` (reason: a StatusCode; Good for CloseSession) when the Session closes, expires or is deleted; it may be a coroutine function."""
+        self._close_listeners.append(callback)
+
+    def remove_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
+        if callback in self._close_listeners:
+            self._close_listeners.remove(callback)
+
+    async def run_close_listeners(self, reason: ua.StatusCode) -> None:
+        listeners, self._close_listeners = self._close_listeners, []
+        for listener in listeners:
+            try:
+                outcome = listener(self, reason)
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:
+                self.logger.exception("A close listener of session %s failed", self.name)
 
     def __str__(self) -> str:
         return f"InternalSession(name:{self.name}, user:{self.user}, id:{self.session_id})"
@@ -693,7 +717,11 @@ class InternalSession(AbstractSession):
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
-        results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        token = current_call_session.set(self)
+        try:
+            results = self.iserver.attribute_service.read(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
         await self.iserver.callback_service.dispatch(
             CallbackType.PostRead, ServerItemCallback(params, results, user, self.external)
         )
