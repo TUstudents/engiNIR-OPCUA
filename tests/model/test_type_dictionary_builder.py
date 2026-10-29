@@ -96,27 +96,11 @@ async def test_opc_type_dict_append_struct_1(srv):
     assert result.attrib == case
 
 
-@pytest.mark.skip("Support for that feature currently removed")
-async def test_opc_type_dict_append_struct_2(srv):
-    case = {"BaseType": "ua:ExtensionObject", "Name": "CustomizedStruct"}
-    result = srv.opc_type_builder.append_struct("customized_#?+`struct")
-    assert result.attrib == case
-
-
-async def test_opc_type_dict_add_field_1(srv):
+@pytest.mark.parametrize("field_type", [ua.VariantType.Boolean, "Boolean"], ids=["variant-type", "type-name"])
+async def test_opc_type_dict_add_field(srv, field_type):
     structure_name = "CustomizedStruct"
     srv.opc_type_builder.append_struct(structure_name)
-    srv.opc_type_builder.add_field(ua.VariantType.Boolean, "id", structure_name)
-    case = {"TypeName": "opc:Boolean", "Name": "id"}
-    struct_dict = getattr(srv.opc_type_builder, "_structs_dict")
-    result = list(struct_dict[structure_name])[0]
-    assert result.attrib == case
-
-
-async def test_opc_type_dict_add_field_2(srv):
-    structure_name = "CustomizedStruct"
-    srv.opc_type_builder.append_struct(structure_name)
-    srv.opc_type_builder.add_field("Boolean", "id", structure_name)
+    srv.opc_type_builder.add_field(field_type, "id", structure_name)
     case = {"TypeName": "opc:Boolean", "Name": "id"}
     struct_dict = getattr(srv.opc_type_builder, "_structs_dict")
     result = list(struct_dict[structure_name])[0]
@@ -154,24 +138,13 @@ async def test_opc_type_dict_get_dict_value(srv):
     assert result == case
 
 
-async def test_reference_generator_1(srv):
+@pytest.mark.parametrize("forward", [True, False])
+async def test_reference_generator(srv, forward):
     id1 = ua.NodeId(1, NamespaceIndex=2, NodeIdType=ua.NodeIdType.Numeric)
     id2 = ua.NodeId(2, NamespaceIndex=2, NodeIdType=ua.NodeIdType.Numeric)
     ref = ua.NodeId(ua.ObjectIds.HasEncoding, 0)
-    result = reference_generator(id1, id2, ref)
-    assert result.IsForward
-    assert result.ReferenceTypeId == ref
-    assert result.SourceNodeId == id1
-    assert result.TargetNodeClass == ua.NodeClass.DataType
-    assert result.TargetNodeId == id2
-
-
-async def test_reference_generator_2(srv):
-    id1 = ua.NodeId(1, NamespaceIndex=2, NodeIdType=ua.NodeIdType.Numeric)
-    id2 = ua.NodeId(2, NamespaceIndex=2, NodeIdType=ua.NodeIdType.Numeric)
-    ref = ua.NodeId(ua.ObjectIds.HasEncoding, 0)
-    result = reference_generator(id1, id2, ref, False)
-    assert not result.IsForward
+    result = reference_generator(id1, id2, ref, forward)
+    assert result.IsForward is forward
     assert result.ReferenceTypeId == ref
     assert result.SourceNodeId == id1
     assert result.TargetNodeClass == ua.NodeClass.DataType
@@ -325,31 +298,6 @@ async def test_struct_node_add_field(srv):
     struct = get_ua_class(struct_name)
     struct_instance = struct()
     assert struct_instance.id == 0
-
-
-async def test_get_ua_class_1(srv):
-    struct_name = "CustomizedStruct"
-    struct_node = await srv.dict_builder.create_data_type(struct_name)
-    struct_node.add_field("id", ua.VariantType.Int32)
-    await srv.dict_builder.set_dict_byte_string()
-    await srv.srv.load_type_definitions()
-    try:
-        assert get_ua_class(struct_name) is not None
-    except AttributeError:
-        pass
-
-
-@pytest.mark.skip("Support for that feature currently removed")
-async def test_get_ua_class_2(srv):
-    struct_name = "*c*u_stom-ized&Stru#ct"
-    struct_node = await srv.dict_builder.create_data_type(struct_name)
-    struct_node.add_field("id", ua.VariantType.Int32)
-    await srv.dict_builder.set_dict_byte_string()
-    await srv.srv.load_type_definitions()
-    try:
-        assert get_ua_class(struct_name) is not None
-    except AttributeError:
-        pass
 
 
 async def test_functional_basic(srv):

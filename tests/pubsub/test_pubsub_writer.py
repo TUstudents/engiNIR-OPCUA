@@ -8,7 +8,9 @@ import pytest
 from enginir_opcua import pubsub, ua
 from enginir_opcua.pubsub import uadp
 from enginir_opcua.pubsub.dataset import DataSetMeta, PubSubDataSourceDict
-from enginir_opcua.pubsub.uadp import UadpNetworkMessage
+from enginir_opcua.pubsub.uadp import (
+    UadpNetworkMessage,
+)
 from enginir_opcua.pubsub.udp import OpcUdp, UdpSettings
 from enginir_opcua.pubsub.writer import DataSetWriter, WriterGroup
 from enginir_opcua.server.server import Server

@@ -9,7 +9,7 @@ from enginir_opcua import Server, ua
 from enginir_opcua.common import ua_utils
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def server() -> Any:
     srv = Server()
     await srv.init()

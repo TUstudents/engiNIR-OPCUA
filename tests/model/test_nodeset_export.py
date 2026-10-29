@@ -74,7 +74,9 @@ SOURCE = nodeset(
 )
 
 
-async def round_trip(tmp_path: Path) -> tuple[Server, Server, Path]:
+@pytest.fixture(scope="module")
+async def round_tripped(tmp_path_factory: pytest.TempPathFactory) -> tuple[Server, Server, Path]:
+    tmp_path = tmp_path_factory.mktemp("round-trip")
     first = await new_server()
     await first.import_xml(xmlstring=SOURCE)
     ns = await first.get_namespace_index(URI)
@@ -92,15 +94,17 @@ async def attribute(server: Server, identifier: int, attribute_id: ua.AttributeI
     return value.Value
 
 
-async def test_com55_reference_type_and_data_type_attributes_survive_a_round_trip(tmp_path: Path) -> None:
-    _, second, _ = await round_trip(tmp_path)
+async def test_com55_reference_type_and_data_type_attributes_survive_a_round_trip(
+    round_tripped: tuple[Server, Server, Path],
+) -> None:
+    _, second, _ = round_tripped
     assert await attribute(second, 3001, ua.AttributeIds.Symmetric) is True
     assert await attribute(second, 3001, ua.AttributeIds.IsAbstract) is True
     assert await attribute(second, 3002, ua.AttributeIds.IsAbstract) is True
 
 
-async def test_com55_instance_attributes_survive_a_round_trip(tmp_path: Path) -> None:
-    _, second, _ = await round_trip(tmp_path)
+async def test_com55_instance_attributes_survive_a_round_trip(round_tripped: tuple[Server, Server, Path]) -> None:
+    _, second, _ = round_tripped
     assert await attribute(second, 3006, ua.AttributeIds.AccessLevel) == 0
     assert await attribute(second, 3006, ua.AttributeIds.Historizing) is True
     assert await attribute(second, 3006, ua.AttributeIds.MinimumSamplingInterval) == 250
@@ -110,8 +114,8 @@ async def test_com55_instance_attributes_survive_a_round_trip(tmp_path: Path) ->
     assert await attribute(second, 3008, ua.AttributeIds.ContainsNoLoops) is True
 
 
-async def test_com55_definitions_survive_a_round_trip(tmp_path: Path) -> None:
-    first, second, _ = await round_trip(tmp_path)
+async def test_com55_definitions_survive_a_round_trip(round_tripped: tuple[Server, Server, Path]) -> None:
+    first, second, _ = round_tripped
     ns = await first.get_namespace_index(URI)
     for identifier in (3002, 3003, 3004):
         node = ua.NodeId(identifier, ns)
@@ -127,8 +131,8 @@ async def test_com55_definitions_survive_a_round_trip(tmp_path: Path) -> None:
     assert [(f.Name, f.Value, f.DisplayName.Text) for f in option_set.Fields][0] == ("One", 0, "Eins")
 
 
-async def test_com87_export_uses_only_attributes_of_the_schema(tmp_path: Path) -> None:
-    _, _, path = await round_trip(tmp_path)
+async def test_com87_export_uses_only_attributes_of_the_schema(round_tripped: tuple[Server, Server, Path]) -> None:
+    _, _, path = round_tripped
     allowed = declared_attributes()
     root = ET.parse(path).getroot()
     checked = 0

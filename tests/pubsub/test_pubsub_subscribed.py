@@ -2,6 +2,7 @@ import logging
 
 import pytest
 
+from enginir_opcua import pubsub
 from enginir_opcua.common.node import Node
 from enginir_opcua.pubsub import DataSetValue, SubscribedDataSetMirror, SubScribedTargetVariables
 from enginir_opcua.pubsub.dataset import DataSetMeta
@@ -198,3 +199,46 @@ async def test_pub31_the_mirror_creates_its_variables_once_and_updates_them(serv
     await mirror.on_dataset_received(meta, fields)
     assert await (await folder.get_child("1:a")).read_value() == 10
     assert await (await folder.get_child("1:b")).read_value() == 11
+
+
+async def target_with_ranges(
+    server: Server, name: str, receiver: str | None, write: str | None
+) -> tuple[Node, pubsub.SubScribedTargetVariables, DataSetMeta]:
+    node = await server.nodes.objects.add_variable(
+        NodeId(String(name), Int16(1)), name, [1, 2, 3, 4], VariantType.Int32
+    )
+    await node.set_writable()
+    dataset = DataSetMeta.Create(String(name))
+    dataset.add_scalar(String("Values"), VariantType.Int32)
+    field = dataset.get_field("Values")
+    assert field is not None
+    config = FieldTargetDataType(
+        DataSetFieldId=field.DataSetFieldId,
+        TargetNodeId=node.nodeid,
+        AttributeId=AttributeIds.Value,
+        ReceiverIndexRange=receiver,
+        WriteIndexRange=write,
+    )
+    target = pubsub.SubScribedTargetVariables(server, [pubsub.FieldTargets(config)])
+    await target.on_state_change(dataset, PubSubState.Operational)
+    return node, target, dataset
+
+
+@pytest.mark.parametrize(
+    ("name", "receiver", "write", "incoming", "expected"),
+    [
+        ("PubRanges", "1:2", "0:1", [10, 20, 30], [20, 30, 3, 4]),
+        ("PubWriteRange", None, "2:3", [7, 8], [1, 2, 7, 8]),
+        ("PubNoData", "5:6", None, [10, 20], [1, 2, 3, 4]),
+    ],
+    ids=["receiver-and-write-range", "write-range-alone", "receiver-range-without-data"],
+)
+async def test_pub6_index_ranges_select_what_is_written_to_the_target(
+    server: Server, name: str, receiver: str | None, write: str | None, incoming: list[int], expected: list[int]
+) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, name, receiver, write)
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant(incoming, VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == expected

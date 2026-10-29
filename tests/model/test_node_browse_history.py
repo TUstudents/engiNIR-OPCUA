@@ -181,7 +181,7 @@ async def test_com104_target_node_class_can_be_given() -> None:
     assert session.reads == []
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def local_server() -> Any:
     srv = Server()
     await srv.init()

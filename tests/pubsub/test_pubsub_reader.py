@@ -1,4 +1,5 @@
 import asyncio
+import struct
 from typing import Any
 
 from enginir_opcua import pubsub, ua
@@ -14,6 +15,7 @@ from enginir_opcua.pubsub.uadp import (
     UadpDataSetHeartbeat,
     UadpDataSetKeepAlive,
     UadpDataSetMessageHeader,
+    UadpDataSetRaw,
     UadpDataSetSkipped,
     UadpDataSetVariant,
     UadpGroupHeader,
@@ -22,7 +24,11 @@ from enginir_opcua.pubsub.uadp import (
 )
 from enginir_opcua.server.server import Server
 from enginir_opcua.ua.status_codes import StatusCodes
-from enginir_opcua.ua.uaprotocol_auto import PubSubState, ReaderGroupDataType, TargetVariablesDataType
+from enginir_opcua.ua.uaprotocol_auto import (
+    PubSubState,
+    ReaderGroupDataType,
+    TargetVariablesDataType,
+)
 from enginir_opcua.ua.uatypes import (
     DataValue,
     Int32,
@@ -349,3 +355,25 @@ async def test_pub19_readers_from_a_configuration_get_a_subscribed_dataset(serve
     await ps._con[0]._reader_groups[0].handle_msg(_message([5], payload=None))
     assert await node.read_value() == 5
     await ps._con[0]._reader_groups[0].stop()
+
+
+async def test_raw_dataset_status_is_status_code():
+    """Raw (fixed-layout) datasets must expose a StatusCode object, not a raw int.
+
+    Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1960
+    where `_datavalues_from_raw` passed the UInt16 header status straight into
+    `DataValue`, so `DataValue.StatusCode.is_good()` raised AttributeError.
+    """
+    dataset = DataSetMeta.Create(String("Raw"))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("Val"), VariantType.Int32))
+    reader = DataSetReader.new(
+        publisherId=Variant(UInt16(1)),
+        writer_group_id=UInt16(1),
+        dataset_writer_id=UInt16(1),
+        meta=dataset,
+    )
+    header = UadpDataSetMessageHeader(Status=UInt16(0))
+    raw = UadpDataSetRaw(header, struct.pack("<i", 42))
+    values = reader._datavalues_from_raw(raw, header)
+    assert isinstance(values[0].StatusCode, StatusCode)
+    assert values[0].StatusCode.is_good()

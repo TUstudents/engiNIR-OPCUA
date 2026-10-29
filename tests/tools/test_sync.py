@@ -1,5 +1,13 @@
+import asyncio
+import gc
+import inspect
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import uuid
+import warnings
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -8,6 +16,8 @@ import pytest
 from enginir_opcua import sync, ua, uamethod
 from enginir_opcua.client import Client as AsyncClient
 from enginir_opcua.client.ua_client import UaClient
+from enginir_opcua.common.node import Node as AsyncNode
+from enginir_opcua.common.subscription import Subscription as AsyncSubscription
 from enginir_opcua.server import Server as AsyncServer
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import (
@@ -15,6 +25,7 @@ from enginir_opcua.sync import (
     Server,
     SyncNode,
     ThreadLoop,
+    ThreadLoopNotRunning,
     XmlExporter,
     call_method_full,
     new_enum,
@@ -121,21 +132,6 @@ def test_sync_async_client_method(client, idx):
     assert results[0].Value.Value == 6.7
 
 
-def test_sync_client_get_node(client, idx):
-    node = client.get_node(85)
-    assert node == client.nodes.objects
-    nodes = node.get_children()
-    assert len(nodes) > 2
-    assert client.nodes.server in nodes
-    assert isinstance(nodes[0], SyncNode)
-
-    results = node.get_children_by_path([[f"{idx}:MyObject", f"{idx}:MyVariable"]])
-    assert len(results) == 1
-    vars = results[0]
-    assert len(vars) == 1
-    assert vars[0].read_value() == 6.7
-
-
 def test_sync_delete_nodes(client):
     obj = client.nodes.objects
     var = obj.add_variable(2, "VarToDelete", 9.1)
@@ -196,12 +192,13 @@ def test_sync_client_browse_nodes(client: Client, idx):
     assert isinstance(results[1][1], ua.BrowseResult)
 
 
-def test_sync_server_get_node(server, idx):
-    node = server.get_node(85)
-    assert node == server.nodes.objects
+def test_sync_get_node(side, idx):
+    _, node_source = side
+    node = node_source.get_node(85)
+    assert node == node_source.nodes.objects
     nodes = node.get_children()
     assert len(nodes) > 2
-    assert server.nodes.server in nodes
+    assert node_source.nodes.server in nodes
     assert isinstance(nodes[0], SyncNode)
 
     results = node.get_children_by_path([[f"{idx}:MyObject", f"{idx}:MyVariable"]])
@@ -211,6 +208,7 @@ def test_sync_server_get_node(server, idx):
     assert vars[0].read_value() == 6.7
 
 
+@pytest.mark.slow("enginir_opcua/sync.py", "enginir_opcua/server/internal_server.py")
 async def test_sync_server_creating_shelf_files_works(tloop: ThreadLoop, tmp_path: Path) -> None:
     shelf_file_path: Path = tmp_path / "shelf_file"
 
@@ -285,86 +283,42 @@ def test_sync_xml_export(server):
         exp.write_xml(Path(tmpdir) / "toto_test_export.xml")
 
 
-def test_create_enum_sync(server):
+@pytest.fixture(params=["server", "client"])
+def side(request, server, client):
+    return request.param, server if request.param == "server" else client
+
+
+def test_create_enum_sync(side):
+    kind, node_source = side
     idx = 4
-    new_enum(
-        server,
-        idx,
-        "MyCustEnum",
-        [
-            "titi",
-            "toto",
-            "tutu",
-        ],
-    )
+    name = f"MyCustEnum_{kind}"
+    new_enum(node_source, idx, name, ["titi", "toto", "tutu"])
 
-    server.load_data_type_definitions()
+    node_source.load_data_type_definitions()
 
-    var = server.nodes.objects.add_variable(idx, "my_enum", ua.MyCustEnum.toto)
-    val = var.read_value()
-    assert val == 1
+    var = node_source.nodes.objects.add_variable(idx, f"my_enum_{kind}", getattr(ua, name).toto)
+    assert var.read_value() == 1
 
 
-def test_create_enum_sync_client(client):
+def test_create_struct_sync(side):
+    kind, node_source = side
     idx = 4
-    new_enum(
-        client,
-        idx,
-        "MyCustEnum2",
-        [
-            "titi",
-            "toto",
-            "tutu",
-        ],
-    )
-
-    client.load_data_type_definitions()
-
-    var = client.nodes.objects.add_variable(idx, "my_enum_client", ua.MyCustEnum2.toto)
-    val = var.read_value()
-    assert val == 1
-
-
-def test_create_struct_sync(server):
-    idx = 4
-
+    name = f"MyMyStruct_{kind}"
     new_struct(
-        server,
+        node_source,
         idx,
-        "MyMyStruct",
+        name,
         [
             new_struct_field("MyBool", ua.VariantType.Boolean),
             new_struct_field("MyUInt32", ua.VariantType.UInt32, array=True),
         ],
     )
 
-    server.load_data_type_definitions()
-    mystruct = ua.MyMyStruct()
+    node_source.load_data_type_definitions()
+    mystruct = getattr(ua, name)()
     mystruct.MyUInt32 = [78, 79]
-    var = server.nodes.objects.add_variable(idx, "my_struct", mystruct)
-    val = var.read_value()
-    assert val.MyUInt32 == [78, 79]
-
-
-def test_create_struct_sync_client(client):
-    idx = 4
-
-    new_struct(
-        client,
-        idx,
-        "MyMyStructClient",
-        [
-            new_struct_field("MyBool", ua.VariantType.Boolean),
-            new_struct_field("MyUInt32", ua.VariantType.UInt32, array=True),
-        ],
-    )
-
-    client.load_data_type_definitions()
-    mystruct = ua.MyMyStructClient()
-    mystruct.MyUInt32 = [78, 79]
-    var = client.nodes.objects.add_variable(idx, "my_struct_client", mystruct)
-    val = var.read_value()
-    assert val.MyUInt32 == [78, 79]
+    var = node_source.nodes.objects.add_variable(idx, f"my_struct_{kind}", mystruct)
+    assert var.read_value().MyUInt32 == [78, 79]
 
 
 def alive_thread_loops():
@@ -403,3 +357,188 @@ def test_sync_client_init_failure_stops_own_tloop(monkeypatch):
     with pytest.raises(ValueError, match="bad url"):
         Client("opc.tcp://localhost:4840")
     assert alive_thread_loops() == before
+
+
+def run_with_deadline(function, seconds: float = 5.0) -> None:
+    errors: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            function()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), "the call did not return"
+    if errors:
+        raise errors[0]
+
+
+def test_syn5_a_forgotten_threadloop_does_not_block_exit():
+    """A program that never stops its ThreadLoop still exits."""
+    code = "from enginir_opcua.sync import ThreadLoop\nThreadLoop().start()\n"
+    result = subprocess.run([sys.executable, "-c", code], timeout=10, capture_output=True)
+    assert result.returncode == 0
+
+
+def test_syn1_a_sync_call_on_the_loop_thread_raises_instead_of_deadlocking():
+    """Part 4 has no say here; a blocking call made on the loop thread could only wait for itself."""
+    with ThreadLoop(timeout=3) as tloop:
+
+        async def inner() -> int:
+            return 1
+
+        async def outer() -> int:
+            return tloop.post(inner())
+
+        with pytest.raises(RuntimeError, match="loop thread"):
+            tloop.post(outer())
+
+
+def test_syn2_a_timed_out_call_is_cancelled_before_post_raises():
+    """Part 4, 5.7.5: a call that was reported as timed out must not run on."""
+    state = {"cancelled": False, "finished": False}
+
+    async def slow() -> None:
+        try:
+            await asyncio.sleep(5)
+            state["finished"] = True
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    with ThreadLoop(timeout=0.2) as tloop:
+        with pytest.raises(TimeoutError, match=r"0\.2 s"):
+            tloop.post(slow())
+        assert state == {"cancelled": True, "finished": False}
+
+
+def test_syn2_a_call_may_carry_its_own_timeout():
+    async def quick() -> int:
+        await asyncio.sleep(0.3)
+        return 7
+
+    with ThreadLoop(timeout=0.1) as tloop:
+        assert tloop.post(quick(), timeout=2) == 7
+        assert tloop.post(quick(), timeout=None) == 7
+
+
+def test_syn4_start_raises_when_the_thread_fails(monkeypatch):
+    def broken_loop():
+        raise OSError("no loop for you")
+
+    monkeypatch.setattr(asyncio, "new_event_loop", broken_loop)
+    tloop = ThreadLoop()
+    with pytest.raises(OSError, match="no loop for you"):
+        run_with_deadline(tloop.start)
+
+
+def test_syn4_stop_cancels_pending_tasks():
+    state = {"cancelled": False}
+
+    async def forever() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    tloop = ThreadLoop()
+    tloop.start()
+    asyncio.run_coroutine_threadsafe(forever(), tloop.loop)
+    time.sleep(0.2)
+    tloop.stop()
+    assert state["cancelled"]
+
+
+def test_syn6_stop_is_idempotent_and_the_loop_restarts():
+    async def answer() -> int:
+        return 42
+
+    tloop = ThreadLoop()
+    tloop.start()
+    tloop.stop()
+    tloop.stop()
+    tloop.start()
+    assert tloop.post(answer()) == 42
+    tloop.stop()
+
+
+def test_syn6_post_on_a_stopped_loop_leaves_no_unawaited_coroutine():
+    async def answer() -> int:
+        return 1
+
+    tloop = ThreadLoop()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(ThreadLoopNotRunning):
+            tloop.post(answer())
+        gc.collect()
+    assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
+
+
+def test_syn1_stop_from_the_loop_thread_raises():
+    with ThreadLoop() as tloop:
+
+        async def stopper() -> None:
+            tloop.stop()
+
+        with pytest.raises(RuntimeError, match="loop thread"):
+            tloop.post(stopper())
+
+
+EXCLUDED = {
+    "Client": {"subscribe_state"},
+    "Server": {"init", "get_pubsub"},
+    "SyncNode": {"new_node"},
+    "Subscription": {"init", "publish_callback", "enqueue", "session_event", "close", "restore"},
+}
+
+
+PAIRS = [
+    ("Client", AsyncClient, sync.Client),
+    ("Server", AsyncServer, sync.Server),
+    ("SyncNode", AsyncNode, sync.SyncNode),
+    ("Subscription", AsyncSubscription, sync.Subscription),
+]
+
+
+def public_members(cls: type) -> dict[str, object]:
+    return {name: member for name, member in inspect.getmembers(cls) if not name.startswith("_")}
+
+
+def describe(function: object) -> list[tuple[str, object, object]]:
+    return [(p.name, p.kind, p.default) for p in inspect.signature(function).parameters.values()]  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("name", "aio_class", "sync_class"), PAIRS)
+def test_syn10_every_public_async_member_has_a_sync_twin(name, aio_class, sync_class):
+    """The sync classes follow the async ones, apart from a short list of members that serve the internals."""
+    missing = sorted(set(public_members(aio_class)) - set(public_members(sync_class)) - EXCLUDED[name])
+    assert not missing
+
+
+@pytest.mark.parametrize(("name", "aio_class", "sync_class"), PAIRS)
+def test_syn8_sync_signatures_match_the_async_ones(name, aio_class, sync_class):
+    drift = []
+    sync_members = public_members(sync_class)
+    for member_name, member in public_members(aio_class).items():
+        twin = sync_members.get(member_name)
+        if not inspect.isfunction(member) or not inspect.isfunction(twin) or member_name in EXCLUDED[name]:
+            continue
+        if describe(member) != describe(twin):
+            drift.append(member_name)
+    assert not drift
+
+
+def test_syn10_configuration_attributes_are_forwarded():
+    for attribute in ("application_uri", "name", "product_uri", "session_state_path", "max_messagesize", "state"):
+        assert isinstance(getattr(sync.Client, attribute), property)
+
+
+def test_syn9_wrapped_methods_keep_name_and_doc():
+    assert sync.Client.connect_sessionless.__name__ == "connect_sessionless"
+    assert sync.SyncNode.read_value.__name__ == "read_value"
+    assert list(inspect.signature(sync.Client.set_security).parameters)[1] == "policy"

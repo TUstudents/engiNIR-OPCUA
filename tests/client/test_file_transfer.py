@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import warnings
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -34,8 +35,8 @@ class Rig:
     directory_node: Any
 
 
-@pytest.fixture
-async def rig() -> AsyncIterator[Rig]:
+@contextlib.asynccontextmanager
+async def build_rig() -> AsyncIterator[Rig]:
     port = find_free_port()
     server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
     server.allow_plaintext_password = True
@@ -58,6 +59,25 @@ async def rig() -> AsyncIterator[Rig]:
     )
     await client.disconnect()
     await server.stop()
+
+
+@pytest.fixture(scope="module")
+async def shared_rig() -> AsyncIterator[Rig]:
+    async with build_rig() as built:
+        yield built
+
+
+@pytest.fixture
+async def fresh_rig() -> AsyncIterator[Rig]:
+    async with build_rig() as built:
+        yield built
+
+
+@pytest.fixture
+async def rig(shared_rig: Rig) -> Rig:
+    await shared_rig.file.reset()
+    shared_rig.directory.reset()
+    return shared_rig
 
 
 async def test_cli12_read_loops_until_an_empty_bytestring(rig: Rig) -> None:
@@ -210,15 +230,16 @@ async def test_write_failure_reports_bytes_written(rig: Rig) -> None:
     assert raised.value.bytes_written == 0
 
 
-async def test_chunk_size_follows_max_byte_string_length(rig: Rig) -> None:
+async def test_chunk_size_follows_max_byte_string_length(fresh_rig: Rig) -> None:
     """OPC 10000-5, 6.3.2: the default chunk size is at most the server's MaxByteStringLength."""
-    limit = rig.client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength))
-    await rig.server.get_node(limit.nodeid).write_value(ua.Variant(2048, ua.VariantType.UInt32))
-    rig.file.write_cap = 2048
-    async with UaFile(rig.file_node, OpenFileMode.Write | OpenFileMode.EraseExisting) as remote:
+    limit = fresh_rig.client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength))
+    limit_on_server = fresh_rig.server.get_node(limit.nodeid)
+    await limit_on_server.write_value(ua.Variant(2048, ua.VariantType.UInt32))
+    fresh_rig.file.write_cap = 2048
+    async with UaFile(fresh_rig.file_node, OpenFileMode.Write | OpenFileMode.EraseExisting) as remote:
         await remote.write(b"z" * 5000)
         assert remote.chunk_size == 2048
-    assert len(rig.file.calls_of("Write")) == 3
+    assert len(fresh_rig.file.calls_of("Write")) == 3
 
 
 async def test_chunk_size_default_without_the_property(rig: Rig) -> None:
@@ -420,11 +441,11 @@ async def test_cli33_method_calls_use_the_per_call_timeout(rig: Rig, monkeypatch
     assert keywords and all(k == {"timeout": 7} for k in keywords)
 
 
-async def test_chunk_size_is_clamped_to_the_transport_limits(rig: Rig) -> None:
+async def test_chunk_size_is_clamped_to_the_transport_limits(fresh_rig: Rig) -> None:
     """OPC 10000-5, C.2: a chunk plus overhead has to fit the message sizes the channel agreed on."""
-    limits = rig.client.uaclient.protocol._channel.limits  # type: ignore[union-attr]
+    limits = fresh_rig.client.uaclient.protocol._channel.limits  # type: ignore[union-attr]
     limits.send_max_message_size = 5000
-    async with UaFile(rig.file_node, OpenFileMode.Write, chunk_size=60000) as remote:
+    async with UaFile(fresh_rig.file_node, OpenFileMode.Write, chunk_size=60000) as remote:
         assert await remote._resolve_chunk_size() <= 5000 - 1024
-    async with UaFile(rig.file_node, OpenFileMode.Read) as remote:
+    async with UaFile(fresh_rig.file_node, OpenFileMode.Read) as remote:
         assert await remote._resolve_chunk_size() <= 5000 - 1024

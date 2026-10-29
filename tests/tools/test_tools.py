@@ -1,4 +1,9 @@
+import argparse
+import getpass
+import os
+import select
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -9,15 +14,30 @@ from pathlib import Path
 
 import pytest
 
-from enginir_opcua import tools, ua, uamethod
+from enginir_opcua import Client, tools, ua, uamethod
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Server
+from enginir_opcua.tools import PASSWORD_VARIABLE, build_parser, configure_client
 from tests.conftest import find_free_port
+from tests.tools.sync_waiting import wait_until_sync
 
 ROOT = Path(__file__).parent.parent.parent
+
+
 PORT = find_free_port()
+UNBUFFERED = {**os.environ, "PYTHONUNBUFFERED": "1"}
+INTERRUPTIBLE_CLI = (
+    "import runpy, signal; signal.signal(signal.SIGINT, signal.default_int_handler); "
+    "runpy.run_module('enginir_opcua', run_name='__main__')"
+)
+
+
 URL = f"opc.tcp://127.0.0.1:{PORT}/tools"
+
+
 ADMIN_URL = f"opc.tcp://admin@127.0.0.1:{PORT}/tools"
+
+
 UNUSED_URL = f"opc.tcp://127.0.0.1:{find_free_port()}"
 
 
@@ -485,36 +505,62 @@ def test_tool3_a_password_in_the_url_is_warned_about(capsys, tool_server):
     assert "secret" not in err.replace("visible", "")
 
 
+def read_until(process: subprocess.Popen[bytes], needle: bytes, timeout: float = 30.0) -> None:
+    assert process.stdout is not None
+    seen = b""
+    deadline = time.monotonic() + timeout
+    while needle not in seen:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, seen
+        if select.select([process.stdout], [], [], remaining)[0]:
+            chunk = os.read(process.stdout.fileno(), 4096)
+            assert chunk, "the process ended before it printed the expected output"
+            seen += chunk
+
+
+def interrupt(process: subprocess.Popen) -> tuple[bytes | str, bytes | str]:
+    process.send_signal(signal.SIGINT)
+    try:
+        return process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        out, err = process.communicate()
+        pytest.fail(f"no exit after SIGINT; stdout={out!r} stderr={err!r}")
+
+
+def port_accepts(port: int) -> bool:
+    with socket.socket() as probe:
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
 def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
     command = [
         sys.executable,
-        "-m",
-        "enginir_opcua",
+        "-c",
+        INTERRUPTIBLE_CLI,
         "subscribe",
         "-u",
         URL,
         "-n",
         tool_server["variables"]["Int32"],
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(4)
-    process.send_signal(signal.SIGINT)
-    _, err = process.communicate(timeout=30)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=UNBUFFERED)
+    read_until(process, tool_server["variables"]["Int32"].encode())
+    _, err = interrupt(process)
     assert process.returncode == 0
-    assert "Traceback" not in err
+    assert b"Traceback" not in err
 
 
 def test_tool2_ctrl_c_in_server_exits_cleanly():
-    url = f"opc.tcp://127.0.0.1:{find_free_port()}"
+    port = find_free_port()
     process = subprocess.Popen(
-        [sys.executable, "-m", "enginir_opcua", "server", "-u", url],
+        [sys.executable, "-c", INTERRUPTIBLE_CLI, "server", "-u", f"opc.tcp://127.0.0.1:{port}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(5)
-    process.send_signal(signal.SIGINT)
-    _, err = process.communicate(timeout=30)
+    wait_until_sync(lambda: port_accepts(port), timeout=30)
+    _, err = interrupt(process)
     assert process.returncode == 0
     assert "Traceback" not in err
     assert "demo server" in err.lower()
@@ -544,3 +590,52 @@ def test_tool1_old_tools_still_read_and_list(capsys, running_server, monkeypatch
             getattr(tools, script)()
         assert exit_info.value.code == 0
         assert "deprecated" in capsys.readouterr().err
+
+
+ROOT = Path(__file__).parent.parent.parent
+
+
+def _arguments(*command_line: str) -> argparse.Namespace:
+    return build_parser().parse_args(["read", "-n", "i=1", "--user", "operator", *command_line])
+
+
+def test_tool3_password_option_is_gone() -> None:
+    """A password on the command line shows up in the process list and the shell history."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["read", "-n", "i=1", "--password", "secret"])
+
+
+async def test_tool3_password_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The password is taken from ENGINIR_OPCUA_PASSWORD when it is set."""
+    monkeypatch.setenv(PASSWORD_VARIABLE, "from-environment")
+    client = Client("opc.tcp://127.0.0.1:4840")
+    await configure_client(client, _arguments())
+    assert client._password == "from-environment"
+
+
+async def test_tool3_password_is_asked_on_the_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--ask-password prompts for the password, and the prompt wins over the environment."""
+    monkeypatch.setenv(PASSWORD_VARIABLE, "from-environment")
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": "typed")
+    client = Client("opc.tcp://127.0.0.1:4840")
+    await configure_client(client, _arguments("--ask-password"))
+    assert client._password == "typed"
+
+
+async def test_tool3_no_password_is_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a prompt and without the variable the tool does not set a password."""
+    monkeypatch.delenv(PASSWORD_VARIABLE, raising=False)
+    client = Client("opc.tcp://127.0.0.1:4840")
+    await configure_client(client, _arguments())
+    assert not client._password
+
+
+def test_tool3_the_server_command_help_says_it_is_a_demo() -> None:
+    """The demo server offers no security, and its help says so."""
+    result = subprocess.run(
+        [sys.executable, "-m", "enginir_opcua", "server", "--help"], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0
+    assert "DEMO" in result.stdout
+    assert "no security" in result.stdout
+    assert "127.0.0.1" in result.stdout
