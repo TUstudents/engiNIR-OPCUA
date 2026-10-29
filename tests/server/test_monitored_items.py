@@ -113,30 +113,25 @@ async def write(server: Server, nodeid: ua.NodeId, value: int, **timestamps: Any
     await server.iserver.aspace.write_attribute_value(nodeid, ua.AttributeIds.Value, dv)
 
 
-async def test_srv13_discard_oldest_drops_the_oldest_and_flags_the_new_first_entry(server: Server) -> None:
-    """Part 4, 5.13.1.5: the oldest value is deleted and the next one gets the Overflow bit."""
-    nodeid = await new_variable(server, "DiscardOldest", 0)
+@pytest.mark.parametrize(
+    ("discard_oldest", "expected", "flagged"),
+    [
+        pytest.param(True, [2, 3, 4], 0, id="srv13_discard_oldest_drops_the_oldest_and_flags_the_new_first_entry"),
+        pytest.param(False, [0, 1, 4], 2, id="srv13_discard_newest_replaces_the_last_entry_and_flags_it"),
+    ],
+)
+async def test_srv13_queue_overflow_flags_one_entry(
+    server: Server, discard_oldest: bool, expected: list[int], flagged: int
+) -> None:
+    """Part 4, 5.13.1.5: the dropped or replaced entry's neighbour carries the Overflow bit, and only that one."""
+    nodeid = await new_variable(server, f"Discard{discard_oldest}", 0)
     sub, wire = await open_subscription(server)
-    await create_items(server, sub, item_request(nodeid, queue=3, discard_oldest=True))
+    await create_items(server, sub, item_request(nodeid, queue=3, discard_oldest=discard_oldest))
     for value in (1, 2, 3, 4):
         await write(server, nodeid, value)
     notifications = await publish(sub, wire)
-    assert values_of(notifications) == [2, 3, 4]
-    assert has_overflow(notifications[0])
-    assert not has_overflow(notifications[1])
-
-
-async def test_srv13_discard_newest_replaces_the_last_entry_and_flags_it(server: Server) -> None:
-    """Part 4, 5.13.1.5: with DiscardOldest false the last value is replaced and carries the Overflow bit."""
-    nodeid = await new_variable(server, "DiscardNewest", 0)
-    sub, wire = await open_subscription(server)
-    await create_items(server, sub, item_request(nodeid, queue=3, discard_oldest=False))
-    for value in (1, 2, 3, 4):
-        await write(server, nodeid, value)
-    notifications = await publish(sub, wire)
-    assert values_of(notifications) == [0, 1, 4]
-    assert not has_overflow(notifications[0])
-    assert has_overflow(notifications[2])
+    assert values_of(notifications) == expected
+    assert [has_overflow(notification) for notification in notifications] == [index == flagged for index in range(3)]
 
 
 @pytest.mark.parametrize("discard_oldest", [True, False])

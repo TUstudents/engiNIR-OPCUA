@@ -19,25 +19,39 @@ def future() -> datetime:
     return datetime.now(UTC) + timedelta(days=1)
 
 
-async def test_history_var_read_one(history_server):
-    """only an end time and a count: newest first"""
-    res = await history_server.var.read_raw_history(None, future(), 1)
-    assert 1 == len(res)
-    assert res[0].Value.Value == history_server.values[-1]
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
-async def test_history_var_read_last_3(history_server):
-    res = await history_server.var.read_raw_history(None, future(), 3)
-    assert 3 == len(res)
-    assert res[-1].Value.Value == history_server.values[-3]
-    assert res[0].Value.Value == history_server.values[-1]
+def _past() -> datetime:
+    return datetime.now(UTC) - timedelta(days=6)
 
 
-async def test_history_var_read_all2(history_server):
-    res = await history_server.var.read_raw_history(None, future(), 9999)
-    assert len(history_server.values) == len(res)
-    assert res[-1].Value.Value == history_server.values[0]
-    assert res[0].Value.Value == history_server.values[-1]
+READ_RANGES = [
+    pytest.param(None, future, 1, slice(None, -2, -1), id="only_an_end_and_one_value_newest_first"),
+    pytest.param(None, future, 3, slice(None, -4, -1), id="only_an_end_and_three_values_newest_first"),
+    pytest.param(None, _now, 2, slice(None, -3, -1), id="only_an_end_at_now_and_two_values_reversed"),
+    pytest.param(None, future, 9999, slice(None, None, -1), id="only_an_end_and_a_large_count_everything_reversed"),
+    pytest.param(_past, _now, 0, slice(None), id="start_and_end_everything_in_order"),
+    pytest.param(_past, _now, 5, slice(0, 5), id="start_and_end_five_values"),
+    pytest.param(_now, _past, 5, slice(None, -6, -1), id="start_after_end_reverses_the_order"),
+    pytest.param(_past, None, 6, slice(0, 6), id="only_a_start_and_six_values_in_order"),
+    pytest.param(_past, None, 100, slice(None), id="only_a_start_everything_in_order"),
+]
+
+
+@pytest.mark.parametrize(("start", "end", "count", "window"), READ_RANGES)
+async def test_history_var_read_ranges(history_server, start, end, count, window):
+    """Part 11, 6.5.3: two of start, end and count select the values; an end without a start reads backwards."""
+    res = await history_server.var.read_raw_history(start() if start else None, end() if end else None, count)
+    assert [dv.Value.Value for dv in res] == history_server.values[window]
+
+
+@pytest.mark.parametrize(("start", "end", "count", "window"), READ_RANGES)
+async def test_history_ev_read_ranges(history_server, start, end, count, window):
+    """Part 11, 6.5.2: the same ranges select events."""
+    res = await history_server.srv_node.read_event_history(start() if start else None, end() if end else None, count)
+    assert [ev.Severity for ev in res] == history_server.ev_values[window]
 
 
 async def test_srv20_fewer_than_two_of_start_end_count_is_invalid_argument(history_server):
@@ -53,65 +67,6 @@ async def test_srv20_fewer_than_two_of_start_end_count_is_invalid_argument(histo
         )
         with pytest.raises(ua.uaerrors.BadInvalidArgument):
             (await history_server.var.history_read(details)).StatusCode.check()
-
-
-async def test_history_var_read_2_with_end(history_server):
-    """only has end time, should return reverse order"""
-    now = datetime.now(UTC)
-    res = await history_server.var.read_raw_history(None, now, 2)
-    assert 2 == len(res)
-    assert res[-1].Value.Value == history_server.values[-2]
-
-
-async def test_history_var_read_all(history_server):
-    """both start and endtime, return from start to end"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.var.read_raw_history(old, now, 0)
-    assert len(history_server.values) == len(res)
-    assert res[-1].Value.Value == history_server.values[-1]
-    assert res[0].Value.Value == history_server.values[0]
-
-
-async def test_history_var_read_5_in_timeframe(history_server):
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.var.read_raw_history(old, now, 5)
-    assert 5 == len(res)
-    assert res[-1].Value.Value == history_server.values[4]
-    assert res[0].Value.Value == history_server.values[0]
-
-
-async def test_history_var_read_5_in_timeframe_start_greater_than_end(history_server):
-    """start time greater than end time, should return reverse order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.var.read_raw_history(now, old, 5)
-    assert 5 == len(res)
-    assert res[-1].Value.Value == history_server.values[-5]
-    assert res[0].Value.Value == history_server.values[-1]
-
-
-async def test_history_var_read_6_with_start(history_server):
-    """only start return original order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-    res = await history_server.var.read_raw_history(old, None, 6)
-    assert 6 == len(res)
-    assert res[-1].Value.Value == history_server.values[5]
-    assert res[0].Value.Value == history_server.values[0]
-
-
-async def test_history_var_read_3_with_end(history_server):
-    """only end return reversed order"""
-    end = datetime.now(UTC) + timedelta(days=6)
-    res = await history_server.var.read_raw_history(None, end, 3)
-    assert 3 == len(res)
-    assert res[2].Value.Value == history_server.values[-3]
-    assert res[0].Value.Value == history_server.values[-1]
 
 
 async def test_history_var_read_repeated_continuation_point():
@@ -449,84 +404,6 @@ async def test_com54_event_time_and_type_are_bound_as_parameters() -> None:
         rows = list(await cursor.fetchall())
     assert rows == [(to_ticks(time), str(event_type))]
     await history.stop()
-
-
-async def test_history_ev_read_2_with_end(history_server):
-    """only has end time, should return reverse order"""
-    now = datetime.now(UTC)
-    res = await history_server.srv_node.read_event_history(None, now, 2)
-    assert 2 == len(res)
-    assert res[-1].Severity == history_server.ev_values[-2]
-
-
-async def test_history_ev_read_all(history_server):
-    """both start and end time, return from start to end"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.srv_node.read_event_history(old, now, 0)
-    assert 20 == len(res)
-    assert res[-1].Severity == history_server.ev_values[-1]
-    assert res[0].Severity == history_server.ev_values[0]
-
-
-async def test_history_ev_read_5_in_timeframe(history_server):
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.srv_node.read_event_history(old, now, 5)
-    assert 5 == len(res)
-    assert res[-1].Severity == history_server.ev_values[4]
-    assert res[0].Severity == history_server.ev_values[0]
-
-
-async def test_history_ev_read_5_in_timeframe_start_greater_than_end(history_server):
-    """start time greater than end time, should return reverse order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-
-    res = await history_server.srv_node.read_event_history(now, old, 5)
-    assert 5 == len(res)
-    assert res[-1].Severity == history_server.ev_values[-5]
-    assert res[0].Severity == history_server.ev_values[-1]
-
-
-async def test_history_ev_read_6_with_start(history_server):
-    """only start return original order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(old, None, 6)
-    assert 6 == len(res)
-    assert res[-1].Severity == history_server.ev_values[5]
-    assert res[0].Severity == history_server.ev_values[0]
-
-
-async def test_history_ev_read_all_with_start(history_server):
-    """only start return original order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(old, None, 100)
-    assert 20 == len(res)
-    assert res[-1].Severity == history_server.ev_values[-1]
-    assert res[0].Severity == history_server.ev_values[0]
-
-
-async def test_history_ev_read_all_with_end(history_server):
-    """only end return reversed order"""
-    end = datetime.now(UTC) + timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(None, end, 100)
-    assert 20 == len(res)
-    assert res[-1].Severity == history_server.ev_values[0]
-    assert res[0].Severity == history_server.ev_values[-1]
-
-
-async def test_history_ev_read_3_with_end(history_server):
-    """only end return reversed order"""
-    end = datetime.now(UTC) + timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(None, end, 3)
-    assert 3 == len(res)
-    assert res[2].Severity == history_server.ev_values[-3]
-    assert res[0].Severity == history_server.ev_values[-1]
 
 
 async def test_com15_read_event_history_without_arguments_reads_everything_until_now(history_server):

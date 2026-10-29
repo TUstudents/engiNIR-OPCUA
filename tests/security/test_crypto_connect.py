@@ -167,11 +167,20 @@ async def test_basic128rsa15(srv_crypto_all_cert_basic128rsa15):
         assert await clt.nodes.objects.get_children()
 
 
-async def test_basic256_encrypt_success(srv_crypto_all_certs):
+@pytest.mark.parametrize(
+    "policy",
+    [
+        security_policies.SecurityPolicyBasic256Sha256,
+        security_policies.SecurityPolicyAes128Sha256RsaOaep,
+        security_policies.SecurityPolicyAes256Sha256RsaPss,
+    ],
+    ids=["basic256", "Aes128Sha256RsaOaep", "Aes256Sha256RsaPss"],
+)
+async def test_encrypt_success(srv_crypto_all_certs, policy):
     clt = Client(uri_crypto)
     _, cert = srv_crypto_all_certs
     await clt.set_security(
-        security_policies.SecurityPolicyBasic256Sha256,
+        policy,
         f"{PKI.peer1.certificate}",
         f"{PKI.peer1.key}",
         None,
@@ -216,38 +225,6 @@ async def test_basic256_encrypt_fail(srv_crypto_all_certs):
             None,
             mode=ua.MessageSecurityMode.None_,
         )
-
-
-async def test_Aes128Sha256RsaOaep_encrypt_success(srv_crypto_all_certs):
-    clt = Client(uri_crypto)
-    _, cert = srv_crypto_all_certs
-    await clt.set_security(
-        security_policies.SecurityPolicyAes128Sha256RsaOaep,
-        f"{PKI.peer1.certificate}",
-        f"{PKI.peer1.key}",
-        None,
-        cert,
-        ua.MessageSecurityMode.SignAndEncrypt,
-    )
-
-    async with clt:
-        assert await clt.nodes.objects.get_children()
-
-
-async def test_Aes256Sha256RsaPss_encrypt_success(srv_crypto_all_certs):
-    clt = Client(uri_crypto)
-    _, cert = srv_crypto_all_certs
-    await clt.set_security(
-        security_policies.SecurityPolicyAes256Sha256RsaPss,
-        f"{PKI.peer1.certificate}",
-        f"{PKI.peer1.key}",
-        None,
-        cert,
-        ua.MessageSecurityMode.SignAndEncrypt,
-    )
-
-    async with clt:
-        assert await clt.nodes.objects.get_children()
 
 
 async def test_certificate_handling_success(srv_crypto_one_cert):

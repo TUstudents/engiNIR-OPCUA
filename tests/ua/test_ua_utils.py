@@ -19,22 +19,13 @@ from enginir_opcua.ua.uatypes import (
 )
 
 
-def test_com1_negative_read_raises() -> None:
+@pytest.mark.parametrize("method", ["read", "skip"], ids=["com1_negative_read", "com1_negative_skip"])
+def test_com1_negative_read_or_skip_raises(method: str) -> None:
     """Part 6, 5.1.2: a decoder never reads before its current position."""
     buf = Buffer(b"0123456789")
-    buf.read(4)
+    getattr(buf, method)(4)
     with pytest.raises(NotEnoughData):
-        buf.read(-2)
-    assert buf.cur_pos == 4
-    assert len(buf) == 6
-
-
-def test_com1_negative_skip_raises() -> None:
-    """Part 6, 5.1.2: a decoder never reads before its current position."""
-    buf = Buffer(b"0123456789")
-    buf.skip(4)
-    with pytest.raises(NotEnoughData):
-        buf.skip(-2)
+        getattr(buf, method)(-2)
     assert buf.cur_pos == 4
     assert len(buf) == 6
 

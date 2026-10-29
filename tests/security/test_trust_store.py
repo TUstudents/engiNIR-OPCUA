@@ -61,39 +61,22 @@ async def test_selfsigned_in_trust_store(tmp_path: Path) -> None:
     assert validator_for(store).validate_application_certificate(peer.der, CONTEXT).accepted
 
 
-async def test_ca_not_in_trust_store(tmp_path: Path) -> None:
+@pytest.mark.parametrize("trusted", [False, True], ids=["ca_not_in_trust_store", "ca_in_trust_store"])
+async def test_ca_in_trust_store(tmp_path: Path, trusted: bool) -> None:
     ca = make_ca()
     leaf = make_identity(issuer=ca)
-    store = TrustStore([write_trust_directory(tmp_path / "trusted")], [])
+    store = TrustStore([write_trust_directory(tmp_path / "trusted", *([ca.certificate] if trusted else []))], [])
     await store.load()
-    assert not validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted
+    assert validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted is trusted
 
 
-async def test_ca_in_trust_store(tmp_path: Path) -> None:
-    ca = make_ca()
-    leaf = make_identity(issuer=ca)
-    store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
-    await store.load()
-    assert validator_for(store).validate_application_certificate(leaf.der, CONTEXT).accepted
-
-
-async def test_cert_expired(tmp_path: Path) -> None:
+@pytest.mark.parametrize("days", [20 * 365, -20 * 365], ids=["cert_expired", "cert_not_yet_valid"])
+async def test_cert_outside_its_validity_period(tmp_path: Path, days: int) -> None:
     ca = make_ca()
     leaf = make_identity(issuer=ca)
     store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
     await store.load()
-    outcome = validator_for(store, NOW + datetime.timedelta(days=20 * 365)).validate_application_certificate(
-        leaf.der, CONTEXT
-    )
-    assert outcome.status == ua.StatusCodes.BadCertificateTimeInvalid
-
-
-async def test_cert_not_yet_valid(tmp_path: Path) -> None:
-    ca = make_ca()
-    leaf = make_identity(issuer=ca)
-    store = TrustStore([write_trust_directory(tmp_path / "trusted", ca.certificate)], [])
-    await store.load()
-    outcome = validator_for(store, NOW - datetime.timedelta(days=20 * 365)).validate_application_certificate(
+    outcome = validator_for(store, NOW + datetime.timedelta(days=days)).validate_application_certificate(
         leaf.der, CONTEXT
     )
     assert outcome.status == ua.StatusCodes.BadCertificateTimeInvalid

@@ -223,31 +223,23 @@ async def _start_server(port: int) -> Server:
     return srv
 
 
-async def test_session_timeout_clamped_to_max() -> None:
-    """A client requesting a huge session timeout gets the server's max instead."""
+@pytest.mark.parametrize(
+    ("attribute", "limit", "requested"),
+    [
+        pytest.param("max_session_timeout_ms", 60_000, 24 * 60 * 60 * 1000, id="session_timeout_clamped_to_max"),
+        pytest.param("min_session_timeout_ms", 5_000, 100, id="session_timeout_clamped_to_min"),
+    ],
+)
+async def test_session_timeout_is_clamped(attribute: str, limit: int, requested: int) -> None:
+    """A requested session timeout above the maximum or below the minimum is revised to the limit."""
     port = find_free_port()
     srv = await _start_server(port)
-    srv.iserver.max_session_timeout_ms = 60_000
+    setattr(srv.iserver, attribute, limit)
     client = Client(f"opc.tcp://127.0.0.1:{port}")
-    client.session_timeout = 24 * 60 * 60 * 1000
+    client.session_timeout = requested
     await client.connect()
     try:
-        assert client.session_timeout == pytest.approx(60_000)
-    finally:
-        await client.disconnect()
-        await srv.stop()
-
-
-async def test_session_timeout_clamped_to_min() -> None:
-    """A client requesting a very short session timeout gets the server's floor."""
-    port = find_free_port()
-    srv = await _start_server(port)
-    srv.iserver.min_session_timeout_ms = 5_000
-    client = Client(f"opc.tcp://127.0.0.1:{port}")
-    client.session_timeout = 100
-    await client.connect()
-    try:
-        assert client.session_timeout == pytest.approx(5_000)
+        assert client.session_timeout == pytest.approx(limit)
     finally:
         await client.disconnect()
         await srv.stop()

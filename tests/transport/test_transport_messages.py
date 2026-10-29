@@ -307,23 +307,20 @@ async def test_srv25_message_before_open_gets_channel_unknown(raw_peer: RawPeer)
     assert await raw_peer.is_closed_by_peer()
 
 
-async def test_srv25_unknown_channel_id_gets_channel_unknown(raw_peer: RawPeer) -> None:
-    """Part 6, 6.7.7 and 7.1.5: a chunk for another channel id is refused."""
+@pytest.mark.parametrize(
+    ("field", "status"),
+    [
+        pytest.param("ChannelId", ua.StatusCodes.BadTcpSecureChannelUnknown, id="srv25_unknown_channel_id"),
+        pytest.param("TokenId", ua.StatusCodes.BadSecureChannelTokenUnknown, id="srv25_unknown_token_id"),
+    ],
+)
+async def test_srv25_unknown_channel_or_token_id_is_refused(raw_peer: RawPeer, field: str, status: int) -> None:
+    """Part 6, 6.7.7 and 7.1.5: a chunk for another channel id, or with a token id nobody issued, is refused."""
     channel = await open_channel_as_client(raw_peer)
-    channel.security_token.ChannelId += 1
+    setattr(channel.security_token, field, getattr(channel.security_token, field) + 1)
     await raw_peer.send(channel.message_to_binary(b"x", request_id=2))
     error = await raw_peer.receive_error()
-    assert error.Error.value == ua.StatusCodes.BadTcpSecureChannelUnknown
-    assert await raw_peer.is_closed_by_peer()
-
-
-async def test_srv25_unknown_token_id_gets_token_unknown(raw_peer: RawPeer) -> None:
-    """Part 6, 6.7.7 and 7.1.5: a chunk with a token id nobody issued is refused."""
-    channel = await open_channel_as_client(raw_peer)
-    channel.security_token.TokenId += 1
-    await raw_peer.send(channel.message_to_binary(b"x", request_id=2))
-    error = await raw_peer.receive_error()
-    assert error.Error.value == ua.StatusCodes.BadSecureChannelTokenUnknown
+    assert error.Error.value == status
     assert await raw_peer.is_closed_by_peer()
 
 

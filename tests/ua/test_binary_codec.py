@@ -250,16 +250,14 @@ def test_ua44_variant_null_array_with_zero_dimension_accepted() -> None:
     assert variant_from_binary(Buffer(data)).Dimensions == [0, 3]
 
 
-def test_ua44_variant_empty_array_with_positive_dimensions_raises() -> None:
-    """Part 6, 5.2.2.16: dimensions must agree with the array length."""
-    data = bytes([0xC0 | ua.VariantType.Int32.value]) + struct.pack("<iiii", 0, 2, 2, 3)
-    with pytest.raises(ua.UaError):
-        variant_from_binary(Buffer(data))
-
-
-def test_ua44_variant_negative_dimension_raises_for_empty_array() -> None:
-    """Part 6, 5.2.2.16: negative dimensions are invalid."""
-    data = bytes([0xC0 | ua.VariantType.Int32.value]) + struct.pack("<iiii", 0, 2, -1, 3)
+@pytest.mark.parametrize(
+    "dimensions",
+    [(2, 3), (-1, 3)],
+    ids=["ua44_empty_array_with_positive_dimensions", "ua44_negative_dimension_for_an_empty_array"],
+)
+def test_ua44_variant_empty_array_dimensions_raise(dimensions: tuple[int, int]) -> None:
+    """Part 6, 5.2.2.16: dimensions must agree with the array length and may not be negative."""
+    data = bytes([0xC0 | ua.VariantType.Int32.value]) + struct.pack("<iiii", 0, 2, *dimensions)
     with pytest.raises(ua.UaError):
         variant_from_binary(Buffer(data))
 

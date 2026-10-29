@@ -270,60 +270,29 @@ async def test_get_event_from_type_node_MultiInhereted_AuditOpenSecureChannelEve
     assert ev.RequestedLifetime is None
 
 
-async def test_eventgenerator_default(server):
-    evgen = await server.get_event_generator()
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
+def _base_event_node(server):
+    return enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
 
 
-async def test_eventgenerator_BaseEvent_object(server):
-    evgen = await server.get_event_generator(BaseEvent())
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
+EVENT_GENERATOR_ARGUMENTS = [
+    pytest.param(lambda server: {}, id="default"),
+    pytest.param(lambda server: {"etype": BaseEvent()}, id="BaseEvent_object"),
+    pytest.param(lambda server: {"etype": _base_event_node(server)}, id="BaseEvent_Node"),
+    pytest.param(lambda server: {"etype": ua.NodeId(ua.ObjectIds.BaseEventType)}, id="BaseEvent_NodeId"),
+    pytest.param(lambda server: {"etype": ua.ObjectIds.BaseEventType}, id="BaseEvent_ObjectIds"),
+    pytest.param(lambda server: {"etype": 2041}, id="BaseEvent_Identifier"),
+    pytest.param(
+        lambda server: {"emitting_node": enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.Server))},
+        id="sourceServer_Node",
+    ),
+    pytest.param(lambda server: {"emitting_node": ua.NodeId(ua.ObjectIds.Server)}, id="sourceServer_NodeId"),
+    pytest.param(lambda server: {"emitting_node": ua.ObjectIds.Server}, id="sourceServer_ObjectIds"),
+]
 
 
-async def test_eventgenerator_BaseEvent_Node(server):
-    evgen = await server.get_event_generator(
-        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType))
-    )
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_BaseEvent_NodeId(server):
-    evgen = await server.get_event_generator(ua.NodeId(ua.ObjectIds.BaseEventType))
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_BaseEvent_ObjectIds(server):
-    evgen = await server.get_event_generator(ua.ObjectIds.BaseEventType)
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_BaseEvent_Identifier(server):
-    evgen = await server.get_event_generator(2041)
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_sourceServer_Node(server):
-    evgen = await server.get_event_generator(
-        emitting_node=enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.Server))
-    )
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_sourceServer_NodeId(server):
-    evgen = await server.get_event_generator(emitting_node=ua.NodeId(ua.ObjectIds.Server))
-    await check_eventgenerator_base_event(evgen, server)
-    await check_eventgenerator_source_server(evgen, server)
-
-
-async def test_eventgenerator_sourceServer_ObjectIds(server):
-    evgen = await server.get_event_generator(emitting_node=ua.ObjectIds.Server)
+@pytest.mark.parametrize("arguments", EVENT_GENERATOR_ARGUMENTS)
+async def test_eventgenerator_arguments(server, arguments):
+    evgen = await server.get_event_generator(**arguments(server))
     await check_eventgenerator_base_event(evgen, server)
     await check_eventgenerator_source_server(evgen, server)
 
@@ -417,15 +386,23 @@ async def test_create_custom_data_type_object_id(server):
     await check_custom_type(type, ua.ObjectIds.BaseDataType, server, ua.NodeClass.DataType)
 
 
-async def test_create_custom_event_type_object_id(server):
-    type = await server.create_custom_event_type(
+@pytest.mark.parametrize(
+    "parent",
+    [
+        pytest.param(lambda server: ua.ObjectIds.BaseEventType, id="object_id"),
+        pytest.param(lambda server: ua.NodeId(ua.ObjectIds.BaseEventType), id="node_id"),
+        pytest.param(lambda server: _base_event_node(server), id="node"),
+    ],
+)
+async def test_create_custom_event_type(server, parent):
+    etype = await server.create_custom_event_type(
         2,
         "MyEvent",
-        ua.ObjectIds.BaseEventType,
+        parent(server),
         [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
     )
-    await check_custom_type(type, ua.ObjectIds.BaseEventType, server)
-    await server.delete_nodes([type])
+    await check_custom_type(etype, ua.ObjectIds.BaseEventType, server)
+    await server.delete_nodes([etype])
 
 
 async def test_create_custom_object_type_object_id(server):
@@ -465,28 +442,6 @@ async def test_create_custom_variable_type_object_id(server):
         [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
     )
     await check_custom_type(type, ua.ObjectIds.BaseVariableType, server)
-
-
-async def test_create_custom_event_type_node_id(server):
-    etype = await server.create_custom_event_type(
-        2,
-        "MyEvent",
-        ua.NodeId(ua.ObjectIds.BaseEventType),
-        [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
-    )
-    await check_custom_type(etype, ua.ObjectIds.BaseEventType, server)
-    await server.delete_nodes([etype])
-
-
-async def test_create_custom_event_type_node(server):
-    etype = await server.create_custom_event_type(
-        2,
-        "MyEvent1",
-        enginir_opcua.Node(server.iserver.isession, ua.NodeId(ua.ObjectIds.BaseEventType)),
-        [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
-    )
-    await check_custom_type(etype, ua.ObjectIds.BaseEventType, server)
-    await server.delete_nodes([etype])
 
 
 async def test_get_event_from_type_node_custom_event(server):
