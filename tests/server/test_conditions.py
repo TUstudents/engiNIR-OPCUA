@@ -472,7 +472,7 @@ async def test_timed_shelve_expires_and_reports_state(condition_rig: ConditionRi
     condition, _source, collector = await make(rig, shelving=True, max_time_shelved=60_000.0)
     shelving_id = (await condition.node.get_child([ua.QualifiedName("ShelvingState", 0)])).nodeid
     await condition.activate(severity=500)
-    await call(rig, shelving_id, TIMED_SHELVE, variant(200.0, ua.VariantType.Double))
+    await call(rig, shelving_id, TIMED_SHELVE, variant(30_000.0, ua.VariantType.Double))
     events = await rig.count(collector, 2)
     shelved = events[-1]
     assert field(shelved, "ShelvingState/CurrentState").Text == "TimedShelved"

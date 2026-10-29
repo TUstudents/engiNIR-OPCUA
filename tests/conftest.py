@@ -529,10 +529,11 @@ async def wait_mode_in_real_map(ha_client, client, sub, mode, value):
     reconciliator = ha_client.reconciliator
     await wait_sub_in_real_map(ha_client, sub)
     url = client.server_url.geturl()
-    vsub = reconciliator.real_map[url][sub]
     option = None
     for _ in range(RETRY):
-        option = getattr(vsub, mode)
+        # Look the entry up every time: the reconciliator may replace it while it works.
+        vsub = reconciliator.real_map[url].get(sub)
+        option = getattr(vsub, mode, None)
         if option == value:
             break
         await sleep(SLEEP)
