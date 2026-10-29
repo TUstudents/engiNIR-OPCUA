@@ -5486,7 +5486,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddRole"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16301, 0),
         BrowseName=QualifiedName("AddRole", 0),
@@ -5554,7 +5556,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveRole"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16304, 0),
         BrowseName=QualifiedName("RemoveRole", 0),
@@ -6138,7 +6142,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetMonitoredItems"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(11492, 0),
         BrowseName=QualifiedName("GetMonitoredItems", 0),
@@ -6208,7 +6214,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("ResendData"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12873, 0),
         BrowseName=QualifiedName("ResendData", 0),
@@ -6246,7 +6254,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetSubscriptionDurable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12749, 0),
         BrowseName=QualifiedName("SetSubscriptionDurable", 0),
@@ -6314,7 +6324,9 @@ def create_standard_address_space_Services_2(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RequestServerStateChange"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12886, 0),
         BrowseName=QualifiedName("RequestServerStateChange", 0),

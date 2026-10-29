@@ -842,11 +842,8 @@ class XmlImporter:
         node = self._get_add_node_item(obj, no_namespace_migration)
         attrs = ua.MethodAttributes()
         self._apply_common(obj, attrs)
-        if obj.executable is not None:
-            attrs.Executable = obj.executable
-            attrs.UserExecutable = obj.executable
-        if obj.userexecutable is not None:
-            attrs.UserExecutable = obj.userexecutable
+        attrs.Executable = True if obj.executable is None else obj.executable
+        attrs.UserExecutable = attrs.Executable if obj.userexecutable is None else obj.userexecutable
         return await self._send_add(obj, node, attrs)
 
     async def add_reference_type(self, obj, no_namespace_migration=False):

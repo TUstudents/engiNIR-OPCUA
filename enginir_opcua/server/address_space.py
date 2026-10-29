@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
+import contextvars
 import dataclasses
 import inspect
 import logging
@@ -904,6 +905,8 @@ class MethodService:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
         self._pool: ThreadPoolExecutor | None = None
+        # Part 9, 5.8.17: a Method may also be called on an Object that does not own it (shelving by ConditionId)
+        self.ownership_hooks: list[Callable[[ua.NodeId, ua.NodeId], bool]] = []
 
     def stop(self) -> None:
         if self._pool is not None:
@@ -964,6 +967,8 @@ class MethodService:
 
     def _owns(self, object_node: NodeData, method_node: NodeData) -> bool:
         aspace = self._aspace
+        if any(hook(object_node.nodeid, method_node.nodeid) for hook in self.ownership_hooks):
+            return True
         checker = DataTypeChecker(aspace)
         is_type = aspace.node_class_of(object_node) == ua.NodeClass.ObjectType
         sources = [object_node]
@@ -1044,7 +1049,7 @@ class MethodService:
             return await func(parent, *args)
         if self._pool is None:
             self._pool = ThreadPoolExecutor()
-        p = partial(func, parent, *args)
+        p = partial(contextvars.copy_context().run, func, parent, *args)
         res = await asyncio.get_event_loop().run_in_executor(self._pool, p)
         return res
 

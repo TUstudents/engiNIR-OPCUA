@@ -1753,6 +1753,7 @@ class Subscription:
         | Iterable[SyncNode | ua.NodeId | str | int] = ua.ObjectIds.ConditionType,
         evfilter: ua.EventFilter | None = None,
         queuesize: int = 0,
+        refresh: bool = True,
     ) -> int: ...
 
     @syncmethod

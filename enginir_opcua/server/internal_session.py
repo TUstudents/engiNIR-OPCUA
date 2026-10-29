@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import secrets
 import time
 import weakref
 from collections import deque
 from collections.abc import Callable, Iterable
-from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import Enum
@@ -40,8 +40,9 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-current_call_session: ContextVar[InternalSession | None] = ContextVar("current_call_session", default=None)
-# J shared: current_call_session (agent A implements)
+current_call_session: contextvars.ContextVar[InternalSession | None] = contextvars.ContextVar(
+    "current_call_session", default=None
+)
 
 CLIENT_NONCE_MIN_LENGTH = 32
 CLIENT_NONCE_MAX_LENGTH = 128
@@ -175,6 +176,7 @@ class Session:
             continuation_points=self.continuation_points,
             history_points=self.history_points,
         )
+        self.services.channel_security_mode = self.channel_security.mode
         self.services.publish_callback = self.forward_publish_response
         self.services.publish_request_callback = self.get_publish_request
 
@@ -668,6 +670,7 @@ class InternalSession(AbstractSession):
         self.subscription_service: SubscriptionService = submgr
         self.name: str = name
         self.user: User = user
+        self.channel_security_mode: ua.MessageSecurityMode | None = None
         self.session_id: ua.NodeId = (
             session_id if session_id is not None else internal_server.session_manager.next_session_id()
         )
@@ -753,7 +756,12 @@ class InternalSession(AbstractSession):
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
         """COROUTINE"""
-        return await self.iserver.method_service.call(params, trusted=not self.external)
+        # Part 9, 5.5.7 and 5.7.3: Condition Methods need the calling Session (ownership of a Subscription, ClientUserId)
+        token = current_call_session.set(self)
+        try:
+            return await self.iserver.method_service.call(params, trusted=not self.external)
+        finally:
+            current_call_session.reset(token)
 
     async def create_subscription(
         self,

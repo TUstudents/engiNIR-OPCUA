@@ -315,6 +315,32 @@ Monitored items and events (OPC 10000-4, 5.13):
   EventNotifier bits; the default Message is a LocalizedText; DaylightSavingInOffset is set only while DST applies.
   68 fields of the generated event classes now declare built-in types.
 
+Alarms and Conditions (OPC 10000-9):
+- New server API: `await server.create_condition(source, condition_type, name, **options)` creates a Condition or
+  Alarm Object (ConditionId = its NodeId, referenced with HasCondition) and returns a handle with `activate()`,
+  `deactivate()`, `update_value()` (level, deviation and off-normal alarms, with deadbands), `acknowledge()`,
+  `confirm()`, `add_comment()`, `enable()`, `disable()`, `shelve_timed()`, `shelve_one_shot()`, `unshelve()` and
+  more. Every change raises one Event with all fields and sets Retain as Part 9 says. Branches (previous states) are
+  opt-in with `branches=True`. Also `server.delete_condition()`, `server.get_condition()`, `server.conditions` and
+  `server.refresh_required()`. Rate-of-change alarms can be created but have no value logic.
+- The Methods Enable, Disable, AddComment, Acknowledge, Confirm, TimedShelve, OneShotShelve, Unshelve (and the
+  `2` variants with a Comment), ConditionRefresh and ConditionRefresh2 work, with the Part 9 result codes. They can be
+  called on the ConditionId with the well-known MethodId. `bind_condition_methods` is removed: ConditionRefresh is
+  always available (it used to answer `Bad_NotExecutable` even when bound). RefreshStart, RefreshEnd and
+  RefreshRequired ignore the content filter and reach every Event item of the Subscription; refreshing another
+  session's Subscription gives `Bad_UserAccessDenied`; retained Conditions and branches are replayed with their EventId.
+  An Event queue overflow that loses Condition Events is followed by a RefreshRequiredEvent.
+- New client helpers in `enginir_opcua.common.conditions`: `acknowledge`, `confirm`, `add_comment`, `enable`,
+  `disable`, shelving calls, `condition_refresh`, `condition_refresh2` (falls back to ConditionRefresh),
+  `condition_event_filter` and `ConditionTracker` (the current-alarm algorithm of Part 9, 4.5).
+  `Subscription.subscribe_alarms_and_conditions()` now calls ConditionRefresh after subscribing; pass
+  `refresh=False` for the old behaviour.
+- Method nodes of the standard address space, of imported NodeSets without an `Executable` attribute and of
+  instantiated types are executable (the NodeSet default is true); they used to be refused with `Bad_NotExecutable`.
+  Method callbacks can read the calling session in `enginir_opcua.server.internal_session.current_call_session`.
+  `instantiate(..., optional=[names])` creates the named Optional children even with `instantiate_optional=False`.
+- Condition Events always have the ConditionId (`NodeId`) field; EventIds are 16 random bytes.
+
 History (OPC 10000-11):
 - `HistoryStorageInterface` is replaced for custom backends: reads take a `TimeDomain` and return a `Page`; saves are
   `save_node_value()` and `save_event()`; new `has_node()`, `has_event()`, `flush()` and `stores_server_timestamp`.

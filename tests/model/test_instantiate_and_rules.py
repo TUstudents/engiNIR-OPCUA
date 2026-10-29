@@ -296,3 +296,27 @@ async def test_com25_copy_survives_a_cycle(srv: Server) -> None:
     below = await top.add_object(new_id("cbelow"), "2:cbelow")
     await below.add_reference(top, ua.ObjectIds.HasNotifier, True, True)
     assert len(await copy_node(srv.nodes.objects, top)) == 2
+
+
+async def test_instantiate_creates_only_the_named_optional_children(opc):
+    dev_t = await opc.opc.nodes.base_object_type.add_object_type(ua.NodeId(NamespaceIndex=2), "0:MyOptionalDevice")
+    for name, mandatory in (("must", True), ("vendor", False), ("model", False)):
+        var = await dev_t.add_variable(ua.NodeId(NamespaceIndex=2), f"0:{name}", 1.0)
+        await var.set_modelling_rule(mandatory)
+    sub_t = await dev_t.add_object(ua.NodeId(NamespaceIndex=2), "0:sub")
+    await sub_t.set_modelling_rule(False)
+    deep_t = await sub_t.add_variable(ua.NodeId(NamespaceIndex=2), "0:deep", 1.0)
+    await deep_t.set_modelling_rule(False)
+
+    nodes = await instantiate(
+        opc.opc.nodes.objects,
+        dev_t,
+        bname="2:optdev",
+        idx=2,
+        instantiate_optional=False,
+        optional=["vendor", "sub", "sub/deep"],
+    )
+    children = {(await child.read_browse_name()).Name for child in await nodes[0].get_children()}
+    assert children == {"must", "vendor", "sub"}
+    sub = [node for node in await nodes[0].get_children() if (await node.read_browse_name()).Name == "sub"][0]
+    assert {(await child.read_browse_name()).Name for child in await sub.get_children()} == {"deep"}

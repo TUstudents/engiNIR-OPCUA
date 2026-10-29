@@ -6,6 +6,7 @@ import pytest
 
 from enginir_opcua import Client, ua
 from enginir_opcua.client.client import UaClientState
+from enginir_opcua.common import conditions
 
 from .support import (
     NONE_POLICY_URI,
@@ -137,6 +138,45 @@ async def test_subscription_delivers_events(client: Client) -> None:
     await client.get_node(alarms).call_method(start, ua.Variant(30, ua.VariantType.UInt32))
     await wait_for(lambda: len(collector.events) >= 2)
     assert all(event.Severity > 0 for event in collector.events)
+    await subscription.delete()
+
+
+async def test_alarms_are_refreshed_and_acknowledged_by_our_client(client: Client) -> None:
+    """Part 9: subscribing refreshes, and our Acknowledge helper works against the reference server's alarms."""
+    collector = Collector()
+    subscription = await client.create_subscription(200, collector)
+    namespaces = await client.get_namespace_array()
+    alarms = ua.NodeId("Alarms", namespaces.index(ALARMS_NAMESPACE_URI))
+    start = ua.NodeId("Alarms.Start", alarms.NamespaceIndex)
+    await client.get_node(alarms).call_method(start, ua.Variant(30, ua.VariantType.UInt32))
+    await subscription.subscribe_alarms_and_conditions(client.nodes.server, ua.ObjectIds.AlarmConditionType)
+    await wait_for(lambda: any(event.EventType == conditions.REFRESH_END for event in collector.events))
+    assert any(event.EventType == conditions.REFRESH_START for event in collector.events)
+
+    def condition_events() -> list[Any]:
+        return [event for event in collector.events if getattr(event, "NodeId", None) is not None]
+
+    await wait_for(lambda: any(event.Retain and not event.__dict__["AckedState/Id"] for event in condition_events()))
+    acknowledged: ua.NodeId | None = None
+    for _attempt in range(20):
+        open_events = [e for e in condition_events() if e.Retain and not e.__dict__["AckedState/Id"]]
+        if not open_events:
+            await asyncio.sleep(0.5)
+            continue
+        event = open_events[-1]
+        try:
+            await conditions.acknowledge(client, event.NodeId, event.EventId, "interop")
+        except ua.UaStatusCodeError as error:
+            assert error.code in (
+                ua.StatusCodes.BadEventIdUnknown,
+                ua.StatusCodes.BadConditionBranchAlreadyAcked,
+            ), error
+            await asyncio.sleep(0.3)
+            continue
+        acknowledged = event.NodeId
+        break
+    assert acknowledged is not None
+    await wait_for(lambda: any(e.NodeId == acknowledged and e.__dict__["AckedState/Id"] for e in condition_events()))
     await subscription.delete()
 
 
