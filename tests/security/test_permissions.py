@@ -255,3 +255,10 @@ def test_cry12_every_dispatch_entry_has_a_permission_class() -> None:
         for role in UserRole:
             expected = ROLE_RANK[role] >= ROLE_RANK[lowest]
             assert ruleset.check_validity(User(role=role), service.type_id, None) is expected, (service.name, role)
+
+
+def test_security_admin_role_has_the_admin_service_permissions():
+    ruleset = SimpleRoleRuleset()
+    add_nodes = ua.NodeId(ua.ObjectIds.AddNodesRequest_Encoding_DefaultBinary)
+    assert ruleset.check_validity(User(role=UserRole.SecurityAdmin), add_nodes, None)
+    assert ROLE_RANK[UserRole.SecurityAdmin] > ROLE_RANK[UserRole.Admin]

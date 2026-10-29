@@ -14,9 +14,12 @@ class UserRole(Enum):
     Admin = 0
     Anonymous = 1
     User = 3
+    # Part 18's well-known SecurityAdmin role: everything Admin may do, plus the security configuration
+    # (certificate management, security diagnostics).
+    SecurityAdmin = 4
 
 
-ROLE_RANK: dict[UserRole, int] = {UserRole.Anonymous: 0, UserRole.User: 1, UserRole.Admin: 2}
+ROLE_RANK: dict[UserRole, int] = {UserRole.Anonymous: 0, UserRole.User: 1, UserRole.Admin: 2, UserRole.SecurityAdmin: 3}
 
 
 def _type_id(request_type: str) -> ua.NodeId:
