@@ -13,7 +13,7 @@ import logging
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Condition, RLock, Thread, current_thread
@@ -31,6 +31,7 @@ from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.crypto.truststore import TrustStore
 from enginir_opcua.observer import Observer
+from enginir_opcua.server.conditions import Condition as ServerCondition
 from enginir_opcua.server.file_transfer import FileProvider
 from enginir_opcua.server.user_managers import UserManager
 
@@ -270,7 +271,7 @@ class _HandlerThread:
 
 
 def _convert_in(value: Any) -> Any:
-    if isinstance(value, SyncNode | Client | Server | Subscription):
+    if isinstance(value, SyncNode | Client | Server | Subscription | SyncCondition):
         return value.aio_obj
     kind = type(value)
     if kind is list:
@@ -295,6 +296,8 @@ def _to_sync(tloop: ThreadLoop, result: Any) -> Any:
         return EventGenerator(tloop, result)
     if isinstance(result, subscription.Subscription):
         return Subscription(tloop, result)
+    if isinstance(result, ServerCondition):
+        return SyncCondition(tloop, result)
     kind = type(result)
     if kind is list:
         return [_to_sync(tloop, item) for item in result]
@@ -1007,6 +1010,29 @@ class Server(_Owner):
 
     def get_objects_node(self) -> SyncNode:
         return SyncNode(self.tloop, self.aio_obj.get_objects_node())
+
+    @syncmethod
+    def create_condition(
+        self,
+        source: SyncNode | ua.NodeId | None,
+        condition_type: SyncNode | ua.NodeId | int,
+        name: str,
+        **options: Any,
+    ) -> SyncCondition: ...
+
+    @syncmethod
+    def delete_condition(self, condition: SyncCondition) -> None: ...
+
+    def get_condition(self, condition_id: ua.NodeId | SyncNode) -> SyncCondition | None:
+        found = self.aio_obj.get_condition(_convert_in(condition_id))
+        return SyncCondition(self.tloop, found) if found is not None else None
+
+    @property
+    def conditions(self) -> list[SyncCondition]:
+        return [SyncCondition(self.tloop, found) for found in self.aio_obj.conditions]
+
+    @syncmethod
+    def refresh_required(self, subscription_ids: list[int] | None = None) -> None: ...
 
     def set_match_discovery_endpoint_url(self, match_discovery_endpoint_url: bool) -> None:
         self.aio_obj.set_match_discovery_endpoint_url(match_discovery_endpoint_url)
@@ -1743,6 +1769,113 @@ class SyncNode:
 
     @syncmethod
     def history_update(self, details: ua.HistoryUpdateDetails) -> ua.HistoryUpdateResult: ...
+
+
+class SyncCondition:
+    """
+    Sync twin of the server's Condition handle (Alarms and Conditions, see Server.create_condition). The calls block
+    until the server has changed the state and published the events; the properties read the current state.
+    """
+
+    def __init__(self, tloop: ThreadLoop, condition: ServerCondition) -> None:
+        self.tloop: ThreadLoop = tloop
+        self.aio_obj: ServerCondition = condition
+
+    def __str__(self) -> str:
+        return f"SyncCondition({self.aio_obj.name}, {self.aio_obj.condition_id})"
+
+    __repr__ = __str__
+
+    @property
+    def node(self) -> SyncNode:
+        return SyncNode(self.tloop, self.aio_obj.node)
+
+    name = _aio_property("name", writable=False)
+    type_id = _aio_property("type_id", writable=False)
+    source_id = _aio_property("source_id", writable=False)
+    source_name = _aio_property("source_name", writable=False)
+    condition_id = _aio_property("condition_id", writable=False)
+    enabled = _aio_property("enabled", writable=False)
+    retain = _aio_property("retain", writable=False)
+    acked = _aio_property("acked", writable=False)
+    confirmed = _aio_property("confirmed", writable=False)
+    active = _aio_property("active", writable=False)
+    severity = _aio_property("severity", writable=False)
+    shelving_state = _aio_property("shelving_state", writable=False)
+    branches = _aio_property("branches", writable=False)
+    limits = _aio_property("limits", writable=False)
+    deadbands = _aio_property("deadbands", writable=False)
+    severities = _aio_property("severities", writable=False)
+
+    def last_event_id(self, branch_id: ua.NodeId | None = None) -> bytes | None:
+        return self.aio_obj.last_event_id(branch_id)
+
+    def retained_events(self) -> list[Any]:
+        return self.aio_obj.retained_events()
+
+    @syncmethod
+    def enable(self) -> None: ...
+
+    @syncmethod
+    def disable(self) -> None: ...
+
+    @syncmethod
+    def activate(self, severity: int | None = None, message: str | ua.LocalizedText | None = None) -> None: ...
+
+    @syncmethod
+    def deactivate(self, message: str | ua.LocalizedText | None = None) -> None: ...
+
+    @syncmethod
+    def set_severity(self, severity: int) -> None: ...
+
+    @syncmethod
+    def set_quality(self, quality: ua.StatusCode) -> None: ...
+
+    @syncmethod
+    def set_retain(self, retain: bool) -> None: ...
+
+    @syncmethod
+    def set_suppressed(self, flag: bool) -> None: ...
+
+    @syncmethod
+    def set_out_of_service(self, flag: bool) -> None: ...
+
+    @syncmethod
+    def acknowledge(
+        self, event_id: bytes | None = None, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
+    ) -> None: ...
+
+    @syncmethod
+    def confirm(
+        self, event_id: bytes | None = None, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
+    ) -> None: ...
+
+    @syncmethod
+    def add_comment(
+        self, comment: str | ua.LocalizedText, event_id: bytes | None = None, *, user: str | None = None
+    ) -> None: ...
+
+    @syncmethod
+    def update_value(self, value: Any, setpoint: float | None = None) -> None: ...
+
+    @syncmethod
+    def set_limits(
+        self,
+        limits: Mapping[str, float] | None = None,
+        deadbands: Mapping[str, float] | None = None,
+        severities: Mapping[str, int] | None = None,
+    ) -> None: ...
+
+    @syncmethod
+    def shelve_timed(
+        self, milliseconds: float, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
+    ) -> None: ...
+
+    @syncmethod
+    def shelve_one_shot(self, comment: str | ua.LocalizedText | None = None, *, user: str | None = None) -> None: ...
+
+    @syncmethod
+    def unshelve(self, comment: str | ua.LocalizedText | None = None, *, user: str | None = None) -> None: ...
 
 
 class Subscription:

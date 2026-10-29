@@ -19,6 +19,7 @@ from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.common.node import Node as AsyncNode
 from enginir_opcua.common.subscription import Subscription as AsyncSubscription
 from enginir_opcua.server import Server as AsyncServer
+from enginir_opcua.server.conditions import Condition as AsyncCondition
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import (
     Client,
@@ -499,12 +500,8 @@ EXCLUDED = {
         "diagnostics",
         "model_change",
         "model_change_events",
-        "create_condition",
-        "delete_condition",
-        "get_condition",
-        "conditions",
-        "refresh_required",
     },
+    "Condition": {"build_replay", "close"},
     "SyncNode": {"new_node"},
     "Subscription": {"init", "publish_callback", "enqueue", "session_event", "close", "restore"},
 }
@@ -513,6 +510,7 @@ EXCLUDED = {
 PAIRS = [
     ("Client", AsyncClient, sync.Client),
     ("Server", AsyncServer, sync.Server),
+    ("Condition", AsyncCondition, sync.SyncCondition),
     ("SyncNode", AsyncNode, sync.SyncNode),
     ("Subscription", AsyncSubscription, sync.Subscription),
 ]
@@ -555,3 +553,50 @@ def test_syn9_wrapped_methods_keep_name_and_doc():
     assert sync.Client.connect_sessionless.__name__ == "connect_sessionless"
     assert sync.SyncNode.read_value.__name__ == "read_value"
     assert list(inspect.signature(sync.Client.set_security).parameters)[1] == "policy"
+
+
+def test_sync_sync_conditions_run_through_the_wrapper(server):
+    idx = server.get_namespace_index("http://examples.freeopcua.github.io")
+    source = server.nodes.objects.add_object(idx, "TankSource")
+    source.set_event_notifier([ua.EventNotifier.SubscribeToEvents])
+    alarm = server.create_condition(
+        source,
+        ua.NodeId(ua.ObjectIds.ExclusiveLevelAlarmType),
+        "SyncTankLevel",
+        limits={"High": 70.0},
+        severities={"High": 500},
+        shelving=True,
+    )
+    assert isinstance(alarm, sync.SyncCondition)
+    assert isinstance(alarm.node, SyncNode)
+    assert server.get_condition(alarm.condition_id).condition_id == alarm.condition_id
+    assert alarm.condition_id in [c.condition_id for c in server.conditions]
+    assert not alarm.active
+    alarm.update_value(80.0)
+    assert alarm.active
+    assert alarm.severity == 500
+    assert not alarm.acked
+    alarm.add_comment("looking")
+    alarm.acknowledge(alarm.last_event_id(), "seen")
+    assert alarm.acked
+    alarm.shelve_one_shot("quiet")
+    assert alarm.shelving_state == "OneShotShelved"
+    alarm.unshelve()
+    alarm.deactivate()
+    assert not alarm.active
+    alarm.set_limits(limits={"High": 75.0})
+    assert alarm.limits["High"] == 75.0
+    server.delete_condition(alarm)
+    assert server.get_condition(alarm.condition_id) is None
+
+
+def test_sync_a_failing_condition_call_raises_the_async_error(server):
+    idx = server.get_namespace_index("http://examples.freeopcua.github.io")
+    source = server.nodes.objects.add_object(idx, "TankSource2")
+    source.set_event_notifier([ua.EventNotifier.SubscribeToEvents])
+    alarm = server.create_condition(
+        source, ua.NodeId(ua.ObjectIds.ExclusiveLevelAlarmType), "SyncTankLevel2", limits={"High": 70.0}, shelving=True
+    )
+    with pytest.raises(ua.uaerrors.BadConditionNotShelved):
+        alarm.unshelve()
+    server.delete_condition(alarm)

@@ -621,3 +621,7 @@ API freeze (before 3.0.0rc1):
   and `client_settings`; `HaClient.init_pki()` creates the shared certificate before `start()` (which does it too) and
   `HaClient.config` returns the `HaConfig`. The constructor with explicit certificates is unchanged. `examples/09_ha_client.py`
   uses it without private attributes (CLI-83).
+- `sync.SyncCondition` wraps the server's `Condition` handle (activate, deactivate, update_value, acknowledge, confirm,
+  add_comment, the shelve calls, set_limits and the state properties). `sync.Server.create_condition`, `get_condition`,
+  `conditions`, `delete_condition` and `refresh_required` exist now; the sync twin check no longer excludes them, and it
+  covers `Condition`.

@@ -74,6 +74,23 @@ A slow handler delays the following handlers but never blocks the connection. At
 observer's ``on_messages_dropped`` is called (see :doc:`../common/observer`). The same thread runs state listeners and
 ``connection_lost_callback``.
 
+Alarms and conditions
+---------------------
+
+``Server.create_condition`` and ``Server.get_condition`` return a :class:`~enginir_opcua.sync.SyncCondition`, the
+synchronous twin of the server's Condition handle: ``activate``, ``deactivate``, ``update_value``, ``acknowledge``,
+``confirm``, ``add_comment``, ``shelve_timed``, ``shelve_one_shot``, ``unshelve`` and the other calls block until the
+server has changed the state and published the events, and ``active``, ``acked``, ``severity``, ``shelving_state`` and
+the other properties read the current state. ``Server.conditions`` lists them, and ``delete_condition`` and
+``refresh_required`` are wrapped as well.
+
+.. code-block:: python
+
+    alarm = server.create_condition(tank, ua.NodeId(ua.ObjectIds.ExclusiveLevelAlarmType), "TankLevel",
+                                    limits={"High": 70.0})
+    alarm.update_value(75.0)
+    alarm.acknowledge(alarm.last_event_id(), "seen")
+
 Where the sync API must not be used
 -----------------------------------
 
