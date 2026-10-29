@@ -514,6 +514,16 @@ def read_until(process: subprocess.Popen[bytes], needle: bytes, timeout: float =
             seen += chunk
 
 
+def interrupt(process: subprocess.Popen) -> tuple[bytes | str, bytes | str]:
+    process.send_signal(signal.SIGINT)
+    try:
+        return process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        out, err = process.communicate()
+        pytest.fail(f"no exit after SIGINT; stdout={out!r} stderr={err!r}")
+
+
 def port_accepts(port: int) -> bool:
     with socket.socket() as probe:
         return probe.connect_ex(("127.0.0.1", port)) == 0
@@ -532,8 +542,7 @@ def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=UNBUFFERED)
     read_until(process, tool_server["variables"]["Int32"].encode())
-    process.send_signal(signal.SIGINT)
-    _, err = process.communicate(timeout=30)
+    _, err = interrupt(process)
     assert process.returncode == 0
     assert b"Traceback" not in err
 
@@ -547,8 +556,7 @@ def test_tool2_ctrl_c_in_server_exits_cleanly():
         text=True,
     )
     wait_until_sync(lambda: port_accepts(port), timeout=30)
-    process.send_signal(signal.SIGINT)
-    _, err = process.communicate(timeout=30)
+    _, err = interrupt(process)
     assert process.returncode == 0
     assert "Traceback" not in err
     assert "demo server" in err.lower()
