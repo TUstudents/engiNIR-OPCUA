@@ -145,7 +145,7 @@ class Client:
             if have_password:
                 self._password = unquote(password)
 
-        self.name = "Pure Python Async Client"
+        self.name = "engiNIR OPC UA Client"
         self.description = self.name
         self.application_uri = "urn:enginir:opcua:client"
         self.product_uri = "urn:enginir:opcua"
