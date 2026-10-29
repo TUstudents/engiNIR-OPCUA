@@ -546,3 +546,52 @@ Server infrastructure (workstream J):
   that raised `NotImplementedError` and is removed there.
 - A structure field named `Encoding` (`SessionSecurityDiagnosticsDataType`) is encoded as a field and no longer as the
   encoding byte.
+
+Quick setup (workstream K):
+- `Server.quickstart(endpoint, profile="secure", pki="./pki", users=None, **overrides)` and
+  `Client.quickstart(url, profile="secure", pki="./pki", username=None, password=None, **overrides)` return a
+  configured object that is not started. The profile `secure` offers Basic256Sha256, Aes128Sha256RsaOaep and
+  Aes256Sha256RsaPss with SignAndEncrypt on any network; `development` listens on loopback only, may also offer no
+  security and warns at start. The PKI directory is created with a self-signed certificate at `Server.init()` and at
+  the first `Client.connect()`; nothing is trusted automatically. The sync classes have the same methods.
+- `enginir_opcua.config.ServerConfig`, `ClientConfig` and `ServerLimits`: `validate()` checks the whole configuration
+  and raises one `ConfigurationError` that names every wrong setting (`server.pki: ...`); `from_toml(path)` reads a
+  `[server]` or `[client]` table (unknown keys are errors, relative paths follow the file, no password is ever read
+  from or written to the file) and `dump(path)` writes a commented file. `Server(config=...)` and `Client(config=...)`
+  apply a configuration; the setters stay the low-level API. `Client(url)` now accepts `url=None` when a config is
+  given.
+- `FileUserManager` reads a TOML or JSON users file (name, role, scrypt hash) and checks passwords on a worker thread.
+  An unknown user and a wrong password cost the same. The file is read again when it changes.
+  `UserManager.authenticate` is the awaitable form of `get_user`, which stays for existing managers; a manager without
+  `authenticate` keeps working (SRV-101).
+- Commands: `enginir-opcua init server|client DIR`, `trust THUMBPRINT_OR_FILE [--pki DIR]`, `pki list`, `pair
+  SERVER_PKI CLIENT_PKI` (development only, always warns), `user add|list|remove FILE`; `server --config FILE` serves
+  from a configuration file. `RESERVED_COMMANDS` in `enginir_opcua.tools` is removed.
+- Trust errors name the fix. The server log says `client certificate <thumbprint> (...) rejected: it is not trusted;
+  trust it with: enginir-opcua trust <thumbprint> --pki <dir>` (once per certificate and ten minutes); the exception
+  of a client that refuses a server certificate says the same for the server certificate, and a refused secure channel
+  names the client certificate that the server probably does not trust. A server certificate that the endpoint list
+  offered and the trust store does not trust is kept in `rejected/certs`, and the client keeps it there before it
+  raises (CLI-72, CLI-73, CRY-33).
+- A running server or client reads the trust lists again when a certificate is refused and `trusted/certs` changed, at
+  most once per second (`TrustStore.refresh_interval`), and `enginir-opcua trust` reloads the stores of its own process
+  (SRV-102). `TrustStore.load_blocking()` and `refresh_if_changed()` are new.
+- `Server.set_endpoint` refuses a URL without the `opc.tcp` scheme, host or a valid port, and `set_security_policy([])`
+  and `set_identity_tokens([])` raise `ConfigurationError` (SRV-103, SRV-104). A development-profile server refuses a
+  `socket_address` that is not loopback (SRV-105).
+- A private key that the PKI directory generates is encrypted when a password is given (CRY-32). The default client
+  name is `engiNIR OPC UA Client` (CLI-71).
+
+Examples (workstream K):
+- The inherited `examples/` directory is removed with everything in it, including the keys and certificates that were
+  committed there (they remain in the history). The new set is 16 files, `01_secure_pair.py` to
+  `16_reverse_connect.py`, one per task: the quick-setup pair, users and roles, subscriptions with reconnect, methods,
+  custom types, events and history, an instrument server from the DI and ADI models, file transfer, an HA client,
+  PubSub, the sync API, a limit alarm, diagnostics, certificate management over OPC UA, the development profile and
+  reverse connect.
+- Each example uses a temporary PKI directory and generates its certificates, pairs the two sides in code, ends by
+  itself and prints `OK <name>`. Only `15_development_profile.py` uses NoSecurity, on 127.0.0.1. `tests/examples/`
+  runs every example as a subprocess (marked `slow`).
+- The Quick Setup page (`docs/usage/get-started/quick-setup.rst`) describes the profiles, configuration files, the users
+  file and the `init`, `trust`, `pki`, `pair` and `user` commands, and lists the examples. The minimal server and client
+  pages and the README quick start use `Server.quickstart` and `Client.quickstart`.

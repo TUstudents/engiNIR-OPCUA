@@ -19,13 +19,15 @@ from ..common.connection import (
 from ..common.utils import Buffer, ServiceError
 from ..crypto.permission_rules import PermissionRuleset
 from ..crypto.security_policies import SecurityPolicyNone
-from ..crypto.validator import PeerRole, ValidationContext
+from ..crypto.validator import CertificateValidator, Outcome, PeerRole, ValidationContext, untrusted_hint
 from ..ua.ua_binary import struct_from_binary, struct_to_binary, uatcp_to_binary
 from .internal_server import InternalServer
 from .internal_session import ChannelSecurity
 from .internal_session import PublishRequestData as PublishRequestData
 
 _logger = logging.getLogger(__name__)
+
+UNTRUSTED_HINT_INTERVAL_SECONDS = 600.0
 
 
 class UaProcessor:
@@ -59,10 +61,25 @@ class UaProcessor:
         outcome = validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
             validator.keep_rejected(outcome, self.peer_address, background=True)
+            self._log_trust_hint(validator, outcome)
             status = ua.StatusCode(outcome.status).name
             raise TransportError(
                 ua.StatusCodes.BadSecurityChecksFailed, f"Client certificate rejected: {status}: {outcome.detail}"
             )
+
+    def _log_trust_hint(self, validator: CertificateValidator, outcome: Outcome) -> None:
+        hint = untrusted_hint("client", outcome, validator.trust_store)
+        if hint is None:
+            return
+        logged = self.iserver.untrusted_hints_logged
+        now = self.iserver.clock()
+        key = hint.split(" ", 3)[2]
+        if key in logged and now - logged[key] < UNTRUSTED_HINT_INTERVAL_SECONDS:
+            return
+        if len(logged) > 1000:
+            logged.clear()
+        logged[key] = now
+        _logger.warning("%s", hint)
 
     @property
     def last_used(self) -> float:

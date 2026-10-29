@@ -10,7 +10,6 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from cryptography import x509
@@ -29,8 +28,8 @@ from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary, s
 from tests.pki import generated_pki
 
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
-EXAMPLES = Path(__file__).parent.parent / "examples"
 PKI = generated_pki()
+PKI_FILES = PKI.fixed
 
 
 class RawPeer:

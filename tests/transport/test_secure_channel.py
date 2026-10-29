@@ -16,7 +16,7 @@ from enginir_opcua.common.connection import (
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.crypto import uacrypto
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyNone
-from tests.harness import EXAMPLES
+from tests.harness import PKI_FILES
 
 
 def test_srv25_channel_exposes_its_security_properties() -> None:
@@ -77,10 +77,10 @@ def accept_any_certificate(_chain: bytes) -> None:
 def open_pair(policy: bool = False) -> ChannelPair:
     clock = FakeClock()
     if policy:
-        certificate = EXAMPLES / "certificate-example.der"
-        key = EXAMPLES / "private-key-example.pem"
-        peer_certificate = EXAMPLES / "certificates" / "peer-certificate-example-1.der"
-        peer_key = EXAMPLES / "certificates" / "peer-private-key-example-1.pem"
+        certificate = PKI_FILES / "certificate-example.der"
+        key = PKI_FILES / "private-key-example.pem"
+        peer_certificate = PKI_FILES / "certificates" / "peer-certificate-example-1.der"
+        peer_key = PKI_FILES / "certificates" / "peer-private-key-example-1.pem"
         client_policy = SecurityPolicyBasic256Sha256(
             uacrypto.x509_from_der(certificate.read_bytes()),
             uacrypto.x509_from_der(peer_certificate.read_bytes()),
@@ -300,7 +300,7 @@ def test_com63_renew_must_keep_certificate_policy_and_mode(change: str) -> None:
     header = signed_header(pair.server)
     mode = ua.MessageSecurityMode.Sign
     if change == "certificate":
-        header.SenderCertificate = (EXAMPLES / "certificate-example.der").read_bytes()
+        header.SenderCertificate = (PKI_FILES / "certificate-example.der").read_bytes()
     elif change == "policy":
         header.SecurityPolicyURI = SecurityPolicyNone.URI
     else:

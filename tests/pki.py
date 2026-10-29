@@ -259,6 +259,16 @@ class GeneratedPki:
         self.peer2 = self.issue("peer2", CLIENT_APPLICATION_URI)
         self.peer3 = self.issue("peer3", CLIENT_APPLICATION_URI)
         self.peer_encrypted = self.issue("peer-encrypted", CLIENT_APPLICATION_URI, password=b"password")
+        self.fixed = self.directory / "fixed"
+        (self.fixed / "certificates").mkdir(parents=True)
+        for peer, target in (
+            (self.server, "certificate-example.der"),
+            (self.server_3072, "certificate-3072-example.der"),
+            (self.peer1, "certificates/peer-certificate-example-1.der"),
+        ):
+            shutil.copy(peer.certificate, self.fixed / target)
+        shutil.copy(self.server.key, self.fixed / "private-key-example.pem")
+        shutil.copy(self.peer1.key, self.fixed / "certificates" / "peer-private-key-example-1.pem")
 
     def issue(self, name: str, uri: str, *, bits: int = 2048, password: bytes | None = None) -> Peer:
         identity = live_identity(

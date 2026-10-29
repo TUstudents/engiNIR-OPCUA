@@ -3,120 +3,111 @@ A Minimal OPC-UA Server
 =======================
 
 Let's start exploring the :code:`enginir_opcua` package by building a minimal runnable server.
-Most of the hard work will be hidden behind the scene and we only need to implement the
-application specific code.
+It is secure from the start: only encrypted and signed connections are offered, and a client has to be
+trusted before it can connect. The :doc:`quick-setup` page explains the pieces; this page builds a server you can
+keep running, and :doc:`minimal-client` the client for it. Both in one process are in
+`01_secure_pair.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/01_secure_pair.py>`_.
 
-The complete code will look like the code below. In the next sections we will look at
-the different parts of the code, so don't be overwhelmed by the code snippet!
+Preparing the certificates and a user
+=====================================
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py
-    :linenos:
-
-Before we even look at the code in detail, let's try out what our server can do.
-Start the server in a terminal with :code:`python server-minimal.py` and open a new console.
-In the new console you now can use the CLI tools (see :ref:`usage/get-started/installation:command line tools`) provided by the package to explore
-the server. The following session gives you an idea how the tools can be used.
+A server needs a PKI directory with its certificate, and a client that is allowed to connect needs one too. The
+command line sets both up for development on one machine:
 
 .. code-block:: console
 
-    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840  # List root node
-    Browsing node i=84 at opc.tcp://127.0.0.1:4840
-    DisplayName                                NodeId   BrowseName    Value
+    $ enginir-opcua init server srv --endpoint opc.tcp://127.0.0.1:4840/enginir-opcua/server/
+    $ enginir-opcua init client cli --application-uri urn:enginir:opcua:client
+    $ enginir-opcua pair srv/pki cli/pki
+    $ enginir-opcua user add srv/users.toml alice --role user
 
-    LocalizedText(Locale=None, Text='Objects') i=85     0:Objects
-    LocalizedText(Locale=None, Text='Types')   i=86     0:Types
-    LocalizedText(Locale=None, Text='Views')   i=87     0:Views
+``pair`` makes the two directories trust each other, and it says that it is for one machine only; on a network you
+move the certificates yourself with ``enginir-opcua trust``. ``user add`` asks for a password and stores only a salted
+hash. A user with the role ``user`` may read, write and call methods; anonymous clients may only read.
 
-    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840 -n i=85 # List 0:Objects
-    Browsing node i=85 at opc.tcp://127.0.0.1:4840
+The server
+==========
 
-    DisplayName                                     NodeId               BrowseName         Value
+.. code-block:: python
+    :caption: server.py
 
-    LocalizedText(Locale=None, Text='Server')       i=2253               0:Server
-    LocalizedText(Locale=None, Text='Aliases')      i=23470              0:Aliases
-    LocalizedText(Locale=None, Text='MyObject')     ns=2;i=1             2:MyObject
-    LocalizedText(Locale=None, Text='ServerMethod') ns=2;s=ServerMethod  2:ServerMethod
+    import asyncio
 
-    $ # In the last two lines we can see our own MyObject and ServerMethod
-    $ # Lets read a value!
-    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -n "ns=2;i=2"  # By NodeId
-    7.599999999999997
-    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -p "0:Objects,2:MyObject,2:MyVariable" # By BrowsePath
-    12.199999999999996
+    from enginir_opcua import Server, ua, uamethod
 
-Seems like our server is working and we can browse through the nodes, read values, ...
-So let's start working through the code!
 
-Imports, Basic Setup & Configuration
-====================================
+    @uamethod
+    def multiply(parent: ua.NodeId, x: float, y: float) -> float:
+        return x * y
 
-In the first few lines the relevant packages, classes and methods are imported.
-While the :mod:`logging` module is optional (just remove all calls to the logging module),
-:mod:`asyncio` is required to actually run our main function. From the :mod:`enginir_opcua`
-package we need the :class:`~enginir_opcua.server.server.Server`, the :mod:`enginir_opcua.ua`
-module and the :meth:`~enginir_opcua.common.methods.uamethod` decorator.
 
-Ignore the :code:`@uamethod ...` part for the moment and jump straight into the
-:code:`async def main()` function:
+    async def main() -> None:
+        server = Server.quickstart(
+            "opc.tcp://127.0.0.1:4840/enginir-opcua/server/", pki="srv/pki", users="srv/users.toml"
+        )
+        await server.init()
+        idx = await server.register_namespace("urn:example:minimal")
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py, Line 13 - 22
-    :lines: 13-22
+        my_object = await server.nodes.objects.add_object(idx, "MyObject")
+        my_variable = await my_object.add_variable(idx, "MyVariable", 6.7)
+        await my_variable.set_writable()
+        await server.nodes.objects.add_method(
+            idx, "multiply", multiply, [ua.VariantType.Double, ua.VariantType.Double], [ua.VariantType.Double]
+        )
 
-.. todo:: The :meth:`~enginir_opcua.server.server.Server.init` and :meth:`~enginir_opcua.server.server.Server.set_endpoint`
-    methods have no docstrings but are referenced in the next section.
+        async with server:
+            count = 0.0
+            while True:
+                await asyncio.sleep(1)
+                count += 0.1
+                await my_variable.write_value(count)
 
-Here the server is created and initialized (:meth:`~enginir_opcua.server.server.Server.init`).
-The endpoint is configured (:meth:`~enginir_opcua.server.server.Server.set_endpoint`) and a custom namespace
-is registered (:meth:`~enginir_opcua.server.server.Server.register_namespace`). It's recommended (:emphasis:`required??`)
-that all custom objects, variables and methods live in a separate namespace. We store its index as :code:`idx`.
-We'll need it later to add our custom objects to the namespace.
 
-Creating Objects and Variables
-==============================
+    asyncio.run(main())
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py, Line 26 - 29
-    :lines: 26-29
+Run it with :code:`python server.py`.
 
-In the next lines, the custom object "MyObject" is created and a variable is added to this object.
-Note that by default all variables are read-only, so we need to be explicit and make it writable.
-The :meth:`~enginir_opcua.common.node.Node.add_object` / :meth:`~enginir_opcua.common.node.Node.add_variable` calls
-are actually just calling :meth:`~enginir_opcua.common.manage_nodes.create_object`, respectively
-:meth:`~enginir_opcua.common.manage_nodes.create_variable` internally. You can find more information on
-how nodes and variables are created in the API docs of these methods.
+Setup and configuration
+=======================
 
-Adding Methods
-==============
+:meth:`Server.quickstart() <enginir_opcua.server.server.Server.quickstart>` returns a configured server with the
+``secure`` profile: Basic256Sha256, Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss, always SignAndEncrypt.
+:meth:`~enginir_opcua.server.server.Server.init` creates the PKI directory when it is missing and loads the
+certificate. A custom namespace is registered with
+:meth:`~enginir_opcua.server.server.Server.register_namespace`. It's recommended that all custom objects, variables
+and methods live in a namespace of their own. We store its index as :code:`idx` and use it to add our objects.
 
-With the code we have written so far, we would already have a server which can be run and
-exposes some custom data. But to complete the example, we also add a method which is callable
-by clients:
+Creating objects, variables and methods
+=======================================
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py, Line 8 - 11
-    :lines: 8 - 11
+:meth:`~enginir_opcua.common.node.Node.add_object` and :meth:`~enginir_opcua.common.node.Node.add_variable` create the
+object "MyObject" and a variable below it. By default all variables are read-only, so we are explicit and make it
+writable. A method is a Python function decorated with :meth:`~enginir_opcua.common.methods.uamethod`, registered with
+:meth:`~enginir_opcua.common.node.Node.add_method` together with the types of its arguments. An undecorated function
+works too, but then the conversion from and to UA Variant types is up to you. Methods with named arguments are in
+`04_methods.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/04_methods.py>`_.
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py, Line 30 - 36
-    :lines: 30 - 36
-
-To do this, a function, decorated with the :meth:`~enginir_opcua.common.methods.uamethod` decorator,
-is created and, similar to the objects and variables, registered on the server. It would
-also be possible to register a undecorated function on the server, but in this case the
-conversion from and to UA Variant types would be up to us.
-
-Starting the Server
+Starting the server
 ===================
 
-.. literalinclude:: ../../../examples/server-minimal.py
-    :caption: server-minimal.py, Line 37 -
-    :lines: 37 -
+Using the server as a context manager with :code:`async with server: ...` starts it and shuts it down cleanly. To keep
+it alive a loop is needed; here the loop also updates the variable once a second.
 
-Using the server as a context manager with :code:`async with server: ...` allows us to
-hide starting and shutting down the server nicely. In order to keep the server alive
-a endless loop must be present. In this example the loop is also used to periodically
-update the variable in our custom object.
+Looking at it from the command line
+===================================
+
+The command line tools (see :ref:`usage/get-started/installation:command line tools`) can connect with a secure
+channel by pointing them at the client's PKI directory. They use the ApplicationUri
+:code:`urn:enginir:opcua:client`, which is why the client was initialised with it above.
+
+.. code-block:: console
+
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki \
+          --security Basic256Sha256,SignAndEncrypt -n i=85
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki \
+          --security Basic256Sha256,SignAndEncrypt --user alice -p "0:Objects,2:MyObject,2:MyVariable"
+
+The second command reads the password from the environment variable :code:`ENGINIR_OPCUA_PASSWORD` or asks for it
+with :code:`--ask-password`.
 
 Now that we have a working server, let's go on and write :ref:`usage/get-started/minimal-client:a minimal opc-ua client`!

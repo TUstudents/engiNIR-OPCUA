@@ -8,7 +8,7 @@ from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode, HaSecu
 from enginir_opcua.crypto import security_policies
 from enginir_opcua.crypto.uacrypto import CertProperties, x509_from_der
 from tests.conftest import find_free_port
-from tests.harness import EXAMPLES, PKI, ResponseTampering, TwoUserManager, make_certificate, signing_client
+from tests.harness import PKI, PKI_FILES, ResponseTampering, TwoUserManager, make_certificate, signing_client
 
 
 @pytest.fixture
@@ -121,8 +121,8 @@ async def test_cli11_security_error_during_reconnect_does_not_fetch_endpoints(mo
 
 def test_cli14_ha_security_without_server_certificate_is_a_configuration_error() -> None:
     """Part 4, 5.7.2.2: an HA client with security on must be given the server certificate, not fetch it."""
-    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
-    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    certificate = CertProperties(PKI_FILES / "certificate-example.der", "DER")
+    key = CertProperties(PKI_FILES / "private-key-example.pem", "PEM")
     with pytest.raises(ValueError, match="server_certificate"):
         HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key)
     config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1", "opc.tcp://127.0.0.1:2"])
@@ -132,8 +132,8 @@ def test_cli14_ha_security_without_server_certificate_is_a_configuration_error()
 
 def test_cli14_ha_security_with_a_trust_store_is_accepted() -> None:
     """Part 4, 5.7.2.2: a trust store is an alternative to a pinned server certificate."""
-    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
-    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    certificate = CertProperties(PKI_FILES / "certificate-example.der", "DER")
+    key = CertProperties(PKI_FILES / "private-key-example.pem", "PEM")
     store = PKI.trust_store()
     secured = HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key, trust_store=store)
     assert secured.trust_store is store
@@ -145,8 +145,8 @@ def test_cli14_ha_security_with_a_trust_store_is_accepted() -> None:
 
 async def test_cli14_ha_reconnect_gives_the_trust_store_to_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Part 4, 5.7.2.2: the clients of an HA client validate the server certificate with the configured store."""
-    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
-    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    certificate = CertProperties(PKI_FILES / "certificate-example.der", "DER")
+    key = CertProperties(PKI_FILES / "private-key-example.pem", "PEM")
     store = PKI.trust_store()
     config = HaConfig(HaMode.WARM, urls=["opc.tcp://127.0.0.1:1", "opc.tcp://127.0.0.1:2"])
     ha = HaClient(config)
@@ -170,8 +170,8 @@ async def test_cli14_ha_reconnect_gives_the_trust_store_to_the_client(monkeypatc
 
 def test_cli14_ha_security_with_server_certificate_and_no_security_are_accepted() -> None:
     """Part 4, 5.7.2.2: a configured server certificate is fine, and so is no security at all."""
-    certificate = CertProperties(EXAMPLES / "certificate-example.der", "DER")
-    key = CertProperties(EXAMPLES / "private-key-example.pem", "PEM")
+    certificate = CertProperties(PKI_FILES / "certificate-example.der", "DER")
+    key = CertProperties(PKI_FILES / "private-key-example.pem", "PEM")
     assert HaSecurityConfig().policy is None
     secured = HaSecurityConfig(security_policies.SecurityPolicyBasic256Sha256, certificate, key, certificate)
     assert secured.server_certificate == certificate

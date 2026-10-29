@@ -29,6 +29,7 @@ from enginir_opcua.common.event_objects import (
 from enginir_opcua.server.binary_server_asyncio import OPCUAProtocol
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.ua.ua_binary import uatcp_to_binary
+from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.conftest import find_free_port
 from tests.harness import give_identity
 from tests.waiting import wait_until
@@ -1017,3 +1018,28 @@ async def test_srv85_server_capabilities_publish_max_byte_string_length() -> Non
     await server.init()
     node = server.get_node(ua.NodeId(ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength))
     assert await node.read_value() == 4096
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("localhost:4840", id="no_scheme"),
+        pytest.param("opc.tcp:/localhost:4840", id="no_host"),
+        pytest.param("opc.tcp://:4840", id="empty_host"),
+        pytest.param("opc.tcp://localhost:99999", id="port_too_high"),
+        pytest.param("http://localhost:4840", id="wrong_scheme"),
+    ],
+)
+def test_srv103_set_endpoint_rejects_a_bad_url(url: str) -> None:
+    srv = Server(allow_no_security=True)
+    with pytest.raises(ConfigurationError, match="endpoint"):
+        srv.set_endpoint(url)
+    assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
+
+
+def test_srv104_set_security_policy_and_identity_tokens_refuse_an_empty_list() -> None:
+    srv = Server()
+    with pytest.raises(ConfigurationError, match="security_policy"):
+        srv.set_security_policy([])
+    with pytest.raises(ConfigurationError, match="identity_tokens"):
+        srv.set_identity_tokens([])

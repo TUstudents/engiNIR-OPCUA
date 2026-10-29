@@ -450,3 +450,9 @@ async def test_strip_credentials_in_url():
     client = Client("opc.tcp://user:password@dummy_address:10000")
     client.strip_url_credentials = False
     assert client.server_url.netloc == "user:password@dummy_address:10000"
+
+
+def test_cli71_default_client_name_is_enginir() -> None:
+    client = Client("opc.tcp://127.0.0.1:4840")
+    assert client.name == "engiNIR OPC UA Client"
+    assert client.description == "engiNIR OPC UA Client"

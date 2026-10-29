@@ -8,6 +8,7 @@ Usage Guide
 
     get-started/installation
     get-started/opc-ua-basics
+    get-started/quick-setup
     get-started/minimal-server
     get-started/minimal-client
     get-started/docker
