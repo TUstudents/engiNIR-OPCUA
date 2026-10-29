@@ -25,6 +25,7 @@ from tests.conftest import (
 )
 from tests.harness import PKI
 from tests.server.test_subscriptions import MySubHandler
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.slow("enginir_opcua/client", "enginir_opcua/common/subscription.py")
 
@@ -125,7 +126,11 @@ class TestHaClient:
         for c in ha_client.get_clients():
             await wait_for_status_change(ha_client, c, 255)
 
-        primary = await ha_client.get_serving_client(ha_client.get_clients(), None)
+        # The manager keeps the first Healthy server it chose (CLI-47); with two at 255 that depends on which
+        # connected first, so ask it instead of electing again.
+        await wait_until(lambda: ha_client.active_client is not None, timeout=10)
+        primary = ha_client.active_client
+        assert primary is not None
         await wait_mode_in_real_map(ha_client, primary, sub, mode="publishing", value=True)
 
         node_id, val, _data = await myhandler.result()
@@ -394,7 +399,9 @@ class TestReconciliator:
             assert isinstance(reconciliator.name_to_subscription[url][sub], Subscription)
             assert isinstance(reconciliator.node_to_handle[url][node_str], int)
 
-        primary = await ha_client.get_serving_client(ha_client.get_clients(), None)
+        await wait_until(lambda: ha_client.active_client is not None, timeout=10)
+        primary = ha_client.active_client
+        assert primary is not None
         # let's save the primary sub/handle for future comparison
         primary_url = primary.server_url.geturl()
         real_sub = reconciliator.name_to_subscription[primary_url][sub]
