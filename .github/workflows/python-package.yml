@@ -86,5 +86,9 @@ jobs:
         run: |
           uv tool install mypy
           uv tool install ruff
-      - name: Run tests
+      - name: Run the full suite
+        if: matrix.python-version == '3.14'
         run: uv run pytest -v -s tests
+      - name: Run the fast suite
+        if: matrix.python-version != '3.14'
+        run: uv run pytest -v -s tests -m "not slow"

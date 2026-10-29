@@ -1,11 +1,18 @@
 # Measures the test suite for workstream T: coverage with per-test contexts, and durations.
-# Runs on pushes to the ws/t-tests branch only; the results are uploaded as artifacts.
+# Runs on manual dispatch and on pushes to ws/t-* branches; the results are uploaded as artifacts.
+# Per-test contexts are opt-in because they need the slower C tracer.
 
 name: Test measurement
 
 on:
+  workflow_dispatch:
+    inputs:
+      contexts:
+        description: Record per-test coverage contexts (uses the C tracer, much slower)
+        type: boolean
+        default: false
   push:
-    branches: [ws/t-tests]
+    branches: ["ws/t-*"]
 
 permissions:
   contents: read
@@ -30,8 +37,17 @@ jobs:
       - name: Install the project
         run: uv sync --all-extras --dev
 
-      - name: Run the full suite with coverage contexts and durations
-        # The sys.monitoring core (default on 3.14) reports a line only once, so per-test contexts need the C tracer.
+      - name: Run the full suite with coverage and durations
+        if: ${{ !inputs.contexts }}
+        run: >
+          uv run pytest tests -q -p no:cacheprovider
+          --cov=enginir_opcua --cov-branch
+          --cov-report=json:coverage.json --cov-report=term
+          --durations=0 --junitxml=junit.xml
+          | tee pytest-output.txt
+
+      - name: Run the full suite with per-test coverage contexts
+        if: ${{ inputs.contexts }}
         env:
           COVERAGE_CORE: ctrace
         run: >
