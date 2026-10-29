@@ -5,6 +5,7 @@ High level interface to pure python OPC-UA server
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import socket
@@ -1187,3 +1188,31 @@ class Server:
         self._reverse_connections.remove(connection)
         if self.bserver is not None:
             self.bserver.remove_reverse_connection(connection)
+
+    def model_change(self) -> contextlib.AbstractAsyncContextManager[None]:
+        """
+        Collect the model changes (AddNodes, DeleteNodes, AddReferences, DeleteReferences) of everything done in the
+        block, by this task and the tasks it starts, into one GeneralModelChangeEvent raised when the block ends:
+
+            async with server.model_change():
+                await folder.add_object(2, "A")
+                await folder.add_object(2, "B")
+
+        Without a block every call is a request of its own and raises its own event.
+        """
+        return self.iserver.model_changes.request()
+
+    @property
+    def model_change_events(self) -> str:
+        """
+        "all" (default): a model change event names every changed Node. "versioned": only Nodes that have a
+        NodeVersion Property, the literal reading of OPC 10000-3 v1.05, 9.32.2. The NodeVersion of a named Node
+        that has the Property is updated in both modes.
+        """
+        return self.iserver.model_change_events
+
+    @model_change_events.setter
+    def model_change_events(self, mode: str) -> None:
+        if mode not in ("all", "versioned"):
+            raise ValueError("model_change_events is 'all' or 'versioned'")
+        self.iserver.model_change_events = mode
