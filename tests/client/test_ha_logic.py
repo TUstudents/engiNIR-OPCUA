@@ -15,6 +15,7 @@ from enginir_opcua.client.ha import ConnectionStates, HaClient, HaMode, HaSecuri
 from enginir_opcua.client.ha.ha_client import HaConfig, HaManager, KeepAlive, ServerInfo, redundancy_accepted
 from enginir_opcua.client.ha.reconciliator import Reconciliator
 from enginir_opcua.client.ua_client import UaClientState
+from tests.waiting import until
 
 
 def make_config(**kwargs: Any) -> HaConfig:
@@ -261,7 +262,7 @@ async def test_cli49_loops_survive_an_exception_in_a_step() -> None:
     ha.manager.update_state_warm = failing_update  # type: ignore[method-assign]
     ha.manager.reconnect_warm = mock.AsyncMock()  # type: ignore[method-assign]
     task = asyncio.create_task(ha.manager.run())
-    await asyncio.sleep(0.5)
+    await until(lambda: len(calls) >= 2)
     assert len(calls) >= 2
     assert ha.manager.errors == 1
     await ha.manager.stop()
@@ -276,7 +277,7 @@ async def test_cli49_loops_survive_an_exception_in_a_step() -> None:
 
     ha.reconciliator.reconciliate = failing_reconciliate  # type: ignore[method-assign]
     task = asyncio.create_task(ha.reconciliator.run())
-    await asyncio.sleep(0.5)
+    await until(lambda: len(steps) >= 2)
     assert len(steps) >= 2
     assert ha.reconciliator.errors == 1
     await ha.reconciliator.stop()
@@ -334,7 +335,7 @@ async def test_probe_timeout_is_shorter_than_request_timeout() -> None:
     info.status = 255
     probe = KeepAlive(first, info, 5, probe_timeout=0.1)
     task = asyncio.create_task(probe.run())
-    await asyncio.sleep(0.5)
+    await until(lambda: info.status == ConnectionStates.NO_DATA)
     assert info.status == ConnectionStates.NO_DATA
     await probe.stop()
     await asyncio.wait_for(task, 1)
@@ -369,7 +370,7 @@ async def test_ha_probe_change_triggers_the_manager_at_once() -> None:
     info = ha.clients[first]
     probe = KeepAlive(first, info, 0.05, on_change=lambda: woken.append(1))
     task = asyncio.create_task(probe.run())
-    await asyncio.sleep(0.4)
+    await until(lambda: info.status == 150 and len(woken) == 2)
     assert info.status == 150
     assert len(woken) == 2
     await probe.stop()
