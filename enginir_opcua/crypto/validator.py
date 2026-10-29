@@ -673,6 +673,12 @@ class CertificateValidator:
         try:
             leaf = validation.run(chain)
         except _Rejected as rejection:
+            if (
+                rejection.status == ua.StatusCodes.BadCertificateUntrusted
+                and rejection.step is Step.TRUST
+                and self._trust_store.refresh_if_changed()
+            ):
+                return self.validate_application_certificate(chain, context)
             outcome = self._rejected(rejection, tuple(validation.suppressed))
             if rejection.status == ua.StatusCodes.BadCertificateUntrusted and rejection.step is Step.TRUST:
                 outcome = replace(outcome, untrusted_chain=self._valid_but_untrusted(chain, context))
