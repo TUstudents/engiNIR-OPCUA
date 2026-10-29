@@ -1,23 +1,27 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Generator, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from enum import IntEnum
 from functools import partial
 from itertools import chain
+from pathlib import Path
 from typing import Any
 
+from cryptography import x509
 from sortedcontainers import SortedDict  # type: ignore
 
 from enginir_opcua import Client, Node, ua
 from enginir_opcua.client.ua_client import UaClientState
 from enginir_opcua.ua.uaerrors import BadSessionClosed, BadSessionNotActivated
 
+from ...config import default_application_uri, quickstart_client_config
 from ...crypto.security_policies import SecurityPolicy
 from ...crypto.truststore import TrustStore
 from ...crypto.uacrypto import CertProperties
+from ...ua.uaerrors import ConfigurationError
 from .common import ClientNotFound, ConnectionStates, event_wait, wait_any
 from .reconciliator import Reconciliator
 from .virtual_subscription import TypeSubHandler, VirtualSubscription
@@ -87,6 +91,16 @@ class HaSecurityConfig:
     password: str | None = field(default=None, repr=False)
     user_certificate: CertProperties | None = field(default=None, repr=False)
     user_private_key: CertProperties | None = field(default=None, repr=False)
+    pki: str | Path | None = None
+    profile: str = "secure"
+    application_uri: str | None = None
+    client_settings: Mapping[str, Any] = field(default_factory=dict)
+    """
+    The quick setup (HaClient.quickstart): `pki` is the PKI directory that every client uses for its certificate, key
+    and trust, `profile` the quick-setup profile, `application_uri` the ApplicationUri of every client (default: the
+    host-derived URI of Client.quickstart) and `client_settings` more ClientConfig fields. The clients are created by
+    the HaClient constructor, so a later set_security() does not reach them; the policy fields above stay unused.
+    """
 
     def __post_init__(self) -> None:
         if self.policy is not None and self.server_certificate is None and self.trust_store is None:
@@ -164,8 +178,9 @@ class HaClient:
         self._resetting: set[Client] = set()
         self.is_running = False
 
+        security = security if security else HaSecurityConfig()
         for url in config.urls:
-            c = Client(url, timeout=self._config.request_timeout)
+            c = self._new_client(url, security)
             # timeouts for the session and secure channel are in ms
             c.session_timeout = self._config.session_timeout * 1000
             c.secure_channel_timeout = self._config.secure_channel_timeout * 1000
@@ -176,11 +191,71 @@ class HaClient:
             self.ideal_map[url] = SortedDict()
 
         # security can also be set via the set_security method
-        self.security_config: HaSecurityConfig = security if security else HaSecurityConfig()
+        self.security_config: HaSecurityConfig = security
         self.manager = HaManager(self, self._config.manager_timer)
         self.reconciliator = Reconciliator(self._config.reconciliator_timer, self)
 
+    @classmethod
+    def quickstart(
+        cls,
+        urls: Sequence[str],
+        profile: str = "secure",
+        pki: str | Path | None = "./pki",
+        username: str | None = None,
+        password: str | None = None,
+        **overrides: Any,
+    ) -> "HaClient":
+        """
+        An HA client for the quick setup, not started: one Client per URL, each configured like Client.quickstart with
+        the same profile, PKI directory (the server certificates have to be in its trusted/certs, see
+        `enginir-opcua trust`) and ApplicationUri, which is the host-derived one unless `application_uri` is given.
+        `username` and `password` go to every client. `overrides` are the fields of :class:`HaConfig` (timers,
+        `session_name`, ...; `ha_mode` defaults to WARM) and any other ClientConfig field (`security`, `name`, ...).
+        The PKI directory and the certificate are created by `init_pki()` or at `start()`.
+        """
+        ha_names = {f.name for f in fields(HaConfig)} - {"urls"}
+        ha_values = {key: value for key, value in overrides.items() if key in ha_names}
+        client_settings = {key: value for key, value in overrides.items() if key not in ha_names}
+        application_uri = client_settings.pop("application_uri", None)
+        ha_values.setdefault("ha_mode", HaMode.WARM)
+        security = HaSecurityConfig(
+            username=username,
+            password=password,
+            pki=pki,
+            profile=profile,
+            application_uri=application_uri,
+            client_settings=client_settings,
+        )
+        return cls(HaConfig(urls=list(urls), **ha_values), security)
+
+    @property
+    def config(self) -> HaConfig:
+        return self._config
+
+    def _new_client(self, url: str, security: HaSecurityConfig) -> Client:
+        if security.pki is None:
+            return Client(url, timeout=self._config.request_timeout)
+        settings = dict(security.client_settings)
+        settings.setdefault("timeout", self._config.request_timeout)
+        settings.setdefault("application_uri", security.application_uri or default_application_uri("client"))
+        config = quickstart_client_config(url, security.profile, security.pki, None, None, settings)
+        return Client(config=config)
+
+    async def init_pki(self) -> x509.Certificate:
+        """
+        Create the PKI directory and the self-signed application certificate of the quick setup now (all clients share
+        them) and return the certificate, for example to put it into the servers' trusted/certs before `start()`.
+        `start()` does it too. Calling it again returns the same certificate.
+        """
+        if self.security_config.pki is None:
+            raise ConfigurationError(
+                "client.pki: init_pki needs a PKI directory; create the client with HaClient.quickstart"
+            )
+        return await next(iter(self.clients)).init_pki()
+
     async def start(self) -> None:
+        if self.security_config.pki is not None:
+            await self.init_pki()
         for client, server in self.clients.items():
             keepalive = KeepAlive(
                 client,

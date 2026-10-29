@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 
-from enginir_opcua import Client, ua
+from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ha import ConnectionStates, HaClient, HaMode, HaSecurityConfig
 from enginir_opcua.client.ha.ha_client import HaConfig, HaManager, KeepAlive, ServerInfo, redundancy_accepted
 from enginir_opcua.client.ha.reconciliator import Reconciliator
 from enginir_opcua.client.ua_client import UaClientState
+from enginir_opcua.config import default_application_uri
+from enginir_opcua.crypto import pki
+from enginir_opcua.ua.uaerrors import ConfigurationError
+from tests.conftest import find_free_port
 from tests.waiting import wait_until
 
 
@@ -423,3 +430,87 @@ def test_ha_manager_and_server_info_defaults() -> None:
     config = HaConfig(HaMode.WARM, urls=["a", "b"])
     assert config.keepalive_timer == 5
     assert config.manager_timer == 5
+
+
+async def test_cli83_quickstart_builds_clients_with_the_quick_setup_uri(tmp_path: Path) -> None:
+    urls = ["opc.tcp://127.0.0.1:1/a/", "opc.tcp://127.0.0.1:2/b/"]
+    ha = HaClient.quickstart(urls, pki=tmp_path / "pki", username="operator", password="secret", keepalive_timer=2)
+    assert list(ha.config.urls) == urls
+    assert ha.config.ha_mode is HaMode.WARM
+    assert ha.config.keepalive_timer == 2
+    for client in ha.get_clients():
+        assert client.application_uri == default_application_uri("client")
+        assert client._config is not None
+        assert client._config.pki == tmp_path / "pki"
+        assert client._config.policy_type() is ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt
+    assert ha.security_config.username == "operator"
+
+
+async def test_cli83_quickstart_takes_an_application_uri_and_client_settings(tmp_path: Path) -> None:
+    ha = HaClient.quickstart(
+        ["opc.tcp://127.0.0.1:1/", "opc.tcp://127.0.0.1:2/"],
+        pki=tmp_path / "pki",
+        application_uri="urn:example:ha-client",
+        security="Aes256Sha256RsaPss,SignAndEncrypt",
+    )
+    for client in ha.get_clients():
+        assert client.application_uri == "urn:example:ha-client"
+        assert client._config is not None
+        assert client._config.policy_type() is ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt
+
+
+def test_cli83_quickstart_refuses_unknown_settings_and_few_urls(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match=r"client\.colour: unknown setting"):
+        HaClient.quickstart(["opc.tcp://127.0.0.1:1/", "opc.tcp://127.0.0.1:2/"], pki=tmp_path, colour="red")
+    with pytest.raises(ValueError, match="at least two"):
+        HaClient.quickstart(["opc.tcp://127.0.0.1:1/"], pki=tmp_path)
+
+
+async def test_cli83_init_pki_creates_one_certificate_for_every_client(tmp_path: Path) -> None:
+    ha = HaClient.quickstart(
+        ["opc.tcp://127.0.0.1:1/", "opc.tcp://127.0.0.1:2/"], pki=tmp_path / "pki", application_uri="urn:ha:client"
+    )
+    certificate = await ha.init_pki()
+    assert (tmp_path / "pki" / "own" / "certs" / pki.CERTIFICATE_NAME).exists()
+    assert await ha.init_pki() == certificate
+    with pytest.raises(ConfigurationError, match="init_pki"):
+        await HaClient(make_config()).init_pki()
+
+
+async def test_cli83_a_quickstart_ha_client_connects_to_two_secure_servers(tmp_path: Path) -> None:
+    servers = []
+    urls = []
+    for name in ("first", "second"):
+        url = f"opc.tcp://127.0.0.1:{find_free_port()}/ha/{name}/"
+        server = Server.quickstart(url, pki=tmp_path / f"{name}-pki")
+        await server.init()
+        servers.append(server)
+        urls.append(url)
+    ha = HaClient.quickstart(
+        urls,
+        pki=tmp_path / "client-pki",
+        keepalive_timer=0.2,
+        manager_timer=0.2,
+        reconciliator_timer=0.2,
+        min_active_seconds=0.2,
+    )
+    certificate = await ha.init_pki()
+    for name in ("first", "second"):
+        (tmp_path / f"{name}-pki" / "trusted" / "certs" / "client.der").write_bytes(
+            certificate.public_bytes(serialization.Encoding.DER)
+        )
+        shutil.copy(
+            tmp_path / f"{name}-pki" / "own" / "certs" / pki.CERTIFICATE_NAME,
+            tmp_path / "client-pki" / "trusted" / "certs" / f"{name}.der",
+        )
+    for server in servers:
+        await server.start()
+    try:
+        await ha.start()
+        await wait_until(lambda: ha.active_client is not None, timeout=30)
+        assert ha.active_client is not None
+        assert ha.active_client.security_policy.URI.endswith("Basic256Sha256")
+    finally:
+        await ha.stop()
+        for server in servers:
+            await server.stop()

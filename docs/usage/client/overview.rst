@@ -191,6 +191,14 @@ For servers that form a redundant set (OPC 10000-4, 6.6), :class:`enginir_opcua.
 client per server, picks the one to use from the ServiceLevel and moves the subscriptions when it fails over. Only the warm
 mode is implemented. See the docstrings of the :mod:`enginir_opcua.client.ha` package.
 
+``HaClient.quickstart(urls, profile="secure", pki="./pki", username=None, password=None, **overrides)`` is the quick
+setup for it (see :doc:`../get-started/quick-setup`): every client gets the same PKI directory and the host-derived
+ApplicationUri of ``Client.quickstart`` (or ``application_uri=``), and ``await ha.init_pki()`` creates the certificate
+before ``start()``, so you can put it into the servers' ``trusted/certs``. The overrides are the fields of ``HaConfig``
+(timers, ``session_name``) and any other ``ClientConfig`` field. ``HaClient(HaConfig(...), HaSecurityConfig(...))`` with
+explicit certificates keeps working. See `09_ha_client.py
+<https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/09_ha_client.py>`_.
+
 Errors
 ======
 

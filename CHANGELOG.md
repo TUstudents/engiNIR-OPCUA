@@ -614,3 +614,10 @@ API freeze (before 3.0.0rc1):
   `pki.create_directories` and `pki.load_own_credentials` (CLI-84).
 - `sync.Server.quickstart` and `sync.Client.quickstart` take `tloop=None`, so a quick-setup server and client can share
   one `ThreadLoop` (CLI-85). `examples/11_sync.py` does.
+- `HaClient.quickstart(urls, profile="secure", pki="./pki", username=None, password=None, **overrides)` builds an HA
+  client whose clients are configured like `Client.quickstart`: one PKI directory, the host-derived ApplicationUri (or
+  `application_uri=`), the profile's security, and the trust store of the PKI directory. The overrides are `HaConfig`
+  fields and any other `ClientConfig` field. `HaSecurityConfig` has the new fields `pki`, `profile`, `application_uri`
+  and `client_settings`; `HaClient.init_pki()` creates the shared certificate before `start()` (which does it too) and
+  `HaClient.config` returns the `HaConfig`. The constructor with explicit certificates is unchanged. `examples/09_ha_client.py`
+  uses it without private attributes (CLI-83).

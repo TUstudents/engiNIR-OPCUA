@@ -2,7 +2,7 @@
 A client for a redundant pair of servers.
 
 Shows: two servers that report warm redundancy and a ServiceLevel, and an HaClient with security (a trust store over
-the client's PKI directory) that keeps a subscription on the healthy one. When the first server reports a low
+the client's PKI directory, set up with HaClient.quickstart) that keeps a subscription on the healthy one. When the first server reports a low
 ServiceLevel the client fails over to the second, and the subscription continues there. Only the warm mode is
 implemented; the servers must have identical NodeIds.
 
@@ -16,17 +16,11 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from _common import free_port, pair, workdir
+from _common import free_port, trust, workdir
 
 from enginir_opcua import Server, ua
-from enginir_opcua.client.ha import HaClient, HaConfig, HaMode
+from enginir_opcua.client.ha import HaClient
 from enginir_opcua.common.node import Node
-from enginir_opcua.crypto import pki
-from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256
-from enginir_opcua.crypto.truststore import TrustStore
-from enginir_opcua.crypto.uacrypto import CertProperties
-
-CLIENT_URI = "urn:enginir:example:ha-client"
 
 
 class Handler:
@@ -74,30 +68,22 @@ async def main() -> None:
     with workdir() as directory:
         first, first_url, first_counter = await make_server(directory, "first")
         second, second_url, second_counter = await make_server(directory, "second")
-        client_pki = directory / "client-pki"
-        await pair(directory / "first-pki", client_pki, CLIENT_URI)
-        await pair(directory / "second-pki", client_pki, CLIENT_URI)
-        await start_server(first, 255)
-        await start_server(second, 200)
-
-        config = HaConfig(
-            HaMode.WARM,
+        ha = HaClient.quickstart(
+            [first_url, second_url],
+            pki=directory / "client-pki",
             keepalive_timer=1,
             manager_timer=1,
             reconciliator_timer=1,
             min_active_seconds=1,
-            urls=[first_url, second_url],
             session_name="ha-example",
         )
-        ha = HaClient(config)
-        for client in ha.get_clients():
-            client.application_uri = CLIENT_URI
-        ha.set_security(
-            SecurityPolicyBasic256Sha256,
-            CertProperties(client_pki / "own" / "certs" / pki.CERTIFICATE_NAME),
-            CertProperties(client_pki / "own" / "private" / pki.KEY_NAME),
-            trust_store=TrustStore.from_pki_directory(client_pki),
-        )
+        await ha.init_pki()
+        for name in ("first", "second"):
+            trust(directory / f"{name}-pki", directory / "client-pki")
+            trust(directory / "client-pki", directory / f"{name}-pki")
+        await start_server(first, 255)
+        await start_server(second, 200)
+
         handler = Handler()
         await ha.start()
         try:
