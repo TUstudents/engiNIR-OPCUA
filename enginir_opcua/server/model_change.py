@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +61,16 @@ def record_change(node_id: ua.NodeId, verb: int, type_definition: Callable[[], u
     changes = _current.get()
     if changes is not None and not changes.discard:
         changes.add(node_id, verb, type_definition())
+
+
+@contextlib.contextmanager
+def suppress_model_change() -> Iterator[None]:
+    """The changes made inside the block are the server's own bookkeeping and raise no event."""
+    token = _current.set(ChangeSet(discard=True))
+    try:
+        yield
+    finally:
+        _current.reset(token)
 
 
 class ModelChangeNotifier:

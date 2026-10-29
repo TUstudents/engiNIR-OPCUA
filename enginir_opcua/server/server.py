@@ -41,6 +41,7 @@ from ..pubsub.pubsub import PubSub
 from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer, ReverseConnection
+from .diagnostics import DiagnosticsCollector
 from .event_generator import EventGenerator
 from .internal_server import InternalServer
 from .user_managers import UserManager
@@ -1216,3 +1217,12 @@ class Server:
         if mode not in ("all", "versioned"):
             raise ValueError("model_change_events is 'all' or 'versioned'")
         self.iserver.model_change_events = mode
+
+    @property
+    def diagnostics(self) -> DiagnosticsCollector:
+        """
+        The server diagnostics (OPC 10000-5 v1.05, 6.3.3): `enabled` is the EnabledFlag of Server/ServerDiagnostics,
+        which a client with the Admin or SecurityAdmin role can write too; `summary()` returns the counters of
+        ServerDiagnosticsSummary. The counters run always, the Session and Subscription details only while enabled.
+        """
+        return self.iserver.diagnostics

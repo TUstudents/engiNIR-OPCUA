@@ -7,6 +7,7 @@ import time
 import weakref
 from collections import deque
 from collections.abc import Callable, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import Enum
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
     from .internal_server import InternalServer
 
 _logger = logging.getLogger(__name__)
+
+current_call_session: ContextVar[InternalSession | None] = ContextVar("current_call_session", default=None)
+# J shared: current_call_session (agent A implements)
 
 CLIENT_NONCE_MIN_LENGTH = 32
 CLIENT_NONCE_MAX_LENGTH = 128
@@ -379,6 +383,7 @@ class SessionManager:
 
     def forget(self, session: Session) -> None:
         self.sessions.pop(session.token, None)
+        self.iserver.diagnostics.session_forgotten(session)  # J: diagnostics (SRV-93)
 
     def has_session(self, channel_id: int) -> bool:
         return any(s.bound_channel_id == channel_id for s in self.sessions.values())
@@ -462,6 +467,7 @@ class SessionManager:
         )
         session.client_certificate = params.ClientCertificate
         self.sessions[session.token] = session
+        self.iserver.diagnostics.session_created(session, params)  # J: diagnostics (SRV-93)
         result = ua.CreateSessionResult()
         result.SessionId = session.id
         result.AuthenticationToken = session.token
@@ -550,6 +556,7 @@ class SessionManager:
         if moving:
             session.move_to(channel)
         session.touch()
+        self.iserver.diagnostics.session_activated(session, params)  # J: diagnostics (SRV-93)
         _logger.info("Activated session %s for user %s", session.name, user)
         return result
 
@@ -562,6 +569,7 @@ class SessionManager:
             if session.bound_channel_id != channel.channel_id:
                 continue
             if session.state == SessionState.Created:
+                self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
                 await session.close(False)
             else:
                 session.unbind()
@@ -580,6 +588,7 @@ class SessionManager:
             session.services.user = session.user
             return True
         _logger.info("The user certificate of session %s expired, closing the session", session.name)
+        self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
         await session.close(False)
         return False
 
@@ -596,6 +605,7 @@ class SessionManager:
                 remaining = session.revised_timeout_ms / 1000 - session.idle_seconds(now)
             if remaining <= 0:
                 _logger.info("Session %s expired", session.name)
+                self.iserver.diagnostics.session_ended(session, "timeout")  # J: diagnostics (SRV-93)
                 await session.close(False)
             else:
                 wait = min(wait, remaining)

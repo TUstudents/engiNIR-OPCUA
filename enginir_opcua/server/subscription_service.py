@@ -110,6 +110,8 @@ class SubscriptionService:
         if owner is not None:
             internal_sub.owner_user, internal_sub.owner_certificate = owner.user, owner.client_certificate
         self.subscriptions[result.SubscriptionId] = internal_sub
+        if self.iserver:
+            self.iserver.diagnostics.subscription_created()  # J: diagnostics (SRV-93)
         return result
 
     def _owned_count(self, session_id: ua.NodeId) -> int:
@@ -233,6 +235,7 @@ class SubscriptionService:
         result.RevisedPublishingInterval, result.RevisedLifetimeCount, result.RevisedMaxKeepAliveCount = self._revise(
             params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
         )
+        sub.counters.modify_count += 1  # J: diagnostics (SRV-93)
         sub.update_parameters(
             result.RevisedPublishingInterval,
             result.RevisedLifetimeCount,
@@ -342,6 +345,8 @@ class SubscriptionService:
         for sub_id in params.SubscriptionIds:
             result = ua.TransferResult()
             sub = self.subscriptions.get(int(sub_id))
+            if sub is not None:
+                sub.counters.transfer_request_count += 1  # J: diagnostics (SRV-93)
             if sub is None:
                 result.StatusCode = ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid)
             elif sub.session_id == session_id:
@@ -352,6 +357,7 @@ class SubscriptionService:
                 result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManySubscriptions)
             else:
                 previous_owners.append(sub.session_id)
+                sub.counters.transferred_to_same_client_count += 1  # J: diagnostics (SRV-93)
                 await self._move(sub, session_id, callback, request_callback, params.SendInitialValues)
                 result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
             results.append(result)

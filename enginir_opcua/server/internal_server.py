@@ -26,6 +26,7 @@ from ..crypto import uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
+from .diagnostics import DiagnosticsCollector
 from .event_generator import EventGenerator
 from .history import HistoryManager
 from .identity import TOKEN_TYPES, IdentityGuard
@@ -180,6 +181,7 @@ class InternalServer:
         self.application_hook: ApplicationHook | None = None
         """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
+        self.diagnostics = DiagnosticsCollector(self)  # J: diagnostics (SRV-91)
         self.model_changes = ModelChangeNotifier(self)  # J: model change events (SRV-96)
         self.model_change_events: str = "all"
         self.session_manager = SessionManager(self)
@@ -197,6 +199,7 @@ class InternalServer:
         await self.load_standard_address_space(shelffile)
         await self._address_space_fixes()
         await self.setup_nodes()
+        await self.diagnostics.install()  # J: diagnostics (SRV-91)
         await self.history_manager.init()
         if self.bind_condition_methods:
             await self.setup_condition_methods()
@@ -349,6 +352,7 @@ class InternalServer:
         for sub_id, sub in list(self.subscription_service.subscriptions.items()):
             await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
+        await self.diagnostics.stop()  # J: diagnostics (SRV-91)
 
     async def _set_current_time_loop(self) -> None:
         while not self._time_task_stop.is_set():
