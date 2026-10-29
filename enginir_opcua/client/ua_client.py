@@ -129,7 +129,10 @@ class UASocketProtocol(asyncio.Protocol):
         context = ValidationContext(
             PeerRole.SERVER, self._channel.security_policy.URI, host_name=self.validation_host_name
         )
-        self.certificate_validator.validate_application_certificate(chain, context).raise_for_status()
+        outcome = self.certificate_validator.validate_application_certificate(chain, context)
+        if not outcome.accepted:
+            self.certificate_validator.keep_rejected(outcome, self.validation_host_name, background=True)
+        outcome.raise_for_status()
 
     def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
         self.state = UASocketState.OPEN

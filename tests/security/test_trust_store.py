@@ -38,6 +38,7 @@ from tests.pki import (
     write_pki_layout,
     write_trust_directory,
 )
+from tests.waiting import wait_until
 
 CONTEXT = ValidationContext(PeerRole.CLIENT, SecurityPolicyBasic256Sha256.URI)
 
@@ -431,11 +432,17 @@ async def pki_validator(root: Path, **options: object) -> CertificateValidator:
     return validator_for(store)
 
 
+def validate_and_keep(validator: CertificateValidator, chain: bytes, peer: str | None = None) -> Outcome:
+    outcome = validator.validate_application_certificate(chain, CONTEXT)
+    validator.keep_rejected(outcome, peer)
+    return outcome
+
+
 async def test_r25_rejected_leaf_and_chain_are_written_by_thumbprint(tmp_path: Path) -> None:
     ca = make_ca()
     leaf = make_identity(issuer=ca)
     validator = await pki_validator(write_pki_layout(tmp_path))
-    outcome = validator.validate_application_certificate(leaf.der + ca.der, CONTEXT)
+    outcome = validate_and_keep(validator, leaf.der + ca.der)
     assert outcome.status == ua.StatusCodes.BadCertificateUntrusted
     names = [path.name for path in rejected_files(tmp_path)]
     assert names == sorted([thumbprint_name(leaf.der), thumbprint_name(ca.der)])
@@ -445,17 +452,17 @@ async def test_r25_rejected_leaf_and_chain_are_written_by_thumbprint(tmp_path: P
 async def test_r25_accepted_certificate_is_not_written(tmp_path: Path) -> None:
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path, trusted=(peer.certificate,)))
-    assert validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    assert validate_and_keep(validator, peer.der).accepted
     assert rejected_files(tmp_path) == []
 
 
 async def test_r25_certificate_is_written_once_per_thumbprint(tmp_path: Path) -> None:
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path))
-    validator.validate_application_certificate(peer.der, CONTEXT)
+    validate_and_keep(validator, peer.der)
     (written,) = rejected_files(tmp_path)
     written.write_bytes(b"marker")
-    validator.validate_application_certificate(peer.der, CONTEXT)
+    validate_and_keep(validator, peer.der)
     assert written.read_bytes() == b"marker"
     assert len(rejected_files(tmp_path)) == 1
 
@@ -464,7 +471,7 @@ async def test_r25_store_is_bounded_and_the_oldest_file_goes_first(tmp_path: Pat
     validator = await pki_validator(write_pki_layout(tmp_path), max_rejected=3)
     peers = [make_identity(f"peer{index}") for index in range(5)]
     for index, peer in enumerate(peers):
-        validator.validate_application_certificate(peer.der, CONTEXT)
+        validate_and_keep(validator, peer.der)
         for path in rejected_files(tmp_path):
             if path.name == thumbprint_name(peer.der):
                 os.utime(path, (1_000_000 + index, 1_000_000 + index))
@@ -474,7 +481,7 @@ async def test_r25_store_is_bounded_and_the_oldest_file_goes_first(tmp_path: Pat
 async def test_r25_nothing_is_written_without_a_rejected_folder(tmp_path: Path) -> None:
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path, rejected=False))
-    assert not validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    assert not validate_and_keep(validator, peer.der).accepted
     assert not (tmp_path / "rejected").exists()
 
 
@@ -488,7 +495,7 @@ async def test_r25_explicit_locations_have_no_rejected_store(tmp_path: Path) -> 
 
 async def test_r25_unparsable_data_is_not_written(tmp_path: Path) -> None:
     validator = await pki_validator(write_pki_layout(tmp_path))
-    outcome = validator.validate_application_certificate(b"\x30\x03\x02\x01\x00", CONTEXT)
+    outcome = validate_and_keep(validator, b"\x30\x03\x02\x01\x00")
     assert outcome.status == ua.StatusCodes.BadCertificateInvalid
     assert rejected_files(tmp_path) == []
 
@@ -502,7 +509,7 @@ async def test_r25_write_error_does_not_change_the_outcome(
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path))
     monkeypatch.setattr("enginir_opcua.crypto.truststore.write_atomic", fail)
-    outcome = validator.validate_application_certificate(peer.der, CONTEXT)
+    outcome = validate_and_keep(validator, peer.der)
     assert outcome.status == ua.StatusCodes.BadCertificateUntrusted
     assert "denied" in caplog.text
 
@@ -510,20 +517,64 @@ async def test_r25_write_error_does_not_change_the_outcome(
 async def test_r25_rejected_certificates_are_never_trusted(tmp_path: Path) -> None:
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path))
-    validator.validate_application_certificate(peer.der, CONTEXT)
+    validate_and_keep(validator, peer.der)
     await validator.trust_store.load()
     assert validator.trust_store.snapshot.trusted == ()
-    assert not validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    assert not validate_and_keep(validator, peer.der).accepted
 
 
 async def test_r25_moving_the_file_to_trusted_certs_trusts_it_after_reload(tmp_path: Path) -> None:
     peer = make_identity()
     validator = await pki_validator(write_pki_layout(tmp_path))
-    validator.validate_application_certificate(peer.der, CONTEXT)
+    validate_and_keep(validator, peer.der)
     (written,) = rejected_files(tmp_path)
     written.rename(tmp_path / "trusted" / "certs" / written.name)
     await validator.trust_store.load()
-    assert validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    assert validate_and_keep(validator, peer.der).accepted
+
+
+async def test_cry18_the_validator_alone_writes_nothing_and_only_valid_but_untrusted_certificates_are_kept(
+    tmp_path: Path,
+) -> None:
+    valid = make_identity("valid")
+    expired = make_identity(
+        "expired", not_before=NOW - datetime.timedelta(days=10), not_after=NOW - datetime.timedelta(days=1)
+    )
+    validator = await pki_validator(write_pki_layout(tmp_path))
+    outcome = validator.validate_application_certificate(valid.der, CONTEXT)
+    assert outcome.untrusted_chain == (valid.der,)
+    assert rejected_files(tmp_path) == []
+    stale = validator.validate_application_certificate(expired.der, CONTEXT)
+    assert stale.untrusted_chain == ()
+    validator.keep_rejected(stale)
+    assert rejected_files(tmp_path) == []
+    validator.keep_rejected(outcome)
+    assert [path.name for path in rejected_files(tmp_path)] == [thumbprint_name(valid.der)]
+
+
+async def test_cry18_one_peer_cannot_evict_the_certificates_of_another(tmp_path: Path) -> None:
+    store = TrustStore.from_pki_directory(write_pki_layout(tmp_path), max_rejected=4, max_rejected_per_peer=2)
+    await store.load()
+    honest = [make_identity(f"honest{index}") for index in range(2)]
+    for identity in honest:
+        store.record_rejected([identity.der], "10.0.0.1")
+    for index in range(10):
+        store.record_rejected([make_identity(f"flood{index}").der], "10.0.0.2")
+    kept = {path.name for path in rejected_files(tmp_path)}
+    assert {thumbprint_name(identity.der) for identity in honest} <= kept
+    assert len(kept) == 4
+
+
+async def test_cry18_the_total_bound_removes_from_the_peer_with_the_most_files(tmp_path: Path) -> None:
+    store = TrustStore.from_pki_directory(write_pki_layout(tmp_path), max_rejected=3, max_rejected_per_peer=3)
+    await store.load()
+    single = make_identity("single")
+    store.record_rejected([single.der], "10.0.0.1")
+    for index in range(4):
+        store.record_rejected([make_identity(f"many{index}").der], "10.0.0.2")
+    names = {path.name for path in rejected_files(tmp_path)}
+    assert thumbprint_name(single.der) in names
+    assert len(names) == 3
 
 
 async def test_r25_server_keeps_the_certificate_of_a_refused_client(tmp_path: Path) -> None:
@@ -543,7 +594,11 @@ async def test_r25_server_keeps_the_certificate_of_a_refused_client(tmp_path: Pa
         )
         with pytest.raises(ua.UaError):
             await client.connect()
+    await wait_until(lambda: bool(rejected_files(root)))
     assert [path.name for path in rejected_files(root)] == [thumbprint_name(pki.peer1.identity.der)]
+    store = server.iserver.trust_store
+    assert store is not None
+    assert set(store._rejected_peers.values()) == {"127.0.0.1"}
 
 
 async def test_r25_client_keeps_the_certificate_of_a_refused_server(tmp_path: Path) -> None:
@@ -562,6 +617,7 @@ async def test_r25_client_keeps_the_certificate_of_a_refused_server(tmp_path: Pa
         await client.set_security(SecurityPolicyBasic256Sha256, pki.peer1.certificate, pki.peer1.key)
         with pytest.raises(ua.UaError):
             await client.connect()
+    await wait_until(lambda: bool(rejected_files(root)))
     assert [path.name for path in rejected_files(root)] == [thumbprint_name(pki.server.identity.der)]
 
 
@@ -694,6 +750,7 @@ async def test_pki_moving_a_rejected_certificate_and_reloading_trusts_it(tmp_pat
         await client.set_security(SecurityPolicyBasic256Sha256)
         with pytest.raises(ua.UaError):
             await client.connect()
+        await wait_until(lambda: bool(rejected_files(tmp_path / "server")))
         (rejected,) = rejected_files(tmp_path / "server")
         rejected.rename(tmp_path / "server" / "trusted" / "certs" / rejected.name)
         await server.reload_trust_store()

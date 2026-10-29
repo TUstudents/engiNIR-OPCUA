@@ -278,6 +278,7 @@ class Session:
                     uacrypto.der_from_x509(self.iserver.certificate) if self.iserver.certificate is not None else None,
                     self.nonce,
                     self.iserver.user_certificate_validator(),
+                    self.bound_channel.peer_address if self.bound_channel is not None else None,
                 )
                 certificate = uacrypto.der_from_x509(user_certificate)
         except (ServiceError, ua.uaerrors.UaStatusCodeError):

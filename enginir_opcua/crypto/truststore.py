@@ -8,6 +8,7 @@ A load builds a new immutable snapshot and installs it with one assignment.
 """
 
 import logging
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
@@ -26,6 +27,7 @@ _logger = logging.getLogger(__name__)
 CERTIFICATE_EXTENSIONS = frozenset({".der", ".cer", ".crt", ".pem"})
 CRL_EXTENSIONS = frozenset({".crl", ".der", ".pem"})
 DEFAULT_MAX_REJECTED = 100
+DEFAULT_MAX_REJECTED_PER_PEER = 10
 
 
 def _der(certificate: x509.Certificate) -> bytes:
@@ -71,6 +73,7 @@ class TrustStore:
         issuer_crl_locations: Sequence[Path] = (),
         rejected_location: Path | None = None,
         max_rejected: int = DEFAULT_MAX_REJECTED,
+        max_rejected_per_peer: int = DEFAULT_MAX_REJECTED_PER_PEER,
     ) -> None:
         """
         Args:
@@ -81,7 +84,9 @@ class TrustStore:
             issuer_crl_locations: directories with revocation lists that only apply to issuer CA certificates.
             rejected_location: directory that receives the certificates of peers that failed validation, never read
                 for validation.
-            max_rejected: the most files kept in rejected_location, the oldest are removed first.
+            max_rejected: the most files kept in rejected_location. When it is exceeded the oldest file of the peer
+                with the most files is removed.
+            max_rejected_per_peer: the most files one peer address may keep in rejected_location.
         """
         self._trust_locations: list[Path] = [Path(location) for location in trust_locations]
         self._crl_locations: list[Path] = [Path(location) for location in crl_locations]
@@ -90,6 +95,9 @@ class TrustStore:
         self._issuer_crl_locations: list[Path] = [Path(location) for location in issuer_crl_locations]
         self._rejected_location: Path | None = Path(rejected_location) if rejected_location else None
         self._max_rejected = max_rejected
+        self._max_rejected_per_peer = max_rejected_per_peer
+        self._rejected_peers: dict[str, str] = {}
+        self._rejected_lock = threading.Lock()
         self._snapshot = StoreSnapshot()
         self._pinned: tuple[x509.Certificate, ...] = ()
 
@@ -131,7 +139,13 @@ class TrustStore:
         return bool(self._crl_locations) or self._snapshot.has_revocation_lists
 
     @classmethod
-    def from_pki_directory(cls, root: str | Path, *, max_rejected: int = DEFAULT_MAX_REJECTED) -> "TrustStore":
+    def from_pki_directory(
+        cls,
+        root: str | Path,
+        *,
+        max_rejected: int = DEFAULT_MAX_REJECTED,
+        max_rejected_per_peer: int = DEFAULT_MAX_REJECTED_PER_PEER,
+    ) -> "TrustStore":
         """
         A store over the folders of a PKI directory: trusted/certs and trusted/crl, issuer/certs and issuer/crl,
         and rejected/certs for the certificates that failed validation. trusted/certs has to exist. The other
@@ -152,6 +166,7 @@ class TrustStore:
             issuer_crl_locations=[issuer_crl] if issuer_crl.is_dir() else [],
             rejected_location=rejected if rejected.is_dir() else None,
             max_rejected=max_rejected,
+            max_rejected_per_peer=max_rejected_per_peer,
         )
 
     def copy(self) -> "TrustStore":
@@ -164,24 +179,31 @@ class TrustStore:
             issuer_crl_locations=self._issuer_crl_locations,
             rejected_location=self._rejected_location,
             max_rejected=self._max_rejected,
+            max_rejected_per_peer=self._max_rejected_per_peer,
         )
 
-    def record_rejected(self, certificates: Sequence[bytes]) -> None:
+    def record_rejected(self, certificates: Sequence[bytes], peer: str | None = None) -> None:
         """
-        Keep DER certificates that failed validation in the rejected location, one file per thumbprint and only
-        when the file does not exist yet, the first of the sequence (the leaf) last. Errors are logged.
+        Keep DER certificates of a peer that was refused in the rejected location, one file per thumbprint and only
+        when the file does not exist yet, the first of the sequence (the leaf) last. `peer` is the address the
+        certificates came from: one peer keeps at most max_rejected_per_peer files, and when the folder is full the
+        peer with the most files loses its oldest. Errors are logged.
         """
         location = self._rejected_location
         if location is None:
             return
         try:
-            if not location.is_dir():
-                return
-            for der in reversed(certificates):
-                target = location / f"{certificate_thumbprint(der).hex()}.der"
-                if not target.exists():
-                    write_atomic(target, der, 0o644)
-            self._prune_rejected(location)
+            with self._rejected_lock:
+                if not location.is_dir():
+                    return
+                for der in reversed(certificates):
+                    name = f"{certificate_thumbprint(der).hex()}.der"
+                    target = location / name
+                    if not target.exists():
+                        write_atomic(target, der, 0o644)
+                        if peer is not None:
+                            self._rejected_peers[name] = peer
+                self._prune_rejected(location)
         except OSError as exc:
             _logger.warning("Could not keep a rejected certificate in %s: %s", location, exc)
 
@@ -190,8 +212,25 @@ class TrustStore:
             (entry for entry in location.iterdir() if entry.suffix == ".der" and entry.is_file()),
             key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
         )
-        for entry in files[: max(len(files) - self._max_rejected, 0)]:
-            entry.unlink(missing_ok=True)
+        groups: dict[str | None, list[Path]] = {}
+        for entry in files:
+            groups.setdefault(self._rejected_peers.get(entry.name), []).append(entry)
+        for peer, entries in groups.items():
+            if peer is not None:
+                for entry in entries[: max(len(entries) - self._max_rejected_per_peer, 0)]:
+                    entry.unlink(missing_ok=True)
+                    self._rejected_peers.pop(entry.name, None)
+                del entries[: max(len(entries) - self._max_rejected_per_peer, 0)]
+        total = sum(len(entries) for entries in groups.values())
+        while total > self._max_rejected:
+            peer = max(
+                (key for key in groups if groups[key]),
+                key=lambda key: (len(groups[key]), -groups[key][0].stat().st_mtime_ns),
+            )
+            victim = groups[peer].pop(0)
+            victim.unlink(missing_ok=True)
+            self._rejected_peers.pop(victim.name, None)
+            total -= 1
 
     @property
     def snapshot(self) -> StoreSnapshot:

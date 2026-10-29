@@ -58,6 +58,7 @@ class UaProcessor:
         context = ValidationContext(PeerRole.CLIENT, self._channel.security_policy.URI)
         outcome = validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
+            validator.keep_rejected(outcome, self.peer_address, background=True)
             status = ua.StatusCode(outcome.status).name
             raise TransportError(
                 ua.StatusCodes.BadSecurityChecksFailed, f"Client certificate rejected: {status}: {outcome.detail}"
