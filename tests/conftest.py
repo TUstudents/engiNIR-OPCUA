@@ -30,7 +30,7 @@ from tests.harness import (
     TwoUserManager,
     start_discovery_server,
 )
-from tests.model.test_common import add_server_methods
+from tests.model.methods_rig import add_server_methods
 from tests.util_enum_struct import add_server_custom_enum_struct
 
 RETRY = 20
