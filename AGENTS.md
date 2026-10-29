@@ -53,3 +53,11 @@ Layout: one directory per component under `tests/`, one file per behaviour of th
 - Tests change tests, rigs and conftest only. A library bug that a test reveals gets a finding ID in the review tracker, and the test stays as it is.
 - New workstreams put their tests in the directory of the component they change and add to the existing behaviour file; a new component gets a new directory with its own `conftest.py`.
 - Tests use `pytest` with `pytest-asyncio` in auto mode. Run specific tests with `uv run pytest tests/<area>/<file>.py -k "<pattern>" -x`. The fast suite is `uv run pytest -q -m "not slow"`; run the full suite only in CI. Details of the rigs and fixtures are in `tests/README.md`.
+
+## Releasing
+
+Releases are published by `.github/workflows/release.yml` when a `v<version>` tag is pushed: it runs lint, mypy and the fast suite, checks that the tag matches the version in `pyproject.toml`, creates the GitHub release and publishes to PyPI with trusted publishing. Only the maintainer releases, from an up-to-date, clean `master`:
+
+1. `uv version 3.0.0rc1` (any PEP 440 version) and add the date to its section in `CHANGELOG.md`.
+2. `git commit -am "Release 3.0.0rc1"` and `git tag -a v3.0.0rc1 -m "Release 3.0.0rc1"`.
+3. `git push origin master v3.0.0rc1`: push the commit and this one tag by name. Never `git push --tags` or `--follow-tags`: a clone of the upstream history holds old upstream tags, and each `v*` tag starts the release workflow.
