@@ -927,3 +927,60 @@ async def test_rejected_certificates_are_read_newest_first(tmp_path: Path) -> No
     assert store.rejected_certificates() == [second.der, first.der]
     store.remove_rejected(second.der)
     assert store.rejected_certificates() == [first.der]
+
+
+async def test_cry32_a_generated_key_is_encrypted_with_the_password(tmp_path: Path) -> None:
+    pki.create_directories(tmp_path)
+    created = await pki.load_own_credentials(
+        tmp_path,
+        application_uri=APPLICATION_URI,
+        host_names=["localhost"],
+        usage=pki.SERVER_USAGE,
+        password="key password",
+    )
+    (key_file,) = list((tmp_path / "own" / "private").iterdir())
+    assert b"ENCRYPTED" in key_file.read_bytes()
+    reloaded = await pki.load_own_credentials(
+        tmp_path, application_uri=APPLICATION_URI, host_names=[], usage=pki.SERVER_USAGE, password="key password"
+    )
+    assert reloaded.private_key.public_key() == created.private_key.public_key()
+    with pytest.raises(TypeError):
+        await pki.load_own_credentials(tmp_path, application_uri=APPLICATION_URI, host_names=[], usage=pki.SERVER_USAGE)
+
+
+async def test_srv102_a_certificate_added_to_trusted_certs_is_trusted_without_a_reload(tmp_path: Path) -> None:
+    peer = make_identity("late")
+    root = write_pki_layout(tmp_path)
+    validator = await pki_validator(root)
+    validator.trust_store.refresh_interval = 0.0
+    assert not validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    (root / "trusted" / "certs" / "late.der").write_bytes(peer.der)
+    assert validator.validate_application_certificate(peer.der, CONTEXT).accepted
+
+
+async def test_srv102_the_folder_is_not_scanned_more_than_once_per_interval(tmp_path: Path) -> None:
+    peer = make_identity("late")
+    root = write_pki_layout(tmp_path)
+    validator = await pki_validator(root)
+    assert not validator.validate_application_certificate(peer.der, CONTEXT).accepted
+    (root / "trusted" / "certs" / "late.der").write_bytes(peer.der)
+    assert not validator.validate_application_certificate(peer.der, CONTEXT).accepted
+
+
+async def test_srv102_a_changed_folder_is_read_again_once(tmp_path: Path) -> None:
+    other = make_identity("other")
+    peer = make_identity("peer")
+    root = write_pki_layout(tmp_path, trusted=(peer.certificate,))
+    validator = await pki_validator(root)
+    store = validator.trust_store
+    store.refresh_interval = 0.0
+    (root / "trusted" / "certs" / "x.der").write_bytes(other.der)
+    assert store.refresh_if_changed()
+    assert not store.refresh_if_changed()
+    assert store.snapshot.is_trusted(other.certificate)
+
+
+async def test_a_store_without_locations_never_refreshes() -> None:
+    store = TrustStore()
+    await store.load()
+    assert not store.refresh_if_changed()

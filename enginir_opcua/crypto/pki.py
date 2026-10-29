@@ -162,7 +162,7 @@ async def _generate(
         key = loaded
     else:
         key = cert_gen.generate_private_key()
-        await cert_gen.write_private_key(root / "own" / "private" / KEY_NAME, key)
+        await cert_gen.write_private_key(root / "own" / "private" / KEY_NAME, key, password)
     alternative_names: list[x509.GeneralName] = [
         x509.UniformResourceIdentifier(application_uri),
         *host_name_entries(host_names),

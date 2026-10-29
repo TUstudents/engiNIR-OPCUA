@@ -8,11 +8,15 @@ A load builds a new immutable snapshot and installs it with one assignment.
 """
 
 import logging
+import os
 import threading
+import time
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
+from typing import ClassVar
 
 import anyio
 from cryptography import x509
@@ -20,7 +24,7 @@ from cryptography.hazmat.primitives import serialization
 
 from enginir_opcua.crypto.cert_gen import write_atomic
 from enginir_opcua.crypto.file_journal import FileJournal
-from enginir_opcua.crypto.uacrypto import certificate_thumbprint, get_content
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.ua.uaerrors import ConfigurationError
 
 _logger = logging.getLogger(__name__)
@@ -85,6 +89,8 @@ class TrustStore:
     extensions are ignored, and a file that does not parse is skipped with a warning.
     """
 
+    _instances: ClassVar["weakref.WeakSet[TrustStore]"] = weakref.WeakSet()
+
     def __init__(
         self,
         trust_locations: Sequence[Path] = (),
@@ -124,6 +130,10 @@ class TrustStore:
         self._pinned: tuple[x509.Certificate, ...] = ()
         self._pki_root: Path | None = None
         self._generation = 0
+        self._load_signature: tuple[tuple[str, int, int], ...] | None = None
+        self._last_refresh = float("-inf")
+        self.refresh_interval = 1.0
+        TrustStore._instances.add(self)
 
     @property
     def trust_locations(self) -> list[Path]:
@@ -214,7 +224,7 @@ class TrustStore:
 
     def copy(self) -> "TrustStore":
         """A store with the same locations and the certificates of none: it has to be loaded."""
-        return TrustStore(
+        copied = TrustStore(
             self._trust_locations,
             self._crl_locations,
             self._issuer_locations,
@@ -224,6 +234,9 @@ class TrustStore:
             max_rejected=self._max_rejected,
             max_rejected_per_peer=self._max_rejected_per_peer,
         )
+        copied._pki_root = self._pki_root
+        copied.refresh_interval = self.refresh_interval
+        return copied
 
     def record_rejected(self, certificates: Sequence[bytes], peer: str | None = None) -> None:
         """
@@ -288,56 +301,112 @@ class TrustStore:
 
     async def load(self) -> None:
         """(Re)load the certificates and revocation lists, and replace the snapshot when all locations are readable."""
-        trusted = await self._load_certificates(self._trust_locations)
-        issuers = await self._load_certificates(self._issuer_locations)
-        crls = await self._load_crls(self._crl_locations)
-        trusted_crls = await self._load_crls(self._trusted_crl_locations)
-        issuer_crls = await self._load_crls(self._issuer_crl_locations)
+        await anyio.to_thread.run_sync(self.load_blocking)
+
+    def load_blocking(self) -> None:
+        """The blocking form of load, for a caller that cannot wait."""
+        signature = self._signature()
+        trusted = self._read_certificates(self._trust_locations)
+        issuers = self._read_certificates(self._issuer_locations)
+        crls = self._read_crls(self._crl_locations)
+        trusted_crls = self._read_crls(self._trusted_crl_locations)
+        issuer_crls = self._read_crls(self._issuer_crl_locations)
         self._snapshot = StoreSnapshot(
             tuple(trusted), tuple(issuers), tuple(crls), self._pinned, tuple(trusted_crls), tuple(issuer_crls)
         )
+        self._load_signature = signature
         self._generation += 1
 
-    @staticmethod
-    async def _files(location: Path, extensions: frozenset[str]) -> list[Path]:
-        if not await anyio.Path(location).is_dir():
-            raise ConfigurationError(f"Trust store location {location} does not exist or is not a directory")
-        names = [Path(entry) async for entry in anyio.Path(location).iterdir()]
-        return sorted(name for name in names if name.suffix.lower() in extensions and name.is_file())
+    def _all_locations(self) -> list[Path]:
+        return [
+            *self._trust_locations,
+            *self._issuer_locations,
+            *self._crl_locations,
+            *self._trusted_crl_locations,
+            *self._issuer_crl_locations,
+        ]
 
-    async def _load_certificates(self, locations: Sequence[Path]) -> list[x509.Certificate]:
+    def _signature(self) -> tuple[tuple[str, int, int], ...]:
+        entries: list[tuple[str, int, int]] = []
+        for location in self._all_locations():
+            try:
+                with os.scandir(location) as listing:
+                    for entry in listing:
+                        info = entry.stat()
+                        entries.append((str(Path(location) / entry.name), info.st_mtime_ns, info.st_size))
+            except OSError:
+                entries.append((str(location), -1, -1))
+        return tuple(sorted(entries))
+
+    @classmethod
+    def reload_pki_directory(cls, root: str | Path) -> int:
+        """Load again every store of this process that was made from the PKI directory; returns how many."""
+        base = Path(root).absolute()
+        count = 0
+        for store in list(cls._instances):
+            if store._pki_root is not None and store._pki_root.absolute() == base and store._load_signature is not None:
+                try:
+                    store.load_blocking()
+                except (ConfigurationError, OSError) as error:
+                    _logger.warning("Could not read the trust lists of %s again: %s", base, error)
+                else:
+                    count += 1
+        return count
+
+    def refresh_if_changed(self) -> bool:
+        """
+        Load the lists again when a file in one of the locations was added, removed or changed since the last load,
+        and return whether it did. Looks at the folders at most once per `refresh_interval` seconds, so a flood of
+        untrusted peers cannot make the server scan them over and over. A store that was never loaded stays as it is.
+        """
+        if self._load_signature is None:
+            return False
+        now = time.monotonic()
+        if now - self._last_refresh < self.refresh_interval:
+            return False
+        self._last_refresh = now
+        if self._signature() == self._load_signature:
+            return False
+        try:
+            self.load_blocking()
+        except (ConfigurationError, OSError) as error:
+            _logger.warning("Could not read the trust lists again: %s", error)
+            return False
+        return True
+
+    @staticmethod
+    def _files(location: Path, extensions: frozenset[str]) -> list[Path]:
+        if not location.is_dir():
+            raise ConfigurationError(f"Trust store location {location} does not exist or is not a directory")
+        return sorted(entry for entry in location.iterdir() if entry.suffix.lower() in extensions and entry.is_file())
+
+    def _read_certificates(self, locations: Sequence[Path]) -> list[x509.Certificate]:
         certificates: list[x509.Certificate] = []
         for location in locations:
-            for file_name in await self._files(location, CERTIFICATE_EXTENSIONS):
+            for file_name in self._files(location, CERTIFICATE_EXTENSIONS):
                 try:
-                    certificates.extend(await self._load_certificate_file(file_name))
+                    content = file_name.read_bytes()
+                    if file_name.suffix.lower() == ".pem":
+                        certificates.extend(x509.load_pem_x509_certificates(content))
+                    else:
+                        certificates.append(x509.load_der_x509_certificate(content))
                 except (ValueError, OSError) as exc:
                     _logger.warning("Skipping %s, it does not hold a certificate: %s", file_name, exc)
         return certificates
 
-    async def _load_crls(self, locations: Sequence[Path]) -> list[x509.CertificateRevocationList]:
+    def _read_crls(self, locations: Sequence[Path]) -> list[x509.CertificateRevocationList]:
         crls: list[x509.CertificateRevocationList] = []
         for location in locations:
-            for file_name in await self._files(location, CRL_EXTENSIONS):
+            for file_name in self._files(location, CRL_EXTENSIONS):
                 try:
-                    crls.append(await self._load_crl(file_name))
+                    content = file_name.read_bytes()
+                    if file_name.suffix.lower() == ".pem":
+                        crls.append(x509.load_pem_x509_crl(content))
+                    else:
+                        crls.append(x509.load_der_x509_crl(content))
                 except (ValueError, OSError) as exc:
                     _logger.warning("Skipping %s, it does not hold a revocation list: %s", file_name, exc)
         return crls
-
-    @staticmethod
-    async def _load_certificate_file(file_name: Path) -> list[x509.Certificate]:
-        content = await get_content(file_name)
-        if file_name.suffix.lower() == ".pem":
-            return x509.load_pem_x509_certificates(content)
-        return [x509.load_der_x509_certificate(content)]
-
-    @staticmethod
-    async def _load_crl(crl_file_name: Path) -> x509.CertificateRevocationList:
-        content = await get_content(crl_file_name)
-        if crl_file_name.suffix.lower() == ".pem":
-            return x509.load_pem_x509_crl(content)
-        return x509.load_der_x509_crl(content)
 
     def read_lists(self) -> TrustLists:
         """The lists of the loaded snapshot as DER, pinned certificates left out."""

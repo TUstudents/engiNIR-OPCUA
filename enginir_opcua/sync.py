@@ -26,6 +26,7 @@ from cryptography import x509
 from enginir_opcua import client, common, server, ua
 from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_builder, xmlexporter
 from enginir_opcua.common.events import Event
+from enginir_opcua.config import ClientConfig, ServerConfig, quickstart_client_config, quickstart_server_config
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.crypto.truststore import TrustStore
@@ -493,7 +494,7 @@ class Client(_Owner):
 
     def __init__(
         self,
-        url: str,
+        url: str | None = None,
         timeout: float = 4,
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
@@ -504,6 +505,7 @@ class Client(_Owner):
         reconnect_request_timeout: float = 60.0,
         handler_queue_maxsize: int = 1000,
         observer: Observer | None = None,
+        config: ClientConfig | None = None,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -525,11 +527,25 @@ class Client(_Owner):
                 reconnect_request_timeout=reconnect_request_timeout,
                 allow_deprecated_policies=allow_deprecated_policies,
                 observer=observer,
+                config=config,
             )
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.uaclient.session)
         except Exception:
             self._stop_own_tloop()
             raise
+
+    @classmethod
+    def quickstart(
+        cls,
+        url: str,
+        profile: str = "secure",
+        pki: str | Path | None = "./pki",
+        username: str | None = None,
+        password: str | None = None,
+        **overrides: Any,
+    ) -> Client:
+        """Sync twin of Client.quickstart; extra sync parameters such as ``tloop`` are not available here."""
+        return cls(config=quickstart_client_config(url, profile, pki, username, password, overrides))
 
     def _note_drop(self) -> None:
         self.aio_obj.uaclient.observer.on_messages_dropped(None, 1)
@@ -926,6 +942,7 @@ class Server(_Owner):
         allow_deprecated_policies: bool = False,
         user_manager: UserManager | None = None,
         handler_queue_maxsize: int = 1000,
+        config: ServerConfig | None = None,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -942,12 +959,28 @@ class Server(_Owner):
                 user_manager=user_manager,
                 allow_no_security=allow_no_security,
                 allow_deprecated_policies=allow_deprecated_policies,
+                config=config,
             )
             self.tloop.post(self.aio_obj.init(shelf_file))
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.iserver.isession)
         except Exception:
             self._stop_own_tloop()
             raise
+
+    @classmethod
+    def quickstart(
+        cls,
+        endpoint: str,
+        profile: str = "secure",
+        pki: str | Path | None = "./pki",
+        users: str | Path | UserManager | None = None,
+        **overrides: Any,
+    ) -> Server:
+        """
+        Sync twin of Server.quickstart. The sync server initialises itself in the constructor, so the PKI directory
+        is created here.
+        """
+        return cls(config=quickstart_server_config(endpoint, profile, pki, users, overrides))
 
     def __str__(self) -> str:
         return "Sync" + self.aio_obj.__str__()

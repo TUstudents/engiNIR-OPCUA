@@ -15,7 +15,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+from cryptography.hazmat.primitives.serialization import BestAvailableEncryption, Encoding, NoEncryption, PrivateFormat
 from cryptography.x509.extensions import _key_identifier_from_public_key as key_identifier_from_public_key
 from cryptography.x509.oid import NameOID
 
@@ -52,18 +52,20 @@ def generate_private_key() -> rsa.RSAPrivateKey:
     return private_key
 
 
-def dump_private_key_as_pem(private_key: rsa.RSAPrivateKey) -> bytes:
+def dump_private_key_as_pem(private_key: rsa.RSAPrivateKey, password: str | bytes | None = None) -> bytes:
     """dumps a private key in PEM format
 
     Args:
         private_key (rsa.RSAPrivateKey): The privatekey to dump
+        password: encrypts the key with it when given
 
     Returns:
         bytes: The private as PEM/PKCS8 format
     """
-    return private_key.private_bytes(
-        encoding=Encoding.PEM, format=PrivateFormat.PKCS8, encryption_algorithm=NoEncryption()
-    )
+    if isinstance(password, str):
+        password = password.encode("utf-8")
+    encryption = BestAvailableEncryption(password) if password else NoEncryption()
+    return private_key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.PKCS8, encryption_algorithm=encryption)
 
 
 def generate_self_signed_app_certificate(
@@ -312,9 +314,12 @@ def write_atomic(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-async def write_private_key(path: Path, private_key: rsa.RSAPrivateKey) -> None:
-    """Write a private key as unencrypted PKCS8 PEM that only its owner can read, with a rename at the end."""
-    await anyio.to_thread.run_sync(write_atomic, path, dump_private_key_as_pem(private_key), 0o600)
+async def write_private_key(path: Path, private_key: rsa.RSAPrivateKey, password: str | bytes | None = None) -> None:
+    """
+    Write a private key as PKCS8 PEM that only its owner can read, with a rename at the end. A password encrypts it;
+    without one the key is unencrypted.
+    """
+    await anyio.to_thread.run_sync(write_atomic, path, dump_private_key_as_pem(private_key, password), 0o600)
 
 
 async def write_certificate(path: Path, certificate: x509.Certificate) -> None:

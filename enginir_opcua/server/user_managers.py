@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import stat
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
-from enginir_opcua.crypto import uacrypto
+from enginir_opcua.crypto import uacrypto, users_file
 from enginir_opcua.crypto.permission_rules import User, UserRole
+from enginir_opcua.ua.uaerrors import ConfigurationError
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
 
+_logger = logging.getLogger(__name__)
 
 ALL_TOKEN_TYPES: frozenset[ua.UserTokenType] = frozenset(
     {ua.UserTokenType.Anonymous, ua.UserTokenType.UserName, ua.UserTokenType.Certificate}
@@ -33,6 +39,36 @@ class UserManager:
         certificate: Any = None,
     ) -> User | None:
         raise NotImplementedError
+
+    async def authenticate(
+        self,
+        iserver: "InternalServer",
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        """
+        Decide who the user of a Session is, without blocking the event loop. The default calls get_user, so a
+        manager that only implements get_user keeps working; a manager that does slow work (a password hash, a
+        database) overrides this method and runs it on a worker thread.
+        """
+        return self.get_user(iserver, username=username, password=password, certificate=certificate)
+
+
+async def authenticate_user(
+    manager: Any,
+    iserver: "InternalServer",
+    username: str | None = None,
+    password: str | None = None,
+    certificate: Any = None,
+) -> User | None:
+    """Ask a user manager, which may be any object with get_user or authenticate, for the user of a login."""
+    authenticate = getattr(manager, "authenticate", None)
+    if authenticate is not None:
+        result: User | None = await authenticate(iserver, username=username, password=password, certificate=certificate)
+        return result
+    result = manager.get_user(iserver, username=username, password=password, certificate=certificate)
+    return result
 
 
 class AnonymousReadOnlyUserManager(UserManager):
@@ -136,3 +172,98 @@ class CertificateUserManager(UserManager):
         await self.add_role(
             certificate_path=certificate_path, user_role=UserRole.SecurityAdmin, name=name, format=format
         )
+
+
+class FileUserManager(UserManager):
+    """
+    Users from a users file (TOML or JSON): name, role and a salted scrypt hash of the password. The hash runs on a
+    worker thread. An unknown user and a wrong password give the same answer and cost the same. The file is read
+    again when it changed, at most once per `reload_interval` seconds, at a login; a file that no longer parses
+    keeps the previous users and is logged. Anonymous tokens get the read-only role when `anonymous` is true.
+    """
+
+    def __init__(self, path: str | Path, anonymous: bool = True) -> None:
+        self.path = Path(path)
+        self.anonymous = anonymous
+        self.reload_interval = 1.0
+        self.accepted_token_types = frozenset(
+            {ua.UserTokenType.UserName, *([ua.UserTokenType.Anonymous] if anonymous else [])}
+        )
+        self._users: dict[str, users_file.UserRecord] = {}
+        self._signature: tuple[int, int] | None = None
+        self._checked = time.monotonic()
+        self._load()
+
+    def _warn_if_readable(self) -> None:
+        try:
+            mode = self.path.stat().st_mode
+        except OSError:
+            return
+        if os.name == "posix" and mode & 0o077:
+            _logger.warning(
+                "The users file %s is readable by other users (mode %o); password hashes allow offline guessing, "
+                "use chmod 600",
+                self.path,
+                stat.S_IMODE(mode),
+            )
+
+    def _stat(self) -> tuple[int, int] | None:
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return info.st_mtime_ns, info.st_size
+
+    def _load(self) -> None:
+        records = users_file.read_users(self.path)
+        self._users = {record.name: record for record in records}
+        self._signature = self._stat()
+        self._warn_if_readable()
+
+    def _refresh(self) -> None:
+        now = time.monotonic()
+        if now - self._checked < self.reload_interval:
+            return
+        self._checked = now
+        signature = self._stat()
+        if signature is None or signature == self._signature:
+            return
+        try:
+            self._load()
+        except ConfigurationError as error:
+            self._signature = signature
+            _logger.error("%s; keeping the users read before", error)
+        else:
+            _logger.info("Read the users file %s again", self.path)
+
+    def _check(self, username: str | None, password: str | None) -> User | None:
+        if username is None:
+            return User(role=UserRole.Anonymous) if self.anonymous else None
+        record = self._users.get(username)
+        stored = record.password_hash if record is not None else users_file.dummy_hash()
+        matched = users_file.verify_password(password or "", stored)
+        if record is None or password is None or not matched:
+            return None
+        return User(role=users_file.ROLES[record.role], name=record.name)
+
+    def get_user(
+        self,
+        iserver: "InternalServer",
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        self._refresh()
+        return self._check(username, password)
+
+    async def authenticate(
+        self,
+        iserver: "InternalServer",
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        self._refresh()
+        if username is None:
+            return self._check(None, None)
+        return await asyncio.to_thread(self._check, username, password)
