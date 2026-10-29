@@ -7,12 +7,10 @@ from typing import Any
 import pytest
 from pytz import timezone
 
-from enginir_opcua import Client, Node, Server, ua, uamethod
+from enginir_opcua import Node, ua, uamethod
 from enginir_opcua.common.structures104 import new_enum, new_enum_field, new_struct, new_struct_field
-from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.ua import uaerrors
 from tests.access_rig import declare_writable
-from tests.conftest import Opc, find_free_port
 
 _logger = logging.getLogger("enginir_opcua.common.xmlimporter")
 _logger.setLevel(logging.DEBUG)
@@ -31,17 +29,6 @@ CUSTOM_NS_META_ADD_XML_PATH = BASE_DIR / "custom_ns_meta_add.xml"
 DESIGN_TOOL_ONLY_XML_PATH = BASE_DIR / "design_tool_only.xml"
 CUSTOM_REQ_XML_PASS_PATH = BASE_DIR / "test_requirement_pass.xml"
 CUSTOM_REQ_XML_FAIL_PATH = BASE_DIR / "test_requirement_fail.xml"
-NODESET_DIR = BASE_DIR.parents[1] / "nodeset"
-NODESET_DI = NODESET_DIR / "DI" / "Opc.Ua.Di.NodeSet2.xml"
-NODESET_SCALES = NODESET_DIR / "Scales" / "Opc.Ua.Scales.NodeSet2.xml"
-NODESET_PACK = NODESET_DIR / "PackML" / "Opc.Ua.PackML.NodeSet2.xml"
-NODESET_TMC = NODESET_DIR / "TMC" / "Opc.Ua.TMC.NodeSet2.xml"
-NODESET_MACHINERY = NODESET_DIR / "Machinery" / "Opc.Ua.Machinery.NodeSet2.xml"
-NODESET_IA = NODESET_DIR / "IA" / "Opc.Ua.IA.NodeSet2.xml"
-NODESET_VISION = NODESET_DIR / "MachineVision" / "Opc.Ua.MachineVision.NodeSet2.xml"
-NODESET_PLASTIC_RUBBER = (
-    NODESET_DIR / "PlasticsRubber" / "GeneralTypes" / "1.03" / "Opc.Ua.PlasticsRubber.GeneralTypes.NodeSet2.xml"
-)
 
 
 @uamethod
@@ -70,43 +57,6 @@ async def test_xml_import(opc):
     await opc.opc.delete_nodes([v])
     for nodeid in nodes:
         await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
-
-
-@pytest.fixture(params=["client", "server"])
-async def disposable_opc(request):
-    srv = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
-    srv.allow_plaintext_password = True
-    await srv.init()
-    port = find_free_port()
-    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
-    await srv.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray)).set_writable()
-    await srv.start()
-    if request.param == "client":
-        async with Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10) as clt:
-            yield Opc(clt, srv)
-    else:
-        yield Opc(srv, srv)
-    await srv.stop()
-
-
-async def test_xml_import_companion_specifications(disposable_opc):
-    opc = disposable_opc
-    await opc.server.register_namespace("http://placeholder.toincrease.nsindex")
-    nodes = await opc.opc.import_xml(NODESET_DI)
-    nodes += await opc.opc.import_xml(NODESET_IA)
-    nodes += await opc.opc.import_xml(NODESET_MACHINERY)
-    nodes += await opc.opc.import_xml(NODESET_PACK)
-    nodes += await opc.opc.import_xml(NODESET_SCALES)
-    if opc.opc == opc.server:
-        nodes += await opc.opc.import_xml(NODESET_PLASTIC_RUBBER)
-        nodes += await opc.opc.import_xml(NODESET_VISION)
-    for nodeid in nodes:
-        await opc.opc.delete_nodes([opc.opc.get_node(nodeid)])
-    aspace = opc.server.iserver.aspace
-    remaining = set(aspace.keys())
-    assert remaining.isdisjoint(nodes)
-    dangling = [(nodeid, ref.NodeId) for nodeid in remaining for ref in aspace[nodeid].references]
-    assert [ref for ref in dangling if ref[1] not in remaining] == []
 
 
 async def test_xml_import_additional_ns(opc):
@@ -330,33 +280,6 @@ async def test_xml_invalid_ns(opc, tmpdir):
         await opc.opc.export_xml([o50], tmp_path, export_values=True)
 
 
-async def test_xml_float(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlfloat", 5.67)
-    dtype = await o.read_data_type()
-    dv = await o.read_data_value()
-    tmp_path = tmpdir.join("tmp_test_export-float.xml").strpath
-    await opc.opc.export_xml([o], tmp_path, export_values=True)
-    await opc.opc.delete_nodes([o])
-    new_nodes = await opc.opc.import_xml(tmp_path)
-    o2 = opc.opc.get_node(new_nodes[0])
-    assert o2 == o
-    assert await o2.read_data_type() == dtype
-    assert (await o2.read_data_value()).Value == dv.Value
-    await opc.opc.delete_nodes([o, o2])
-
-
-async def test_xml_bool(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlbool", True)
-    await _test_xml_var_type(opc, tmpdir, o, "bool")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_string(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlstring", "mystring")
-    await _test_xml_var_type(opc, tmpdir, o, "string")
-    await opc.opc.delete_nodes([o])
-
-
 async def test_xml_string_with_null_description(opc, tmpdir):
     o = await opc.opc.nodes.objects.add_variable(2, "xmlstring", "mystring")
     await declare_writable(opc, o, attributes=(ua.AttributeIds.Description,))
@@ -364,161 +287,6 @@ async def test_xml_string_with_null_description(opc, tmpdir):
     o2 = await _test_xml_var_type(opc, tmpdir, o, "string")
     assert await o.read_description() == await o2.read_description()
     await opc.opc.delete_nodes([o, o2])
-
-
-async def test_xml_string_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlstringarray", ["mystring2", "mystring3"])
-    node2 = await _test_xml_var_type(opc, tmpdir, o, "stringarray")
-    _ = await node2.read_data_value()
-    await opc.opc.delete_nodes([o, node2])
-
-
-async def test_xml_guid(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlguid", uuid.uuid4())
-    await _test_xml_var_type(opc, tmpdir, o, "guid")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_guid_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlguid", [uuid.uuid4(), uuid.uuid4()])
-    await _test_xml_var_type(opc, tmpdir, o, "guid_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_datetime(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        3, "myxmlvar-dt", datetime.datetime.now(datetime.UTC), ua.VariantType.DateTime
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "datetime")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_datetime_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        3,
-        "myxmlvar-array",
-        [
-            datetime.datetime.now(datetime.UTC),
-            datetime.datetime.now(timezone("Asia/Tokyo")),
-        ],
-        ua.VariantType.DateTime,
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "datetime_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_qualifiedname(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlltext", ua.QualifiedName("mytext", 5))
-    await _test_xml_var_type(opc, tmpdir, o, "qualified_name")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_qualifiedname_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmlltext_array", [ua.QualifiedName("erert", 5), ua.QualifiedName("erert33", 6)]
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "qualified_name_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_xmlelement(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmllxmlelement", ua.XmlElement("XMLElem"))
-    await _test_xml_var_type(opc, tmpdir, o, "xmlelement")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_xmlelement_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmllxmlelement_array", [ua.XmlElement("XMLElem1"), ua.XmlElement("XMLElem2")], ua.VariantType.XmlElement
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "xmlelement_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_expanded_nodeid(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmllexpandednodeid", ua.ExpandedNodeId(32, 1, None, "urn://testxml", 1)
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "expanded_nodeid")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_expanded_nodeid_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2,
-        "xmllexpandednodeid_array",
-        [ua.ExpandedNodeId(32, 1, None, "urn://testxml", 1), ua.ExpandedNodeId(33, 5, None, "urn://testxml2", 2)],
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "expanded_nodeid_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_bytestring(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlltext", b"mytext", ua.VariantType.ByteString)
-    await _test_xml_var_type(opc, tmpdir, o, "bytestring")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_statuscode(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmllstatuscode", ua.StatusCode(value=ua.StatusCodes.BadNodeIdInvalid)
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "statuscode")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_statuscode_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2,
-        "xmllstatuscode_array",
-        [ua.StatusCode(value=ua.StatusCodes.BadNodeIdInvalid), ua.StatusCode(value=ua.StatusCodes.BadNodeIdExists)],
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "statuscode_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_bytestring_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmlltext_array", [b"mytext", b"errsadf"], ua.VariantType.ByteString
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "bytestring_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_localizedtext(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlltext", ua.LocalizedText("mytext"))
-    await _test_xml_var_type(opc, tmpdir, o, "localized_text")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_localizedtext_with_locale(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlltext", ua.LocalizedText("mytext", "en-US"))
-    await _test_xml_var_type(opc, tmpdir, o, "localized_text")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_localizedtext_array(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmlltext_array", [ua.LocalizedText("erert"), ua.LocalizedText("erert33")]
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "localized_text_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_localizedtext_array_with_locale(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2,
-        "xmlltext_array",
-        [ua.LocalizedText(Text="erert", Locale="en"), ua.LocalizedText(Text="erert33", Locale="de")],
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "localized_text_array")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_nodeid(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "xmlnodeid", ua.NodeId("mytext", 1))
-    await _test_xml_var_type(opc, tmpdir, o, "nodeid")
-    await opc.opc.delete_nodes([o])
 
 
 async def test_xml_ext_obj(opc, tmpdir):
@@ -558,22 +326,6 @@ async def test_xml_ext_obj_array(opc, tmpdir):
         assert args[i].Description == read_args[i].Description
         assert args[i].DataType == read_args[i].DataType
     await opc.opc.delete_nodes([node, node2])
-
-
-async def test_xml_enum(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmlenum", 0, varianttype=ua.VariantType.Int32, datatype=ua.ObjectIds.ApplicationType
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "enum")
-    await opc.opc.delete_nodes([o])
-
-
-async def test_xml_enumvalues(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(
-        2, "xmlenumvalues", 0, varianttype=ua.VariantType.UInt32, datatype=ua.ObjectIds.AttributeWriteMask
-    )
-    await _test_xml_var_type(opc, tmpdir, o, "enumvalues")
-    await opc.opc.delete_nodes([o])
 
 
 async def test_xml_enum_fields(opc, tmpdir):
@@ -656,6 +408,95 @@ async def test_xml_var_nillable(opc):
     await opc.opc.delete_nodes([var_string, var_bool])
 
 
+ROUND_TRIPS = [
+    pytest.param(2, "xmlfloat", 5.67, None, id="float"),
+    pytest.param(2, "xmlbool", True, None, id="bool"),
+    pytest.param(2, "xmlstring", "mystring", None, id="string"),
+    pytest.param(2, "xmlstringarray", ["mystring2", "mystring3"], None, id="string_array"),
+    pytest.param(2, "xmlguid", uuid.uuid4(), None, id="guid"),
+    pytest.param(2, "xmlguid_array", [uuid.uuid4(), uuid.uuid4()], None, id="guid_array"),
+    pytest.param(3, "myxmlvar-dt", datetime.datetime.now(datetime.UTC), ua.VariantType.DateTime, id="datetime"),
+    pytest.param(
+        3,
+        "myxmlvar-array",
+        [datetime.datetime.now(datetime.UTC), datetime.datetime.now(timezone("Asia/Tokyo"))],
+        ua.VariantType.DateTime,
+        id="datetime_array",
+    ),
+    pytest.param(2, "xmlqname", ua.QualifiedName("mytext", 5), None, id="qualified_name"),
+    pytest.param(
+        2,
+        "xmlqname_array",
+        [ua.QualifiedName("erert", 5), ua.QualifiedName("erert33", 6)],
+        None,
+        id="qualified_name_array",
+    ),
+    pytest.param(2, "xmllxmlelement", ua.XmlElement("XMLElem"), None, id="xmlelement"),
+    pytest.param(
+        2,
+        "xmllxmlelement_array",
+        [ua.XmlElement("XMLElem1"), ua.XmlElement("XMLElem2")],
+        ua.VariantType.XmlElement,
+        id="xmlelement_array",
+    ),
+    pytest.param(
+        2, "xmllexpandednodeid", ua.ExpandedNodeId(32, 1, None, "urn://testxml", 1), None, id="expanded_nodeid"
+    ),
+    pytest.param(
+        2,
+        "xmllexpandednodeid_array",
+        [ua.ExpandedNodeId(32, 1, None, "urn://testxml", 1), ua.ExpandedNodeId(33, 5, None, "urn://testxml2", 2)],
+        None,
+        id="expanded_nodeid_array",
+    ),
+    pytest.param(2, "xmlbytestring", b"mytext", ua.VariantType.ByteString, id="bytestring"),
+    pytest.param(2, "xmlbytestring_array", [b"mytext", b"errsadf"], ua.VariantType.ByteString, id="bytestring_array"),
+    pytest.param(2, "xmlstatuscode", ua.StatusCode(value=ua.StatusCodes.BadNodeIdInvalid), None, id="statuscode"),
+    pytest.param(
+        2,
+        "xmlstatuscode_array",
+        [ua.StatusCode(value=ua.StatusCodes.BadNodeIdInvalid), ua.StatusCode(value=ua.StatusCodes.BadNodeIdExists)],
+        None,
+        id="statuscode_array",
+    ),
+    pytest.param(2, "xmlltext", ua.LocalizedText("mytext"), None, id="localized_text"),
+    pytest.param(2, "xmlltext_locale", ua.LocalizedText("mytext", "en-US"), None, id="localized_text_with_locale"),
+    pytest.param(
+        2, "xmlltext_array", [ua.LocalizedText("erert"), ua.LocalizedText("erert33")], None, id="localized_text_array"
+    ),
+    pytest.param(
+        2,
+        "xmlltext_array_locale",
+        [ua.LocalizedText(Text="erert", Locale="en"), ua.LocalizedText(Text="erert33", Locale="de")],
+        None,
+        id="localized_text_array_with_locale",
+    ),
+    pytest.param(2, "xmlnodeid", ua.NodeId("mytext", 1), None, id="nodeid"),
+    pytest.param(2, "byte", 255, ua.VariantType.Byte, id="byte"),
+]
+
+
+@pytest.mark.parametrize(("namespace", "name", "value", "varianttype"), ROUND_TRIPS)
+async def test_xml_value_round_trip(opc, tmpdir, namespace, name, value, varianttype):
+    o = await opc.opc.nodes.objects.add_variable(namespace, name, value, varianttype)
+    await _test_xml_var_type(opc, tmpdir, o, name)
+    await opc.opc.delete_nodes([o])
+
+
+@pytest.mark.parametrize(
+    ("name", "varianttype", "datatype"),
+    [
+        ("xmlenum", ua.VariantType.Int32, ua.ObjectIds.ApplicationType),
+        ("xmlenumvalues", ua.VariantType.UInt32, ua.ObjectIds.AttributeWriteMask),
+    ],
+    ids=["enum", "enumvalues"],
+)
+async def test_xml_enum_value_round_trip(opc, tmpdir, name, varianttype, datatype):
+    o = await opc.opc.nodes.objects.add_variable(2, name, 0, varianttype=varianttype, datatype=datatype)
+    await _test_xml_var_type(opc, tmpdir, o, name)
+    await opc.opc.delete_nodes([o])
+
+
 async def _test_xml_var_type(opc, tmpdir, node: Node, typename: str, test_equality: bool = True):
     dtype = await node.read_data_type()
     dv = await node.read_data_value()
@@ -677,21 +518,6 @@ async def _test_xml_var_type(opc, tmpdir, node: Node, typename: str, test_equali
     assert dim == await node2.read_array_dimensions()
     assert nclass == await node2.read_node_class()
     return node2
-
-
-async def test_xml_byte(opc, tmpdir):
-    o = await opc.opc.nodes.objects.add_variable(2, "byte", 255, ua.VariantType.Byte)
-    dtype = await o.read_data_type()
-    dv = await o.read_data_value()
-    tmp_path = tmpdir.join("export-byte.xml").strpath
-    await opc.opc.export_xml([o], tmp_path, export_values=True)
-    await opc.opc.delete_nodes([o])
-    new_nodes = await opc.opc.import_xml(tmp_path)
-    o2 = opc.opc.get_node(new_nodes[0])
-    assert o == o2
-    assert dtype == await o2.read_data_type()
-    assert dv.Value == (await o2.read_data_value()).Value
-    await opc.opc.delete_nodes([o2])
 
 
 async def test_xml_union(opc, tmpdir):

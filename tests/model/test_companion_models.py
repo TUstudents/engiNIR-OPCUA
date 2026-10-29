@@ -25,6 +25,12 @@ AMB = NODESETS / "AMB" / "Opc.Ua.AMB.NodeSet2.xml"
 IA = NODESETS / "IA" / "Opc.Ua.IA.NodeSet2.xml"
 MACHINERY = NODESETS / "Machinery" / "Opc.Ua.Machinery.NodeSet2.xml"
 LADS = NODESETS / "LADS" / "Opc.Ua.LADS.NodeSet2.xml"
+PACKML = NODESETS / "PackML" / "Opc.Ua.PackML.NodeSet2.xml"
+SCALES = NODESETS / "Scales" / "Opc.Ua.Scales.NodeSet2.xml"
+PLASTICS_RUBBER = (
+    NODESETS / "PlasticsRubber" / "GeneralTypes" / "1.03" / "Opc.Ua.PlasticsRubber.GeneralTypes.NodeSet2.xml"
+)
+MACHINE_VISION = NODESETS / "MachineVision" / "Opc.Ua.MachineVision.NodeSet2.xml"
 AGGREGATES = (ua.ObjectIds.HasComponent, ua.ObjectIds.HasProperty)
 
 
@@ -201,3 +207,19 @@ async def test_instances_have_the_mandatory_children_of_their_declared_types(com
                         missing.append((nodeid, child))
     assert checked > 0
     assert missing == []
+
+
+async def test_nodesets_imported_on_top_of_the_companions_are_deleted_without_dangling_references(
+    opc: Any, companion: Companion
+) -> None:
+    paths = [PACKML, SCALES]
+    if opc.opc == opc.server:
+        paths += [PLASTICS_RUBBER, MACHINE_VISION]
+    nodes = []
+    for path in paths:
+        nodes += await opc.opc.import_xml(path)
+    await opc.opc.delete_nodes([opc.opc.get_node(nodeid) for nodeid in nodes])
+    remaining = set(companion.aspace.keys())
+    assert remaining.isdisjoint(nodes)
+    dangling = [(nodeid, ref.NodeId) for nodeid in remaining for ref in companion.aspace[nodeid].references]
+    assert [ref for ref in dangling if ref[1] not in remaining] == []
