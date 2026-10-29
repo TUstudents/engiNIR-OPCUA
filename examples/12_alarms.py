@@ -8,8 +8,8 @@ Calling methods needs the "user" role.
 
 Run: python examples/12_alarms.py
 
-Spec: OPC 10000-9 v1.05, 5.5 (ConditionType), 5.7 (AcknowledgeableConditionType: Acknowledge), 5.8 (AlarmConditionType),
-5.8.12 (limit alarms), 4.5 (current Alarm display) and 5.5.7 (Condition refresh).
+Spec: OPC 10000-9 v1.05, 5.5.2 (ConditionType), 5.7 (Acknowledgeable Condition Model: Acknowledge), 5.8 (Alarm model),
+5.8.18 and 5.8.19 (limit alarm types), 4.5 (Condition state synchronization) and 5.5.7 (ConditionRefresh).
 """
 
 import asyncio

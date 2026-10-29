@@ -8,7 +8,7 @@ subscription come back, and the handler keeps receiving values.
 Run: python examples/03_read_write_subscribe.py
 
 Spec: OPC 10000-4 v1.05, 5.11 (Attribute services: Read and Write), 5.13 (MonitoredItem services),
-5.14 (Subscription services), 6.7 (Subscription recovery after a lost connection).
+5.14 (Subscription services), 6.7 (Re-establishing connections).
 """
 
 import asyncio

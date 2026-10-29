@@ -9,7 +9,7 @@ certificates are exchanged and have to be trusted as with a normal connection.
 Run: python examples/16_reverse_connect.py
 
 Spec: OPC 10000-6 v1.05, 7.1.2.6 (ReverseHello message) and 7.1.3 (reverse connect: socket handling and
-endpoint selection); OPC 10000-4 v1.05, 7.40 (EndpointDescription).
+endpoint selection); OPC 10000-4 v1.05, 7.14 (EndpointDescription).
 """
 
 import asyncio

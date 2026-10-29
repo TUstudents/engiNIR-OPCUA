@@ -8,7 +8,7 @@ history across restarts.
 
 Run: python examples/06_events_and_history.py
 
-Spec: OPC 10000-3 v1.05, 5.6.5 (EventNotifier attribute) and 6.4 (Event model); OPC 10000-4 v1.05, 5.13 (event
+Spec: OPC 10000-3 v1.05, 5.5.1 (Object NodeClass, EventNotifier) and 4.7 (Event model); OPC 10000-4 v1.05, 5.13 (event
 filters in MonitoredItem services) and 5.11 (HistoryRead and HistoryUpdate); OPC 10000-11 v1.05, 4 (Historical Access).
 """
 

@@ -8,8 +8,8 @@ implemented; the servers must have identical NodeIds.
 
 Run: python examples/09_ha_client.py
 
-Spec: OPC 10000-4 v1.05, 6.6 (Redundancy: 6.6.2.4.2 ServiceLevel, 6.6.2.4.5 non-transparent redundancy, client
-failover); OPC 10000-5 v1.05, 6.3.2 (ServerRedundancyType, RedundancySupport).
+Spec: OPC 10000-4 v1.05, 6.6 (Redundancy: 6.6.2.4.2 ServiceLevel, 6.6.2.4.5 client failover behaviour); OPC 10000-5
+v1.05, 6.3.7 (ServerRedundancyType) and 12.5 (RedundancySupport).
 """
 
 import asyncio

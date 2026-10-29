@@ -11,7 +11,7 @@ silenced here; they are not about the types of this example.
 Run: python examples/05_custom_types.py
 
 Spec: OPC 10000-3 v1.05, 5.8 (DataType NodeClass), 8.48 (StructureDefinition) and 8.50 (EnumDefinition);
-OPC 10000-5 v1.05, 8.51 (DataTypeDefinition attribute); OPC 10000-6 v1.05, 5.2.6 (structures) and 5.2.7 (enumerations).
+OPC 10000-6 v1.05, 5.2.4 (enumerations), 5.2.6 (structures) and 5.2.7 (structures with optional fields).
 """
 
 import asyncio

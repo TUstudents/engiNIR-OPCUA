@@ -7,8 +7,8 @@ an "admin" (may also change the address space). A refused request comes back as 
 
 Run: python examples/02_users_and_roles.py
 
-Spec: OPC 10000-4 v1.05, 7.36 (UserIdentityToken), 5.6.3 (CreateSession) and 5.6.4 (ActivateSession);
-OPC 10000-18 v1.05 (role-based user management, well-known roles).
+Spec: OPC 10000-4 v1.05, 7.40 (UserIdentityToken parameters), 5.7.2 (CreateSession) and 5.7.3
+(ActivateSession); OPC 10000-18 v1.05 (Role-Based Security, well-known roles).
 """
 
 import asyncio

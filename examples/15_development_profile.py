@@ -9,8 +9,8 @@ needs a PKI directory and trust; here there is nothing to set up, which is the p
 
 Run: python examples/15_development_profile.py
 
-Spec: OPC 10000-4 v1.05, 7.2 (ApplicationInstanceCertificate and security policy None) and 6.1 (certificate
-validation, which a None channel skips); OPC 10000-7 (SecurityPolicy None).
+Spec: OPC 10000-4 v1.05, 6.1 (security: certificates and validation, which a None channel skips); OPC 10000-7
+v1.05 (SecurityPolicy None).
 """
 
 import asyncio

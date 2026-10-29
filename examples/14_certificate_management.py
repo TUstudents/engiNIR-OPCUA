@@ -10,7 +10,7 @@ methods.
 
 Run: python examples/14_certificate_management.py
 
-Spec: OPC 10000-12 v1.05, 7.4 (push management), 7.7.2 (workflow), 7.8.2 (TrustLists), 7.8.2.2 (AddCertificate),
+Spec: OPC 10000-12 v1.05, 7.4 (push management), 7.7.2 (workflow), 7.8.2 (TrustLists), 7.8.2.6 (AddCertificate),
 7.10.4 (ServerConfiguration) and 7.10.12 (GetRejectedList); OPC 10000-18 v1.05 (SecurityAdmin role).
 """
 

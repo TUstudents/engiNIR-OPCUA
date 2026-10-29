@@ -8,8 +8,8 @@ command line; nothing is ever trusted automatically.
 
 Run: python examples/01_secure_pair.py
 
-Spec: OPC 10000-4 v1.05, 6.1 (application instance certificate and trust), 5.6 (SecureChannel and Session
-services); OPC 10000-6 v1.05, 6.2 (security policies).
+Spec: OPC 10000-4 v1.05, 6.1 (application instance certificate and trust), 5.6 (SecureChannel service set)
+and 5.7 (Session service set); OPC 10000-6 v1.05, 6.1 (security policies) and 6.2 (certificates).
 """
 
 import asyncio
