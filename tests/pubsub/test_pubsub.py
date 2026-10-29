@@ -1,0 +1,463 @@
+import asyncio
+import logging
+import struct
+from datetime import UTC
+from typing import ClassVar
+
+import pytest
+
+from enginir_opcua import pubsub
+from enginir_opcua.common.node import Node
+from enginir_opcua.common.utils import Buffer
+from enginir_opcua.pubsub.connection import PubSubConnection
+from enginir_opcua.pubsub.dataset import DataSetMeta, DataSetValue, PublishedDataSet
+from enginir_opcua.pubsub.reader import DataSetReader, ReaderGroup
+from enginir_opcua.pubsub.uadp import (
+    UadpDataSetDataValue,
+    UadpDataSetMessageHeader,
+    UadpDataSetRaw,
+    UadpDataSetVariant,
+    UadpGroupHeader,
+    UadpHeader,
+    UadpNetworkMessage,
+)
+from enginir_opcua.pubsub.udp import UdpSettings
+from enginir_opcua.pubsub.writer import DataSetWriter
+from enginir_opcua.server.server import Server
+from enginir_opcua.ua.attribute_ids import AttributeIds
+from enginir_opcua.ua.object_ids import ObjectIds
+from enginir_opcua.ua.status_codes import StatusCodes
+from enginir_opcua.ua.uaprotocol_auto import FieldTargetDataType, PubSubState
+from enginir_opcua.ua.uatypes import (
+    Byte,
+    DataValue,
+    DateTime,
+    Int16,
+    Int32,
+    NodeId,
+    StatusCode,
+    String,
+    UInt16,
+    UInt32,
+    UInt64,
+    Variant,
+    VariantType,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+def _get_test_msg() -> UadpNetworkMessage:
+    gp_header = UadpGroupHeader(UInt16(2), NetworkMessageNo=UInt16(3), SequenceNo=UInt16(5))
+    datasets = [
+        UadpDataSetVariant(
+            Header=UadpDataSetMessageHeader(True, UInt16(5), DateTime.now(UTC), None, UInt16(StatusCodes.Good)),
+            Data=[Variant(123), Variant(True), Variant("1234565456")],
+        ),
+        UadpDataSetDataValue(
+            Header=UadpDataSetMessageHeader(True, UInt16(5), DateTime.now(UTC), None, UInt16(StatusCodes.Good)),
+            Data=[
+                DataValue(Variant(123), StatusCode(UInt32(StatusCodes.Good)), None, DateTime.now(UTC)),
+                DataValue(Variant(True), StatusCode(UInt32(StatusCodes.Good)), None, DateTime.now(UTC)),
+                DataValue(Variant("1234565456"), StatusCode(UInt32(StatusCodes.Good)), None, DateTime.now(UTC)),
+                DataValue(None, StatusCode(UInt32(StatusCodes.BadNodeIdUnknown)), None, DateTime.now(UTC)),
+            ],
+        ),
+    ]
+    return UadpNetworkMessage(
+        UadpHeader(UInt16(16)),
+        GroupHeader=gp_header,
+        Timestamp=DateTime.now(UTC),
+        DataSetPayloadHeader=[UInt16(5), UInt16(4)],
+        Payload=datasets,
+    )
+
+
+def test_uadp_basic():
+    msg = _get_test_msg()
+    b = msg.to_binary()
+    buffer = Buffer(b)
+    new_msg = msg.from_binary(buffer)
+    assert msg, new_msg
+
+
+class _Receiver:
+    msgs: list[UadpNetworkMessage]
+
+    def __init__(self) -> None:
+        self.msgs = []
+
+    async def got_uadp(self, msg: UadpNetworkMessage):
+        # Called when a msg is received
+        self.msgs.append(msg)
+
+
+async def test_connection():
+    for ids in [Byte(5), UInt16(13), UInt32(55), UInt64(33), "TestPub"]:
+        con = PubSubConnection.udp_uadp("test", ids, UdpSettings(Url="opc.udp://127.0.0.1:4840"))
+        recv = _Receiver()
+        con.set_receiver(recv)
+        msg = _get_test_msg()
+        try:
+            await con.start()
+            await asyncio.sleep(0.001)
+            await con.send_uadp_msg(msg)
+            await asyncio.sleep(0.01)
+            assert msg == recv.msgs[0]
+        finally:
+            await con.stop()
+
+
+CFG = {
+    "PublisherId": UInt16(1),
+    "WriterGroupId": UInt16(1),
+    "DataSetWriterId": UInt16(32),
+    "url": "opc.udp://224.0.0.22:4840",
+    "PdsName": "SimpleDataSet",
+}
+
+
+async def create_published_dataset() -> PublishedDataSet:
+    dataset = DataSetMeta.Create(String("Simple"))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("Int32"), VariantType.Int32))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("String"), VariantType.String))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("Bool"), ObjectIds.Boolean))
+    dataset.add_field(pubsub.DataSetField.CreateArray(String("ArrayInt16"), ObjectIds.Double))
+    return pubsub.PublishedDataSet.Create(CFG["PdsName"], dataset)
+
+
+class OnDataReceived:
+    values: ClassVar = {}
+
+    async def on_dataset_received(self, meta: pubsub.DataSetMeta, fields: list[pubsub.DataSetValue]):
+        _logger.info("Got Dataset %s", meta.Name)
+        if meta.Name not in self.values:
+            self.values[meta.Name] = {}
+        for f in fields:
+            self.values[meta.Name][f.Meta.Name] = f.Value
+
+    async def on_state_change(self, meta: pubsub.DataSetMeta, state):
+        _logger.info("State changed %s - %s", meta.Name, state.name)
+
+
+async def test_full_simple():
+    pds = await create_published_dataset()
+    source = pds.get_source()
+    source.datasources["Simple"] = {
+        "Int32": DataValue(Variant(Int32(1))),
+        "String": DataValue(Variant("0")),
+        "Bool": DataValue(Variant(True)),
+        "ArrayInt16": DataValue(Variant([UInt16(123), UInt16(234)])),
+    }
+    sink = OnDataReceived()
+    pub_writer = pubsub.WriterGroup.new_uadp(
+        name=String("WriterGroup1"),
+        writer_group_id=CFG["WriterGroupId"],
+        publishing_interval=100,
+        writer=[
+            pubsub.DataSetWriter.new_uadp(
+                name=String("Writer1"),
+                dataset_writer_id=CFG["DataSetWriterId"],
+                dataset_name=CFG["PdsName"],
+                datavalue=True,
+            )
+        ],
+    )
+    pub_reader = ReaderGroup.new(
+        name="ReaderGroup1",
+        reader=[
+            DataSetReader.new(
+                name="SimpleDataSetReader",
+                publisherId=Variant(CFG["PublisherId"]),
+                writer_group_id=CFG["WriterGroupId"],
+                dataset_writer_id=CFG["DataSetWriterId"],
+                meta=await pds.get_meta(),
+                subscribed=sink,
+                enabled=True,
+            )
+        ],
+        enable=True,
+    )
+    con = pubsub.PubSubConnection.udp_uadp(
+        "Publisher Connection1 UDP UADP", CFG["PublisherId"], UdpSettings(Url=CFG["url"])
+    )
+    await con.add_writer_group(pub_writer)
+    await con.add_reader_group(pub_reader)
+    ps = pubsub.PubSub()
+    await ps.add_connection(con)
+    await ps.add_published_dataset(pds)
+    async with ps:
+        await asyncio.sleep(0.5)
+        for x in range(10):
+            i32 = Int32(x)
+            source.datasources["Simple"]["Int32"] = DataValue(Variant(i32))
+            source.datasources["Simple"]["String"] = DataValue(Variant(str(i32)))
+            source.datasources["Simple"]["Bool"] = DataValue(Variant((i32 % 2) > 0))
+            source.datasources["Simple"]["ArrayInt16"] = DataValue(Variant([UInt16(1), UInt16(2), UInt16(3)]))
+            await asyncio.sleep(0.2)
+            for key in source.datasources:
+                assert source.datasources[key] == sink.values[key]
+
+
+@pytest.fixture
+async def pusbsub_src_nodes(server) -> list[NodeId]:
+    node = server.nodes.objects
+    ns = 1
+    folder = await node.add_folder(NodeId(String("SrcTestNodes"), Int16(ns)), "TestNodes")
+    nodes = [
+        await folder.add_variable(NodeId(String("PubInt32"), Int16(ns)), "Int32", 1, VariantType.Int32),
+        await folder.add_variable(NodeId(String("PubString"), Int16(ns)), "String", "DemoString"),
+        await folder.add_variable(NodeId(String("PubBool"), Int16(ns)), "Bool", True, VariantType.Boolean),
+        await folder.add_variable(
+            NodeId(String("PubArrayInt16"), Int16(ns)), "ArrayInt16", [1, 2, 3], VariantType.Int16
+        ),
+    ]
+    for n in nodes:
+        await n.set_writable()
+    return nodes
+
+
+@pytest.fixture
+async def pubsub_dest_nodes(server) -> list[NodeId]:
+    node = server.nodes.objects
+    ns = 1
+    dest_folder = await node.add_folder(NodeId(String("DestTestNodes"), Int16(ns)), "DestNodes")
+    dest_nodes = [
+        await dest_folder.add_variable(NodeId(String("DestPubInt32"), Int16(ns)), "Int32", 1, VariantType.Int32),
+        await dest_folder.add_variable(NodeId(String("DestPubString"), Int16(ns)), "String", "DemoString"),
+        await dest_folder.add_variable(NodeId(String("DestPubBool"), Int16(ns)), "Bool", True, VariantType.Boolean),
+        await dest_folder.add_variable(
+            NodeId(String("DestPubArrayInt16"), Int16(ns)), "ArrayInt16", [1, 2, 3], VariantType.Int16
+        ),
+    ]
+    for n in dest_nodes:
+        await n.set_writable()
+    return dest_nodes
+
+
+async def test_datasource_and_subscribed_dataset(
+    server: Server, pubsub_dest_nodes: list[Node], pusbsub_src_nodes: list[Node]
+):
+    ps = await server.get_pubsub()
+    pubid = Variant(UInt32(1))
+    writer_group_id = UInt16(2)
+    datasetwriter_id = UInt16(32)
+    dataset = pubsub.DataSetMeta.Create(String("Simple"))
+    dataset.add_scalar(String("Int32"), VariantType.Int32)
+    dataset.add_scalar(String("String"), VariantType.String)
+    dataset.add_scalar(String("Bool"), ObjectIds.Boolean)
+    dataset.add_array(String("ArrayInt16"), ObjectIds.Int16)
+    subscribed_ds = pubsub.SubScribedTargetVariables(
+        server,
+        [
+            pubsub.FieldTargets.createTarget(dataset.get_field((await n.read_browse_name()).Name), n.nodeid)
+            for n in pubsub_dest_nodes
+        ],
+    )
+    variables = []
+    for node in pusbsub_src_nodes:
+        name = await node.read_display_name()
+        variables.append(pubsub.TargetVariable(name.Text, node.nodeid))
+
+    await ps.add_published_dataset(await pubsub.PublishedDataItems.Create(String("Simple"), server, variables))
+    con = PubSubConnection.udp_uadp(
+        "Publisher Connection1 UDP UADP",
+        pubid,
+        UdpSettings(Url="opc.udp://127.0.0.1:4841"),
+        reader_groups=[
+            pubsub.ReaderGroup.new(
+                name="ReaderGroup1",
+                enable=True,
+                reader=[
+                    pubsub.DataSetReader.new(
+                        pubid,
+                        writer_group_id,
+                        datasetwriter_id,
+                        dataset,
+                        name="SimpleDataSetReader",
+                        subscribed=subscribed_ds,
+                        enabled=True,
+                    )
+                ],
+            )
+        ],
+        writer_groups=[
+            pubsub.WriterGroup.new_uadp(
+                name=String("WriterGroup1"),
+                writer_group_id=writer_group_id,
+                publishing_interval=100,
+                writer=[
+                    pubsub.DataSetWriter.new_uadp(
+                        name=String("Writer1"),
+                        dataset_writer_id=datasetwriter_id,
+                        dataset_name=String("Simple"),
+                        datavalue=True,
+                    )
+                ],
+            )
+        ],
+    )
+    await ps.add_connection(con)
+    async with ps:
+        for i in range(20):
+            await pusbsub_src_nodes[0].write_value(Int32(i))
+            await pusbsub_src_nodes[1].write_value(str(i))
+            await pusbsub_src_nodes[2].write_value(i % 2 == 0)
+            await pusbsub_src_nodes[3].write_value([Int16(x) for x in range(i, i + 3)])
+            await asyncio.sleep(0.200)
+            for dest, src in zip(pubsub_dest_nodes, pusbsub_src_nodes):
+                assert await dest.read_value() == await src.read_value()
+
+
+async def test_dataset_writer_seq_no_wraps_at_uint16_max():
+    """Part 14, 7.2.3: a sequence number starts at 0 and rolls over from 65535 to 0.
+
+    Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1953
+    """
+    writer = DataSetWriter.new_uadp(
+        name=String("TestWriter"),
+        dataset_writer_id=UInt16(1),
+        dataset_name=String("Test"),
+        datavalue=True,
+    )
+    writer._seq_no = 65534
+
+    dataset = DataSetMeta.Create(String("Test"))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("Val"), VariantType.Int32))
+    pds = pubsub.PublishedDataSet.Create(String("Test"), dataset)
+    source = pds.get_source()
+    source.datasources["Test"] = {"Val": DataValue(Variant(Int32(42)))}
+
+    numbers = [(await writer.generate_uadp_dataset(pds)).Header.SequenceNo for _ in range(4)]
+    assert numbers == [65534, 65535, 0, 1]
+
+
+async def test_load_save_ua_binary_publisher(server: Server, tmpdir_factory):
+    ps = await server.get_pubsub()
+    in_file = "tests/pubsub/check_publisher_configuration.bin"
+    out_file = tmpdir_factory.mktemp("pubsub") / "check_publisher_configuration.bin"
+    await ps.load_binary_file(in_file)
+    assert len(ps._con) == 1
+    con = ps.get_connection(String("UADP Connection 1"))
+    assert con is not None
+    assert len(con._writer_groups) == 1
+    wgr = con.get_writer_group(String("Demo WriterGroup"))
+    assert wgr is not None
+    assert len(wgr._writer) == 1
+    dsw = wgr.get_writer("Demo DataSetWriter")
+    assert dsw is not None
+    await ps.save_binary_file(out_file)
+
+    ps = pubsub.PubSub(None, server)
+    in_file = "tests/pubsub/check_publisher_configuration.bin"
+    out_file = tmpdir_factory.mktemp("pubsub") / "check_publisher_configuration.bin"
+    await ps.load_binary_file(in_file)
+    assert len(ps._con) == 1
+    con = ps.get_connection(String("UADP Connection 1"))
+    assert con is not None
+    assert len(con._writer_groups) == 1
+    wgr = con.get_writer_group(String("Demo WriterGroup"))
+    assert wgr is not None
+    assert len(wgr._writer) == 1
+    dsw = wgr.get_writer("Demo DataSetWriter")
+    assert dsw is not None
+
+
+def test_udp_settings_key_value_roundtrip():
+    """Test that get_key_value/set_key_value round-trip preserves all settings.
+
+    Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1945
+    where 'Loopback' (capital L) in get_key_value did not match 'loopback'
+    (lowercase l) in set_key_value, causing the value to be silently lost.
+    """
+    original = UdpSettings(Addr=("239.0.0.1", 4840), Loopback=False, Reuse=False, TTL=5)
+    kvs = original.get_key_value()
+
+    restored = UdpSettings(Addr=("239.0.0.1", 4840))
+    restored.set_key_value(kvs)
+
+    assert restored.Loopback == original.Loopback
+    assert restored.Reuse == original.Reuse
+    assert restored.TTL == original.TTL
+
+
+def test_udp_settings_key_names_consistent():
+    """Test that key names in get_key_value match the keys expected by set_key_value."""
+    settings = UdpSettings(Addr=("239.0.0.1", 4840), TTL=10)
+    kvs = settings.get_key_value()
+    key_names = [kv.Key.Name for kv in kvs]
+    assert "loopback" in key_names
+    assert "reuse" in key_names
+    assert "ttl" in key_names
+
+
+async def test_raw_dataset_status_is_status_code():
+    """Raw (fixed-layout) datasets must expose a StatusCode object, not a raw int.
+
+    Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1960
+    where `_datavalues_from_raw` passed the UInt16 header status straight into
+    `DataValue`, so `DataValue.StatusCode.is_good()` raised AttributeError.
+    """
+    dataset = DataSetMeta.Create(String("Raw"))
+    dataset.add_field(pubsub.DataSetField.CreateScalar(String("Val"), VariantType.Int32))
+    reader = DataSetReader.new(
+        publisherId=Variant(UInt16(1)),
+        writer_group_id=UInt16(1),
+        dataset_writer_id=UInt16(1),
+        meta=dataset,
+    )
+    header = UadpDataSetMessageHeader(Status=UInt16(0))
+    raw = UadpDataSetRaw(header, struct.pack("<i", 42))
+    values = reader._datavalues_from_raw(raw, header)
+    assert isinstance(values[0].StatusCode, StatusCode)
+    assert values[0].StatusCode.is_good()
+
+
+async def target_with_ranges(
+    server: Server, name: str, receiver: str | None, write: str | None
+) -> tuple[Node, pubsub.SubScribedTargetVariables, DataSetMeta]:
+    node = await server.nodes.objects.add_variable(
+        NodeId(String(name), Int16(1)), name, [1, 2, 3, 4], VariantType.Int32
+    )
+    await node.set_writable()
+    dataset = DataSetMeta.Create(String(name))
+    dataset.add_scalar(String("Values"), VariantType.Int32)
+    field = dataset.get_field("Values")
+    assert field is not None
+    config = FieldTargetDataType(
+        DataSetFieldId=field.DataSetFieldId,
+        TargetNodeId=node.nodeid,
+        AttributeId=AttributeIds.Value,
+        ReceiverIndexRange=receiver,
+        WriteIndexRange=write,
+    )
+    target = pubsub.SubScribedTargetVariables(server, [pubsub.FieldTargets(config)])
+    await target.on_state_change(dataset, PubSubState.Operational)
+    return node, target, dataset
+
+
+async def test_pub6_receiver_and_write_index_range_use_numeric_range(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubRanges", "1:2", "0:1")
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([10, 20, 30], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [20, 30, 3, 4]
+
+
+async def test_pub6_write_index_range_alone_replaces_part_of_the_target(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubWriteRange", None, "2:3")
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([7, 8], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [1, 2, 7, 8]
+
+
+async def test_pub6_receiver_range_without_data_leaves_the_target_unchanged(server: Server) -> None:
+    """Part 14, 6.2.10.2.3; Part 4, 7.27."""
+    node, target, dataset = await target_with_ranges(server, "PubNoData", "5:6", None)
+    field = dataset.get_field("Values")
+    received = DataSetValue("Values", DataValue(Variant([10, 20], VariantType.Int32)), field)
+    await target.on_dataset_received(dataset, [received])
+    assert await node.read_value() == [1, 2, 3, 4]
