@@ -48,11 +48,12 @@ trap cleanup EXIT
 
 data_home="$work_dir/data"
 mkdir -p "$data_home"
+reverse_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 
 (
     cd "$(dirname "$server_dll")"
     exec env DOTNET_CLI_TELEMETRY_OPTOUT=1 HOME="$data_home" XDG_DATA_HOME="$data_home" \
-        dotnet "$server_dll" --autoaccept --console --timeout 3600 >"$server_log" 2>&1
+        dotnet "$server_dll" --autoaccept --console --timeout 3600 --reverseconnect "opc.tcp://localhost:$reverse_port" >"$server_log" 2>&1
 ) &
 server_pid=$!
 
@@ -71,6 +72,7 @@ grep -q "Server started" "$server_log" || { echo "the reference server did not s
 
 export ENGINIR_INTEROP_SERVER_URL="opc.tcp://$(hostname):$port/Quickstarts/ReferenceServer"
 export ENGINIR_INTEROP_CLIENT_DLL="$client_dll"
+export ENGINIR_INTEROP_REVERSE_PORT="$reverse_port"
 export ENGINIR_INTEROP_REFERENCE_PKI="$data_home/OPC Foundation/pki"
 export ENGINIR_INTEROP_DOTNET
 ENGINIR_INTEROP_DOTNET=$(command -v dotnet)
