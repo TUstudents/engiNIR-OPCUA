@@ -154,6 +154,7 @@ class InternalServer:
         self.max_browse_continuation_points: int = 10
         self.max_browse_references_per_node: int = 10_000
         self.max_translate_matches: int = 1_000
+        self.max_byte_string_length: int = 1_048_576
         self.certificate: Any = None
         self.certificate_chain: list[Any] = []
         self.private_key: Any = None
@@ -248,6 +249,9 @@ class InternalServer:
             ),
             ua.ObjectIds.Server_ServerCapabilities_MaxMonitoredItemsQueueSize: ua.Variant(
                 self.max_monitored_item_queue_size, ua.VariantType.UInt32
+            ),
+            ua.ObjectIds.Server_ServerCapabilities_MaxByteStringLength: ua.Variant(
+                self.max_byte_string_length, ua.VariantType.UInt32
             ),
         }
         for nodeid, variant in capabilities.items():
