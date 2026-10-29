@@ -420,6 +420,7 @@ class NodeManagementService:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
         self._adding: ua.NodeId | None = None
+        self.delete_guards: list[Callable[[ua.NodeId], ua.StatusCode | None]] = []  # J: Program lifetime (COM-121)
 
     def add_nodes(self, addnodeitems: list[ua.AddNodesItem], trusted: bool = True) -> list[ua.AddNodesResult]:
         return [self._add_node(item, trusted) for item in addnodeitems]
@@ -704,6 +705,11 @@ class NodeManagementService:
             return ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)
         if not trusted and item.NodeId.NamespaceIndex == 0:
             return ua.StatusCode(ua.StatusCodes.BadNoDeleteRights)
+        if not trusted:
+            for guard in self.delete_guards:  # J: Program lifetime (COM-121)
+                refused = guard(item.NodeId)
+                if refused is not None:
+                    return refused
 
         self._record(item.NodeId, NODE_DELETED)
         if item.DeleteTargetReferences:
