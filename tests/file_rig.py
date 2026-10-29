@@ -18,7 +18,12 @@ async def make_executable(method_node: Node) -> None:
 class FileRig:
     def __init__(self, server: Server, content: bytes = b"") -> None:
         self.server = server
-        self.content = bytearray(content)
+        self.initial_content = bytes(content)
+        self.node: Node | None = None
+        self.clear_state()
+
+    def clear_state(self) -> None:
+        self.content = bytearray(self.initial_content)
         self.read_cap: int | None = None
         self.write_cap: int | None = None
         self.fail_read_after: int | None = None
@@ -28,7 +33,10 @@ class FileRig:
         self.handles: dict[int, dict[str, Any]] = {}
         self.next_handle = 1
         self.reads = 0
-        self.node: Node | None = None
+
+    async def reset(self) -> None:
+        self.clear_state()
+        await self.publish_size()
 
     async def attach(self, name: str = "RigFile", link_type: bool = False) -> Node:
         node = await self.server.nodes.objects.add_object(2, name, objecttype=ua.ObjectIds.FileType)
@@ -132,9 +140,12 @@ class FileRig:
 class DirectoryRig:
     def __init__(self, server: Server) -> None:
         self.server = server
+        self.node: Node | None = None
+        self.reset()
+
+    def reset(self) -> None:
         self.names: dict[str, ua.NodeId] = {}
         self.calls: list[tuple[str, list[ua.Variant]]] = []
-        self.node: Node | None = None
 
     async def attach(self, name: str = "RigDirectory") -> Node:
         node = await self.server.nodes.objects.add_object(2, name, objecttype=ua.ObjectIds.FileDirectoryType)

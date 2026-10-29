@@ -1,17 +1,10 @@
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.common.node import Node
-from enginir_opcua.server.history import HistoryDict, HistoryStorageInterface
-from enginir_opcua.server.history_sql import HistorySQLite
-from enginir_opcua.server.user_managers import PermissiveUserManager
-
-from .access_rig import free_port
+from enginir_opcua.server.history import HistoryStorageInterface
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -86,24 +79,3 @@ class HistoryRig:
 
 def numbers(result: ua.HistoryReadResult) -> list[Any]:
     return [dv.Value.Value if dv.Value is not None else None for dv in result.HistoryData.DataValues]
-
-
-@pytest.fixture(params=["dict", "sqlite"], name="history_rig")
-async def make_history_rig(request: pytest.FixtureRequest) -> AsyncIterator[HistoryRig]:
-    port = free_port()
-    server = Server(user_manager=PermissiveUserManager(), allow_no_security=True)
-    server.allow_plaintext_password = True
-    storage: HistoryStorageInterface = HistoryDict() if request.param == "dict" else HistorySQLite(":memory:")
-    server.iserver.history_manager.set_storage(storage)
-    await server.init()
-    server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
-    ns = await server.register_namespace("http://test.example/history")
-    await server.start()
-    admin = Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10)
-    user = Client(f"opc.tcp://someone@127.0.0.1:{port}", timeout=10)
-    await admin.connect()
-    await user.connect()
-    yield HistoryRig(server, admin, user, storage, request.param, ns)
-    await user.disconnect()
-    await admin.disconnect()
-    await server.stop()

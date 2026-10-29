@@ -26,8 +26,7 @@ from enginir_opcua.crypto.permission_rules import User, UserRole
 from enginir_opcua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyNone
 from enginir_opcua.server.internal_server import InternalServer
 from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
-
-from .pki import generated_pki
+from tests.pki import generated_pki
 
 CONNECTION_PROTOCOL_HEADER = struct.Struct("<3scI")
 EXAMPLES = Path(__file__).parent.parent / "examples"
