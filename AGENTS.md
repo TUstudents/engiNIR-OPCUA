@@ -6,6 +6,7 @@
 - Use `uv` to run commands: `uv run mypy ...`
 - Use `uv` to run commands: `uv run ruff ...`
 - Use `uv` to run commands: `uv run python ...`
+- Build the docs with the `docs` dependency group: `uv run --group docs sphinx-build -b html docs docs/_build/html`. All dependencies and tool settings live in `pyproject.toml`; Read the Docs installs the same group (`.readthedocs.yml`).
 
 ## Code Style
 
