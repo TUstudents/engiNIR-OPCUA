@@ -1,23 +1,24 @@
 # Read the Docs configuration file
 # See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+#
+# The docs dependencies live in the "docs" dependency group of pyproject.toml; the environment is built with uv,
+# like CI's.
 
-# Required
 version: 2
 
-# Set the OS, Python version, and other tools you might need
 build:
   os: ubuntu-24.04
   tools:
     python: "3.13"
+  jobs:
+    pre_create_environment:
+      - asdf plugin add uv
+      - asdf install uv latest
+      - asdf global uv latest
+    create_environment:
+      - uv venv "${READTHEDOCS_VIRTUALENV_PATH}"
+    install:
+      - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --no-default-groups --group docs
 
-# Build documentation in the "docs/" directory with Sphinx
 sphinx:
-   configuration: docs/conf.py
-
-# The Sphinx requirements, and the package itself: docs/conf.py reads its version from the installed metadata
-# and autodoc imports it.
-python:
-  install:
-    - requirements: docs/requirements.txt
-    - method: pip
-      path: .
+  configuration: docs/conf.py
