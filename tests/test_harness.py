@@ -1,8 +1,7 @@
 import pytest
 
 from enginir_opcua import Client, Server, ua
-
-from .harness import RawPeer, ResponseTampering, TwoSessions
+from tests.harness import RawPeer, ResponseTampering, TwoSessions
 
 
 async def test_raw_peer_gets_acknowledge_for_hello(raw_peer: RawPeer) -> None:

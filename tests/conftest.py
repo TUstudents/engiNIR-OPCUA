@@ -20,8 +20,7 @@ from enginir_opcua.server.history import HistoryDict
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.server.user_managers import PermissiveUserManager
-
-from .harness import (
+from tests.harness import (
     PKI,
     TWO_SESSION_USERS,
     RawPeer,
@@ -31,8 +30,8 @@ from .harness import (
     TwoUserManager,
     start_discovery_server,
 )
-from .test_common import add_server_methods
-from .util_enum_struct import add_server_custom_enum_struct
+from tests.model.test_common import add_server_methods
+from tests.util_enum_struct import add_server_custom_enum_struct
 
 RETRY = 20
 SLEEP = 0.4

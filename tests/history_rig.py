@@ -10,8 +10,7 @@ from enginir_opcua.common.node import Node
 from enginir_opcua.server.history import HistoryDict, HistoryStorageInterface
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.user_managers import PermissiveUserManager
-
-from .access_rig import free_port
+from tests.access_rig import free_port
 
 BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
