@@ -265,3 +265,23 @@ async def test_cli84_a_pair_without_the_pki_helpers(tmp_path: Path, port: int) -
     trust(tmp_path / "client-pki", tmp_path / "server-pki")
     async with server, client:
         assert await client.nodes.root.read_browse_name() == ua.QualifiedName("Root", 0)
+
+
+def test_cli85_the_sync_quickstarts_share_one_thread_loop(tmp_path: Path) -> None:
+    from enginir_opcua import sync
+
+    url = f"opc.tcp://127.0.0.1:{find_free_port()}/sync/"
+    with sync.ThreadLoop() as tloop:
+        server = sync.Server.quickstart(url, profile="development", pki=tmp_path / "pki", tloop=tloop)
+        client = sync.Client.quickstart(url, profile="development", tloop=tloop)
+        assert server.tloop is tloop
+        assert client.tloop is tloop
+        assert not server.close_tloop
+        assert not client.close_tloop
+        server.start()
+        try:
+            with client:
+                assert client.nodes.server_state.read_value() == ua.ServerState.Running
+        finally:
+            server.stop()
+        assert tloop.is_alive()

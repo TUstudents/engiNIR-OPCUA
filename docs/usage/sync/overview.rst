@@ -30,6 +30,9 @@ a ThreadLoop and pass it:
         client = Client(url, tloop=tloop)
         server = Server(tloop=tloop)
 
+``Server.quickstart(...)`` and ``Client.quickstart(...)`` take ``tloop=`` too, so a quick-setup server and client can
+share one thread; ``client.init_pki()`` creates the client's certificate before ``connect()``.
+
 A ThreadLoop you pass in is never stopped by the objects that use it. The thread is a daemon thread, so a program that
 forgets to stop it still exits; clients that are still connected at that time are disconnected on a best-effort basis.
 

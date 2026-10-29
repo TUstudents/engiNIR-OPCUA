@@ -542,10 +542,14 @@ class Client(_Owner):
         pki: str | Path | None = "./pki",
         username: str | None = None,
         password: str | None = None,
+        tloop: ThreadLoop | None = None,
         **overrides: Any,
     ) -> Client:
-        """Sync twin of Client.quickstart; extra sync parameters such as ``tloop`` are not available here."""
-        return cls(config=quickstart_client_config(url, profile, pki, username, password, overrides))
+        """
+        Sync twin of Client.quickstart. ``tloop`` is the :class:`ThreadLoop` to run on, for example the one of a
+        quickstart server; without one the client starts its own.
+        """
+        return cls(config=quickstart_client_config(url, profile, pki, username, password, overrides), tloop=tloop)
 
     def _note_drop(self) -> None:
         self.aio_obj.uaclient.observer.on_messages_dropped(None, 1)
@@ -977,13 +981,15 @@ class Server(_Owner):
         profile: str = "secure",
         pki: str | Path | None = "./pki",
         users: str | Path | UserManager | None = None,
+        tloop: ThreadLoop | None = None,
         **overrides: Any,
     ) -> Server:
         """
         Sync twin of Server.quickstart. The sync server initialises itself in the constructor, so the PKI directory
-        is created here.
+        is created here. ``tloop`` is the :class:`ThreadLoop` to run on, for example the one of a quickstart client;
+        without one the server starts its own.
         """
-        return cls(config=quickstart_server_config(endpoint, profile, pki, users, overrides))
+        return cls(config=quickstart_server_config(endpoint, profile, pki, users, overrides), tloop=tloop)
 
     def __str__(self) -> str:
         return "Sync" + self.aio_obj.__str__()

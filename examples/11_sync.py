@@ -2,8 +2,8 @@
 The synchronous API: a server and a client without async and await.
 
 Shows: enginir_opcua.sync.Server.quickstart and enginir_opcua.sync.Client.quickstart, which have the same settings
-as the asynchronous classes, blocking node calls, and a subscription whose handler runs on a handler thread. Each
-object runs its own event-loop thread.
+as the asynchronous classes, blocking node calls, and a subscription whose handler runs on a handler thread. Server and
+client share one ThreadLoop (the event-loop thread) through the `tloop` argument; without it each runs its own.
 
 Run: python examples/11_sync.py
 
@@ -14,10 +14,10 @@ Read and Write and 5.13 and 5.14 for subscriptions).
 import queue
 from typing import Any
 
-from _common import free_port, pair_sync, workdir
+from _common import free_port, trust, workdir
 
 from enginir_opcua import ua
-from enginir_opcua.sync import Client, Server
+from enginir_opcua.sync import Client, Server, ThreadLoop
 
 
 class Handler:
@@ -29,11 +29,13 @@ class Handler:
 
 
 def main() -> None:
-    with workdir() as directory:
+    with workdir() as directory, ThreadLoop() as tloop:
         url = f"opc.tcp://127.0.0.1:{free_port()}/enginir-opcua/example/"
-        server = Server.quickstart(url, pki=directory / "server-pki")
-        client = Client.quickstart(url, pki=directory / "client-pki")
-        pair_sync(directory / "server-pki", directory / "client-pki", client.application_uri)
+        server = Server.quickstart(url, pki=directory / "server-pki", tloop=tloop)
+        client = Client.quickstart(url, pki=directory / "client-pki", tloop=tloop)
+        client.init_pki()
+        trust(directory / "server-pki", directory / "client-pki")
+        trust(directory / "client-pki", directory / "server-pki")
 
         idx = server.register_namespace("urn:enginir:example:sync")
         level = server.nodes.objects.add_variable(idx, "Level", 1.0)

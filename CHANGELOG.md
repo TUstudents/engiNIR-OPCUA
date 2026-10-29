@@ -612,3 +612,5 @@ API freeze (before 3.0.0rc1):
   application certificate of a quick-setup object before the first `connect()` or `init()` and return the certificate;
   calling them again returns the same one. A program that pairs a client and a server in code no longer needs
   `pki.create_directories` and `pki.load_own_credentials` (CLI-84).
+- `sync.Server.quickstart` and `sync.Client.quickstart` take `tloop=None`, so a quick-setup server and client can share
+  one `ThreadLoop` (CLI-85). `examples/11_sync.py` does.
