@@ -927,3 +927,22 @@ async def test_rejected_certificates_are_read_newest_first(tmp_path: Path) -> No
     assert store.rejected_certificates() == [second.der, first.der]
     store.remove_rejected(second.der)
     assert store.rejected_certificates() == [first.der]
+
+
+async def test_cry32_a_generated_key_is_encrypted_with_the_password(tmp_path: Path) -> None:
+    pki.create_directories(tmp_path)
+    created = await pki.load_own_credentials(
+        tmp_path,
+        application_uri=APPLICATION_URI,
+        host_names=["localhost"],
+        usage=pki.SERVER_USAGE,
+        password="key password",
+    )
+    (key_file,) = list((tmp_path / "own" / "private").iterdir())
+    assert b"ENCRYPTED" in key_file.read_bytes()
+    reloaded = await pki.load_own_credentials(
+        tmp_path, application_uri=APPLICATION_URI, host_names=[], usage=pki.SERVER_USAGE, password="key password"
+    )
+    assert reloaded.private_key.public_key() == created.private_key.public_key()
+    with pytest.raises(TypeError):
+        await pki.load_own_credentials(tmp_path, application_uri=APPLICATION_URI, host_names=[], usage=pki.SERVER_USAGE)
