@@ -164,3 +164,18 @@ async def test_com66_an_audit_event_with_a_time_field_can_be_selected(server: Se
     [notification] = await publish(sub, wire)
     assert notification.EventFields[0].VariantType == ua.VariantType.DateTime
     assert notification.EventFields[0].Value == stamp
+
+
+async def test_srv77_a_condition_event_object_has_the_condition_id_field(server: Server) -> None:
+    """Part 9, 5.5.2: the ConditionId is the NodeId field of every Condition Event, however the Event was made."""
+    generator = await server.get_event_generator(event_objects.AlarmCondition())
+    assert generator.event.data_types["NodeId"] == ua.VariantType.NodeId
+
+
+async def test_event_ids_are_16_random_bytes(server: Server) -> None:
+    generator = await server.get_event_generator()
+    await generator.trigger(message="id")
+    first = generator.event.EventId
+    await generator.trigger(message="id")
+    assert len(first.Value) == 16
+    assert first != generator.event.EventId

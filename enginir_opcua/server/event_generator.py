@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +10,16 @@ from enginir_opcua import ua
 from enginir_opcua.server.internal_session import InternalSession
 
 from ..common import Node, event_objects, events
+
+
+def stamp_event(event: Any, time_attr: datetime | None = None) -> None:
+    event.EventId = ua.Variant(secrets.token_bytes(16), ua.VariantType.ByteString)
+    event.Time = time_attr if time_attr else datetime.now(UTC)
+    event.ReceiveTime = datetime.now(UTC)
+    event.LocalTime = ua.uaprotocol_auto.TimeZoneDataType()
+    localtime = time.localtime(event.Time.timestamp())
+    event.LocalTime.Offset = localtime.tm_gmtoff // 60
+    event.LocalTime.DaylightSavingInOffset = bool(localtime.tm_isdst > 0)
 
 
 class EventGenerator:
@@ -48,9 +58,9 @@ class EventGenerator:
 
         if node:
             self.event = await events.get_event_obj_from_type_node(node)
-            if isinstance(self.event, event_objects.Condition):
-                # Add ConditionId, which is not modelled as a component of the ConditionType
-                self.event.add_property("NodeId", None, ua.VariantType.NodeId)
+        if isinstance(self.event, event_objects.Condition):
+            # Part 9, 5.5.2: the ConditionId is not modelled as a component of the ConditionType
+            self.event.add_property("NodeId", None, ua.VariantType.NodeId)
 
         if isinstance(emitting_node, Node):
             pass
@@ -107,17 +117,7 @@ class EventGenerator:
         """
         Trigger the event. This will send a notification to all subscribed clients
         """
-        self.event.EventId = ua.Variant(uuid.uuid4().hex.encode("utf-8"), ua.VariantType.ByteString)
-        if time_attr:
-            self.event.Time = time_attr
-        else:
-            self.event.Time = datetime.now(UTC)
-        self.event.ReceiveTime = datetime.now(UTC)
-
-        self.event.LocalTime = ua.uaprotocol_auto.TimeZoneDataType()
-        localtime = time.localtime(self.event.Time.timestamp())
-        self.event.LocalTime.Offset = localtime.tm_gmtoff // 60
-        self.event.LocalTime.DaylightSavingInOffset = bool(localtime.tm_isdst > 0)
+        stamp_event(self.event, time_attr)
 
         if message:
             self.event.Message = ua.LocalizedText(message)
