@@ -34,6 +34,36 @@ class UserManager:
     ) -> User | None:
         raise NotImplementedError
 
+    async def authenticate(
+        self,
+        iserver: "InternalServer",
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        """
+        Decide who the user of a Session is, without blocking the event loop. The default calls get_user, so a
+        manager that only implements get_user keeps working; a manager that does slow work (a password hash, a
+        database) overrides this method and runs it on a worker thread.
+        """
+        return self.get_user(iserver, username=username, password=password, certificate=certificate)
+
+
+async def authenticate_user(
+    manager: Any,
+    iserver: "InternalServer",
+    username: str | None = None,
+    password: str | None = None,
+    certificate: Any = None,
+) -> User | None:
+    """Ask a user manager, which may be any object with get_user or authenticate, for the user of a login."""
+    authenticate = getattr(manager, "authenticate", None)
+    if authenticate is not None:
+        result: User | None = await authenticate(iserver, username=username, password=password, certificate=certificate)
+        return result
+    result = manager.get_user(iserver, username=username, password=password, certificate=certificate)
+    return result
+
 
 class AnonymousReadOnlyUserManager(UserManager):
     """

@@ -648,3 +648,46 @@ def test_srv39_key_of_an_unsecured_channel_is_the_address_only() -> None:
         make_certificate("urn:example:claimed")[0], SecurityPolicyNone.URI, ua.MessageSecurityMode.None_
     )
     assert peer_key(security, "10.1.2.3") == "ip:10.1.2.3"
+
+
+class _AsyncOnlyManager:
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def authenticate(
+        self,
+        iserver: Any,
+        username: str | None = None,
+        password: str | None = None,
+        certificate: Any = None,
+    ) -> User | None:
+        self.entered.set()
+        await self.release.wait()
+        return User(role=UserRole.User, name=username)
+
+
+async def test_srv101_a_manager_with_async_authenticate_does_not_block_the_loop(signing_server: Server) -> None:
+    manager = _AsyncOnlyManager()
+    signing_server.iserver.user_manager = manager
+    client = await signing_client(signing_server)
+    login = asyncio.create_task(client.connect())
+    await asyncio.wait_for(manager.entered.wait(), 5)
+    assert await signing_server.nodes.server_state.read_value() == ua.ServerState.Running
+    manager.release.set()
+    await asyncio.wait_for(login, 5)
+    await client.disconnect()
+
+
+async def test_srv101_the_default_authenticate_calls_get_user() -> None:
+    class Manager(UserManager):
+        def get_user(
+            self,
+            iserver: Any,
+            username: str | None = None,
+            password: str | None = None,
+            certificate: Any = None,
+        ) -> User | None:
+            return User(role=UserRole.Admin, name=username)
+
+    assert await Manager().authenticate(None, username="x") == User(role=UserRole.Admin, name="x")
