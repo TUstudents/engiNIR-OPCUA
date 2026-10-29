@@ -127,7 +127,7 @@ async def test_instantiate_abstract(opc):
         )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def srv() -> Any:
     server = Server()
     await server.init()
@@ -222,11 +222,11 @@ async def test_com23_existing_node_id_raises_and_leaves_nothing(srv: Server) -> 
     var = await kind.add_variable(new_id("kv"), "2:kv", 1)
     await var.set_modelling_rule(True)
     await srv.nodes.objects.add_object(new_id("taken"), "2:taken")
+    before = await names(srv.nodes.objects)
     with pytest.raises(ua.UaStatusCodeError):
         await instantiate(srv.nodes.objects, kind, new_id("taken"), "2:again")
     assert await exists(srv.get_node(new_id("taken")))
-    assert await names(srv.nodes.objects) == sorted(set(await names(srv.nodes.objects)))
-    assert "again" not in await names(srv.nodes.objects)
+    assert await names(srv.nodes.objects) == before
 
 
 async def test_com23_failed_child_removes_created_nodes(srv: Server) -> None:

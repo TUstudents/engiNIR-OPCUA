@@ -7,7 +7,7 @@ from enginir_opcua import Server, ua
 from enginir_opcua.common.statemachine import FiniteStateMachine, State, StateMachine, Transition
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def srv() -> Any:
     server = Server()
     await server.init()

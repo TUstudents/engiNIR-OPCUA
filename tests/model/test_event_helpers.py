@@ -11,7 +11,7 @@ from enginir_opcua.common.events import (
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def srv() -> Any:
     server = Server()
     await server.init()

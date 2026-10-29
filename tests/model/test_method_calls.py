@@ -199,7 +199,7 @@ async def test_object_meth_args(opc):
     await obj.get_child(["2:ObjectWithMethodTestArgsTest", "OutputArguments"])
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def local_server() -> Any:
     srv = Server()
     await srv.init()

@@ -460,7 +460,7 @@ async def test_duplicated_browsenames_same_ns_protperties(opc):
         return
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 async def srv() -> Any:
     server = Server()
     await server.init()
