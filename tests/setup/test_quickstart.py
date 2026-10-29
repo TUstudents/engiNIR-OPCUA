@@ -9,6 +9,7 @@ from enginir_opcua.config import ClientConfig, ServerConfig, ServerLimits
 from enginir_opcua.crypto import pki
 from enginir_opcua.server.user_managers import AnonymousReadOnlyUserManager, FileUserManager
 from enginir_opcua.ua.uaerrors import ConfigurationError
+from tests.conftest import find_free_port
 from tests.setup.conftest import make_credentials, trust
 
 URL = "opc.tcp://127.0.0.1:4840/quick/"
@@ -210,3 +211,20 @@ async def test_a_pinned_server_certificate_is_trusted(tmp_path: Path, port: int)
         )
         async with client:
             assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+
+
+def test_the_sync_twins_of_quickstart(tmp_path: Path) -> None:
+    from enginir_opcua import sync
+
+    url = f"opc.tcp://127.0.0.1:{find_free_port()}/sync/"
+    server = sync.Server.quickstart(url, profile="development", pki=tmp_path / "pki")
+    server.start()
+    try:
+        client = sync.Client.quickstart(url, profile="development")
+        client.connect()
+        try:
+            assert client.nodes.server_state.read_value() == ua.ServerState.Running
+        finally:
+            client.disconnect()
+    finally:
+        server.stop()
