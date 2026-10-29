@@ -110,6 +110,18 @@ with a comment for every setting; ``enginir-opcua init`` does it for you:
     server = Server(config=ServerConfig.from_toml("server.toml"))
     await server.init()
 
+Redundant servers and the synchronous API
+=========================================
+
+``HaClient.quickstart(urls, profile="secure", pki="./pki", username=None, password=None, **overrides)`` gives a client
+for a redundant set the same quick setup: all its clients share the PKI directory and the host-derived ApplicationUri,
+and ``await ha.init_pki()`` creates the certificate before ``start()``. See `09_ha_client.py
+<https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/09_ha_client.py>`_.
+
+``enginir_opcua.sync.Server.quickstart`` and ``enginir_opcua.sync.Client.quickstart`` have the same arguments and one
+more, ``tloop``, to run both on one :class:`~enginir_opcua.sync.ThreadLoop`; the sync client has ``init_pki()`` too. See
+`11_sync.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/11_sync.py>`_.
+
 Users and roles
 ===============
 
