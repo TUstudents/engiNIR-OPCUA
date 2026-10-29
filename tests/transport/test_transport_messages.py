@@ -533,3 +533,46 @@ def test_client_sends_what_the_server_receives_and_receives_what_it_sends(initia
     limits.update_client_limits(ack)
 
     assert (limits.max_recv_buffer, limits.max_send_buffer) == (65535, 8192)
+
+
+def test_com122_reverse_hello_round_trip() -> None:
+    """Part 6, 7.1.2.6: RHE has the 8-byte header and two Strings."""
+    from enginir_opcua.common.connection import reverse_hello_to_binary
+
+    data = reverse_hello_to_binary("urn:server", "opc.tcp://host:4840/x")
+    header = header_from_binary(Buffer(data))
+    assert header.MessageType == b"RHE"
+    assert header.packet_size == len(data)
+    hello = struct_from_binary(ua.ReverseHello, Buffer(data[8:]))
+    assert (hello.ServerUri, hello.EndpointUrl) == ("urn:server", "opc.tcp://host:4840/x")
+
+
+@pytest.mark.parametrize("field", ["server_uri", "endpoint_url"])
+def test_com122_reverse_hello_strings_are_below_4096_bytes(field: str) -> None:
+    """Part 6, 7.1.2.6: both strings encode to fewer than 4096 bytes."""
+    from enginir_opcua.common.connection import reverse_hello_to_binary
+
+    arguments = {"server_uri": "u", "endpoint_url": "e", field: "x" * 4096}
+    with pytest.raises(ValueError):
+        reverse_hello_to_binary(**arguments)
+    arguments[field] = "x" * 4095
+    assert len(reverse_hello_to_binary(**arguments)) <= 8208
+
+
+def test_com122_frame_reader_takes_rhe_only_when_asked() -> None:
+    """Part 6, 7.1.2.6 and 7.1.3: RHE is a valid first message only on a socket that waits for one."""
+    from enginir_opcua.common.connection import (
+        REVERSE_HELLO_TYPES,
+        FrameReader,
+        TransportError,
+        reverse_hello_to_binary,
+    )
+
+    data = reverse_hello_to_binary("u", "e")
+    strict = FrameReader(lambda: 8192)
+    strict.feed(data)
+    with pytest.raises(TransportError):
+        list(strict.frames())
+    lenient = FrameReader(lambda: 8208, REVERSE_HELLO_TYPES)
+    lenient.feed(data)
+    assert [header.MessageType for header, _ in lenient.frames()] == [b"RHE"]

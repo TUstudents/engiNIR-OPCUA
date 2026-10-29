@@ -23,10 +23,17 @@ class Hello:
     EndpointUrl: uatypes.String = ""
 
 
+@dataclass(slots=True)
+class ReverseHello:
+    ServerUri: uatypes.String = ""
+    EndpointUrl: uatypes.String = ""
+
+
 class MessageType:
     Hello: bytes = b"HEL"
     Acknowledge: bytes = b"ACK"
     Error: bytes = b"ERR"
+    ReverseHello: bytes = b"RHE"
     SecureOpen: bytes = b"OPN"
     SecureClose: bytes = b"CLO"
     SecureMessage: bytes = b"MSG"
