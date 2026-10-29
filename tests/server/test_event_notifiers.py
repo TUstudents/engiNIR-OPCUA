@@ -1,16 +1,18 @@
-"""Event delivery: the notifier hierarchy and the BaseEventType stamping of the EventGenerator."""
-
 from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from enginir_opcua import Server, ua
+from enginir_opcua.common import event_objects
 from tests.monitoring import create_items, item_request, make_server, open_subscription, publish
+
+"""Event delivery: the notifier hierarchy and the BaseEventType stamping of the EventGenerator."""
 
 
 @pytest.fixture(scope="module")
@@ -139,3 +141,26 @@ async def test_srv23_a_source_without_a_notifier_reference_still_reaches_the_ser
     generator = await server.get_event_generator(emitting_node=lonely)
     await generator.trigger(message="lonely")
     assert [n.EventFields[0].Value.Text for n in await publish(sub, wire)] == ["lonely"]
+
+
+"""Generated event classes."""
+
+
+@pytest.mark.parametrize("event_class", sorted(event_objects.IMPLEMENTED_EVENTS.values(), key=repr))
+def test_com66_every_field_of_a_generated_event_declares_a_built_in_type(event_class: Any) -> None:
+    """Part 6, 5.1.2: a Variant carries a built-in type, never the NodeId of a DataType."""
+    event = event_class()
+    wrong = {name: kind for name, kind in event.data_types.items() if not isinstance(kind, ua.VariantType)}
+    assert wrong == {}
+
+
+async def test_com66_an_audit_event_with_a_time_field_can_be_selected(server: Server) -> None:
+    """Part 5, 6.4.2 and Part 6, 5.1.2: ActionTimeStamp is a DateTime on the wire."""
+    sub, wire = await watch(server, ua.NodeId(ua.ObjectIds.Server), "ActionTimeStamp", "Message")
+    generator = await server.get_event_generator(ua.ObjectIds.AuditEventType)
+    stamp = datetime.now(UTC)
+    generator.event.ActionTimeStamp = stamp
+    await generator.trigger(message="audit")
+    [notification] = await publish(sub, wire)
+    assert notification.EventFields[0].VariantType == ua.VariantType.DateTime
+    assert notification.EventFields[0].Value == stamp

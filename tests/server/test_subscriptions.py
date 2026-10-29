@@ -1,21 +1,32 @@
+from __future__ import annotations
+
 import asyncio
+import inspect
 from asyncio import Future, sleep, wait_for
+from collections.abc import AsyncIterator
 from copy import copy
 from datetime import UTC, datetime, timedelta
+from typing import Any, get_overloads
+from unittest.mock import AsyncMock
 
 import pytest
 
-from enginir_opcua.common.subscription import Subscription
+import enginir_opcua
+from enginir_opcua import Client, Server, ua
+from enginir_opcua.common.subscription import (
+    DataChangeEvent,
+    Subscription,
+    SubscriptionItemData,
+)
+from enginir_opcua.server.internal_server import InternalServer
+from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary
+from tests.conftest import Opc, find_free_port
+from tests.waiting import wait_until
 
 try:
     from unittest.mock import AsyncMock
 except ImportError:
     from asynctest import CoroutineMock as AsyncMock  # type: ignore[no-redef]
-import enginir_opcua
-from enginir_opcua import Client, ua
-from enginir_opcua.ua.ua_binary import nodeid_from_binary, struct_from_binary
-from tests.conftest import Opc
-from tests.waiting import wait_until
 
 
 class MySubHandler:
@@ -1328,3 +1339,468 @@ async def test_recreate_does_not_adopt_items_of_a_failing_call():
 
     assert sub._monitored_items == {}
     assert session.recreated_with in ([], [[]])
+
+
+SESSION = ua.NodeId(1, 1)
+
+
+@pytest.fixture
+async def iserver() -> AsyncIterator[InternalServer]:
+    server = InternalServer()
+    yield server
+    for sub in list(server.subscription_service.subscriptions.values()):
+        await sub.stop()
+    server.subscription_service.subscriptions.clear()
+
+
+def create_params(interval: float = 100, lifetime: int = 30, keepalive: int = 10) -> ua.CreateSubscriptionParameters:
+    return ua.CreateSubscriptionParameters(
+        RequestedPublishingInterval=interval,
+        RequestedLifetimeCount=lifetime,
+        RequestedMaxKeepAliveCount=keepalive,
+        MaxNotificationsPerPublish=0,
+        PublishingEnabled=True,
+        Priority=0,
+    )
+
+
+async def create(iserver: InternalServer, params: ua.CreateSubscriptionParameters) -> ua.CreateSubscriptionResult:
+    return await iserver.subscription_service.create_subscription(
+        params, AsyncMock(), SESSION, request_callback=lambda _id: None
+    )
+
+
+@pytest.mark.parametrize("requested", [0.0, -5.0, float("nan"), 1.0])
+async def test_srv11_publishing_interval_below_the_minimum_is_revised_up(
+    iserver: InternalServer, requested: float
+) -> None:
+    """Part 4, 5.14.2.2: the server revises the interval to the fastest one it supports."""
+    result = await create(iserver, create_params(interval=requested))
+    assert result.RevisedPublishingInterval == iserver.min_publishing_interval_ms
+
+
+async def test_srv11_publishing_interval_is_clamped_to_the_maximum(iserver: InternalServer) -> None:
+    """Part 4, 5.14.2.2: the server revises the interval to the slowest one it supports."""
+    result = await create(iserver, create_params(interval=1e9, lifetime=3, keepalive=1))
+    assert result.RevisedPublishingInterval == iserver.max_publishing_interval_ms
+
+
+async def test_srv33_keepalive_zero_becomes_one(iserver: InternalServer) -> None:
+    """Part 4, 5.14.2.2: a keep-alive count of 0 is revised to the smallest supported count."""
+    result = await create(iserver, create_params(keepalive=0))
+    assert result.RevisedMaxKeepAliveCount == 1
+
+
+async def test_srv33_lifetime_is_at_least_three_times_keepalive(iserver: InternalServer) -> None:
+    """Part 4, 5.14.2.2: the lifetime count is revised to at least three times the keep-alive count."""
+    result = await create(iserver, create_params(lifetime=1, keepalive=5))
+    assert result.RevisedLifetimeCount == 15
+
+
+async def test_srv33_interval_times_lifetime_is_capped(iserver: InternalServer) -> None:
+    """Part 4, 5.14.2.2: the server may lower the lifetime so an abandoned subscription does not live for days."""
+    iserver.max_subscription_lifetime_ms = 60_000
+    result = await create(iserver, create_params(interval=1000, lifetime=1000, keepalive=2))
+    assert result.RevisedLifetimeCount == 60
+    assert result.RevisedLifetimeCount * result.RevisedPublishingInterval <= 60_000
+
+
+async def test_srv33_lifetime_cap_lowers_keepalive_when_three_times_it_does_not_fit(iserver: InternalServer) -> None:
+    """Part 4, 5.14.2.2: the lifetime count stays at least three times the keep-alive count."""
+    iserver.max_subscription_lifetime_ms = 60_000
+    result = await create(iserver, create_params(interval=10_000, lifetime=1000, keepalive=100))
+    assert result.RevisedLifetimeCount >= 3 * result.RevisedMaxKeepAliveCount
+    assert result.RevisedLifetimeCount * result.RevisedPublishingInterval <= 60_000
+
+
+async def test_srv11_modify_applies_revised_values(iserver: InternalServer) -> None:
+    """Part 4, 5.14.3.2: ModifySubscription revises and applies the new parameters."""
+    created = await create(iserver, create_params(interval=100, lifetime=30, keepalive=10))
+    modify = ua.ModifySubscriptionParameters(
+        SubscriptionId=created.SubscriptionId,
+        RequestedPublishingInterval=0,
+        RequestedLifetimeCount=1,
+        RequestedMaxKeepAliveCount=0,
+        MaxNotificationsPerPublish=7,
+        Priority=9,
+    )
+    result = iserver.subscription_service.modify_subscription(modify, SESSION)
+    assert result.RevisedPublishingInterval == iserver.min_publishing_interval_ms
+    assert result.RevisedMaxKeepAliveCount == 1
+    assert result.RevisedLifetimeCount == 3
+    sub = iserver.subscription_service.subscriptions[created.SubscriptionId]
+    assert sub.data.RevisedPublishingInterval == result.RevisedPublishingInterval
+    assert sub.max_notifications_per_publish == 7
+    assert sub.priority == 9
+
+
+"""Tests for the async-iterator subscription API."""
+
+
+async def _start_server(port: int) -> Server:
+    srv = Server(allow_no_security=True)
+    await srv.init()
+    srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    await srv.start()
+    return srv
+
+
+async def test_iterator_yields_data_changes() -> None:
+    """Iterator-mode subscription yields DataChangeEvent for monitored variable writes."""
+    port = find_free_port()
+    srv = await _start_server(port)
+    objects = srv.get_objects_node()
+    var = await objects.add_variable(2, "IterVar", 0)
+    await var.set_writable()
+
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    await client.connect()
+    try:
+        sub = await client.create_subscription(50)  # no handler -> iterator mode
+        async with sub:
+            await sub.subscribe_data_change(client.get_node(var.nodeid))
+            # First arrival is the initial value (0).
+            first = await asyncio.wait_for(sub.next_event(), timeout=3.0)
+            assert isinstance(first, DataChangeEvent)
+            assert first.value == 0
+            # Then writes propagate as DataChangeEvents.
+            await var.write_value(7)
+            seen: list[int] = []
+            while 7 not in seen:
+                ev = await asyncio.wait_for(sub.next_event(), timeout=3.0)
+                if isinstance(ev, DataChangeEvent):
+                    seen.append(ev.value)
+            assert 7 in seen
+    finally:
+        await client.disconnect()
+        await srv.stop()
+
+
+async def test_iterator_async_for_loop_exits_on_delete() -> None:
+    """`async for ev in sub` ends cleanly when the subscription is deleted."""
+    port = find_free_port()
+    srv = await _start_server(port)
+    objects = srv.get_objects_node()
+    var = await objects.add_variable(2, "IterVar2", 0)
+    await var.set_writable()
+
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    await client.connect()
+    try:
+        sub = await client.create_subscription(50)
+        await sub.subscribe_data_change(client.get_node(var.nodeid))
+        consumed: list[object] = []
+        pending: list[asyncio.Task[None]] = []
+
+        async def consumer() -> None:
+            async for ev in sub:
+                consumed.append(ev)
+                if isinstance(ev, DataChangeEvent) and ev.value == 1:
+                    # Trigger delete from inside the loop (a common pattern).
+                    pending.append(asyncio.create_task(sub.delete()))
+
+        consumer_task = asyncio.create_task(consumer())
+        # Wait for initial value, then poke a new one to trigger delete.
+        await asyncio.sleep(0.2)
+        await var.write_value(1)
+        await asyncio.wait_for(consumer_task, timeout=3.0)
+        # consumer ended naturally via StopAsyncIteration; loop got at least
+        # the initial value (0) and the trigger value (1).
+        assert any(isinstance(ev, DataChangeEvent) and ev.value == 1 for ev in consumed)
+    finally:
+        await srv.stop()
+
+
+async def test_iterator_context_manager_deletes_on_exit() -> None:
+    """`async with sub:` exit deletes the server-side subscription."""
+    port = find_free_port()
+    srv = await _start_server(port)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    await client.connect()
+    try:
+        sub = await client.create_subscription(50)
+        assert sub.is_deleted is False
+        async with sub:
+            assert sub.subscription_id is not None
+        assert sub.is_deleted is True
+    finally:
+        await client.disconnect()
+        await srv.stop()
+
+
+async def test_iterator_rejects_handler_mode() -> None:
+    """Trying to iterate a handler-mode subscription is a hard error."""
+    port = find_free_port()
+    srv = await _start_server(port)
+
+    class _Noop:
+        def datachange_notification(self, _n, _v, _d) -> None:
+            pass
+
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    await client.connect()
+    try:
+        sub = await client.create_subscription(50, _Noop())
+        with pytest.raises(RuntimeError, match="handler mode"):
+            sub.__aiter__()
+        await sub.delete()
+    finally:
+        await client.disconnect()
+        await srv.stop()
+
+
+"""Monitored item bookkeeping of the client Subscription (modify, revised values)."""
+
+
+def capture_modify(sub: Subscription, monkeypatch: pytest.MonkeyPatch) -> list[ua.ModifyMonitoredItemsParameters]:
+    sent: list[ua.ModifyMonitoredItemsParameters] = []
+    original = sub.server.modify_monitored_items
+
+    async def modify(params: ua.ModifyMonitoredItemsParameters) -> Any:
+        sent.append(params)
+        return await original(params)
+
+    monkeypatch.setattr(sub.server, "modify_monitored_items", modify)
+    return sent
+
+
+async def test_com31_unknown_handle_is_value_error(opc) -> None:
+    """Part 4, 5.13.3: only an existing item can be modified; the client refuses an unknown handle itself."""
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    with pytest.raises(ValueError):
+        await sub.modify_monitored_item(123456, 100)
+    await sub.delete()
+
+
+async def test_com30_modify_keeps_event_decoding(opc) -> None:
+    """Part 4, 5.13.3: Modify must not replace the stored EventFilter by the server's FilterResult."""
+    handler = MySubHandler()
+    sub = await opc.opc.create_subscription(100, handler)
+    handle = await sub.subscribe_events()
+    await sub.modify_monitored_item(handle, 0, 10)
+    item = next(i for i in sub._monitored_items.values() if i.server_handle == handle)
+    assert isinstance(item.mfilter, ua.EventFilter)
+    evgen = await opc.server.get_event_generator()
+    await evgen.trigger(datetime.now(UTC), "after modify")
+    event = await handler.result()
+    assert event.Message.Text == "after modify"
+    await sub.delete()
+
+
+async def test_cli22_second_modify_resends_the_requested_filter(opc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.13.3: every Modify carries the filter as requested, never an earlier FilterResult."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Cli22Var", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handle = await sub.deadband_monitor(node, 0.5, queuesize=3)
+    sent = capture_modify(sub, monkeypatch)
+    await sub.modify_monitored_item(handle, 200)
+    await sub.modify_monitored_item(handle, 300)
+    for params in sent:
+        sent_filter = params.ItemsToModify[0].RequestedParameters.Filter
+        assert isinstance(sent_filter, ua.DataChangeFilter)
+        assert sent_filter.DeadbandValue == 0.5
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_com70_modify_keeps_timestamps_queue_size_and_discard_policy(
+    opc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 4, 5.13.3: Modify replaces all parameters, so the stored ones are sent again."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Com70Var", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handle = await sub.subscribe_data_change(node, queuesize=5)
+    item = next(i for i in sub._monitored_items.values() if i.server_handle == handle)
+    item.discard_oldest = False
+    sent = capture_modify(sub, monkeypatch)
+    await sub.modify_monitored_item(handle, 250)
+    params = sent[0]
+    assert params.TimestampsToReturn == ua.TimestampsToReturn.Both
+    requested = params.ItemsToModify[0].RequestedParameters
+    assert requested.QueueSize == 5
+    assert requested.DiscardOldest is False
+    assert requested.SamplingInterval == 250
+    assert item.queuesize == 5
+    assert item.sampling_interval == 250
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_cli22_modify_without_filter_keeps_the_deadband(opc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.13.3: a null filter removes the filter, so only an explicit None may send one."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Cli22Var2", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handle = await sub.deadband_monitor(node, 2.0)
+    sent = capture_modify(sub, monkeypatch)
+    await sub.modify_monitored_item(handle, 100)
+    await sub.modify_monitored_item(handle, 100, mod_filter_val=None)
+    assert isinstance(sent[0].ItemsToModify[0].RequestedParameters.Filter, ua.DataChangeFilter)
+    assert not isinstance(sent[1].ItemsToModify[0].RequestedParameters.Filter, ua.DataChangeFilter)
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_com73_revised_sampling_interval_and_queue_size_are_stored(opc) -> None:
+    """Part 4, 5.13.2: the item keeps what the server revised next to what was requested."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Com73Var", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handle = await sub.subscribe_data_change(node, queuesize=7, sampling_interval=1)
+    await asyncio.sleep(0)
+    item = next(i for i in sub._monitored_items.values() if i.server_handle == handle)
+    assert item.sampling_interval == 1
+    assert item.queuesize == 7
+    assert item.revised_sampling_interval is not None
+    assert item.revised_queuesize == 7
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_com69_unsubscribe_accepts_a_generator(opc) -> None:
+    """Part 4, 5.13.6: every item the server deleted leaves the local map, whatever the iterable."""
+    nodes = [await opc.opc.nodes.objects.add_variable(3, f"Com69Var{i}", 1.0) for i in range(2)]
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handles = await sub.subscribe_data_change(nodes)
+    assert len(sub._monitored_items) == 2
+    await sub.unsubscribe(h for h in handles if isinstance(h, int))
+    assert sub._monitored_items == {}
+    await sub.delete()
+    await opc.opc.delete_nodes(nodes)
+
+
+async def test_com34_unsubscribe_keeps_items_the_server_could_not_delete(opc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.13.6: the per-item results decide which items are removed locally."""
+    nodes = [await opc.opc.nodes.objects.add_variable(3, f"Com34Var{i}", 1.0) for i in range(2)]
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    handles = await sub.subscribe_data_change(nodes)
+
+    async def delete_items(params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
+        return [ua.StatusCode(ua.StatusCodes.Good), ua.StatusCode(ua.StatusCodes.BadUserAccessDenied)]
+
+    monkeypatch.setattr(sub.server, "delete_monitored_items", delete_items)
+    with pytest.raises(ua.UaStatusCodeError):
+        await sub.unsubscribe(handles)
+    assert [i.server_handle for i in sub._monitored_items.values()] == [handles[1]]
+    monkeypatch.undo()
+    await sub.delete()
+    await opc.opc.delete_nodes(nodes)
+
+
+async def test_unsubscribe_of_an_unknown_handle_sends_nothing(opc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.13.6: a handle that isn't an item of this Subscription is skipped."""
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    sent: list[Any] = []
+
+    async def delete_items(params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
+        sent.append(params)
+        return []
+
+    monkeypatch.setattr(sub.server, "delete_monitored_items", delete_items)
+    await sub.unsubscribe([4242])
+    assert sent == []
+    monkeypatch.undo()
+    await sub.delete()
+
+
+async def test_com34_set_monitoring_mode_updates_stored_mode_and_survives_recreate(
+    opc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 4, 5.12.4: the mode the server confirmed is the mode a recreated item gets."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Com34Mode", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    await sub.subscribe_data_change(node)
+    if not sub._remote:
+        pytest.skip("in-process subscriptions have no monitoring mode service")
+    results = await sub.set_monitoring_mode(ua.MonitoringMode.Disabled)
+    assert results[0].is_good()
+    item = next(iter(sub._monitored_items.values()))
+    assert item.monitoring_mode == ua.MonitoringMode.Disabled
+    sent: list[ua.CreateMonitoredItemsParameters] = []
+    original = sub.server.create_monitored_items
+
+    async def create_items(params: ua.CreateMonitoredItemsParameters) -> Any:
+        sent.append(params)
+        return await original(params)
+
+    monkeypatch.setattr(sub.server, "create_monitored_items", create_items)
+    await sub.recreate()
+    assert sent[0].ItemsToCreate[0].MonitoringMode == ua.MonitoringMode.Disabled
+    monkeypatch.undo()
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_com34_set_monitoring_mode_skips_items_without_server_handle(
+    opc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 4, 5.12.4: only items the server knows are sent."""
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    if not sub._remote:
+        pytest.skip("in-process subscriptions have no monitoring mode service")
+    pending = SubscriptionItemData()
+    pending.client_handle = 999
+    sub._monitored_items[999] = pending
+    sent: list[Any] = []
+
+    async def set_mode(params: ua.SetMonitoringModeParameters) -> list[ua.StatusCode]:
+        sent.append(params)
+        return []
+
+    monkeypatch.setattr(sub.server, "set_monitoring_mode", set_mode)
+    assert await sub.set_monitoring_mode(ua.MonitoringMode.Disabled) == []
+    assert sent == []
+    monkeypatch.undo()
+    del sub._monitored_items[999]
+    await sub.delete()
+
+
+async def test_com34_recreate_keeps_discard_oldest(opc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 4, 5.13.1.5: a recreated item uses the discard policy it was created with."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Com34Discard", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    await sub.subscribe_data_change(node, queuesize=4)
+    next(iter(sub._monitored_items.values())).discard_oldest = False
+    sent: list[ua.CreateMonitoredItemsParameters] = []
+    original = sub.server.create_monitored_items
+
+    async def create_items(params: ua.CreateMonitoredItemsParameters) -> Any:
+        sent.append(params)
+        return await original(params)
+
+    monkeypatch.setattr(sub.server, "create_monitored_items", create_items)
+    await sub.recreate()
+    assert sent[0].ItemsToCreate[0].RequestedParameters.DiscardOldest is False
+    assert sent[0].ItemsToCreate[0].RequestedParameters.QueueSize == 4
+    monkeypatch.undo()
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+async def test_com35_default_sampling_interval_follows_the_publishing_interval(
+    opc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 4, 7.21: a sampling interval of -1 means the publishing interval of the Subscription."""
+    node = await opc.opc.nodes.objects.add_variable(3, "Com35Var", 1.0)
+    sub = await opc.opc.create_subscription(100, MySubHandler())
+    sent: list[ua.CreateMonitoredItemsParameters] = []
+    original = sub.server.create_monitored_items
+
+    async def create_items(params: ua.CreateMonitoredItemsParameters) -> Any:
+        sent.append(params)
+        return await original(params)
+
+    monkeypatch.setattr(sub.server, "create_monitored_items", create_items)
+    await sub.subscribe_data_change(node)
+    await sub.deadband_monitor(node, 1.0)
+    assert [p.ItemsToCreate[0].RequestedParameters.SamplingInterval for p in sent] == [-1, -1]
+    monkeypatch.undo()
+    await sub.delete()
+    await opc.opc.delete_nodes([node])
+
+
+def test_com35_overloads_declare_the_same_default_as_the_implementation() -> None:
+    """Part 4, 7.21: the signatures the type checker sees say -1, like the code."""
+    defaults = {
+        inspect.signature(f).parameters["sampling_interval"].default
+        for f in [*get_overloads(Subscription.subscribe_data_change), Subscription.subscribe_data_change]
+    }
+    assert defaults == {-1}

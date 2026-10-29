@@ -33,7 +33,6 @@ from tests.conftest import find_free_port
 from tests.harness import give_identity
 from tests.waiting import wait_until
 
-pytestmark = pytest.mark.asyncio
 _logger = logging.getLogger(__name__)
 
 

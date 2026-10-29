@@ -1,14 +1,11 @@
 import logging
 
-import pytest
-
 from enginir_opcua import Client, Server
 from enginir_opcua.common.callback import CallbackType
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from tests.conftest import find_free_port
 
 _logger = logging.getLogger(__name__)
-pytestmark = pytest.mark.asyncio
 
 port_num = find_free_port()
 

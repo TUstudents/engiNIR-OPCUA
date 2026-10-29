@@ -15,8 +15,6 @@ from enginir_opcua.server.user_managers import PermissiveUserManager
 from tests.conftest import find_free_port
 from tests.harness import SessionProbe
 
-pytestmark = pytest.mark.asyncio
-
 
 class RolelessUserManager:
     def get_user(self, iserver: Any, username: Any = None, password: Any = None, certificate: Any = None) -> User:
