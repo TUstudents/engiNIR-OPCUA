@@ -8,15 +8,16 @@ Tests that reproduce a review finding carry its ID in the name, for example `tes
 
 ## Peer harness
 
-`tests/harness.py` holds the building blocks, and `tests/conftest.py` holds the fixtures:
+`tests/harness.py` holds the building blocks, and `tests/conftest.py` holds the fixtures. The test files are grouped by component (see the Tests section of `AGENTS.md`):
 
 | Fixture | Use it for |
 |---|---|
 | `raw_peer` | Sending hand-made UA-TCP bytes to the module's `server` and reading the raw replies: Hello and buffer limits, malformed chunks, connection handling |
 | `raw_server` | Acting as a hostile server for a client under test: `peer = await raw_server.accept()` hands over the client's connection as a `RawPeer` |
 | `tampered_responses` | Acting as a hostile server: `tampered_responses.on(ua.CreateSessionResponse, change)` modifies every response of that type before it's encoded |
-| `signing_server` | A server with only Basic256Sha256 Sign and the users of `two_sessions`; connect with `signing_client(server, "alice")` |
-| `two_sessions` | Ownership and isolation checks: a fresh server with users `alice` and `bob`, each connected with their own client |
+| `signing_server` | A server with only Basic256Sha256 Sign and the users of `two_sessions`, started per test; connect with `signing_client(server, "alice")` |
+| `shared_signing_server` | The same server, started once per module; its identity guard is reset after each test. Use it when the test does not change the server |
+| `two_sessions` | Ownership and isolation checks: one server per module with users `alice` and `bob`, each connected with a client of its own per test |
 
 ## Certificates in tests
 
@@ -24,7 +25,7 @@ Tests that connect with security generate their certificates: `tests/pki.py` bui
 
 The library trusts nothing by default, so a test trusts explicitly: `server.set_trust_store(PKI.trust_store())` for the client certificates of the server, and either `client.set_trust_store(PKI.trust_store())` or a server certificate passed to `set_security` (which pins it) for the client. A server that offers the None policy asks for it with `Server(allow_no_security=True)`; one that offers Basic128Rsa15 or Basic256 with `Server(allow_deprecated_policies=True)`. Never weaken the validator to make a test pass: name the step in `suppress` when a test needs it.
 
-A PKI directory is the shortest way to set up a peer: `await server.set_pki_directory(tmp_path / "server")` creates the folders and a self-signed certificate on first use, and `await client.set_pki_directory(tmp_path / "client")` does the same for a client. Trust is still explicit: copy the peer's `own/certs/application.der` into the other side's `trusted/certs`, or move a file from `rejected/certs` to `trusted/certs` and call `server.reload_trust_store()`. `write_pki_layout(root, trusted=..., issuers=..., trusted_crls=..., issuer_crls=...)` in `tests/pki.py` builds a store layout from certificates a test made. The layout is `own/certs`, `own/private`, `trusted/certs`, `trusted/crl`, `issuer/certs`, `issuer/crl` and `rejected/certs`; see `tests/test_pki_directory.py`. Check file modes only on POSIX.
+A PKI directory is the shortest way to set up a peer: `await server.set_pki_directory(tmp_path / "server")` creates the folders and a self-signed certificate on first use, and `await client.set_pki_directory(tmp_path / "client")` does the same for a client. Trust is still explicit: copy the peer's `own/certs/application.der` into the other side's `trusted/certs`, or move a file from `rejected/certs` to `trusted/certs` and call `server.reload_trust_store()`. `write_pki_layout(root, trusted=..., issuers=..., trusted_crls=..., issuer_crls=...)` in `tests/pki.py` builds a store layout from certificates a test made. The layout is `own/certs`, `own/private`, `trusted/certs`, `trusted/crl`, `issuer/certs`, `issuer/crl` and `rejected/certs`; see `tests/security/test_trust_store.py`. Check file modes only on POSIX.
 
 `SessionProbe` (in `harness.py`, no fixture) is a client with an open None-policy channel on which a test creates several sessions and sends requests under any session's token: `probe = await SessionProbe.open(url)`, `create_session()`, `activate(token)`, `read_server_state(token)`, `send(token, request, response_type)`, `send_edited(token, request, response_type, edit)` for malformed bodies, `close_session(token)`. Use it for session binding, limits, channel moves and Publish queue tests; open a second probe for a second channel.
 
