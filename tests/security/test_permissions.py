@@ -262,3 +262,10 @@ def test_security_admin_role_has_the_admin_service_permissions():
     add_nodes = ua.NodeId(ua.ObjectIds.AddNodesRequest_Encoding_DefaultBinary)
     assert ruleset.check_validity(User(role=UserRole.SecurityAdmin), add_nodes, None)
     assert ROLE_RANK[UserRole.SecurityAdmin] > ROLE_RANK[UserRole.Admin]
+
+
+async def test_srv84_certificate_user_manager_maps_a_certificate_to_security_admin(tmp_path) -> None:
+    manager = CertificateUserManager()
+    await manager.add_security_admin(PKI.peer1.certificate, name="Configurator")
+    user = manager.get_user(None, certificate=PKI.peer1.identity.der)  # type: ignore[arg-type]
+    assert user is not None and user.role == UserRole.SecurityAdmin

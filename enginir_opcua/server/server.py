@@ -40,6 +40,7 @@ from ..pubsub.pubsub import PubSub
 from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
+from .certificate_manager import CertificateManager
 from .event_generator import EventGenerator
 from .file_transfer import FileProvider
 from .internal_server import InternalServer
@@ -128,6 +129,7 @@ class Server:
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
         self._default_validator: CertificateValidator | None = None
+        self._certificate_manager: CertificateManager | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
         self.allow_deprecated_policies: bool = allow_deprecated_policies
         # the secure endpoints are enabled by default, the None endpoint only when asked for
@@ -1124,6 +1126,31 @@ class Server:
     async def refresh_directory(self, directory: Node | ua.NodeId) -> None:
         """Bring the Objects of a directory and everything below it in line with the file system."""
         await self.iserver.file_service.refresh_directory(_get_node(self.iserver.isession, directory))
+
+    async def enable_push_management(
+        self,
+        *,
+        max_trust_list_size: int = 65_535,
+        min_security_mode: ua.MessageSecurityMode = ua.MessageSecurityMode.SignAndEncrypt,
+        activity_timeout: float = 60.0,
+    ) -> CertificateManager:
+        """
+        Let a SecurityAdmin replace the certificate and the trust lists of this server over OPC UA (OPC 10000-12,
+        7.10, push management): the ServerConfiguration Object with UpdateCertificate, CreateSigningRequest,
+        GetRejectedList, GetCertificates, ApplyChanges and CancelChanges, and the TrustLists of its
+        CertificateGroups. Call it after init() and set_pki_directory (and set_user_pki_directory for the user
+        TrustList), because every change is written to the PKI directory. The Methods need a user whose role is
+        SecurityAdmin and a channel with at least `min_security_mode`.
+        """
+        manager = CertificateManager(
+            self,
+            max_trust_list_size=max_trust_list_size,
+            min_security_mode=min_security_mode,
+            activity_timeout=activity_timeout,
+        )
+        await manager.enable()
+        self._certificate_manager = manager
+        return manager
 
     # --- end of File transfer and certificate management ---
 

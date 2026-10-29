@@ -346,10 +346,12 @@ class FileService:
         await self.register_file(entry, mime_type)
         return node
 
-    async def register_file(self, entry: FileEntry, mime_type: str | None = None) -> None:
+    async def register_file(
+        self, entry: FileEntry, mime_type: str | None = None, callbacks: dict[str, Callable[..., Any]] | None = None
+    ) -> None:
         await self.bind_types()
         node = entry.node
-        await self._bind(node, _FILE_METHODS, self.file_callbacks())
+        await self._bind(node, _FILE_METHODS, callbacks or self.file_callbacks())
         self.files[node.nodeid] = entry
         await self._set_value_callback(node, "Size", ua.VariantType.UInt64, lambda: self._size_of(entry))
         await self._set_value_callback(node, "OpenCount", ua.VariantType.UInt16, lambda: len(entry.handles))
@@ -502,6 +504,12 @@ class FileService:
             open_handle.entry.handles.discard((session_id, handle))
             open_handle.entry.write_handles.discard((session_id, handle))
         return open_handle
+
+    def lookup_handle(self, session: InternalSession, entry: FileEntry, handle: int) -> OpenHandle:
+        return self._handle(session, entry, handle)
+
+    def release_handle(self, session_id: ua.NodeId, handle: int) -> None:
+        self._release(session_id, handle)
 
     def take_handle(self, session: InternalSession, entry: FileEntry, handle: int) -> OpenHandle:
         """Remove a handle without flushing it; used by Methods that end a handle themselves (CloseAndUpdate)."""
