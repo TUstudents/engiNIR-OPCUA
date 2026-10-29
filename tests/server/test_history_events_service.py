@@ -5,7 +5,7 @@ from typing import Any
 from enginir_opcua import ua
 from enginir_opcua.common.node import Node
 from enginir_opcua.server.history import TimeDomain
-from tests.history_rig import HistoryRig, at, make_history_rig  # noqa: F401
+from tests.history_rig import HistoryRig, at
 
 
 def severity_filter(minimum: int | None) -> ua.EventFilter:

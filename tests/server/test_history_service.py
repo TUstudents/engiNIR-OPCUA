@@ -5,7 +5,7 @@ import pytest
 from enginir_opcua import ua
 from enginir_opcua.common.utils import ServiceError
 from enginir_opcua.server.history import TimeDomain
-from tests.history_rig import HistoryRig, at, make_history_rig, numbers  # noqa: F401
+from tests.history_rig import HistoryRig, at, numbers
 
 
 def code(value: int) -> ua.StatusCode:

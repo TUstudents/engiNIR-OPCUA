@@ -16,7 +16,7 @@ import pytest
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode
 from enginir_opcua.client.ua_client import UASocketState
-from enginir_opcua.server.history import HistoryDict
+from enginir_opcua.server.history import HistoryDict, TimeDomain
 from enginir_opcua.server.history_sql import HistorySQLite
 from enginir_opcua.server.uaprocessor import UaProcessor
 from enginir_opcua.server.user_managers import PermissiveUserManager
@@ -32,6 +32,7 @@ from tests.harness import (
 )
 from tests.model.test_common import add_server_methods
 from tests.util_enum_struct import add_server_custom_enum_struct
+from tests.waiting import wait_until
 
 RETRY = 20
 SLEEP = 0.4
@@ -308,6 +309,12 @@ class HistoryServer:
         self.values = None
 
 
+async def _stored_values(history_server: HistoryServer, expected: int) -> bool:
+    storage = history_server.srv.iserver.history_manager.storage
+    page = await storage.read_node_history(history_server.var.nodeid, TimeDomain(None, None, expected + 1))
+    return len(page.entries) >= expected
+
+
 async def create_srv_events(history_server: HistoryServer):
     history_server.ev_values = [i for i in range(20)]
     srv_evgen = await history_server.srv.get_event_generator()
@@ -316,8 +323,7 @@ async def create_srv_events(history_server: HistoryServer):
     for i in history_server.ev_values:
         srv_evgen.event.Severity = history_server.ev_values[i]
         await srv_evgen.trigger(message="test message")
-        await asyncio.sleep(0.1)
-    await asyncio.sleep(2)
+    await history_server.srv.iserver.history_manager._queue.join()
 
 
 async def create_var(history_server: HistoryServer):
@@ -327,7 +333,7 @@ async def create_var(history_server: HistoryServer):
     await history_server.srv.historize_node_data_change(history_server.var, period=None, count=0)
     for i in history_server.values[1:]:
         await history_server.var.write_value(i)
-    await asyncio.sleep(1)
+    await wait_until(lambda: _stored_values(history_server, len(history_server.values)))
 
 
 async def create_history_server(sqlite=False) -> HistoryServer:
