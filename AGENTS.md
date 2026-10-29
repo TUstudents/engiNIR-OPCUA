@@ -46,6 +46,9 @@ Layout: one directory per component under `tests/`, one file per behaviour of th
 - Use `find_free_port()` for every port; never bind 4840 or another fixed port. A client URL that is never connected to may name any port.
 - Mark a test `@pytest.mark.slow(<source paths>)` when it takes more than about 5 seconds; with `--changed-since REF` it then runs only when one of those paths, its file or `tests/conftest.py` changed. Shorten timeouts through the test's own configuration, not by changing library defaults.
 - Do not add `pytestmark = pytest.mark.asyncio`; asyncio mode is auto.
+- The suite runs in parallel with `pytest-xdist` as `-n 4 --dist loadfile`: tests of one file share a worker, so module-scoped servers stay safe. Plain `-n` without `loadfile` breaks tests that share module fixtures.
+- Sync code waits with `wait_until_sync` from `tests/tools/sync_waiting.py`.
+- A test that sends Ctrl-C to a CLI subprocess starts it with the default SIGINT handler (`preexec_fn` or `start_new_session` plus `signal.signal(SIGINT, SIG_DFL)`); background runs ignore SIGINT and the CLI would hang.
 - Tests change tests, rigs and conftest only. A library bug that a test reveals gets a finding ID in the review tracker, and the test stays as it is.
 - New workstreams put their tests in the directory of the component they change and add to the existing behaviour file; a new component gets a new directory with its own `conftest.py`.
 - Tests use `pytest` with `pytest-asyncio` in auto mode. Run specific tests with `uv run pytest tests/<area>/<file>.py -k "<pattern>" -x`. The fast suite is `uv run pytest -q -m "not slow"`; run the full suite only in CI. Details of the rigs and fixtures are in `tests/README.md`.
