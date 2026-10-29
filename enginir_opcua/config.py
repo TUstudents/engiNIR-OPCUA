@@ -221,6 +221,16 @@ class ServerLimits:
     hello_timeout_seconds: int = field(default=30, metadata={"doc": "Time a new connection has to send Hello"})
     max_message_size: int = field(default=104_857_600, metadata={"doc": "Largest message in bytes"})
     max_buffer_size: int = field(default=65_535, metadata={"doc": "Receive and send buffer in bytes"})
+    max_string_length: int = field(
+        default=16_777_216, metadata={"doc": "Longest String in a request in bytes, published as MaxStringLength"}
+    )
+    max_byte_string_length: int = field(
+        default=16_777_216,
+        metadata={"doc": "Longest ByteString in a request in bytes, published as MaxByteStringLength"},
+    )
+    max_array_length: int = field(
+        default=1_000_000, metadata={"doc": "Most elements in an array value of a request, published as MaxArrayLength"}
+    )
 
     def collect(self, problems: _Problems) -> None:
         values = {f.name: getattr(self, f.name) for f in fields(self)}
@@ -251,6 +261,9 @@ class ServerLimits:
         check("hello_timeout_seconds", 1, 120)
         check("max_message_size", 8_192, 4_294_967_295)
         check("max_buffer_size", 8_192, 4_294_967_295)
+        check("max_string_length", 4_096, 2_147_483_647)
+        check("max_byte_string_length", 4_096, 2_147_483_647)
+        check("max_array_length", 100, 2_147_483_647)
 
 
 def _field_names(cls: type) -> list[str]:

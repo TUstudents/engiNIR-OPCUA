@@ -60,7 +60,7 @@ class UaProcessor:
         context = ValidationContext(PeerRole.CLIENT, self._channel.security_policy.URI)
         outcome = validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
-            validator.keep_rejected(outcome, self.peer_address, background=True)
+            validator.keep_rejected(outcome, self.peer_address)
             self._log_trust_hint(validator, outcome)
             status = ua.StatusCode(outcome.status).name
             raise TransportError(

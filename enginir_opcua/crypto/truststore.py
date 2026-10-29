@@ -251,6 +251,7 @@ class TrustStore:
         try:
             with self._rejected_lock:
                 if not location.is_dir():
+                    _logger.debug("The rejected folder %s is gone, the certificate is not kept", location)
                     return
                 for der in reversed(certificates):
                     name = f"{certificate_thumbprint(der).hex()}.der"
@@ -261,7 +262,10 @@ class TrustStore:
                             self._rejected_peers[name] = peer
                 self._prune_rejected(location)
         except OSError as exc:
-            _logger.warning("Could not keep a rejected certificate in %s: %s", location, exc)
+            if location.is_dir():
+                _logger.warning("Could not keep a rejected certificate in %s: %s", location, exc)
+            else:
+                _logger.debug("The rejected folder %s is gone, the certificate is not kept: %s", location, exc)
 
     def _prune_rejected(self, location: Path) -> None:
         files = sorted(

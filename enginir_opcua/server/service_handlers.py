@@ -7,10 +7,11 @@ from typing import Any
 from enginir_opcua import ua
 
 from ..common.utils import ServiceError
-from ..ua.ua_binary import Primitives
+from ..ua.ua_binary import DecodeLimits, Primitives
 from .identity import authorize_register_server
 from .internal_session import PublishRequestData
 from .service_dispatch import OperationBound, Permission, Requires, ServiceContext, ServiceEntry, entry
+from .value_limits import exceeds_limits
 
 
 async def get_endpoints(ctx: ServiceContext, params: ua.GetEndpointsParameters) -> ua.GetEndpointsResponse:
@@ -72,9 +73,22 @@ async def read(ctx: ServiceContext, params: ua.ReadParameters) -> ua.ReadRespons
     return response
 
 
+def _decode_limits(ctx: ServiceContext) -> DecodeLimits:
+    iserver = ctx.iserver
+    return DecodeLimits(iserver.max_string_length, iserver.max_byte_string_length, iserver.max_array_length)
+
+
 async def write(ctx: ServiceContext, params: ua.WriteParameters) -> ua.WriteResponse:
+    limits = _decode_limits(ctx)
+    too_long = [exceeds_limits(item.Value, limits) for item in params.NodesToWrite]
+    if any(too_long):
+        accepted = ua.WriteParameters(NodesToWrite=[w for w, bad in zip(params.NodesToWrite, too_long) if not bad])
+        results = iter(await ctx.active_session.services.write(accepted) if accepted.NodesToWrite else [])
+        statuses = [ua.StatusCode(ua.StatusCodes.BadOutOfRange) if bad else next(results) for bad in too_long]
+    else:
+        statuses = await ctx.active_session.services.write(params)
     response = ua.WriteResponse()
-    response.Results = await ctx.active_session.services.write(params)
+    response.Results = statuses
     return response
 
 
@@ -115,9 +129,24 @@ async def unregister_nodes(ctx: ServiceContext, params: ua.UnregisterNodesParame
     return ua.UnregisterNodesResponse()
 
 
+def _too_long_arguments(request: ua.CallMethodRequest, limits: DecodeLimits) -> ua.CallMethodResult | None:
+    flags = [exceeds_limits(argument, limits) for argument in request.InputArguments]
+    if not any(flags):
+        return None
+    result = ua.CallMethodResult(StatusCode=ua.StatusCode(ua.StatusCodes.BadInvalidArgument))
+    result.InputArgumentResults = [
+        ua.StatusCode(ua.StatusCodes.BadOutOfRange if bad else ua.StatusCodes.Good) for bad in flags
+    ]
+    return result
+
+
 async def call(ctx: ServiceContext, params: ua.CallParameters) -> ua.CallResponse:
+    limits = _decode_limits(ctx)
+    refused = [_too_long_arguments(request, limits) for request in params.MethodsToCall]
+    to_run = [request for request, result in zip(params.MethodsToCall, refused) if result is None]
+    run = iter(await ctx.active_session.services.call(to_run) if to_run else [])
     response = ua.CallResponse()
-    response.Results = await ctx.active_session.services.call(params.MethodsToCall)
+    response.Results = [result if result is not None else next(run) for result in refused]
     return response
 
 
@@ -266,6 +295,7 @@ def build_service_table() -> list[ServiceEntry]:
             write,
             operations=OperationBound("NodesToWrite", "max_nodes_per_write"),
             permission=Permission.User,
+            checks_values=True,
         ),
         entry(
             "HistoryRead",
@@ -317,6 +347,7 @@ def build_service_table() -> list[ServiceEntry]:
             call,
             operations=OperationBound("MethodsToCall", "max_nodes_per_method_call"),
             permission=Permission.User,
+            checks_values=True,
         ),
         entry(
             "AddNodes",

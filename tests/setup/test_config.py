@@ -83,6 +83,11 @@ def test_the_defaults_of_both_profiles() -> None:
             {"limits": ServerLimits(hello_timeout_seconds=500)}, "server.limits.hello_timeout_seconds", id="hello"
         ),
         pytest.param({"limits": ServerLimits(max_buffer_size=100)}, "server.limits.max_buffer_size", id="buffer"),
+        pytest.param({"limits": ServerLimits(max_string_length=100)}, "server.limits.max_string_length", id="string"),
+        pytest.param(
+            {"limits": ServerLimits(max_byte_string_length=0)}, "server.limits.max_byte_string_length", id="bytes"
+        ),
+        pytest.param({"limits": ServerLimits(max_array_length=1)}, "server.limits.max_array_length", id="array"),
         pytest.param({"limits": ServerLimits(max_sessions=True)}, "server.limits.max_sessions", id="bool_is_not_int"),
     ],
 )

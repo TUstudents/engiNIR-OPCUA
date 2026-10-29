@@ -18,7 +18,6 @@ from enginir_opcua.server.user_managers import CertificateUserManager, Permissiv
 from tests.conftest import find_free_port
 from tests.harness import PKI
 from tests.pki import Identity, live_ca, live_identity
-from tests.waiting import wait_until
 
 RSA_SHA1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
 
@@ -326,7 +325,6 @@ async def test_pki_user_directory_keeps_the_rejected_user_certificate_and_reload
         with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
             await client.connect()
         await client.disconnect()
-        await wait_until(lambda: len(list((users / "rejected" / "certs").glob("*.der"))) == 2)
         rejected = sorted((users / "rejected" / "certs").glob("*.der"))
         assert sorted(path.read_bytes() for path in rejected) == sorted([user_pki.user.der, user_pki.ca.der])
         for path in rejected:
