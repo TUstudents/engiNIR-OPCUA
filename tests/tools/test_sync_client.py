@@ -8,7 +8,7 @@ from enginir_opcua.observer import Observer
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Client, Server, SyncNode, ThreadLoop, _to_async, _to_sync
 from tests.conftest import find_free_port
-from tests.waiting import until_sync
+from tests.tools.sync_waiting import wait_until_sync
 
 PORT = find_free_port()
 URL = f"opc.tcp://admin@127.0.0.1:{PORT}/enginir-opcua/server/"
@@ -76,7 +76,7 @@ def test_syn1_handlers_run_in_order_on_one_thread(client, variable):
     handler.done.wait(5)
     for value in (11.0, 12.0, 13.0, 14.0):
         variable.write_value(value)
-        until_sync(lambda value=value: handler.values[-1:] == [value])
+        wait_until_sync(lambda value=value: handler.values[-1:] == [value])
     assert handler.values[-4:] == [11.0, 12.0, 13.0, 14.0]
     assert len(set(handler.threads)) == 1
     assert handler.threads[0] != threading.get_ident()
@@ -152,7 +152,7 @@ def test_syn3_auto_reconnect_is_exposed_and_the_state_is_visible(server):
     c.add_state_listener(states.append)
     with c:
         assert c.state is UaClientState.CONNECTED
-        until_sync(lambda: UaClientState.CONNECTED in states)
+        wait_until_sync(lambda: UaClientState.CONNECTED in states)
     assert UaClientState.CONNECTED in states
 
 
@@ -226,7 +226,7 @@ def test_syn7_iteration_ends_on_delete(client, variable):
 
     thread = threading.Thread(target=consume, daemon=True)
     thread.start()
-    until_sync(lambda: bool(received))
+    wait_until_sync(lambda: bool(received))
     sub.delete()
     thread.join(5)
     assert not thread.is_alive()
@@ -249,7 +249,7 @@ def test_syn11_a_handler_without_a_method_gets_the_async_layers_error(client, va
     sub = client.create_subscription(50, OnlyEvents())
     with caplog.at_level("ERROR"):
         sub.subscribe_data_change(client.get_node(variable.nodeid))
-        until_sync(lambda: "has no datachange_notification method" in caplog.text)
+        wait_until_sync(lambda: "has no datachange_notification method" in caplog.text)
     assert "has no datachange_notification method" in caplog.text
     sub.delete()
 

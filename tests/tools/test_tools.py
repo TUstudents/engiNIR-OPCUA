@@ -19,7 +19,7 @@ from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Server
 from enginir_opcua.tools import PASSWORD_VARIABLE, build_parser, configure_client
 from tests.conftest import find_free_port
-from tests.waiting import until_sync
+from tests.tools.sync_waiting import wait_until_sync
 
 ROOT = Path(__file__).parent.parent.parent
 
@@ -546,7 +546,7 @@ def test_tool2_ctrl_c_in_server_exits_cleanly():
         stderr=subprocess.PIPE,
         text=True,
     )
-    until_sync(lambda: port_accepts(port), timeout=30)
+    wait_until_sync(lambda: port_accepts(port), timeout=30)
     process.send_signal(signal.SIGINT)
     _, err = process.communicate(timeout=30)
     assert process.returncode == 0

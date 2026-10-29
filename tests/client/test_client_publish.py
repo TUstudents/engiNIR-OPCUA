@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -17,6 +17,7 @@ from enginir_opcua.observer import NULL_OBSERVER
 from enginir_opcua.ua.ua_binary import struct_to_binary
 from tests.conftest import find_free_port
 from tests.subscription_rig import FakeSession
+from tests.waiting import wait_until
 
 
 class ScriptedClient:
@@ -85,12 +86,6 @@ def keep_alive_response(subscription_id: int = 1, sequence: int = 6) -> ua.Publi
     )
 
 
-async def until(condition: Callable[[], bool], timeout: float = 3.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(0.01)
-
-
 @pytest.fixture
 def wire() -> ScriptedClient:
     return ScriptedClient()
@@ -114,7 +109,7 @@ async def test_cli5_acks_survive_a_failed_publish(wire: ScriptedClient, session:
     """Part 4, 5.14.5.2: a message is acknowledged until a Publish carrying the acknowledgement was answered."""
     wire.script.put_nowait(data_response())
     wire.script.put_nowait(ua.uaerrors.BadTimeout())
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert wire.acks(1) == [(1, 5)]
     assert wire.acks(2) == [(1, 5)]
 
@@ -123,7 +118,7 @@ async def test_cli5_acks_are_settled_by_the_response(wire: ScriptedClient, sessi
     """Part 4, 5.14.1.1: once the response to the request that carried an acknowledgement arrived, it is not repeated."""
     wire.script.put_nowait(data_response())
     wire.script.put_nowait(data_response(sequence=6, results=[ua.StatusCodes.Good]))
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert wire.acks(1) == [(1, 5)]
     assert wire.acks(2) == [(1, 6)]
 
@@ -132,18 +127,18 @@ async def test_cli5_acks_survive_a_lost_connection(wire: ScriptedClient, session
     """Part 4, 6.7: acknowledgements of a request that never got an answer go into the next request."""
     wire.script.put_nowait(data_response())
     wire.script.put_nowait(ConnectionError("lost"))
-    await until(lambda: session.publish_suspended)
+    await wait_until(lambda: session.publish_suspended)
     session.resume_publish()
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert wire.acks(2) == [(1, 5)]
 
 
 async def test_cli5_republished_messages_are_acknowledged(wire: ScriptedClient, session: UaSession) -> None:
     """Part 4, 5.14.1.1: a message fetched with Republish is acknowledged like a published one."""
-    await until(lambda: len(wire.requests) >= 1)
+    await wait_until(lambda: len(wire.requests) >= 1)
     session.acknowledge(1, 9)
     wire.script.put_nowait(keep_alive_response())
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert wire.acks(1) == [(1, 9)]
 
 
@@ -152,7 +147,7 @@ async def test_cli5_empty_available_sequence_numbers_are_not_acknowledged(
 ) -> None:
     """Part 4, 5.14.5.2: a Subscription without a retransmission queue lists no sequence numbers; nothing is acked."""
     wire.script.put_nowait(data_response(available=[]))
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert wire.acks(1) == []
     assert len(sink.results) == 1
 
@@ -160,7 +155,7 @@ async def test_cli5_empty_available_sequence_numbers_are_not_acknowledged(
 async def test_cli5_keep_alives_are_not_acknowledged(wire: ScriptedClient, session: UaSession) -> None:
     """Part 4, 5.14.1.1: only NotificationMessages with notifications are acknowledged."""
     wire.script.put_nowait(keep_alive_response())
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert wire.acks(1) == []
 
 
@@ -169,11 +164,11 @@ async def test_cli5_acks_of_a_removed_subscription_are_dropped(
 ) -> None:
     """Part 4, 5.14.1.1: the server would answer Bad_SubscriptionIdInvalid for a deleted Subscription."""
     wire.script.put_nowait(data_response())
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     wire.script.put_nowait(ua.uaerrors.BadTimeout())
     del session._subscription_callbacks[1]
     session._subscription_callbacks[2] = sink
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert wire.acks(2) == []
 
 
@@ -184,7 +179,7 @@ async def test_cli5_unknown_sequence_number_is_logged_at_debug_level(
     caplog.set_level(logging.DEBUG)
     wire.script.put_nowait(data_response())
     wire.script.put_nowait(data_response(sequence=6, results=[ua.StatusCodes.BadSequenceNumberUnknown]))
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
@@ -195,7 +190,7 @@ async def test_cli5_ledger_is_bounded(wire: ScriptedClient, session: UaSession) 
     for sequence in range(1, 8):
         session.acknowledge(1, sequence)
     session.resume_publish()
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert wire.acks(1) == [(1, 5), (1, 6), (1, 7)]
 
 
@@ -205,9 +200,9 @@ async def test_cli4_bad_no_subscription_with_a_sink_registered_does_not_end_the_
     """Part 4, 5.14.5.2: Bad_NoSubscription ends the pump only when no Subscription is left locally."""
     monkeypatch.setattr(ua_session, "NO_SUBSCRIPTION_RETRY_DELAYS", (0.05, 0.05))
     wire.script.put_nowait(ua.uaerrors.BadNoSubscription())
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     wire.script.put_nowait(data_response())
-    await until(lambda: len(sink.results) == 1)
+    await wait_until(lambda: len(sink.results) == 1)
 
 
 async def test_cli4_pump_idles_without_sinks_and_wakes_on_the_next_one(
@@ -220,7 +215,7 @@ async def test_cli4_pump_idles_without_sinks_and_wakes_on_the_next_one(
     assert len(wire.requests) == 1
     assert session.publish_requests_outstanding == 0
     session._subscription_callbacks[7] = sink
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
 
 
 async def test_cli4_response_with_subscription_id_zero_is_no_subscription(
@@ -229,7 +224,7 @@ async def test_cli4_response_with_subscription_id_zero_is_no_subscription(
     """Part 4, 5.14.5.2: a SubscriptionId of 0 means the Session has no Subscription."""
     monkeypatch.setattr(ua_session, "NO_SUBSCRIPTION_RETRY_DELAYS", (0.05, 0.05))
     wire.script.put_nowait(data_response(subscription_id=0))
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert sink.results == []
 
 
@@ -249,7 +244,7 @@ async def test_cli29_lost_connection_stops_the_pump(
 ) -> None:
     """Part 4, 6.7: when the Session or the channel is gone, no Publish request is retried until the client resumes."""
     wire.script.put_nowait(error)
-    await until(lambda: session.publish_suspended)
+    await wait_until(lambda: session.publish_suspended)
     await asyncio.sleep(0.2)
     assert len(wire.requests) == 1
     assert session.publish_requests_outstanding == 0
@@ -262,7 +257,7 @@ async def test_cli3_other_bad_result_is_retried_after_a_delay(
     monkeypatch.setattr(ua_session, "PUBLISH_ERROR_RETRY_DELAY", 0.05)
     wire.script.put_nowait(ua.uaerrors.BadInternalError())
     wire.script.put_nowait(ua.uaerrors.BadInternalError())
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
 
 
 async def test_cli3_expected_publish_results_do_not_log_warnings(
@@ -273,7 +268,7 @@ async def test_cli3_expected_publish_results_do_not_log_warnings(
     caplog.set_level(logging.DEBUG)
     wire.script.put_nowait(ua.uaerrors.BadTimeout())
     wire.script.put_nowait(ua.uaerrors.BadNoSubscription())
-    await until(lambda: len(wire.requests) >= 3)
+    await wait_until(lambda: len(wire.requests) >= 3)
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
@@ -282,7 +277,7 @@ async def test_cli3_response_goes_to_the_sink_without_awaiting_it(
 ) -> None:
     """Part 4, 5.14.5: the pump hands a result to the sink and carries on."""
     wire.script.put_nowait(data_response())
-    await until(lambda: len(sink.results) == 1)
+    await wait_until(lambda: len(sink.results) == 1)
     assert sink.results[0].SubscriptionId == 1
 
 
@@ -297,7 +292,7 @@ async def test_cli3_legacy_callback_that_blocks_does_not_stop_the_pump(
 
     session._subscription_callbacks[1] = blocked
     wire.script.put_nowait(data_response())
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     gate.set()
 
 
@@ -308,10 +303,10 @@ async def test_cli3_pipeline_follows_the_number_of_subscriptions(
     session.max_outstanding_publish_requests = 10
     session._subscription_callbacks[2] = sink
     session._subscription_callbacks[3] = sink
-    await until(lambda: session.publish_requests_outstanding == 4)
+    await wait_until(lambda: session.publish_requests_outstanding == 4)
     del session._subscription_callbacks[3]
     wire.script.put_nowait(keep_alive_response())
-    await until(lambda: session.publish_requests_outstanding == 3)
+    await wait_until(lambda: session.publish_requests_outstanding == 3)
 
 
 async def test_cli3_pipeline_is_capped(session: UaSession, sink: RecordingSink) -> None:
@@ -319,7 +314,7 @@ async def test_cli3_pipeline_is_capped(session: UaSession, sink: RecordingSink) 
     session.max_outstanding_publish_requests = 3
     for subscription_id in range(2, 8):
         session._subscription_callbacks[subscription_id] = sink
-    await until(lambda: session.publish_requests_outstanding == 3)
+    await wait_until(lambda: session.publish_requests_outstanding == 3)
     await asyncio.sleep(0.2)
     assert session.publish_requests_outstanding == 3
 
@@ -330,7 +325,7 @@ async def test_cli3_round_trip_time_adds_requests(session: UaSession) -> None:
     session.note_subscription_timing(1, 1.0, 10)
     session._round_trip = 5.0
     session.ensure_publish_loop()
-    await until(lambda: session.publish_requests_outstanding == 6)
+    await wait_until(lambda: session.publish_requests_outstanding == 6)
 
 
 async def test_cli3_too_many_publish_requests_lowers_the_target(
@@ -340,9 +335,9 @@ async def test_cli3_too_many_publish_requests_lowers_the_target(
     session.max_outstanding_publish_requests = 4
     session._subscription_callbacks[2] = sink
     session._subscription_callbacks[3] = sink
-    await until(lambda: session.publish_requests_outstanding == 4)
+    await wait_until(lambda: session.publish_requests_outstanding == 4)
     wire.script.put_nowait(ua.uaerrors.BadTooManyPublishRequests())
-    await until(lambda: session.publish_requests_outstanding == 3)
+    await wait_until(lambda: session.publish_requests_outstanding == 3)
     await asyncio.sleep(0.2)
     assert session.publish_requests_outstanding == 3
 
@@ -353,7 +348,7 @@ async def test_cli3_publish_timeout_follows_the_keep_alive_time(wire: ScriptedCl
     session.note_subscription_timing(2, 1.0, 3)
     session.pause_publish()
     session.resume_publish()
-    await until(lambda: len(wire.requests) >= 2)
+    await wait_until(lambda: len(wire.requests) >= 2)
     assert wire.hints[-1] == pytest.approx(10.2)
 
 

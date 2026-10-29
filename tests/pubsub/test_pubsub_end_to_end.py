@@ -38,7 +38,7 @@ from enginir_opcua.ua.uatypes import (
     VariantType,
 )
 from tests.conftest import find_free_port
-from tests.waiting import until
+from tests.waiting import wait_until
 
 _logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ async def test_connection(publisher_id: Byte | UInt16 | UInt32 | UInt64 | str) -
     try:
         await con.start()
         await con.send_uadp_msg(msg)
-        await until(lambda: bool(recv.msgs))
+        await wait_until(lambda: bool(recv.msgs))
         assert msg == recv.msgs[0]
     finally:
         await con.stop()
@@ -180,7 +180,7 @@ async def test_full_simple():
             source.datasources["Simple"]["String"] = DataValue(Variant(str(i32)))
             source.datasources["Simple"]["Bool"] = DataValue(Variant((i32 % 2) > 0))
             source.datasources["Simple"]["ArrayInt16"] = DataValue(Variant([UInt16(1), UInt16(2), UInt16(3)]))
-            await until(lambda: all(sink.values.get(key) == source.datasources[key] for key in source.datasources))
+            await wait_until(lambda: all(sink.values.get(key) == source.datasources[key] for key in source.datasources))
             for key in source.datasources:
                 assert source.datasources[key] == sink.values[key]
 

@@ -1,17 +1,18 @@
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 
-async def until(condition: Callable[[], bool], timeout: float = 5.0, interval: float = 0.005) -> None:
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(interval)
-
-
-def until_sync(condition: Callable[[], bool], timeout: float = 5.0, interval: float = 0.005) -> None:
+async def wait_until(
+    condition: Callable[[], Awaitable[bool] | bool], timeout: float = 10.0, interval: float = 0.01
+) -> None:
     deadline = time.monotonic() + timeout
-    while not condition():
+    while True:
+        result = condition()
+        if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+            result = await result
+        if result:
+            return
         if time.monotonic() > deadline:
-            raise TimeoutError("condition not met")
-        time.sleep(interval)
+            raise TimeoutError("condition not met within the timeout")
+        await asyncio.sleep(interval)
