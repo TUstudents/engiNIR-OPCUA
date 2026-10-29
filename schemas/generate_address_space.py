@@ -365,7 +365,12 @@ class CodeGenerator:
         self.writecode(indent, "attrs = ua.MethodAttributes(")
         if obj.desc:
             self.writecode(indent, '    Description=LocalizedText("{0}"),'.format(obj.desc))
-        self.writecode(f'        DisplayName=LocalizedText("{obj.displayname}"),\n    )')
+        self.writecode(indent, f'    DisplayName=LocalizedText("{obj.displayname}"),')
+        executable = True if obj.executable is None else obj.executable
+        user_executable = executable if obj.userexecutable is None else obj.userexecutable
+        self.writecode(indent, f"    Executable={executable},")
+        self.writecode(indent, f"    UserExecutable={user_executable},")
+        self.writecode(indent, "    )")
         self.make_node_code(obj, indent)
 
     def make_reference_code(self, obj: Any) -> None:

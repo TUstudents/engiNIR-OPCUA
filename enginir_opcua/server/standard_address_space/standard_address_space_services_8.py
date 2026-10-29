@@ -102,7 +102,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddDataSetWriter"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(17969, 0),
         BrowseName=QualifiedName("AddDataSetWriter", 0),
@@ -165,7 +167,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveDataSetWriter"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(17992, 0),
         BrowseName=QualifiedName("RemoveDataSetWriter", 0),
@@ -642,7 +646,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Reset"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(21027, 0),
         BrowseName=QualifiedName("Reset", 0),
@@ -1259,7 +1265,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddDataSetReader"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(21082, 0),
         BrowseName=QualifiedName("AddDataSetReader", 0),
@@ -1322,7 +1330,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveDataSetReader"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(21085, 0),
         BrowseName=QualifiedName("RemoveDataSetReader", 0),
@@ -1719,7 +1729,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Reset"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19562, 0),
         BrowseName=QualifiedName("Reset", 0),
@@ -2696,7 +2708,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Reset"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19621, 0),
         BrowseName=QualifiedName("Reset", 0),
@@ -3232,7 +3246,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CreateTargetVariables"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(17386, 0),
         BrowseName=QualifiedName("CreateTargetVariables", 0),
@@ -3302,7 +3318,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CreateDataSetMirror"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(17389, 0),
         BrowseName=QualifiedName("CreateDataSetMirror", 0),
@@ -3444,7 +3462,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddTargetVariables"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(15115, 0),
         BrowseName=QualifiedName("AddTargetVariables", 0),
@@ -3514,7 +3534,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveTargetVariables"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(15118, 0),
         BrowseName=QualifiedName("RemoveTargetVariables", 0),
@@ -3627,7 +3649,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddSubscribedDataSet"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23797, 0),
         BrowseName=QualifiedName("AddSubscribedDataSet", 0),
@@ -3690,7 +3714,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveSubscribedDataSet"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23800, 0),
         BrowseName=QualifiedName("RemoveSubscribedDataSet", 0),
@@ -3728,7 +3754,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddDataSetFolder"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23802, 0),
         BrowseName=QualifiedName("AddDataSetFolder", 0),
@@ -3791,7 +3819,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveDataSetFolder"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23805, 0),
         BrowseName=QualifiedName("RemoveDataSetFolder", 0),
@@ -3891,7 +3921,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddSubscribedDataSet"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23811, 0),
         BrowseName=QualifiedName("AddSubscribedDataSet", 0),
@@ -3954,7 +3986,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveSubscribedDataSet"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23814, 0),
         BrowseName=QualifiedName("RemoveSubscribedDataSet", 0),
@@ -3992,7 +4026,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddDataSetFolder"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23816, 0),
         BrowseName=QualifiedName("AddDataSetFolder", 0),
@@ -4055,7 +4091,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveDataSetFolder"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23819, 0),
         BrowseName=QualifiedName("RemoveDataSetFolder", 0),
@@ -4184,7 +4222,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Enable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(14645, 0),
         BrowseName=QualifiedName("Enable", 0),
@@ -4197,7 +4237,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Disable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(14646, 0),
         BrowseName=QualifiedName("Disable", 0),
@@ -4368,7 +4410,9 @@ def create_standard_address_space_Services_8(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Reset"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19689, 0),
         BrowseName=QualifiedName("Reset", 0),

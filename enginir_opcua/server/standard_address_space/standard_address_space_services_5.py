@@ -1060,7 +1060,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12543, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -1123,7 +1125,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12546, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -1186,7 +1190,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12548, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -1229,7 +1235,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12550, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -1537,7 +1545,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13605, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -1600,7 +1610,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13608, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -1638,7 +1650,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13610, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -1706,7 +1720,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13613, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -1749,7 +1765,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13615, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -1812,7 +1830,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13618, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -1871,7 +1891,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13621, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -1934,7 +1956,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13624, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -1997,7 +2021,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13627, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -2040,7 +2066,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13629, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -2483,7 +2511,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Disable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19483, 0),
         BrowseName=QualifiedName("Disable", 0),
@@ -2496,7 +2526,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Enable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19484, 0),
         BrowseName=QualifiedName("Enable", 0),
@@ -2509,7 +2541,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddComment"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19485, 0),
         BrowseName=QualifiedName("AddComment", 0),
@@ -2586,7 +2620,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Acknowledge"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19505, 0),
         BrowseName=QualifiedName("Acknowledge", 0),
@@ -3126,7 +3162,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Disable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(20176, 0),
         BrowseName=QualifiedName("Disable", 0),
@@ -3139,7 +3177,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Enable"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(20177, 0),
         BrowseName=QualifiedName("Enable", 0),
@@ -3152,7 +3192,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddComment"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(20178, 0),
         BrowseName=QualifiedName("AddComment", 0),
@@ -3229,7 +3271,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Acknowledge"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(20198, 0),
         BrowseName=QualifiedName("Acknowledge", 0),
@@ -3402,7 +3446,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetRejectedList"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(23526, 0),
         BrowseName=QualifiedName("GetRejectedList", 0),
@@ -3549,7 +3595,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13821, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -3612,7 +3660,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13824, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -3650,7 +3700,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13826, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -3718,7 +3770,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13829, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -3761,7 +3815,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13831, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -3824,7 +3880,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13834, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -3883,7 +3941,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13837, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -3946,7 +4006,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13840, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -4009,7 +4071,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13843, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -4052,7 +4116,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13845, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -4206,7 +4272,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13855, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -4269,7 +4337,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13858, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -4307,7 +4377,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13860, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -4375,7 +4447,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13863, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -4418,7 +4492,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13865, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -4481,7 +4557,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13868, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -4540,7 +4618,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13871, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -4603,7 +4683,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13874, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -4666,7 +4748,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13877, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -4709,7 +4793,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13879, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -4863,7 +4949,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13889, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -4926,7 +5014,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13892, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -4964,7 +5054,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13894, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -5032,7 +5124,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13897, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -5075,7 +5169,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13899, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -5138,7 +5234,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13902, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -5197,7 +5295,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13905, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -5260,7 +5360,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13908, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -5323,7 +5425,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13911, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -5366,7 +5470,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13913, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -5520,7 +5626,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13923, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -5583,7 +5691,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13926, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -5621,7 +5731,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13928, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -5689,7 +5801,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13931, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -5732,7 +5846,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13933, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -5795,7 +5911,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13936, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -5854,7 +5972,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13939, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -5917,7 +6037,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13942, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -5980,7 +6102,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13945, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -6023,7 +6147,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13947, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -6427,7 +6553,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("ConfirmUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(15508, 0),
         BrowseName=QualifiedName("ConfirmUpdate", 0),
@@ -6465,7 +6593,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(15505, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -6988,7 +7118,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("UpdateCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(18533, 0),
         BrowseName=QualifiedName("UpdateCertificate", 0),
@@ -7077,7 +7209,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("ApplyChanges"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(18539, 0),
         BrowseName=QualifiedName("ApplyChanges", 0),
@@ -7090,7 +7224,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CreateSigningRequest"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(18541, 0),
         BrowseName=QualifiedName("CreateSigningRequest", 0),
@@ -7173,7 +7309,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetRejectedList"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(18544, 0),
         BrowseName=QualifiedName("GetRejectedList", 0),
@@ -7321,7 +7459,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16717, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -7384,7 +7524,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16724, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -7422,7 +7564,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16726, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -7490,7 +7634,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16729, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -7533,7 +7679,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16732, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -7596,7 +7744,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16735, 0),
         BrowseName=QualifiedName("SetPosition", 0),
@@ -7655,7 +7805,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("OpenWithMasks"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16741, 0),
         BrowseName=QualifiedName("OpenWithMasks", 0),
@@ -7718,7 +7870,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CloseAndUpdate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16744, 0),
         BrowseName=QualifiedName("CloseAndUpdate", 0),
@@ -7781,7 +7935,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("AddCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16747, 0),
         BrowseName=QualifiedName("AddCertificate", 0),
@@ -7824,7 +7980,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("RemoveCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(16749, 0),
         BrowseName=QualifiedName("RemoveCertificate", 0),
@@ -8339,7 +8497,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("UpdateCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12616, 0),
         BrowseName=QualifiedName("UpdateCertificate", 0),
@@ -8428,7 +8588,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CreateSelfSignedCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19337, 0),
         BrowseName=QualifiedName("CreateSelfSignedCertificate", 0),
@@ -8523,7 +8685,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("DeleteCertificate"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(19340, 0),
         BrowseName=QualifiedName("DeleteCertificate", 0),
@@ -8566,7 +8730,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetCertificates"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(32296, 0),
         BrowseName=QualifiedName("GetCertificates", 0),
@@ -8636,7 +8802,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("ApplyChanges"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12734, 0),
         BrowseName=QualifiedName("ApplyChanges", 0),
@@ -8649,7 +8817,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CancelChanges"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(25698, 0),
         BrowseName=QualifiedName("CancelChanges", 0),
@@ -8662,7 +8832,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("CreateSigningRequest"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12731, 0),
         BrowseName=QualifiedName("CreateSigningRequest", 0),
@@ -8745,7 +8917,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetRejectedList"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(12775, 0),
         BrowseName=QualifiedName("GetRejectedList", 0),
@@ -8784,7 +8958,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("ResetToServerDefaults"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(25699, 0),
         BrowseName=QualifiedName("ResetToServerDefaults", 0),
@@ -8906,7 +9082,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Open"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13958, 0),
         BrowseName=QualifiedName("Open", 0),
@@ -8969,7 +9147,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Close"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13961, 0),
         BrowseName=QualifiedName("Close", 0),
@@ -9007,7 +9187,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Read"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13963, 0),
         BrowseName=QualifiedName("Read", 0),
@@ -9075,7 +9257,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("Write"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13966, 0),
         BrowseName=QualifiedName("Write", 0),
@@ -9118,7 +9302,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("GetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13968, 0),
         BrowseName=QualifiedName("GetPosition", 0),
@@ -9181,7 +9367,9 @@ def create_standard_address_space_Services_5(server):
 
     attrs = ua.MethodAttributes(
         DisplayName=LocalizedText("SetPosition"),
-    )
+        Executable=True,
+        UserExecutable=True,
+        )
     node = ua.AddNodesItem(
         RequestedNewNodeId=NumericNodeId(13971, 0),
         BrowseName=QualifiedName("SetPosition", 0),

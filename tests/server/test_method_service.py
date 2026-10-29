@@ -1,6 +1,7 @@
 from typing import Any
 
 from enginir_opcua import Node, ua
+from enginir_opcua.common.instantiate_util import instantiate
 from tests.access_rig import AccessRig, make_access_rig  # noqa: F401
 
 
@@ -205,3 +206,26 @@ async def test_srv18_callback_status_results(access_rig: AccessRig) -> None:
     )
     assert (await call(access_rig, objects.nodeid, first.nodeid)).StatusCode == code(ua.StatusCodes.BadOutOfRange)
     assert (await call(access_rig, objects.nodeid, second.nodeid)).StatusCode == code(ua.StatusCodes.BadNotImplemented)
+
+
+async def test_srv83_standard_and_instantiated_methods_are_executable(access_rig: AccessRig) -> None:
+    """The NodeSet default of Executable and UserExecutable is true (UANodeSet.xsd)."""
+    server = access_rig.server
+    standard = [
+        ua.ObjectIds.Server_GetMonitoredItems,
+        ua.ObjectIds.ConditionType_ConditionRefresh,
+        ua.ObjectIds.AcknowledgeableConditionType_Acknowledge,
+    ]
+    for method_id in standard:
+        node = server.get_node(ua.NodeId(method_id))
+        assert (await node.read_attribute(ua.AttributeIds.Executable)).Value.Value is True
+        assert (await node.read_attribute(ua.AttributeIds.UserExecutable)).Value.Value is True
+    instance = await instantiate(
+        server.nodes.objects,
+        server.get_node(ua.NodeId(ua.ObjectIds.AlarmConditionType)),
+        bname=f"{access_rig.ns}:Alarm",
+    )
+    methods = [node for node in await instance[0].get_children(nodeclassmask=ua.NodeClass.Method)]
+    assert methods
+    for node in methods:
+        assert (await node.read_attribute(ua.AttributeIds.Executable)).Value.Value is True
