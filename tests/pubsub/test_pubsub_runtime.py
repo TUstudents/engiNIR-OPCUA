@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from enginir_opcua import ua
+from enginir_opcua import pubsub, ua
 from enginir_opcua.pubsub import PubSub
 from enginir_opcua.pubsub.connection import PubSubConnection
 from enginir_opcua.pubsub.dataset import DataSetMeta, DataSetValue, PublishedDataSet, PubSubDataSourceDict
@@ -314,3 +314,34 @@ async def test_pub30_pubsub_logs_on_its_own_loggers(caplog: pytest.LogCaptureFix
             await asyncio.sleep(0.05)
     assert caplog.records
     assert all(r.name.startswith("enginir_opcua") for r in caplog.records)
+
+
+async def test_load_save_ua_binary_publisher(server: Server, tmpdir_factory):
+    ps = await server.get_pubsub()
+    in_file = "tests/pubsub/check_publisher_configuration.bin"
+    out_file = tmpdir_factory.mktemp("pubsub") / "check_publisher_configuration.bin"
+    await ps.load_binary_file(in_file)
+    assert len(ps._con) == 1
+    con = ps.get_connection(String("UADP Connection 1"))
+    assert con is not None
+    assert len(con._writer_groups) == 1
+    wgr = con.get_writer_group(String("Demo WriterGroup"))
+    assert wgr is not None
+    assert len(wgr._writer) == 1
+    dsw = wgr.get_writer("Demo DataSetWriter")
+    assert dsw is not None
+    await ps.save_binary_file(out_file)
+
+    ps = pubsub.PubSub(None, server)
+    in_file = "tests/pubsub/check_publisher_configuration.bin"
+    out_file = tmpdir_factory.mktemp("pubsub") / "check_publisher_configuration.bin"
+    await ps.load_binary_file(in_file)
+    assert len(ps._con) == 1
+    con = ps.get_connection(String("UADP Connection 1"))
+    assert con is not None
+    assert len(con._writer_groups) == 1
+    wgr = con.get_writer_group(String("Demo WriterGroup"))
+    assert wgr is not None
+    assert len(wgr._writer) == 1
+    dsw = wgr.get_writer("Demo DataSetWriter")
+    assert dsw is not None

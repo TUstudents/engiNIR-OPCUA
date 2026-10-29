@@ -8,9 +8,19 @@ import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.pubsub import udp as udp_module
-from enginir_opcua.pubsub.uadp import UadpDataSetMessageHeader, UadpDataSetVariant, UadpHeader, UadpNetworkMessage
+from enginir_opcua.pubsub.uadp import (
+    UadpDataSetMessageHeader,
+    UadpDataSetVariant,
+    UadpHeader,
+    UadpNetworkMessage,
+)
 from enginir_opcua.pubsub.udp import OpcUdp, UdpSettings
-from enginir_opcua.ua.uatypes import Int32, UInt16, Variant
+from enginir_opcua.ua.uatypes import (
+    Int32,
+    UInt16,
+    Variant,
+)
+from tests.conftest import find_free_port
 
 
 def _message(value: int = 1) -> bytes:
@@ -57,18 +67,12 @@ def _option(sock: socket.socket, level: int, name: int) -> int:
 
 def test_pub7_loopback_option_is_applied_both_ways() -> None:
     for loopback in (True, False):
-        sock, _, _ = UdpSettings(Url="opc.udp://239.255.0.77:48555", Loopback=loopback).create_socket(receive=False)
+        url = f"opc.udp://239.255.0.77:{find_free_port()}"
+        sock, _, _ = UdpSettings(Url=url, Loopback=loopback).create_socket(receive=False)
         try:
             assert _option(sock, socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP) == int(loopback)
         finally:
             sock.close()
-
-
-def test_pub7_multicast_receiver_binds_to_the_group_not_to_the_interface() -> None:
-    sock, _, local = UdpSettings(Url="opc.udp://239.255.0.77:48556").create_socket(receive=True)
-    sock.close()
-    assert local is not None
-    assert local[0] == "239.255.0.77"
 
 
 def test_pub7_network_interface_names_resolve_to_an_interface_index() -> None:
@@ -79,7 +83,8 @@ def test_pub7_network_interface_names_resolve_to_an_interface_index() -> None:
 
 
 def test_pub7_multicast_sender_uses_the_configured_interface_address() -> None:
-    settings = UdpSettings(Url="opc.udp://239.255.0.77:48557", Adapter=("127.0.0.1", 48557))
+    port = find_free_port()
+    settings = UdpSettings(Url=f"opc.udp://239.255.0.77:{port}", Adapter=("127.0.0.1", port))
     sock, _, _ = settings.create_socket(receive=False)
     try:
         assert socket.inet_ntoa(sock.getsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, 4)) == "127.0.0.1"
@@ -87,31 +92,27 @@ def test_pub7_multicast_sender_uses_the_configured_interface_address() -> None:
         sock.close()
 
 
-def test_pub9_unicast_localhost_binds_to_loopback_only() -> None:
-    sock, _, local = UdpSettings(Url="opc.udp://localhost:48558").create_socket(receive=True)
+@pytest.mark.parametrize(
+    ("host", "all_interfaces", "bound"),
+    [
+        ("239.255.0.77", False, "239.255.0.77"),
+        ("localhost", False, "127.0.0.1"),
+        ("127.0.0.2", False, "127.0.0.2"),
+        ("localhost", True, "0.0.0.0"),
+    ],
+    ids=["pub7-multicast-group", "pub9-localhost-loopback-only", "pub9-ip-address", "pub9-all-interfaces-written-out"],
+)
+def test_receiver_socket_binds_to_the_address_the_settings_name(host: str, all_interfaces: bool, bound: str) -> None:
+    port = find_free_port()
+    adapter = ("0.0.0.0", port) if all_interfaces else None
+    sock, _, local = UdpSettings(Url=f"opc.udp://{host}:{port}", Adapter=adapter).create_socket(receive=True)
     sock.close()
     assert local is not None
-    assert local[0] == "127.0.0.1"
-
-
-def test_pub9_unicast_ip_url_binds_to_that_address() -> None:
-    sock, _, local = UdpSettings(Url="opc.udp://127.0.0.2:48559").create_socket(receive=True)
-    sock.close()
-    assert local is not None
-    assert local[0] == "127.0.0.2"
-
-
-def test_pub9_all_interfaces_only_when_written_out() -> None:
-    sock, _, local = UdpSettings(Url="opc.udp://localhost:48560", Adapter=("0.0.0.0", 48560)).create_socket(
-        receive=True
-    )
-    sock.close()
-    assert local is not None
-    assert local[0] == "0.0.0.0"
+    assert local[0] == bound
 
 
 def test_pub9_a_sender_does_not_bind_a_receive_address() -> None:
-    sock, _, local = UdpSettings(Url="opc.udp://127.0.0.1:48561").create_socket(receive=False)
+    sock, _, local = UdpSettings(Url=f"opc.udp://127.0.0.1:{find_free_port()}").create_socket(receive=False)
     try:
         assert local is None
         assert sock.getsockname()[1] == 0
@@ -127,7 +128,8 @@ def test_pub24_ipv6_url_keeps_its_brackets() -> None:
 
 
 def test_pub24_a_unicast_interface_that_is_a_name_is_a_clear_error() -> None:
-    settings = UdpSettings(Url="opc.udp://127.0.0.1:48562", Adapter=("lo", 48562))
+    port = find_free_port()
+    settings = UdpSettings(Url=f"opc.udp://127.0.0.1:{port}", Adapter=("lo", port))
     with pytest.raises(ua.UaError, match="IP address"):
         settings.create_socket(receive=True)
 
@@ -233,3 +235,31 @@ async def test_pub26_the_registry_of_the_session_is_used_to_decode_and_encode(mo
     await protocol.close()
     assert decoded_with == [registry]
     assert Registry.encoding_entered == 1
+
+
+def test_udp_settings_key_value_roundtrip():
+    """Test that get_key_value/set_key_value round-trip preserves all settings.
+
+    Regression test for https://github.com/FreeOpcUa/opcua-asyncio/issues/1945
+    where 'Loopback' (capital L) in get_key_value did not match 'loopback'
+    (lowercase l) in set_key_value, causing the value to be silently lost.
+    """
+    original = UdpSettings(Addr=("239.0.0.1", 4840), Loopback=False, Reuse=False, TTL=5)
+    kvs = original.get_key_value()
+
+    restored = UdpSettings(Addr=("239.0.0.1", 4840))
+    restored.set_key_value(kvs)
+
+    assert restored.Loopback == original.Loopback
+    assert restored.Reuse == original.Reuse
+    assert restored.TTL == original.TTL
+
+
+def test_udp_settings_key_names_consistent():
+    """Test that key names in get_key_value match the keys expected by set_key_value."""
+    settings = UdpSettings(Addr=("239.0.0.1", 4840), TTL=10)
+    kvs = settings.get_key_value()
+    key_names = [kv.Key.Name for kv in kvs]
+    assert "loopback" in key_names
+    assert "reuse" in key_names
+    assert "ttl" in key_names
