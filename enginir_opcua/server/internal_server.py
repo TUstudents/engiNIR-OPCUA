@@ -26,7 +26,7 @@ from ..crypto import uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
-from .event_generator import EventGenerator
+from .conditions import ConditionManager
 from .history import HistoryManager
 from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
@@ -101,7 +101,6 @@ class InternalServer:
         self._channel_id_counter = 5
         self.allow_plaintext_password = False
         self.identity_guard = IdentityGuard()
-        self.bind_condition_methods: bool | int = False
         self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
         self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
         self.accept_server_registrations: bool = False
@@ -166,6 +165,9 @@ class InternalServer:
         self.asyncio_transports: list[Any] = []
         self.subscription_service: SubscriptionService = SubscriptionService(self.aspace, iserver=self)
         self.history_manager = HistoryManager(self)
+        # --- Alarms and Conditions (Part 9) ---
+        self.condition_manager = ConditionManager(self)
+        # --- end Alarms and Conditions ---
         if user_manager is None:
             user_manager = AnonymousReadOnlyUserManager()
         self.user_manager: UserManager = user_manager
@@ -195,24 +197,7 @@ class InternalServer:
         await self._address_space_fixes()
         await self.setup_nodes()
         await self.history_manager.init()
-        if self.bind_condition_methods:
-            await self.setup_condition_methods()
-
-    async def setup_condition_methods(self) -> None:
-        for etype in (ua.ObjectIds.RefreshStartEventType, ua.ObjectIds.RefreshEndEventType):
-            evgen = EventGenerator(self.isession)
-            await evgen.init(etype, add_generates_event=False)
-            # don't use isinstance(int), it also matches bool
-            if isinstance(self.bind_condition_methods, int):
-                evgen.event.Severity = self.bind_condition_methods
-            self.subscription_service.standard_events[etype] = evgen
-
-        self.isession.add_method_callback(
-            ua.NodeId(ua.ObjectIds.ConditionType_ConditionRefresh), self.subscription_service.condition_refresh
-        )
-        self.isession.add_method_callback(
-            ua.NodeId(ua.ObjectIds.ConditionType_ConditionRefresh2), self.subscription_service.condition_refresh
-        )
+        await self.condition_manager.init()
 
     async def setup_nodes(self) -> None:
         """
@@ -344,6 +329,7 @@ class InternalServer:
         for sub_id, sub in list(self.subscription_service.subscriptions.items()):
             await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
+        await self.condition_manager.stop()  # Alarms and Conditions (Part 9)
 
     async def _set_current_time_loop(self) -> None:
         while not self._time_task_stop.is_set():

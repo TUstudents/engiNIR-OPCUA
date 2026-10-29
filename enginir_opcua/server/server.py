@@ -40,6 +40,7 @@ from ..pubsub.pubsub import PubSub
 from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
 from .binary_server_asyncio import BinaryServer
+from .conditions import Condition
 from .event_generator import EventGenerator
 from .internal_server import InternalServer
 from .user_managers import UserManager
@@ -1152,3 +1153,37 @@ class Server:
             self._pubsub = PubSub(server=self)
             await self._pubsub.init_information_model()
         return self._pubsub
+
+    # --- Alarms and Conditions (Part 9) ---
+
+    async def create_condition(
+        self,
+        source: Node | ua.NodeId | None,
+        condition_type: Node | ua.NodeId | int,
+        name: str,
+        **options: Any,
+    ) -> Condition:
+        """
+        Create a Condition or Alarm instance of a ConditionType below its source and return its handle.
+        Options: node_id, namespace, notifier, confirmable, shelving, suppression, branches (default off),
+        severity, condition_class, quality, comment_max_length, limits, deadbands, severities (dicts keyed by
+        HighHigh, High, Low, LowLow), input_node, follow_input, normal_value, normal_node, setpoint_node,
+        max_time_shelved (milliseconds).
+        """
+        return await self.iserver.condition_manager.create(source, condition_type, name, **options)
+
+    async def delete_condition(self, condition: Condition) -> None:
+        await self.iserver.condition_manager.delete(condition)
+
+    def get_condition(self, condition_id: ua.NodeId | Node) -> Condition | None:
+        return self.iserver.condition_manager.get(condition_id)
+
+    @property
+    def conditions(self) -> list[Condition]:
+        return list(self.iserver.condition_manager.conditions.values())
+
+    async def refresh_required(self, subscription_ids: list[int] | None = None) -> None:
+        """Tell clients that their Condition state may be out of date (RefreshRequiredEvent, Part 9, 5.11.4)."""
+        await self.iserver.condition_manager.refresh_required(subscription_ids)
+
+    # --- end Alarms and Conditions ---

@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
-from enginir_opcua.common import uamethod, utils
+from enginir_opcua.common import utils
 from enginir_opcua.crypto.permission_rules import User
 
 from .address_space import AddressSpace
@@ -44,8 +44,6 @@ class SubscriptionService:
         self.iserver: "InternalServer | None" = iserver
         self.subscriptions: dict[int, InternalSubscription] = {}
         self._sub_id_counter = 77
-        self.standard_events: dict[int, Any] = {}
-        self._conditions: dict[ua.NodeId, Any] = {}
         self._background: set[asyncio.Task[None]] = set()
         self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
         self._event_sinks: dict[int, tuple[ua.NodeId, Callable[[Any], None]]] = {}
@@ -404,11 +402,6 @@ class SubscriptionService:
         return notice
 
     async def trigger_event(self, event: Any, subscription_id: int | None = None) -> None:
-        if hasattr(event, "Retain") and hasattr(event, "NodeId"):
-            if event.Retain:
-                self._conditions[event.NodeId] = event
-            elif event.NodeId in self._conditions:
-                del self._conditions[event.NodeId]
         notifiers = notifiers_of(self.aspace, event.emitting_node)
         if subscription_id is None:
             self._deliver_to_sinks(event, notifiers)
@@ -419,19 +412,19 @@ class SubscriptionService:
             for sub in list(self.subscriptions.values()):
                 await sub.monitored_item_srv.trigger_event(event, notifiers=notifiers)
 
-    @uamethod
-    async def condition_refresh(
-        self, parent: Any, subscription_id: int, mid: int | None = None
-    ) -> ua.StatusCode | None:
-        if subscription_id not in self.subscriptions:
-            return ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid)
-        sub = self.subscriptions[subscription_id]
-        if mid is not None and mid not in sub.monitored_item_srv._monitored_items:
-            return ua.StatusCode(ua.StatusCodes.BadMonitoredItemIdInvalid)
-        if ua.ObjectIds.RefreshStartEventType in self.standard_events:
-            await self.standard_events[ua.ObjectIds.RefreshStartEventType].trigger(subscription_id=subscription_id)
-        for event in self._conditions.values():
-            await sub.monitored_item_srv.trigger_event(event, mid, notifiers_of(self.aspace, event.emitting_node))
-        if ua.ObjectIds.RefreshEndEventType in self.standard_events:
-            await self.standard_events[ua.ObjectIds.RefreshEndEventType].trigger(subscription_id=subscription_id)
-        return None  # FIXME: really not sure this is correct, but this is the original behaviour
+    async def deliver_to_subscription(
+        self,
+        subscription_id: int,
+        event: Any,
+        item_ids: list[int] | None = None,
+        bypass_where: bool = False,
+    ) -> None:
+        # Part 9, 5.5.7: the hook ConditionRefresh uses to queue an Event for the items of one Subscription
+        sub = self.subscriptions.get(subscription_id)
+        if sub is None:
+            return
+        service = sub.monitored_item_srv
+        for mid in item_ids if item_ids is not None else service.event_item_ids():
+            node = service.item_node(mid)
+            if node is not None:
+                await service.trigger_event(event, mid, notifiers=[node], bypass_where=bypass_where)
