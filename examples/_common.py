@@ -4,6 +4,7 @@ The pairing is what `enginir-opcua pair` does on the command line; see 01_secure
 """
 
 import argparse
+import asyncio
 import shutil
 import socket
 import tempfile
@@ -52,3 +53,8 @@ async def pair(server_pki: Path, client_pki: Path, client_uri: str) -> None:
     await create_client_credentials(client_pki, client_uri)
     trust(server_pki, client_pki)
     trust(client_pki, server_pki)
+
+
+def pair_sync(server_pki: Path, client_pki: Path, client_uri: str) -> None:
+    """The same as `pair`, for programs that do not run an event loop (the synchronous API)."""
+    asyncio.run(pair(server_pki, client_pki, client_uri))
