@@ -33,6 +33,7 @@ from ..common.subscription import Subscription
 from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
+from ..config import parse_opc_tcp_url
 from ..crypto import pki, security_policies, uacrypto, validator
 from ..crypto.permission_rules import SimpleRoleRuleset, UserRole
 from ..crypto.truststore import TrustStore
@@ -452,7 +453,8 @@ class Server:
         self.iserver.allow_plaintext_password = allow
 
     def set_endpoint(self, url: str) -> None:
-        self.endpoint = urlparse(url)
+        """Set the endpoint URL: opc.tcp://host[:port][/path]. A URL without scheme or host is refused."""
+        self.endpoint = parse_opc_tcp_url(url, "endpoint")
 
     async def get_endpoints(self) -> list[ua.EndpointDescription]:
         return await self.iserver.get_endpoints()
@@ -485,6 +487,8 @@ class Server:
                 f"The deprecated policies {', '.join(deprecated)} are only available with "
                 "Server(allow_deprecated_policies=True)"
             )
+        if not security_policy:
+            raise ConfigurationError("security_policy: the list is empty; name at least one policy")
         self._security_policy = security_policy
         if permission_ruleset is not None:
             self._permission_ruleset = permission_ruleset
@@ -513,6 +517,8 @@ class Server:
 
             set_identity_tokens([ua.X509IdentityToken, ua.UserNameIdentityToken])
         """
+        if not tokens:
+            raise ConfigurationError("identity_tokens: the list is empty; name at least one token type")
         self.iserver.supported_tokens = tuple(tokens)
 
     async def _setup_server_nodes(self) -> None:
