@@ -260,6 +260,14 @@ Transport (OPC 10000-6, 7.1):
   the server closes its oldest connection without a session instead of refusing the new one.
 - A request above the server's limits fails locally with `Bad_RequestTooLarge`; a response above the client's limits
   becomes a ServiceFault `Bad_ResponseTooLarge`. An Abort chunk fails its request at once.
+- New server limits `max_string_length` and `max_byte_string_length` (16 MiB each, in bytes) and `max_array_length`
+  (1,000,000 elements), in `ServerLimits`, as `Server` attributes and published as `MaxStringLength`,
+  `MaxByteStringLength` and `MaxArrayLength` in ServerCapabilities (OPC 10000-5, 6.3.2). A request with a longer
+  String or ByteString, or a longer array in a Variant, gets a ServiceFault `Bad_EncodingLimitsExceeded` (OPC
+  10000-4, 5.3). A Write value over a limit gets `Bad_OutOfRange` for that operation (5.11.4.4), and a Call input
+  argument over a limit gets `Bad_OutOfRange` in `InputArgumentResults` with `Bad_InvalidArgument` for the Method
+  (5.12.2.4). The default `max_byte_string_length` rose from 1 MiB to 16 MiB, which also raises the default chunk size
+  of the file service. The client side is unchanged.
 - Channel failures send an Error message and close the connection, so clients see `Bad_SecurityChecksFailed`,
   `Bad_TcpSecureChannelUnknown` or `Bad_SecureChannelTokenUnknown` instead of a timeout.
 - Hello is handled by `OPCUAProtocol` (`UaProcessor.accept_hello`). Removed: `UASocketProtocol.receive_buffer`,
