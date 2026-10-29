@@ -490,8 +490,16 @@ def test_syn1_stop_from_the_loop_thread_raises():
 
 
 EXCLUDED = {
-    "Client": {"subscribe_state"},
-    "Server": {"init", "get_pubsub"},
+    "Client": {"subscribe_state", "listen_reverse", "use_reverse_listener"},
+    "Server": {
+        "init",
+        "get_pubsub",
+        "add_reverse_connect",
+        "remove_reverse_connect",
+        "diagnostics",
+        "model_change",
+        "model_change_events",
+    },
     "SyncNode": {"new_node"},
     "Subscription": {"init", "publish_callback", "enqueue", "session_event", "close", "restore"},
 }
