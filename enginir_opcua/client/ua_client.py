@@ -17,12 +17,16 @@ import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 from enginir_opcua import ua
 from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.uaerrors._base import UaError
 
 from ..common.connection import (
+    MAX_ENDPOINT_URL_BYTES,
+    MAX_REVERSE_HELLO_SIZE,
+    REVERSE_HELLO_TYPES,
     AbortedMessage,
     FrameReader,
     MessageAborted,
@@ -31,10 +35,11 @@ from ..common.connection import (
     SecureChannel,
     TransportError,
     TransportLimits,
+    error_message_to_binary,
 )
 from ..common.utils import wait_for
 from ..crypto import security_policies
-from ..crypto.validator import CertificateValidator, PeerRole, ValidationContext
+from ..crypto.validator import CertificateValidator, PeerRole, ValidationContext, check_application_uri
 from ..observer import NULL_OBSERVER, Observer
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary, struct_to_binary, uatcp_to_binary
 from ..ua.uaprotocol_auto import OpenSecureChannelResult
@@ -95,6 +100,7 @@ class UASocketProtocol(asyncio.Protocol):
         self._channel.peer_certificate_check = self._check_server_certificate
         self.certificate_validator: CertificateValidator | None = None
         self.validation_host_name: str | None = None
+        self.expected_application_uri: str | None = None
         self._acknowledged_version = 0
         self._reader = FrameReader(lambda: self._channel.limits.max_recv_buffer)
 
@@ -129,7 +135,10 @@ class UASocketProtocol(asyncio.Protocol):
         context = ValidationContext(
             PeerRole.SERVER, self._channel.security_policy.URI, host_name=self.validation_host_name
         )
-        self.certificate_validator.validate_application_certificate(chain, context).raise_for_status()
+        outcome = self.certificate_validator.validate_application_certificate(chain, context)
+        outcome.raise_for_status()
+        if self.expected_application_uri is not None and outcome.leaf is not None:
+            check_application_uri(outcome.leaf, self.expected_application_uri).raise_for_status()
 
     def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
         self.state = UASocketState.OPEN
@@ -410,6 +419,199 @@ class UASocketProtocol(asyncio.Protocol):
         self._callbackmap.clear()
 
 
+def normalize_endpoint_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return f"{parsed.scheme.lower()}://{host}:{parsed.port or 4840}{parsed.path}"
+
+
+class _ReverseAcceptor(asyncio.Protocol):
+    """A socket accepted for reverse connect: waits for the ReverseHello, checks it, then parks or hands it over."""
+
+    def __init__(self, listener: ReverseConnectListener) -> None:
+        self.listener = listener
+        self.transport: asyncio.Transport | None = None
+        self.target: ReverseTarget | None = None
+        self.endpoint_url = ""
+        self.server_uri = ""
+        self._reader = FrameReader(lambda: MAX_REVERSE_HELLO_SIZE, REVERSE_HELLO_TYPES)
+        self._timer: asyncio.TimerHandle | None = None
+        self._done = False
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = transport  # type: ignore[assignment]
+        self._timer = asyncio.get_running_loop().call_later(self.listener.rhe_deadline, self._expired)
+
+    def _expired(self) -> None:
+        if self.transport is not None and self.target is None:
+            self.transport.close()
+
+    def _refuse(self, status: int, reason: str) -> None:
+        self._done = True
+        if self.transport is not None:
+            self.transport.write(error_message_to_binary(status, reason))
+            self.transport.close()
+
+    def data_received(self, data: bytes) -> None:
+        if self._done:
+            return
+        if self.target is not None:
+            self._refuse(ua.StatusCodes.BadTcpMessageTypeInvalid, "No message is expected before the Hello")
+            return
+        self._reader.feed(data)
+        try:
+            for header, body in self._reader.frames():
+                if header.MessageType != ua.MessageType.ReverseHello:
+                    self._refuse(ua.StatusCodes.BadTcpMessageTypeInvalid, "ReverseHello expected first")
+                    return
+                self._reverse_hello(struct_from_binary(ua.ReverseHello, body))
+                return
+        except TransportError as e:
+            self._refuse(e.status, e.reason)
+        except Exception:
+            self._refuse(ua.StatusCodes.BadTcpMessageTypeInvalid, "Malformed ReverseHello")
+
+    def _reverse_hello(self, hello: ua.ReverseHello) -> None:
+        uri, endpoint = hello.ServerUri or "", hello.EndpointUrl or ""
+        if len(uri.encode()) >= MAX_ENDPOINT_URL_BYTES or len(endpoint.encode()) >= MAX_ENDPOINT_URL_BYTES:
+            self._refuse(ua.StatusCodes.BadTcpEndpointUrlInvalid, "ServerUri or EndpointUrl too long")
+            return
+        target = self.listener.find_target(uri, endpoint)
+        if target is None:
+            self._refuse(ua.StatusCodes.BadTcpEndpointUrlInvalid, "Unknown server")
+            return
+        self.server_uri, self.endpoint_url = uri, endpoint
+        if not target.offer(self):
+            self._refuse(ua.StatusCodes.BadServerTooBusy, "A socket of this server is already kept")
+            return
+        self.target = target
+        if self._timer is not None:
+            self._timer.cancel()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._done = True
+        if self._timer is not None:
+            self._timer.cancel()
+        if self.target is not None:
+            self.target.dropped(self)
+        self.listener.forget(self)
+
+
+class ReverseTarget:
+    """The sockets of one server (ServerUri and EndpointUrl) that a reverse connect listener keeps for a client."""
+
+    def __init__(self, listener: ReverseConnectListener, server_uri: str, endpoint_url: str) -> None:
+        self.listener = listener
+        self.server_uri = server_uri
+        self.endpoint_url = endpoint_url
+        self._parked: _ReverseAcceptor | None = None
+        self._waiter: asyncio.Future[_ReverseAcceptor] | None = None
+
+    def offer(self, acceptor: _ReverseAcceptor) -> bool:
+        if self._waiter is not None and not self._waiter.done():
+            self._waiter.set_result(acceptor)
+            return True
+        if self._parked is not None or self.listener.parked_count() >= self.listener.max_parked:
+            return False
+        self._parked = acceptor
+        return True
+
+    def dropped(self, acceptor: _ReverseAcceptor) -> None:
+        if self._parked is acceptor:
+            self._parked = None
+
+    def has_parked(self) -> bool:
+        return self._parked is not None
+
+    async def accept(self, timeout: float) -> tuple[asyncio.Transport, str]:
+        """The transport of the next ReverseHello of this server and the EndpointUrl it announced."""
+        acceptor, self._parked = self._parked, None
+        if acceptor is None:
+            self._waiter = asyncio.get_running_loop().create_future()
+            try:
+                acceptor = await asyncio.wait_for(self._waiter, timeout)
+            finally:
+                self._waiter = None
+        assert acceptor.transport is not None
+        acceptor.target = None
+        acceptor.listener.forget(acceptor)
+        return acceptor.transport, acceptor.endpoint_url
+
+
+class ReverseConnectListener:
+    """
+    Listens for servers that connect out (reverse connect, OPC 10000-6 v1.05, 7.1.2.6 and 7.1.3). One listener
+    serves any number of clients, each waiting for its own server (ServerUri and EndpointUrl). A socket of an
+    unknown server is refused with Bad_TcpEndpointUrlInvalid, a second socket of a server whose first one is parked
+    with Bad_ServerTooBusy.
+    """
+
+    def __init__(self, listen_url: str, rhe_deadline: float = 30.0, max_parked: int = 8) -> None:
+        parsed = urlparse(listen_url)
+        if parsed.scheme != "opc.tcp" or not parsed.hostname or parsed.port is None:
+            raise ValueError(f"The listen URL must be opc.tcp://host:port, not {listen_url!r}")
+        self.host: str = parsed.hostname
+        self.port: int = parsed.port
+        self.rhe_deadline = rhe_deadline
+        self.max_parked = max_parked
+        self._server: asyncio.Server | None = None
+        self._targets: list[ReverseTarget] = []
+        self._acceptors: set[_ReverseAcceptor] = set()
+
+    def target(self, server_uri: str, endpoint_url: str) -> ReverseTarget:
+        endpoint = normalize_endpoint_url(endpoint_url)
+        for existing in self._targets:
+            if existing.server_uri == server_uri and existing.endpoint_url == endpoint:
+                return existing
+        created = ReverseTarget(self, server_uri, endpoint)
+        self._targets.append(created)
+        return created
+
+    def find_target(self, server_uri: str, endpoint_url: str) -> ReverseTarget | None:
+        endpoint = normalize_endpoint_url(endpoint_url)
+        return next((t for t in self._targets if t.server_uri == server_uri and t.endpoint_url == endpoint), None)
+
+    def parked_count(self) -> int:
+        return sum(1 for t in self._targets if t.has_parked())
+
+    def forget(self, acceptor: _ReverseAcceptor) -> None:
+        self._acceptors.discard(acceptor)
+
+    def _make_acceptor(self) -> _ReverseAcceptor:
+        acceptor = _ReverseAcceptor(self)
+        self._acceptors.add(acceptor)
+        return acceptor
+
+    @property
+    def is_listening(self) -> bool:
+        return self._server is not None
+
+    async def start(self) -> None:
+        if self._server is not None:
+            return
+        self._server = await asyncio.get_running_loop().create_server(self._make_acceptor, self.host, self.port)
+        if self.port == 0:
+            self.port = self._server.sockets[0].getsockname()[1]
+
+    async def stop(self) -> None:
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
+        for acceptor in list(self._acceptors):
+            if acceptor.transport is not None:
+                acceptor.transport.close()
+        self._acceptors.clear()
+        if server is not None:
+            await server.wait_closed()
+
+    async def __aenter__(self) -> ReverseConnectListener:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.stop()
+
+
 class StateSubscription:
     """Async context manager that buffers `UaClient` state transitions.
 
@@ -659,6 +861,16 @@ class UaClient:
         except BaseException:
             self._set_state(UaClientState.DISCONNECTED)
             raise
+        self._set_state(UaClientState.SOCKET_OPEN)
+
+    def attach_socket(self, transport: asyncio.Transport, host: str, expected_application_uri: str | None) -> None:
+        """Use a socket that the server opened (reverse connect, OPC 10000-6 v1.05, 7.1.3) like one that was dialled."""
+        self.validation_host_name = host
+        self._set_state(UaClientState.CONNECTING)
+        protocol = self._make_protocol()
+        protocol.expected_application_uri = expected_application_uri
+        transport.set_protocol(protocol)
+        protocol.connection_made(transport)
         self._set_state(UaClientState.SOCKET_OPEN)
 
     def disconnect_socket(self) -> None:

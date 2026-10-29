@@ -5,6 +5,7 @@ High level interface to pure python OPC-UA server
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import socket
@@ -39,7 +40,8 @@ from ..crypto.validator import CertificateValidator
 from ..pubsub.pubsub import PubSub
 from ..ua.uaerrors import ConfigurationError
 from .address_space import NodeData
-from .binary_server_asyncio import BinaryServer
+from .binary_server_asyncio import BinaryServer, ReverseConnection
+from .diagnostics import DiagnosticsCollector
 from .event_generator import EventGenerator
 from .internal_server import InternalServer
 from .user_managers import UserManager
@@ -120,6 +122,7 @@ class Server:
         self.application_type: ua.ApplicationType = ua.ApplicationType.ClientAndServer
         self.iserver: InternalServer = iserver if iserver else InternalServer(user_manager=user_manager)
         self.bserver: BinaryServer | None = None
+        self._reverse_connections: list[ReverseConnection] = []
         self.socket_address: tuple[str, int] | None = None
         self._discovery_clients: dict[str, Client] = {}
         self._discovery_configurations: dict[str, ua.DiscoveryConfiguration | None] = {}
@@ -641,6 +644,8 @@ class Server:
             ipaddress, port = self._get_bind_socket_info()
             self.bserver = BinaryServer(self.iserver, ipaddress, port, self.limits)
             self.bserver.set_policies(self._policies)
+            for connection in self._reverse_connections:
+                self.bserver.add_reverse_connection(connection)
             await self.bserver.start()
         except Exception as exp:
             _logger.exception("%s error starting server", self)
@@ -1152,3 +1157,72 @@ class Server:
             self._pubsub = PubSub(server=self)
             await self._pubsub.init_information_model()
         return self._pubsub
+
+    # --- Diagnostics, programs, reverse connect, model change ---
+
+    def add_reverse_connect(
+        self, client_url: str, endpoint_url: str | None = None, retry_interval: float = 5.0
+    ) -> ReverseConnection:
+        """
+        Connect to a client that listens at client_url and let it open the SecureChannel on that socket (reverse
+        connect, OPC 10000-6 v1.05, 7.1.2.6 and 7.1.3). The server sends a ReverseHello with its application URI and
+        endpoint_url (default: the endpoint of the server), keeps one such socket open for the client at all times and
+        reconnects after retry_interval seconds when the client refuses or the connection fails. Can be called before
+        or after start. Returns the handle for remove_reverse_connect.
+        """
+        connection = ReverseConnection(
+            client_url,
+            endpoint_url if endpoint_url is not None else (lambda: self.endpoint.geturl()),
+            lambda: self._application_uri,
+            retry_interval,
+        )
+        if any(
+            c.client_url == client_url and c.endpoint_url == connection.endpoint_url for c in self._reverse_connections
+        ):
+            raise ValueError(f"Reverse connection to {client_url} exists")
+        self._reverse_connections.append(connection)
+        if self.bserver is not None:
+            self.bserver.add_reverse_connection(connection)
+        return connection
+
+    def remove_reverse_connect(self, connection: ReverseConnection) -> None:
+        self._reverse_connections.remove(connection)
+        if self.bserver is not None:
+            self.bserver.remove_reverse_connection(connection)
+
+    def model_change(self) -> contextlib.AbstractAsyncContextManager[None]:
+        """
+        Collect the model changes (AddNodes, DeleteNodes, AddReferences, DeleteReferences) of everything done in the
+        block, by this task and the tasks it starts, into one GeneralModelChangeEvent raised when the block ends:
+
+            async with server.model_change():
+                await folder.add_object(2, "A")
+                await folder.add_object(2, "B")
+
+        Without a block every call is a request of its own and raises its own event.
+        """
+        return self.iserver.model_changes.request()
+
+    @property
+    def model_change_events(self) -> str:
+        """
+        "all" (default): a model change event names every changed Node. "versioned": only Nodes that have a
+        NodeVersion Property, the literal reading of OPC 10000-3 v1.05, 9.32.2. The NodeVersion of a named Node
+        that has the Property is updated in both modes.
+        """
+        return self.iserver.model_change_events
+
+    @model_change_events.setter
+    def model_change_events(self, mode: str) -> None:
+        if mode not in ("all", "versioned"):
+            raise ValueError("model_change_events is 'all' or 'versioned'")
+        self.iserver.model_change_events = mode
+
+    @property
+    def diagnostics(self) -> DiagnosticsCollector:
+        """
+        The server diagnostics (OPC 10000-5 v1.05, 6.3.3): `enabled` is the EnabledFlag of Server/ServerDiagnostics,
+        which a client with the Admin or SecurityAdmin role can write too; `summary()` returns the counters of
+        ServerDiagnosticsSummary. The counters run always, the Session and Subscription details only while enabled.
+        """
+        return self.iserver.diagnostics

@@ -13,7 +13,7 @@ from enginir_opcua import ua
 from ..common.utils import Buffer, ServiceError
 from ..crypto.permission_rules import ROLE_RANK, UserRole
 from ..ua.ua_binary import nodeid_from_binary, struct_from_binary
-from .internal_session import Session, SessionChannel
+from .internal_session import Session, SessionChannel, current_call_session
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
@@ -165,13 +165,17 @@ class Dispatcher:
         handle = header.RequestHandle
         session: Session | None = None
         counted = False
+        service_name: str | None = None
+        reader_token = None
         try:
             service = self.table.get(type_id)
             if service is None:
                 _logger.warning("Unsupported request %s", type_id)
                 raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
+            service_name = service.name
             session = self._session_for(service, channel, header)
             if session is not None:
+                reader_token = current_call_session.set(session.services)  # J: reader of the request (SRV-94)
                 session.enter_request()
                 counted = True
                 self._check_permission(service, session, channel, body)
@@ -183,15 +187,19 @@ class Dispatcher:
             self._check_operations(service, params)
             context = ServiceContext(self.iserver, channel, session, header, seqhdr)
             response = await service.handler(context, params)
+            self.iserver.diagnostics.request_done(session, service_name, ua.StatusCodes.Good)  # J: diagnostics (SRV-93)
             if response is not None:
                 channel.send_response(handle, seqhdr, response)
         except Exception as error:
             status = status_of(error)
+            self.iserver.diagnostics.request_done(session, service_name, status)  # J: diagnostics (SRV-93)
             if status == ua.StatusCodes.BadInternalError:
                 _logger.exception("Error while processing a request")
             else:
                 _logger.info("Request failed with %s", ua.StatusCode(status).name)
             self._answer_fault(channel, handle, seqhdr, status)
         finally:
+            if reader_token is not None:
+                current_call_session.reset(reader_token)
             if counted and session is not None:
                 session.leave_request()

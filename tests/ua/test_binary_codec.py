@@ -701,3 +701,20 @@ def test_ua24_diagnostic_info_inside_a_variant_is_rejected() -> None:
     info = ua.DiagnosticInfo(LocalizedText=1, InnerDiagnosticInfo=ua.DiagnosticInfo(Locale=2))
     with pytest.raises(UaError):
         variant_from_binary(Buffer(bytes([ua.VariantType.DiagnosticInfo.value]) + diagnosticinfo_to_binary(info)))
+
+
+def test_com123_structure_field_named_encoding_is_a_normal_field() -> None:
+    """Part 5, 12.12: SessionSecurityDiagnosticsDataType has a String field Encoding, not the encoding byte."""
+    original = ua.SessionSecurityDiagnosticsDataType(
+        ClientUserIdOfSession="alice",
+        ClientUserIdHistory=["alice"],
+        AuthenticationMechanism="UserName",
+        Encoding="UA Binary",
+        TransportProtocol="opc.tcp",
+        SecurityMode=ua.MessageSecurityMode.Sign,
+        SecurityPolicyUri="uri",
+        ClientCertificate=b"x",
+    )
+    data = struct_to_binary(original)
+    assert b"UA Binary" in data
+    assert struct_from_binary(ua.SessionSecurityDiagnosticsDataType, Buffer(data)) == original

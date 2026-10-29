@@ -26,10 +26,12 @@ from ..crypto import uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import ApplicationHook, CertificateValidator
 from .address_space import AddressSpace, AttributeService, MethodService, NodeData, NodeManagementService, ViewService
+from .diagnostics import DiagnosticsCollector
 from .event_generator import EventGenerator
 from .history import HistoryManager
 from .identity import TOKEN_TYPES, IdentityGuard
 from .internal_session import InternalSession, SessionManager
+from .model_change import ModelChangeNotifier
 from .service_dispatch import Dispatcher
 from .service_handlers import build_service_table
 from .subscription_service import SubscriptionService
@@ -179,6 +181,9 @@ class InternalServer:
         self.application_hook: ApplicationHook | None = None
         """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
+        self.diagnostics = DiagnosticsCollector(self)  # J: diagnostics (SRV-91)
+        self.model_changes = ModelChangeNotifier(self)  # J: model change events (SRV-96)
+        self.model_change_events: str = "all"
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())
         self.isession: InternalSession = self.session_manager.new_in_process_session()
@@ -194,6 +199,7 @@ class InternalServer:
         await self.load_standard_address_space(shelffile)
         await self._address_space_fixes()
         await self.setup_nodes()
+        await self.diagnostics.install()  # J: diagnostics (SRV-91)
         await self.history_manager.init()
         if self.bind_condition_methods:
             await self.setup_condition_methods()
@@ -325,6 +331,7 @@ class InternalServer:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
         self.session_manager.start()
+        self.model_changes.enabled = True  # J: model change events (SRV-96)
 
     async def set_server_state(self, state: ua.ServerState) -> None:
         status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
@@ -336,6 +343,7 @@ class InternalServer:
 
     async def stop(self) -> None:
         self.logger.info("stopping internal server")
+        self.model_changes.enabled = False  # J: model change events (SRV-96)
         if self.time_task:
             self._time_task_stop.set()
             await self.time_task
@@ -344,6 +352,7 @@ class InternalServer:
         for sub_id, sub in list(self.subscription_service.subscriptions.items()):
             await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
+        await self.diagnostics.stop()  # J: diagnostics (SRV-91)
 
     async def _set_current_time_loop(self) -> None:
         while not self._time_task_stop.is_set():

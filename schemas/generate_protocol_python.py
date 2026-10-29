@@ -188,7 +188,7 @@ class CodeGenerator:
                 typestring = f"{typestring} | None"
             fieldname = field.name
 
-            if field.name == "Encoding":
+            if field.name == "Encoding" and field.data_type == "Byte":
                 val = 0 if not extobj_hack else 1
                 self.write(f"{field.name}: Byte = field(default={val}, repr=False, init=False, compare=False)")
             elif field.data_type == obj.name:  # help!!! self referencing class

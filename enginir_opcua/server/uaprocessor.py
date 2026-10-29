@@ -191,11 +191,13 @@ class UaProcessor:
             return False
         except TransportError as e:
             _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self.iserver.diagnostics.channel_rejected(e.status)  # J: diagnostics (SRV-93)
             self._send_error(e.status)
             return False
         except Exception as e:
             _logger.warning("Closing connection from %s: channel failure", self.name, exc_info=True)
             status = e.code if isinstance(e, ua.UaStatusCodeError) else ua.StatusCodes.BadSecurityChecksFailed
+            self.iserver.diagnostics.channel_rejected(status)  # J: diagnostics (SRV-93)
             self._send_error(status)
             return False
         if isinstance(msg, ua.Message):

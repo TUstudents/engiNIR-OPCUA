@@ -39,6 +39,7 @@ from enginir_opcua.ua.numeric_range import IndexRange
 
 from .continuation_points import BrowseCursor, ContinuationPoints
 from .datatype_check import BASE_DATA_TYPE, DataTypeChecker, check_variant
+from .model_change import NODE_ADDED, NODE_DELETED, REFERENCE_ADDED, REFERENCE_DELETED, record_change
 
 ALL_ELEMENTS_PROCESSED = 0xFFFFFFFF
 HIERARCHICAL_REFERENCES = ua.NodeId(ua.ObjectIds.HierarchicalReferences)
@@ -418,6 +419,8 @@ class NodeManagementService:
     def __init__(self, aspace: AddressSpace) -> None:
         self.logger = logging.getLogger(__name__)
         self._aspace: AddressSpace = aspace
+        self._adding: ua.NodeId | None = None
+        self.delete_guards: list[Callable[[ua.NodeId], ua.StatusCode | None]] = []  # J: Program lifetime (COM-121)
 
     def add_nodes(self, addnodeitems: list[ua.AddNodesItem], trusted: bool = True) -> list[ua.AddNodesResult]:
         return [self._add_node(item, trusted) for item in addnodeitems]
@@ -429,6 +432,15 @@ class NodeManagementService:
             ret = self._add_node(item, trusted, check=check)
             if not ret.StatusCode.is_good():
                 yield item
+
+    def _type_for_change(self, node_id: ua.NodeId) -> ua.NodeId:
+        node = self._aspace.get(node_id)
+        if node is None or self._aspace.node_class_of(node) not in (ua.NodeClass.Object, ua.NodeClass.Variable):
+            return ua.NodeId()
+        return self._aspace.type_definition_of(node)
+
+    def _record(self, node_id: ua.NodeId, verb: int) -> None:
+        record_change(node_id, verb, lambda: self._type_for_change(node_id))  # J: model change events (SRV-96)
 
     def _add_node(self, item: ua.AddNodesItem, trusted: bool, check: bool = True) -> ua.AddNodesResult:
         try:
@@ -466,6 +478,7 @@ class NodeManagementService:
         if check:
             self._complete_attributes(nodedata, item, type_definition)
         aspace[nodedata.nodeid] = nodedata
+        self._adding = nodedata.nodeid
         try:
             if parentdata is not None:
                 self._add_ref_from_parent(nodedata, item, parentdata)
@@ -476,6 +489,9 @@ class NodeManagementService:
         except Exception:
             self._remove_added_node(nodedata, parentdata)
             raise
+        finally:
+            self._adding = None
+        self._record(nodedata.nodeid, NODE_ADDED)
         return nodedata.nodeid
 
     def _remove_added_node(self, nodedata: NodeData, parentdata: NodeData | None) -> None:
@@ -640,6 +656,8 @@ class NodeManagementService:
         nodedata.references.append(desc)
         nodedata.reference_version += 1
         self._aspace.reference_added(nodedata.nodeid, desc.NodeId)
+        if nodedata.nodeid != self._adding:
+            self._record(nodedata.nodeid, REFERENCE_ADDED)
         return ua.StatusCode()
 
     def _add_ref_from_parent(self, nodedata: NodeData, item: ua.AddNodesItem, parentdata: NodeData) -> None:
@@ -687,7 +705,13 @@ class NodeManagementService:
             return ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)
         if not trusted and item.NodeId.NamespaceIndex == 0:
             return ua.StatusCode(ua.StatusCodes.BadNoDeleteRights)
+        if not trusted:
+            for guard in self.delete_guards:  # J: Program lifetime (COM-121)
+                refused = guard(item.NodeId)
+                if refused is not None:
+                    return refused
 
+        self._record(item.NodeId, NODE_DELETED)
         if item.DeleteTargetReferences:
             for source in self._aspace.referencing_nodes(item.NodeId):
                 sourcedata = self._aspace.get(source)
@@ -696,6 +720,7 @@ class NodeManagementService:
                 sourcedata.references[:] = [ref for ref in sourcedata.references if ref.NodeId != item.NodeId]
                 sourcedata.reference_version += 1
                 self._aspace.reference_removed(source, item.NodeId)
+                self._record(source, REFERENCE_DELETED)
 
         await self._delete_node_callbacks(self._aspace[item.NodeId])
 
@@ -797,6 +822,7 @@ class NodeManagementService:
                     self._aspace[source].references.remove(rdesc)
                     self._aspace[source].reference_version += 1
                     self._aspace.reference_removed(source, target)
+                    self._record(source, REFERENCE_DELETED)
                     return ua.StatusCode()
         return ua.StatusCode(ua.StatusCodes.BadNotFound)
 

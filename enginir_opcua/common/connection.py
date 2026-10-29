@@ -37,6 +37,10 @@ KNOWN_MESSAGE_TYPES = frozenset(
 )
 
 
+REVERSE_HELLO_TYPES = frozenset({ua.MessageType.ReverseHello, ua.MessageType.Error})
+MAX_REVERSE_HELLO_SIZE = 8 + 2 * (4 + MAX_ENDPOINT_URL_BYTES)
+
+
 def _refuse_unchecked_certificate(_chain: bytes) -> None:
     raise TransportError(
         ua.StatusCodes.BadSecurityChecksFailed,
@@ -99,6 +103,14 @@ class MessageAborted(UaError):
         self.written = written
 
 
+def reverse_hello_to_binary(server_uri: str, endpoint_url: str) -> bytes:
+    """A ReverseHello message (OPC 10000-6 v1.05, 7.1.2.6); both strings encode to fewer than 4096 bytes."""
+    for name, value in (("ServerUri", server_uri), ("EndpointUrl", endpoint_url)):
+        if len(value.encode()) >= MAX_ENDPOINT_URL_BYTES:
+            raise ValueError(f"{name} must encode to fewer than {MAX_ENDPOINT_URL_BYTES} bytes")
+    return uatcp_to_binary(ua.MessageType.ReverseHello, ua.ReverseHello(server_uri, endpoint_url))
+
+
 def error_message_to_binary(status: int, reason: str = "") -> bytes:
     reason = reason.encode()[:MAX_ERROR_REASON_BYTES].decode(errors="ignore")
     return uatcp_to_binary(ua.MessageType.Error, ua.ErrorMessage(ua.StatusCode(status), reason))
@@ -110,9 +122,10 @@ class FrameReader:
     The size of a message is checked against the limit before any of its body is waited for.
     """
 
-    def __init__(self, max_frame_size: Callable[[], int]) -> None:
+    def __init__(self, max_frame_size: Callable[[], int], known_types: frozenset[bytes] = KNOWN_MESSAGE_TYPES) -> None:
         self.buffer = bytearray()
         self._max_frame_size = max_frame_size
+        self._known_types = known_types
 
     def feed(self, data: bytes) -> None:
         self.buffer += data
@@ -123,7 +136,7 @@ class FrameReader:
             while True:
                 if len(self.buffer) - pos < 3:
                     return
-                if bytes(self.buffer[pos : pos + 3]) not in KNOWN_MESSAGE_TYPES:
+                if bytes(self.buffer[pos : pos + 3]) not in self._known_types:
                     raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Unknown message type")
                 try:
                     header = header_from_binary(Buffer(bytes(self.buffer[pos : pos + ua.Header.max_size()])))

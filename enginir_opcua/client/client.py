@@ -48,7 +48,7 @@ from ..ua.uaerrors import (
     BadSessionNotActivated,
     ConfigurationError,
 )
-from .ua_client import StateSubscription, UaClient, UaClientState
+from .ua_client import ReverseConnectListener, ReverseTarget, StateSubscription, UaClient, UaClientState
 from .ua_session import check_result_count
 
 _logger = logging.getLogger(__name__)
@@ -74,6 +74,18 @@ _T = TypeVar("_T")
 _supervisor_owns_requests: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "enginir_opcua.supervisor_owns_requests", default=False
 )
+
+
+@dataclasses.dataclass
+class _ReverseConfig:
+    """Reverse connect of one client (OPC 10000-6 v1.05, 7.1.3): the listener, the server it waits for."""
+
+    listener: ReverseConnectListener
+    target: ReverseTarget
+    server_uri: str
+    accept_timeout: float
+    owns_listener: bool
+    announced_endpoint_url: str | None = None
 
 
 class Client:
@@ -189,6 +201,45 @@ class Client:
         # server-side session via ActivateSession instead of creating a new one
         # (OPC 10000-4 v1.05, 6.7) — useful after a client crash.
         self.session_state_path: Path | None = None
+        self._reverse: _ReverseConfig | None = None
+
+    def listen_reverse(
+        self,
+        listen_url: str,
+        server_uri: str,
+        endpoint_url: str | None = None,
+        accept_timeout: float = 60.0,
+        rhe_deadline: float = 30.0,
+    ) -> None:
+        """
+        Wait for the server to open the connection (reverse connect, OPC 10000-6 v1.05, 7.1.3) instead of dialling it.
+        The client listens on listen_url from connect() until disconnect(), accepts a ReverseHello only from the server
+        with the application URI server_uri and the endpoint endpoint_url (default: the URL of this client) and then
+        runs Hello, OpenSecureChannel and the session on that socket. Call before connect().
+        """
+        self.use_reverse_listener(
+            ReverseConnectListener(listen_url, rhe_deadline), server_uri, endpoint_url, accept_timeout, owns=True
+        )
+
+    def use_reverse_listener(
+        self,
+        listener: ReverseConnectListener,
+        server_uri: str,
+        endpoint_url: str | None = None,
+        accept_timeout: float = 60.0,
+        owns: bool = False,
+    ) -> None:
+        """Like listen_reverse, with a listener that several clients share; its owner starts and stops it."""
+        if self.uaclient.state is not UaClientState.DISCONNECTED:
+            raise ConfigurationError("Reverse connect must be configured before connect()")
+        if not server_uri:
+            raise ConfigurationError("The application URI of the server is needed for reverse connect")
+        target = listener.target(server_uri, endpoint_url or self.server_url.geturl())
+        self._reverse = _ReverseConfig(listener, target, server_uri, accept_timeout, owns)
+
+    async def _close_private_reverse_listener(self) -> None:
+        if self._reverse is not None and self._reverse.owns_listener:
+            await self._reverse.listener.stop()
 
     async def __aenter__(self) -> "Client":
         await self.connect()
@@ -535,6 +586,7 @@ class Client:
                 await self.close_secure_channel()
         finally:
             self.disconnect_socket()
+            await self._close_private_reverse_listener()
 
     async def connect_and_get_server_endpoints(self) -> list[ua.EndpointDescription]:
         """
@@ -681,6 +733,7 @@ class Client:
         except Exception:
             _logger.exception("close_secure_channel raised during disconnect; continuing teardown")
         self.disconnect_socket()
+        await self._close_private_reverse_listener()
         self._clear_persisted_session()
         self._close_subscriptions()
 
@@ -778,6 +831,7 @@ class Client:
             await self.close_secure_channel()
         finally:
             self.disconnect_socket()
+            await self._close_private_reverse_listener()
 
     async def connect_socket(self) -> None:
         """
@@ -785,7 +839,17 @@ class Client:
         """
 
         await self._prepare_certificate_validation()
-        await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port or DEFAULT_PORT)
+        reverse = self._reverse
+        if reverse is None:
+            await self.uaclient.connect_socket(self.server_url.hostname, self.server_url.port or DEFAULT_PORT)
+            return
+        await reverse.listener.start()
+        transport, reverse.announced_endpoint_url = await reverse.target.accept(reverse.accept_timeout)
+        host = urlparse(reverse.target.endpoint_url).hostname or self.server_url.hostname
+        expected_uri = (
+            reverse.server_uri if not isinstance(self.security_policy, security_policies.SecurityPolicyNone) else None
+        )
+        self.uaclient.attach_socket(cast(asyncio.Transport, transport), cast(str, host), expected_uri)
 
     async def _prepare_certificate_validation(self) -> None:
         if self.certificate_validator is not None:
@@ -809,7 +873,10 @@ class Client:
         """
         Send OPC-UA hello to server
         """
-        await self.uaclient.send_hello(self.server_url.geturl(), self.max_messagesize, self.max_chunkcount)
+        url = self.server_url.geturl()
+        if self._reverse is not None and self._reverse.announced_endpoint_url is not None:
+            url = self._reverse.announced_endpoint_url
+        await self.uaclient.send_hello(url, self.max_messagesize, self.max_chunkcount)
 
     async def open_secure_channel(self, renew: bool = False) -> None:
         """

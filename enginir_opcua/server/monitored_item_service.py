@@ -95,6 +95,9 @@ class MonitoredItemService:
     def item_count(self) -> int:
         return len(self._monitored_items)
 
+    def disabled_count(self) -> int:
+        return sum(1 for mdata in self._monitored_items.values() if mdata.mode == ua.MonitoringMode.Disabled)
+
     def delete_all_monitored_items(self) -> None:
         self.delete_monitored_items([mdata.monitored_item_id for mdata in self._monitored_items.values()])
 
@@ -428,6 +431,8 @@ class MonitoredItemService:
             mdata.overflowed = False
             return
         first_discard = not mdata.overflowed
+        if first_discard:
+            self.isub.counters.event_queue_overflow_count += 1  # J: diagnostics (SRV-93)
         mdata.overflowed = True
         discarded = entries[:excess] if mdata.discard_oldest else entries[len(entries) - excess :]
         queue[:] = [entry for entry in queue if not any(entry is gone for gone in discarded)]
@@ -480,6 +485,7 @@ class MonitoredItemService:
         if size == 1:
             queue[:] = [notification]
             return
+        self.isub.counters.monitoring_queue_overflow_count += excess  # J: diagnostics (SRV-93)
         if mdata.discard_oldest:
             del queue[:excess]
             queue.append(notification)

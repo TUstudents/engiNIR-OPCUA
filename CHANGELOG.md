@@ -466,3 +466,28 @@ PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
   `DataSetMeta.add_array` creates an array field, `remove_field` removes it, versions follow the changes, and
   `PublishedDataItems.Create` no longer inverts the promoted flag. `DataSetField.get_datatype_name(types)` looks the type up
   in the given registry.
+
+Server infrastructure (workstream J):
+- Reverse connect (OPC 10000-6, 7.1.2.6 and 7.1.3). `Server.add_reverse_connect(client_url, endpoint_url=None,
+  retry_interval=5.0)` connects out to a listening client, sends a ReverseHello, keeps one such socket open per client
+  and reconnects with a back-off; `remove_reverse_connect()` ends it. `Client.listen_reverse(listen_url, server_uri,
+  endpoint_url=None)` waits for that server, also when the connection is lost and the session is reactivated;
+  `ReverseConnectListener` shares one listening port between several clients (`Client.use_reverse_listener`). A
+  ReverseHello of an unknown server is refused with `Bad_TcpEndpointUrlInvalid`. `ua.ReverseHello` and
+  `ua.MessageType.ReverseHello` are new.
+- Diagnostics (OPC 10000-5, 6.3.3). `Server.diagnostics` keeps the counters of `ServerDiagnosticsSummary`, which the
+  standard nodes now return instead of a null value; `EnabledFlag` (default FALSE, writable by Admin and
+  SecurityAdmin, or `server.diagnostics.enabled`) adds `SessionDiagnosticsArray`, `SubscriptionDiagnosticsArray`,
+  `SessionSecurityDiagnosticsArray` and an Object per Session. The security diagnostics are returned only to a
+  SecurityAdmin on a SignAndEncrypt channel, and to a Session about itself. `SamplingIntervalDiagnosticsArray` is no
+  longer in the address space.
+- Model change events (OPC 10000-3, 9.32). A request that adds or deletes nodes or references raises one
+  `GeneralModelChangeEvent` from the Server Object; `async with server.model_change():` batches several calls into
+  one event. A node that has a `NodeVersion` property gets a new value. `Server.model_change_events` is `"all"` (every
+  changed node, the default) or `"versioned"` (only nodes with a `NodeVersion`).
+- `enginir_opcua.common.programs.ProgramStateMachine` makes a Program of ProgramStateMachineType (OPC 10000-10) with the
+  control Methods you supply, `Executable` that follows the state, `ProgramTransitionEvent`s, `ProgramDiagnostic`,
+  recycle and instance counts, and deletion rules. Breaking: `ProgramStateMachine` of `common/statemachine.py` was a stub
+  that raised `NotImplementedError` and is removed there.
+- A structure field named `Encoding` (`SessionSecurityDiagnosticsDataType`) is encoded as a field and no longer as the
+  encoding byte.
