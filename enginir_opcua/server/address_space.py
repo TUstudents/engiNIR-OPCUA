@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
+import contextvars
 import dataclasses
 import inspect
 import logging
@@ -1018,7 +1019,7 @@ class MethodService:
             return await func(parent, *args)
         if self._pool is None:
             self._pool = ThreadPoolExecutor()
-        p = partial(func, parent, *args)
+        p = partial(contextvars.copy_context().run, func, parent, *args)
         res = await asyncio.get_event_loop().run_in_executor(self._pool, p)
         return res
 

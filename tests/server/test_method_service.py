@@ -2,6 +2,8 @@ from typing import Any
 
 from enginir_opcua import Node, ua
 from enginir_opcua.common.instantiate_util import instantiate
+from enginir_opcua.crypto.permission_rules import UserRole
+from enginir_opcua.server.internal_session import current_call_session
 from tests.access_rig import AccessRig, make_access_rig  # noqa: F401
 
 
@@ -234,3 +236,23 @@ async def test_srv83_standard_and_instantiated_methods_are_executable(access_rig
     assert methods
     for node in methods:
         assert await is_set(node, ua.AttributeIds.Executable)
+
+
+async def test_method_callback_sees_the_calling_session(access_rig: AccessRig) -> None:
+    """Part 9, 5.5.7 and 5.7.3: Condition Methods act for the calling Session."""
+    seen: list[tuple[UserRole, ua.MessageSecurityMode | None]] = []
+
+    def callback(parent_id: ua.NodeId, *arguments: ua.Variant) -> None:
+        session = current_call_session.get()
+        assert session is not None
+        seen.append((session.user.role, session.channel_security_mode))
+
+    owner = await access_rig.server.nodes.objects.add_object(access_rig.node_id("WhoCalls"), "WhoCalls")
+    method = await owner.add_method(access_rig.node_id("WhoCallsMethod"), "WhoCallsMethod", callback, [], [])
+    assert current_call_session.get() is None
+    await call(access_rig, owner.nodeid, method.nodeid, admin=True)
+    await call(access_rig, owner.nodeid, method.nodeid)
+    assert [role for role, _mode in seen] == [UserRole.Admin, UserRole.User]
+    assert all(mode is not None for _name, mode in seen)
+    await owner.call_method(method)
+    assert current_call_session.get() is None
