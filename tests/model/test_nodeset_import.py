@@ -518,14 +518,17 @@ def test_com48_invalid_boolean_raises() -> None:
         parse('<UAVariable NodeId="i=1" BrowseName="1:V" Historizing="maybe"/>')
 
 
-def test_com49_naive_datetime_is_utc() -> None:
-    data = parse(variable("<uax:DateTime>2020-01-02T03:04:05</uax:DateTime>"))[0]
-    assert data.value == datetime.datetime(2020, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
-
-
-def test_com49_datetime_with_offset_is_converted() -> None:
-    data = parse(variable("<uax:DateTime>2020-01-02T03:04:05+01:00</uax:DateTime>"))[0]
-    assert data.value == datetime.datetime(2020, 1, 2, 2, 4, 5, tzinfo=datetime.UTC)
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("2020-01-02T03:04:05", datetime.datetime(2020, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)),
+        ("2020-01-02T03:04:05+01:00", datetime.datetime(2020, 1, 2, 2, 4, 5, tzinfo=datetime.UTC)),
+    ],
+    ids=["com49-naive-is-utc", "com49-offset-is-converted"],
+)
+def test_datetime_value_is_normalised_to_utc(text: str, expected: datetime.datetime) -> None:
+    data = parse(variable(f"<uax:DateTime>{text}</uax:DateTime>"))[0]
+    assert data.value == expected
 
 
 @pytest.mark.parametrize("tag", ["String", "XmlElement"])

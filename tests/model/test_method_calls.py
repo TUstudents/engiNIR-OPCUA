@@ -81,22 +81,18 @@ async def test_method_async(opc):
     await call_method_full(o, m)
 
 
-async def test_method_byte_array(opc):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ua.Variant((2, 3, 4), ua.VariantType.Byte),
+        ua.Variant(b"\x02\x03\x04", ua.VariantType.ByteString),
+    ],
+    ids=["byte-array", "byte-string"],
+)
+async def test_method_byte_array(opc, payload):
     o = opc.opc.nodes.objects
     m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(
-        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant((2, 3, 4), ua.VariantType.Byte)
-    )
-    assert val == 1
-    assert mybytes == [2, 3]
-
-
-async def test_method_byte_array_better(opc):
-    o = opc.opc.nodes.objects
-    m = await o.get_child("2:ServerMethodByteArray")
-    val, mybytes = await o.call_method(
-        m, ua.Variant(1, ua.VariantType.Byte), ua.Variant(b"\x02\x03\x04", ua.VariantType.ByteString)
-    )
+    val, mybytes = await o.call_method(m, ua.Variant(1, ua.VariantType.Byte), payload)
     assert val == 1
     assert mybytes == [2, 3]
 

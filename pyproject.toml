@@ -66,6 +66,7 @@ dev = [
   "pytest-cov",
   "pytest-mock",
   "pytest-repeat",
+  "pytest-xdist",
   "ruff",
   "types-python-dateutil",
   "types-pytz",

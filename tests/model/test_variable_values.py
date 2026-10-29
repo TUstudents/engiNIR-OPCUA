@@ -74,23 +74,19 @@ async def test_variant_array_dim(opc):
     await opc.opc.delete_nodes([v, v1])
 
 
-async def test_add_numeric_variable(opc):
+@pytest.mark.parametrize(
+    ("nodeid_text", "browse_name", "value", "expected"),
+    [
+        ("ns=3;i=888;", "numericnodefromstring", 99, ua.NodeId(888, 3)),
+        ("ns=3;s=stringid", "stringnodefromstring", [68], ua.NodeId("stringid", 3)),
+    ],
+    ids=["numeric", "string"],
+)
+async def test_add_variable_with_a_nodeid_string(opc, nodeid_text, browse_name, value, expected):
     objects = opc.opc.nodes.objects
-    v = await objects.add_variable("ns=3;i=888;", "3:numericnodefromstring", 99)
-    nid = ua.NodeId(888, 3)
-    qn = ua.QualifiedName("numericnodefromstring", 3)
-    assert nid == v.nodeid
-    assert qn == await v.read_browse_name()
-    await opc.opc.delete_nodes([v])
-
-
-async def test_add_string_variable(opc):
-    objects = opc.opc.nodes.objects
-    v = await objects.add_variable("ns=3;s=stringid", "3:stringnodefromstring", [68])
-    nid = ua.NodeId("stringid", 3)
-    qn = ua.QualifiedName("stringnodefromstring", 3)
-    assert nid == v.nodeid
-    assert qn == await v.read_browse_name()
+    v = await objects.add_variable(nodeid_text, f"3:{browse_name}", value)
+    assert expected == v.nodeid
+    assert ua.QualifiedName(browse_name, 3) == await v.read_browse_name()
     await opc.opc.delete_nodes([v])
 
 

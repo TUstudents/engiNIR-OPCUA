@@ -239,24 +239,18 @@ async def test_reference_with_nodeid_reftype(opc):
     await opc.opc.delete_nodes([fold, newtype], recursive=True)
 
 
-async def test_add_numeric_node(opc):
+@pytest.mark.parametrize(
+    ("nid", "browse_name"),
+    [(ua.NodeId(9999, 3), "AddNodeVar1"), (ua.NodeId("AddNodeVar2Id", 3), "AddNodeVar2")],
+    ids=["numeric", "string"],
+)
+async def test_add_node_with_a_nodeid(opc, nid, browse_name):
     objects = opc.opc.nodes.objects
-    nid = ua.NodeId(9999, 3)
-    qn = ua.QualifiedName("AddNodeVar1", 3)
-    v1 = await objects.add_variable(nid, qn, 0)
-    assert nid == v1.nodeid
-    assert qn == await v1.read_browse_name()
-    await opc.opc.delete_nodes([v1])
-
-
-async def test_add_string_node(opc):
-    objects = opc.opc.nodes.objects
-    qn = ua.QualifiedName("AddNodeVar2", 3)
-    nid = ua.NodeId("AddNodeVar2Id", 3)
-    v2 = await objects.add_variable(nid, qn, 0)
-    assert nid == v2.nodeid
-    assert qn == await v2.read_browse_name()
-    await opc.opc.delete_nodes([v2])
+    qn = ua.QualifiedName(browse_name, 3)
+    v = await objects.add_variable(nid, qn, 0)
+    assert nid == v.nodeid
+    assert qn == await v.read_browse_name()
+    await opc.opc.delete_nodes([v])
 
 
 async def test_add_find_node_(opc):
