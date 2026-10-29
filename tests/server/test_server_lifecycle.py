@@ -271,13 +271,20 @@ async def test_unacked_buffer_cap_propagated_from_iserver() -> None:
         await srv.stop()
 
 
-async def test_monitored_item_queue_size_clamped() -> None:
-    """RequestedQueueSize larger than max_monitored_item_queue_size is revised down."""
+@pytest.mark.parametrize(
+    ("server_maximum", "requested", "revised"),
+    [
+        pytest.param(100, 100_000, 100, id="queue_size_clamped_to_the_server_maximum"),
+        pytest.param(250, 0, 1, id="srv13_zero_queue_size_of_a_data_item_is_revised_to_one"),
+    ],
+)
+async def test_monitored_item_queue_size_is_revised(server_maximum: int, requested: int, revised: int) -> None:
+    """Part 4, 7.21: a queue size above the maximum is revised down; 0 or 1 gives a queue of one value."""
     port = find_free_port()
     srv = await _start_server(port)
-    srv.iserver.max_monitored_item_queue_size = 100
+    srv.iserver.max_monitored_item_queue_size = server_maximum
     objects = srv.get_objects_node()
-    variable = await objects.add_variable(2, "ClampVar", 0)
+    variable = await objects.add_variable(2, "QueueVar", 0)
 
     client = Client(f"opc.tcp://127.0.0.1:{port}")
     await client.connect()
@@ -292,7 +299,7 @@ async def test_monitored_item_queue_size_clamped() -> None:
         mparams = ua.MonitoringParameters()
         mparams.ClientHandle = 9999
         mparams.SamplingInterval = 50
-        mparams.QueueSize = 100_000
+        mparams.QueueSize = requested
         mparams.DiscardOldest = True
         mir = ua.MonitoredItemCreateRequest()
         mir.ItemToMonitor = rv
@@ -301,44 +308,7 @@ async def test_monitored_item_queue_size_clamped() -> None:
         request.ItemsToCreate = [mir]
         results = await client.uaclient.create_monitored_items(request)
         assert results[0].StatusCode.is_good()
-        assert results[0].RevisedQueueSize == 100
-        await sub.delete()
-    finally:
-        await client.disconnect()
-        await srv.stop()
-
-
-async def test_srv13_zero_queue_size_of_a_data_item_is_revised_to_one() -> None:
-    """Part 4, 7.21: a queue size of 0 or 1 gives a queue of one value for a data item."""
-    port = find_free_port()
-    srv = await _start_server(port)
-    srv.iserver.max_monitored_item_queue_size = 250
-    objects = srv.get_objects_node()
-    variable = await objects.add_variable(2, "DefaultVar", 0)
-
-    client = Client(f"opc.tcp://127.0.0.1:{port}")
-    await client.connect()
-    try:
-        sub = await client.create_subscription(50)
-        request = ua.CreateMonitoredItemsParameters()
-        request.SubscriptionId = sub.subscription_id
-        request.TimestampsToReturn = ua.TimestampsToReturn.Both
-        rv = ua.ReadValueId()
-        rv.NodeId = variable.nodeid
-        rv.AttributeId = ua.AttributeIds.Value
-        mparams = ua.MonitoringParameters()
-        mparams.ClientHandle = 9998
-        mparams.SamplingInterval = 50
-        mparams.QueueSize = 0
-        mparams.DiscardOldest = True
-        mir = ua.MonitoredItemCreateRequest()
-        mir.ItemToMonitor = rv
-        mir.MonitoringMode = ua.MonitoringMode.Reporting
-        mir.RequestedParameters = mparams
-        request.ItemsToCreate = [mir]
-        results = await client.uaclient.create_monitored_items(request)
-        assert results[0].StatusCode.is_good()
-        assert results[0].RevisedQueueSize == 1
+        assert results[0].RevisedQueueSize == revised
         await sub.delete()
     finally:
         await client.disconnect()

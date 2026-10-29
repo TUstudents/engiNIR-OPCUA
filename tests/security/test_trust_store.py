@@ -186,8 +186,9 @@ async def secure_client(
     return client
 
 
-async def test_srv3_trusted_client_certificate_connects(tmp_path: Path) -> None:
-    """Part 4, 6.1.3: a client certificate in the trusted list opens the channel."""
+async def test_srv3_cli21_trusted_client_certificate_connects_with_a_pinned_server_certificate(tmp_path: Path) -> None:
+    """Part 4, 6.1.3: a client certificate in the trusted list opens the channel, and a server certificate passed
+    explicitly to set_security is the one that is trusted."""
     async with running_server(trust_directory(tmp_path / "trusted", PKI.peer1)) as server:
         client = await secure_client(server, server_peer=PKI.server)
         async with client:
@@ -310,14 +311,6 @@ async def test_cli21_client_checks_the_host_name_of_the_server_certificate(tmp_p
         with pytest.raises(ua.uaerrors.BadCertificateHostNameInvalid):
             await client.connect()
         client.uaclient.disconnect_socket()
-
-
-async def test_cli21_pinned_server_certificate_is_trusted_without_a_trust_store(tmp_path: Path) -> None:
-    """Part 4, 6.1.3: a server certificate passed explicitly to set_security is the one that is trusted."""
-    async with running_server(trust_directory(tmp_path / "trusted", PKI.peer1)) as server:
-        client = await secure_client(server, server_peer=PKI.server)
-        async with client:
-            assert await client.nodes.objects.get_children()
 
 
 async def test_cli21_pinned_server_certificate_is_not_trusted_for_another_server(tmp_path: Path) -> None:

@@ -123,10 +123,17 @@ async def test_srv6_unknown_policy_id_is_rejected(
     await client.disconnect()
 
 
-async def test_srv6_token_without_password_goes_to_the_user_manager(shared_signing_server: Server) -> None:
-    """A token without a password carries no secret to encrypt; the user manager decides about it."""
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("", id="srv6_token_without_a_password_goes_to_the_user_manager"),
+        pytest.param("wrong", id="srv6_wrong_password"),
+    ],
+)
+async def test_srv6_bad_password_is_user_access_denied(shared_signing_server: Server, password: str) -> None:
+    """Part 4, 5.7.3.3: a valid token with a wrong or empty password is Bad_UserAccessDenied."""
     client = await signing_client(shared_signing_server)
-    client.set_password("")
+    client.set_password(password)
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await client.connect()
     await client.disconnect()
@@ -199,15 +206,6 @@ async def test_srv48_secret_with_zero_padding_is_accepted(
     client = await signing_client(shared_signing_server)
     async with client:
         assert await client.nodes.server_state.read_value() == ua.ServerState.Running
-
-
-async def test_srv6_wrong_password_is_user_access_denied(shared_signing_server: Server) -> None:
-    """Part 4, 5.7.3.3: a valid token with a wrong password is Bad_UserAccessDenied."""
-    client = await signing_client(shared_signing_server)
-    client.set_password("wrong")
-    with pytest.raises(ua.uaerrors.BadUserAccessDenied):
-        await client.connect()
-    await client.disconnect()
 
 
 port_num = find_free_port()

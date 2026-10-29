@@ -107,10 +107,18 @@ def test_ua37_extensionobject_xml_body_round_trips() -> None:
     assert extensionobject_to_binary(extensionobject_from_binary(Buffer(data))) == data
 
 
-def test_ua37_extensionobject_unknown_encoding_raises() -> None:
-    """Part 6, 5.2.2.15: only encodings 0, 1 and 2 are defined."""
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        pytest.param("03 00000000", id="ua37_unknown_encoding"),
+        pytest.param("01 fdffffff 6162", id="ua44_length_below_minus_one"),
+        pytest.param("01 10000000 6162", id="ua44_length_beyond_data"),
+    ],
+)
+def test_malformed_extensionobject_raises(encoded: str) -> None:
+    """Part 6, 5.2.2.15: only encodings 0, 1 and 2 exist, a length is -1 or not negative, and the body is as long as its length says."""
     with pytest.raises(ua.UaError):
-        extensionobject_from_binary(Buffer(UNKNOWN_TYPE_ID + bytes.fromhex("03 00000000")))
+        extensionobject_from_binary(Buffer(UNKNOWN_TYPE_ID + bytes.fromhex(encoded)))
 
 
 def test_ua38_extensionobject_empty_structure_has_length() -> None:
@@ -198,18 +206,6 @@ def test_ua44_extensionobject_length_minus_one_known_type_decodes_from_stream() 
     buf = Buffer(data)
     assert isinstance(extensionobject_from_binary(buf), ua.MonitoringFilter)
     assert ua_binary.Primitives.Int32.unpack(buf) == 1234
-
-
-def test_ua44_extensionobject_length_below_minus_one_raises() -> None:
-    """Part 6, 5.2.2.15: a length is -1 or not negative."""
-    with pytest.raises(ua.UaError):
-        extensionobject_from_binary(Buffer(UNKNOWN_TYPE_ID + bytes.fromhex("01 fdffffff 6162")))
-
-
-def test_ua44_extensionobject_length_beyond_data_raises() -> None:
-    """Part 6, 5.2.2.15: the body is as long as its length says."""
-    with pytest.raises(ua.UaError):
-        extensionobject_from_binary(Buffer(UNKNOWN_TYPE_ID + bytes.fromhex("01 10000000 6162")))
 
 
 def _variant_with_dimensions(count: int, dims: list[int] | None) -> bytes:

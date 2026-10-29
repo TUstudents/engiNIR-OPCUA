@@ -529,16 +529,6 @@ async def test_history_ev_read_3_with_end(history_server):
     assert res[0].Severity == history_server.ev_values[-1]
 
 
-async def test_history_ev_read_all_filter_order_reversed(history_server):
-    """reverse event filter select clauses and test that results match the filter order"""
-    now = datetime.now(UTC)
-    old = now - timedelta(days=6)
-    res = await history_server.srv_node.read_event_history(old, None, 100)
-    assert 20 == len(res)
-    assert res[-1].Severity == history_server.ev_values[-1]
-    assert res[0].Severity == history_server.ev_values[0]
-
-
 async def test_com15_read_event_history_without_arguments_reads_everything_until_now(history_server):
     """Part 11, 6.5.2: a read needs two of start, end and count; the client fills in a valid range."""
     res = await history_server.srv_node.read_event_history()

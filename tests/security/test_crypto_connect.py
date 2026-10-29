@@ -149,10 +149,11 @@ async def test_nocrypto_fail(srv_no_crypto):
         await clt.set_security_string(f"Basic256Sha256,Sign,{PKI.peer1.certificate},{PKI.peer1.key}")
 
 
-async def test_basic256(srv_crypto_all_certs):
+@pytest.mark.parametrize("mode", ["Sign", "SignAndEncrypt"])
+async def test_basic256(srv_crypto_all_certs, mode):
     _, cert = srv_crypto_all_certs
     clt = Client(uri_crypto)
-    await clt.set_security_string(f"Basic256Sha256,Sign,{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
+    await clt.set_security_string(f"Basic256Sha256,{mode},{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
     async with clt:
         assert await clt.nodes.objects.get_children()
 
@@ -162,14 +163,6 @@ async def test_basic128rsa15(srv_crypto_all_cert_basic128rsa15):
     clt = Client(uri_crypto_basic128rsa15, allow_deprecated_policies=True)
     print(await clt.connect_and_get_server_endpoints())
     await clt.set_security_string(f"Basic128Rsa15,Sign,{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
-    async with clt:
-        assert await clt.nodes.objects.get_children()
-
-
-async def test_basic256_encrypt(srv_crypto_all_certs):
-    _, cert = srv_crypto_all_certs
-    clt = Client(uri_crypto)
-    await clt.set_security_string(f"Basic256Sha256,SignAndEncrypt,{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
     async with clt:
         assert await clt.nodes.objects.get_children()
 
