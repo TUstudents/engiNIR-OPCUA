@@ -26,6 +26,10 @@ ROOT = Path(__file__).parent.parent.parent
 
 PORT = find_free_port()
 UNBUFFERED = {**os.environ, "PYTHONUNBUFFERED": "1"}
+INTERRUPTIBLE_CLI = (
+    "import runpy, signal; signal.signal(signal.SIGINT, signal.default_int_handler); "
+    "runpy.run_module('enginir_opcua', run_name='__main__')"
+)
 
 
 URL = f"opc.tcp://127.0.0.1:{PORT}/tools"
@@ -532,8 +536,8 @@ def port_accepts(port: int) -> bool:
 def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
     command = [
         sys.executable,
-        "-m",
-        "enginir_opcua",
+        "-c",
+        INTERRUPTIBLE_CLI,
         "subscribe",
         "-u",
         URL,
@@ -550,7 +554,7 @@ def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
 def test_tool2_ctrl_c_in_server_exits_cleanly():
     port = find_free_port()
     process = subprocess.Popen(
-        [sys.executable, "-m", "enginir_opcua", "server", "-u", f"opc.tcp://127.0.0.1:{port}"],
+        [sys.executable, "-c", INTERRUPTIBLE_CLI, "server", "-u", f"opc.tcp://127.0.0.1:{port}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
