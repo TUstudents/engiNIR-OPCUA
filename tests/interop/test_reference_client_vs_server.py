@@ -1,12 +1,14 @@
 import asyncio
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
 
-from enginir_opcua import ua
+from enginir_opcua import Server, ua
+from enginir_opcua.crypto import users_file
 
-from .reference_nodes import serve
+from .reference_nodes import SERVER_APPLICATION_URI, Observations, populate, serve
 from .support import SECURITY_CASES, USER_NAME, USER_PASSWORD, ReferenceStack, SecurityCase, free_port, make_identity
 
 pytestmark = pytest.mark.interop
@@ -138,5 +140,43 @@ async def test_reference_client_browses_a_server_with_file_and_directory_objects
             reference_client_home, running.url, *client_options(case, "anonymous"), "--browseall", "--timeout", "30"
         )
     assert "Browse the full address space." in output, output
+    assert "Client disconnected." in output, output
+    assert code == 0, output
+
+
+async def test_reference_client_connects_to_a_quickstart_server(
+    reference_stack: ReferenceStack, reference_client_home: Path, trusted_clients: Path, tmp_path: Path
+) -> None:
+    users = tmp_path / "users.toml"
+    users_file.write_users(users, [users_file.UserRecord(USER_NAME, "user", users_file.hash_password(USER_PASSWORD))])
+    port = free_port()
+    server = Server.quickstart(
+        f"opc.tcp://0.0.0.0:{port}/enginir-opcua/quickstart",
+        pki=tmp_path / "server-pki",
+        users=users,
+        application_uri=SERVER_APPLICATION_URI,
+    )
+    await server.init()
+    shutil.copytree(trusted_clients, tmp_path / "server-pki" / "trusted" / "certs", dirs_exist_ok=True)
+    _, simulation = await populate(server, Observations())
+    url = f"opc.tcp://{socket.gethostname()}:{port}/enginir-opcua/quickstart"
+    try:
+        async with server:
+            code, output = await reference_stack.run_client(
+                reference_client_home,
+                url,
+                "--autoaccept",
+                "--console",
+                "--username",
+                USER_NAME,
+                "--userpassword",
+                USER_PASSWORD,
+                "--browseall",
+                "--timeout",
+                "30",
+            )
+    finally:
+        simulation.cancel()
+    assert "Connected!" in output, output
     assert "Client disconnected." in output, output
     assert code == 0, output
