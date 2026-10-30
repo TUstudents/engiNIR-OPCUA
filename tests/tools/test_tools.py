@@ -299,6 +299,21 @@ def _listing(out: str) -> str:
     return "\n".join(line for line in out.splitlines() if not line.startswith("Browsing node "))
 
 
+@pytest.mark.parametrize(
+    ("argv", "header"),
+    [
+        (["ls", "-n", "i=85"], "Browsing node "),
+        (["history", "-n", "i=2258"], "Reading the history of node "),
+        (["discover"], "Performing discovery at "),
+    ],
+)
+def test_tool_header_line_ends_with_a_newline_not_an_escape(capsys, tool_server, argv, header):
+    _, out, _ = run(capsys, argv[0], "-u", URL, *argv[1:])
+    lines = out.splitlines()
+    assert lines[0].startswith(header) and "\\x0a" not in lines[0]
+    assert lines[1] == ""
+
+
 def test_tool5_ls_depth_two_indents_children(capsys, tool_server):
     _, out, _ = run(capsys, "ls", "-u", URL, "-n", "i=85", "-d", "2", "--format", "name")
     assert any(line.startswith("  ") for line in out.splitlines())

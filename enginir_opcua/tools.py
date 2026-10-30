@@ -471,7 +471,8 @@ async def _list_children(node: Node, depth: int, layout: str, indent: str = "") 
 
 async def _ls(client: Client, args: argparse.Namespace) -> int:
     node = await resolve_node(client, args, default=ROOT_NODE)
-    say(f"Browsing node {node} at {shown_url(args.url)}\n")
+    say(f"Browsing node {node} at {shown_url(args.url)}")
+    say()
     await _list_children(node, args.depth, args.format)
     return 0
 
@@ -514,7 +515,8 @@ async def _history(client: Client, args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     start = str_to_datetime(args.start, now - timedelta(days=1))
     end = str_to_datetime(args.end, now)
-    say(f"Reading the history of node {node} at {shown_url(args.url)}; start at {start}, end at {end}\n")
+    say(f"Reading the history of node {node} at {shown_url(args.url)}; start at {start}, end at {end}")
+    say()
     if args.events:
         for event in await node.read_event_history(start, end, numvalues=args.limit):
             say(event)
@@ -594,7 +596,8 @@ def _print_block(title: str, rows: list[tuple[str, Any]]) -> None:
 
 async def _discover(args: argparse.Namespace) -> int:
     client = Client(args.url, timeout=args.timeout)
-    say(f"Performing discovery at {shown_url(args.url)}\n")
+    say(f"Performing discovery at {shown_url(args.url)}")
+    say()
     if args.network:
         try:
             result = await client.connect_and_find_servers_on_network()
