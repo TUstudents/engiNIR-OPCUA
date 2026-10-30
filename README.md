@@ -4,9 +4,17 @@ OPC UA / IEC 62541 client and server library for Python 3.12+, built on asyncio.
 
 This repository is a fork of [FreeOpcUa/opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0, made on 2026-10-25. The original library was written by Olivier Roulet-Dubonnet and the opcua-asyncio contributors.
 
-**A new package, `enginir-opcua`, is coming soon.** It isn't on PyPI yet, and the code is being reworked, so expect breaking changes. Until then, use upstream [`asyncua`](https://pypi.org/project/asyncua/) for production.
-
 License: LGPL-3.0-or-later. See [COPYING](COPYING), [COPYING.GPL](COPYING.GPL) and [NOTICE](NOTICE).
+
+## Installation
+
+The package is [`enginir-opcua`](https://pypi.org/project/enginir-opcua/) on PyPI:
+
+```bash
+uv add enginir-opcua
+```
+
+The breaking changes from `asyncua` 2.x are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
