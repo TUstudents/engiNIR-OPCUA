@@ -75,6 +75,7 @@ docs = [
   "pydata-sphinx-theme>=0.16",
   "sphinx>=8.1",
   "sphinx-autobuild>=2024.10.3",
+  "sphinx-design>=0.6",
 ]
 
 [build-system]

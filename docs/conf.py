@@ -22,6 +22,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
     "sphinx.ext.todo",
+    "sphinx_design",
     # "sphinx_copybutton",  # Currently not working with line numbers
 ]
 
@@ -33,9 +34,11 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 # https://pydata-sphinx-theme.readthedocs.io/en/latest/user_guide/index.html
 html_theme = "pydata_sphinx_theme"
+html_title = f"engiNIR-OPCUA {release}"
 
 html_theme_options = {
     "github_url": "https://github.com/TUstudents/engiNIR-OPCUA",
+    "logo": {"text": "engiNIR-OPCUA"},
     "show_toc_level": 2, # Visible levels in the right navigation
     "show_nav_level": 2, # Default levels of expanded elements in the left navigation
 }

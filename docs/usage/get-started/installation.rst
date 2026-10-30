@@ -6,29 +6,34 @@ Package Installation
 ====================
 
 engiNIR-OPCUA is published on `PyPI <https://pypi.org/project/enginir-opcua/>`_ as :code:`enginir-opcua`
-and imported as :code:`enginir_opcua`. To install it, run
+and imported as :code:`enginir_opcua`. It needs Python 3.12 or newer. Add it to a project managed with
+`uv <https://docs.astral.sh/uv/>`_:
 
 .. code-block:: console
 
-    pip install enginir-opcua
+    uv add enginir-opcua
 
-To install the current development version from the source repository, run
+To install only the command line program, without a project:
 
 .. code-block:: console
 
-    pip install git+https://github.com/TUstudents/engiNIR-OPCUA.git
-    # or, if git is not available
-    pip install https://github.com/TUstudents/engiNIR-OPCUA/archive/refs/heads/master.zip
+    uv tool install enginir-opcua
 
-To check the installation, or to report the version in a bug report, run this in a Python interpreter:
+To use the current development version from the source repository:
 
-.. code-block:: python
+.. code-block:: console
 
-    import enginir_opcua
-    print(enginir_opcua.__version__)
+    uv add git+https://github.com/TUstudents/engiNIR-OPCUA
+
+To check the installation, or to report the version in a bug report:
+
+.. code-block:: console
+
+    uv run python -c "import enginir_opcua; print(enginir_opcua.__version__)"
 
 engiNIR-OPCUA is a fork of `FreeOpcUa/opcua-asyncio <https://github.com/FreeOpcUa/opcua-asyncio>`_ 2.1.0.
-It can be installed next to the :code:`asyncua` package, because the import package and the command names differ.
+It can be installed next to the :code:`asyncua` package, because the import package and the command names differ;
+:doc:`../../migration` lists what changes when you move an application over.
 
 
 Command Line Tools
@@ -101,13 +106,3 @@ The older scripts :code:`enginir-uaread`, :code:`enginir-uawrite`, :code:`engini
 :code:`enginir-uabrowse`, :code:`enginir-uasubscribe`, :code:`enginir-uahistoryread`, :code:`enginir-uadiscover`,
 :code:`enginir-uaserver`, :code:`enginir-uaclient` and :code:`enginir-uageneratestructs` still work, print a notice that they
 are deprecated, and are removed in 4.0.0.
-
-
-More Tools for Development
-==========================
-
-.. todo:: Create a list of additional tools which are nice to have during development
-    Possible Tools:
-
-    - opcua-client (https://github.com/FreeOpcUa/opcua-client-gui)
-    - UaModeler (https://www.unified-automation.com/products/development-tools/uamodeler.html)

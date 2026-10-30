@@ -198,46 +198,5 @@ A SecurityAdmin can do the same over OPC UA with the push model of OPC 10000-12;
 Examples
 ========
 
-The ``examples`` directory of the repository has one runnable file per task. Each uses a temporary PKI directory,
-generates its certificates, ends by itself and prints ``OK <name>``; the test suite runs all of them. Start with
-``python examples/01_secure_pair.py`` from a checkout (``07_instrument_server.py`` also needs the ``nodeset``
-submodule).
-
-.. list-table::
-    :header-rows: 1
-    :widths: 8 92
-
-    * - Example
-      - Shows
-    * - `01 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/01_secure_pair.py>`__
-      - Quickstart server and client, PKI directory, pairing
-    * - `02 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/02_users_and_roles.py>`__
-      - Users file, roles, refused requests
-    * - `03 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/03_read_write_subscribe.py>`__
-      - Read, write, data-change subscription, reconnect after a server restart
-    * - `04 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/04_methods.py>`__
-      - Methods with typed, named arguments
-    * - `05 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/05_custom_types.py>`__
-      - Custom enumerations and structures
-    * - `06 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/06_events_and_history.py>`__
-      - Custom events, event subscription, history of values and events
-    * - `07 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/07_instrument_server.py>`__
-      - DI and ADI companion models, a SpectrometerDeviceType instance with spectrum values
-    * - `08 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/08_file_transfer.py>`__
-      - Server-side FileType and FileDirectoryType, client UaFile and UaDirectory
-    * - `09 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/09_ha_client.py>`__
-      - HaClient over a redundant pair with failover
-    * - `10 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/10_pubsub.py>`__
-      - PubSub over UDP (experimental)
-    * - `11 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/11_sync.py>`__
-      - The synchronous API
-    * - `12 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/12_alarms.py>`__
-      - A limit alarm acknowledged from a client
-    * - `13 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/13_diagnostics.py>`__
-      - Server diagnostics and who may read them
-    * - `14 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/14_certificate_management.py>`__
-      - Part 12 push management: a SecurityAdmin trusts a rejected client
-    * - `15 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/15_development_profile.py>`__
-      - The development profile, no security, loopback only
-    * - `16 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/16_reverse_connect.py>`__
-      - Reverse connect
+The ``examples`` directory of the repository has one runnable file per task, from this secure pair to alarms,
+history, file transfer and reverse connect. :doc:`../examples` describes each of them.

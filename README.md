@@ -53,8 +53,9 @@ asyncio.run(main())
 ```
 
 Profiles, users and roles, configuration files, the `enginir-opcua init`, `trust`, `pki`, `pair` and `user` commands
-and the 16 runnable examples in [`examples/`](examples) are described in
-[Quick Setup](docs/usage/get-started/quick-setup.rst).
+are described in [Quick Setup](docs/usage/get-started/quick-setup.rst), and the 16 runnable programs in
+[`examples/`](examples) in [Examples](docs/usage/examples.rst). Coming from `asyncua`? See
+[Migrating from asyncua](docs/migration.rst).
 
 ## Development
 

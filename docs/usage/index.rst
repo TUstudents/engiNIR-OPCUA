@@ -12,6 +12,7 @@ Usage Guide
     get-started/minimal-server
     get-started/minimal-client
     get-started/docker
+    examples
 
 .. toctree::
     :maxdepth: 2

@@ -14,8 +14,8 @@ from these packages will be discussed in the following sections.
 enginir_opcua.common package
 ============================
 
-The :mod:`enginir_opcua.common` package is provides the core functionality of the library.
-Several important parts life in this subpackage, for example the :class:`~enginir_opcua.common.node.Node`
+The :mod:`enginir_opcua.common` package provides the core functionality of the library.
+Several important parts live in this subpackage, for example the :class:`~enginir_opcua.common.node.Node`
 class and the :mod:`~enginir_opcua.common.subscription` module. You can find usage examples
 of these classes and functionalities in the following sections.
 
