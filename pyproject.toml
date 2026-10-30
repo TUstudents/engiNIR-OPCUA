@@ -1,6 +1,6 @@
 [project]
 name = "enginir-opcua"
-version = "3.0.0rc2"
+version = "3.0.0rc3"
 description = "OPC UA client and server library for Python, built on asyncio; a fork of opcua-asyncio"
 readme = "README.md"
 requires-python = ">=3.12"
