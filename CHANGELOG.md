@@ -85,6 +85,7 @@ Client:
   `timeout`. `UaClient.add_state_listener` is public. `get_keepalive_count` and `get_subscription_revised_params`
   are removed; use `subscription_parameters`.
 - `HaClient` needs at least two server URLs.
+- A session timeout revised by the server is logged at INFO, not WARNING: revising it is normal (OPC 10000-4, 5.7.2).
 
 Client subscriptions (OPC 10000-4, 5.13 and 5.14):
 - `subscription_parameters(period, ...)` derives the keep-alive count from a keep-alive time (default 10 s) and the
@@ -394,6 +395,8 @@ Crypto:
 - The server writes the certificate of a refused peer to `rejected/certs` before it sends the error, so `GetRejectedList`
   right after a failed connect lists it. `CertificateValidator.keep_rejected()` lost its `background` argument and
   writes synchronously; a vanished rejected folder is logged at debug level only.
+- Without a revocation list, a validator warns once, when it first accepts a CA-issued certificate unchecked, and
+  names the issuer; it no longer warns at every start, and never for self-signed certificates.
 - Verifiers raise `ua.uaerrors.SignatureError` and decryption failures `ua.uaerrors.DecryptionError` (both
   `UaError`); `uacrypto.InvalidSignature` is gone.
 - A bad ActivateSession client signature is answered with `Bad_ApplicationSignatureInvalid`, a bad or missing X509

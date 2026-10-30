@@ -1153,7 +1153,7 @@ class Client:
 
         self._policy_ids = ep.UserIdentityTokens
         if self.session_timeout != response.RevisedSessionTimeout:
-            _logger.warning(
+            _logger.info(
                 "Requested session timeout to be %dms, got %dms instead",
                 self.session_timeout,
                 response.RevisedSessionTimeout,

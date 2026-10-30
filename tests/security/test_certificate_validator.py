@@ -306,6 +306,36 @@ async def test_cry3_suppressed_revocation_unknown_is_accepted_and_reported(
     assert "revocation_unknown" in caplog.text
 
 
+def _revocation_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records if "Revocation of certificates" in record.getMessage()]
+
+
+async def test_unchecked_revocation_is_not_reported_for_self_signed_certificates(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Part 4, 6.1.3: a self-signed certificate has no issuer whose revocation list could be missing."""
+    peer = make_identity()
+    with caplog.at_level(logging.WARNING):
+        validator = await make_validator(tmp_path, trusted=[peer])
+        assert validator.validate_application_certificate(peer.der, CLIENT).accepted
+    assert _revocation_warnings(caplog) == []
+
+
+async def test_unchecked_revocation_is_reported_once_for_a_ca_issued_certificate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Part 4, 6.1.3: without a revocation list a CA-issued certificate is accepted unchecked, and the log says so."""
+    ca = make_ca()
+    leaf = make_identity(issuer=ca)
+    validator = await make_validator(tmp_path, trusted=[ca])
+    with caplog.at_level(logging.WARNING):
+        assert validator.validate_application_certificate(leaf.der, CLIENT).accepted
+        assert validator.validate_application_certificate(leaf.der, CLIENT).accepted
+    warnings = _revocation_warnings(caplog)
+    assert len(warnings) == 1
+    assert ca.certificate.subject.rfc4514_string() in warnings[0]
+
+
 async def test_cry2_revoked_intermediate_rejects_leaf(tmp_path: Path) -> None:
     """Part 4, 6.1.3, Table 100: revocation is checked for every CA of the chain."""
     root = make_ca("Root")

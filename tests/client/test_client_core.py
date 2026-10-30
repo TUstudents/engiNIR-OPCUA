@@ -158,19 +158,20 @@ def test_cli36_other_schemes_are_a_configuration_error(url: str) -> None:
         Client(url)
 
 
-async def test_cli24_session_timeout_warning_names_the_session_timeout(
+async def test_cli24_revised_session_timeout_is_logged_at_info_with_both_values(
     server: Server, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Part 4, 5.7.2.2: the log line gives the requested and the revised session timeout."""
+    """Part 4, 5.7.2.2: a server may revise the session timeout; the log line gives the requested and revised value."""
     client = Client(server.endpoint.geturl())
     client.session_timeout = 1_234_567_890
     client.secure_channel_timeout = 3_600_000
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         async with client:
             pass
-    messages = [r.getMessage() for r in caplog.records if "session timeout" in r.getMessage()]
-    assert len(messages) == 1
-    assert "1234567890ms" in messages[0]
+    records = [r for r in caplog.records if "session timeout" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert "1234567890ms" in records[0].getMessage()
 
 
 async def test_cli27_reconnect_gate_survives_disconnect_and_connect(server: Server) -> None:

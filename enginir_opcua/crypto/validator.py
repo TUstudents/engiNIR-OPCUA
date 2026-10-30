@@ -9,7 +9,7 @@ logged and reported in the outcome.
 import ipaddress
 import logging
 import shlex
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -530,6 +530,7 @@ class _Validation:
 
     def check_revocation(self) -> None:
         if not self.validator.revocation_active:
+            self.validator.report_unchecked_revocation(self.chain)
             return
         found: dict[int, list[x509.CertificateRevocationList]] = {}
         for index, certificate in enumerate(self.chain):
@@ -661,10 +662,7 @@ class CertificateValidator:
         if check_revocation and not trust_store.has_crl_locations:
             raise ConfigurationError("Revocation checking needs at least one crl location in the trust store")
         self._check_revocation = check_revocation
-        if not self.revocation_active:
-            _logger.warning(
-                "Revocation of certificates is not checked: no certificate revocation list is configured or loaded"
-            )
+        self._unchecked_revocation_reported = False
         self.accept_ca_application_certificates = accept_ca_application_certificates
         self.max_chain_length = max_chain_length
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -686,6 +684,20 @@ class CertificateValidator:
     @property
     def trust_store(self) -> TrustStore:
         return self._trust_store
+
+    def report_unchecked_revocation(self, chain: Sequence[x509.Certificate]) -> None:
+        if self._unchecked_revocation_reported:
+            return
+        issued = next((certificate for certificate in chain if not _is_self_issued(certificate)), None)
+        if issued is None:
+            return
+        self._unchecked_revocation_reported = True
+        _logger.warning(
+            "Revocation of certificates is not checked: %s is issued by %s, and no certificate revocation list is "
+            "configured or loaded",
+            _subject(issued),
+            issued.issuer.rfc4514_string(),
+        )
 
     def validate_application_certificate(self, chain: bytes, context: ValidationContext) -> Outcome:
         """
