@@ -71,5 +71,7 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Build
         run: uv build
-      - name: Publish
-        run: uv publish --trusted-publishing always
+      - name: Publish with attestations
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+        with:
+          attestations: true
