@@ -3,7 +3,8 @@
 [![PyPI](https://img.shields.io/pypi/v/enginir-opcua)](https://pypi.org/project/enginir-opcua/)
 [![Python](https://img.shields.io/pypi/pyversions/enginir-opcua)](https://pypi.org/project/enginir-opcua/)
 [![CI](https://github.com/TUstudents/engiNIR-OPCUA/actions/workflows/python-package.yml/badge.svg)](https://github.com/TUstudents/engiNIR-OPCUA/actions/workflows/python-package.yml)
-[![License: LGPL-3.0-or-later](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)](COPYING)
+[![Documentation](https://readthedocs.org/projects/enginir-opcua/badge/?version=latest)](https://enginir-opcua.readthedocs.io/en/latest/)
+[![License: LGPL-3.0-or-later](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/COPYING)
 
 **An OPC UA client and server for Python, built on asyncio and secure from the first line.**
 
@@ -59,8 +60,8 @@ asyncio.run(main())
 ```
 
 The same with two programs, a users file and the command line is in
-[A Minimal Server](docs/usage/get-started/minimal-server.rst) and
-[A Minimal Client](docs/usage/get-started/minimal-client.rst).
+[A Minimal Server](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/minimal-server.html) and
+[A Minimal Client](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/minimal-client.html).
 
 ## Secure by default
 
@@ -87,18 +88,20 @@ enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli
 
 `enginir-opcua` has the subcommands `read`, `write`, `call`, `ls`, `subscribe`, `history`, `discover`, `server`,
 `shell` and `generate-structs`, and `init`, `trust`, `pki`, `pair` and `user` to set up certificates and users. See
-[Installation & CLI Tools](docs/usage/get-started/installation.rst).
+[Installation & CLI Tools](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/installation.html).
 
 ## Documentation
 
-- [Quick Setup](docs/usage/get-started/quick-setup.rst): profiles, configuration files, users and roles, the trust
+The documentation is at <https://enginir-opcua.readthedocs.io/en/latest/>.
+
+- [Quick Setup](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/quick-setup.html): profiles, configuration files, users and roles, the trust
   commands
-- [OPC UA Basics](docs/usage/get-started/opc-ua-basics.rst): the terms the documentation uses
-- [Client](docs/usage/client/overview.rst), [Server](docs/usage/server/overview.rst),
-  [Synchronous API](docs/usage/sync/overview.rst) and [PubSub](docs/usage/pubsub/overview.rst) (experimental)
-- [Examples](docs/usage/examples.rst): 16 runnable programs in [`examples/`](examples), from a secure pair to alarms,
+- [OPC UA Basics](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/opc-ua-basics.html): the terms the documentation uses
+- [Client](https://enginir-opcua.readthedocs.io/en/latest/usage/client/overview.html), [Server](https://enginir-opcua.readthedocs.io/en/latest/usage/server/overview.html),
+  [Synchronous API](https://enginir-opcua.readthedocs.io/en/latest/usage/sync/overview.html) and [PubSub](https://enginir-opcua.readthedocs.io/en/latest/usage/pubsub/overview.html) (experimental)
+- [Examples](https://enginir-opcua.readthedocs.io/en/latest/usage/examples.html): 16 runnable programs in [`examples/`](https://github.com/TUstudents/engiNIR-OPCUA/tree/master/examples), from a secure pair to alarms,
   history, file transfer and reverse connect
-- [Migrating from asyncua](docs/migration.rst), and every change in [CHANGELOG.md](CHANGELOG.md)
+- [Migrating from asyncua](https://enginir-opcua.readthedocs.io/en/latest/migration.html), and every change in [CHANGELOG.md](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/CHANGELOG.md)
 
 Build the documentation locally with `uv run --group docs sphinx-build -b html docs docs/_build/html`.
 
@@ -111,9 +114,9 @@ uv run pytest -q -m "not slow"
 uv run ruff check . && uv run ruff format --check . && uv run mypy enginir_opcua tests
 ```
 
-The conventions for code and tests are in [AGENTS.md](AGENTS.md) and [tests/README.md](tests/README.md).
+The conventions for code and tests are in [AGENTS.md](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/AGENTS.md) and [tests/README.md](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/tests/README.md).
 
 ## License
 
-LGPL-3.0-or-later; see [COPYING](COPYING), [COPYING.GPL](COPYING.GPL) and [NOTICE](NOTICE). The original library was
+LGPL-3.0-or-later; see [COPYING](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/COPYING), [COPYING.GPL](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/COPYING.GPL) and [NOTICE](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/NOTICE). The original library was
 written by Olivier Roulet-Dubonnet and the opcua-asyncio contributors; this fork was made on 2026-10-25.

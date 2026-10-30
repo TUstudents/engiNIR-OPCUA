@@ -34,6 +34,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/TUstudents/engiNIR-OPCUA"
+Documentation = "https://enginir-opcua.readthedocs.io/en/latest/"
 Repository = "https://github.com/TUstudents/engiNIR-OPCUA"
 Upstream = "https://github.com/FreeOpcUa/opcua-asyncio"
 
