@@ -344,11 +344,11 @@ class Node:
         self, attributeid: ua.AttributeIds, datavalue: ua.DataValue, indexrange: str | None = None
     ) -> None:
         """
-        Set an attribute of a node
-        attributeid is a member of ua.AttributeIds
-        datavalue is a ua.DataValue object
-        indexrange is a NumericRange (a string; e.g. "1" or "1:3".
-            See OPC 10000-4 v1.05, 7.27)
+        Set an attribute of a node.
+
+        :param attributeid: a member of ua.AttributeIds
+        :param datavalue: a ua.DataValue object
+        :param indexrange: a NumericRange, a string such as "1" or "1:3" (OPC 10000-4 v1.05, 7.27)
         """
         attr = ua.WriteValue()
         attr.NodeId = self.nodeid

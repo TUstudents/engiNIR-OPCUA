@@ -469,15 +469,15 @@ class Client:
 
     async def set_security_string(self, string: str) -> None:
         """
-        Set SecureChannel mode.
-        :param string: Mode format ``Policy,Mode,certificate,private_key[,server_certificate]``
-        where:
-        - ``Policy`` is ``Basic256Sha256``, ``Aes128Sha256RsaOaep`` or ``Aes256Sha256RsaPss``
-        - ``Mode`` is ``Sign`` or ``SignAndEncrypt``
-        - ``certificate`` and ``server_certificate`` are paths to ``.pem`` or ``.der`` files
-        - ``private_key`` may be a path to a ``.pem`` or ``.der`` file or a conjunction of ``path``::``password`` where
-          ``password`` is the private key password.
-        Call this before connect()
+        Set SecureChannel mode. Call this before connect().
+
+        :param string: Mode format ``Policy,Mode,certificate,private_key[,server_certificate]`` where:
+
+            - ``Policy`` is ``Basic256Sha256``, ``Aes128Sha256RsaOaep`` or ``Aes256Sha256RsaPss``
+            - ``Mode`` is ``Sign`` or ``SignAndEncrypt``
+            - ``certificate`` and ``server_certificate`` are paths to ``.pem`` or ``.der`` files
+            - ``private_key`` may be a path to a ``.pem`` or ``.der`` file or ``path::password``, where ``password`` is
+              the private key password.
         """
         if not string:
             return None
@@ -1676,11 +1676,12 @@ class Client:
         Create a subscription.
 
         Returns a Subscription object which can be used either:
+
         - **Callback mode** (legacy): pass a `handler` and implement
           `datachange_notification` / `event_notification` /
           `status_change_notification`.
         - **Iterator mode**: pass `handler=None` and use the subscription as
-          an async context manager + async iterator:
+          an async context manager + async iterator::
 
               async with sub:
                   await sub.subscribe_data_change(node)

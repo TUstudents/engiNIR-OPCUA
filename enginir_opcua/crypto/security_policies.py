@@ -664,6 +664,7 @@ class SecurityPolicyBasic128Rsa15(RsaSecurityPolicy):
     Security Basic 128Rsa15
     A suite of algorithms that uses RSA15 as Key-Wrap-algorithm
     and 128-Bit (16 bytes) for encryption algorithms.
+
     - SymmetricSignatureAlgorithm - HmacSha1
       (http://www.w3.org/2000/09/xmldsig#hmac-sha1)
     - SymmetricEncryptionAlgorithm - Aes128
@@ -715,6 +716,7 @@ class SecurityPolicyBasic256(RsaSecurityPolicy):
     Security Basic 256
     A suite of algorithms that are for 256-Bit (32 bytes) encryption,
     algorithms include:
+
     - SymmetricSignatureAlgorithm - HmacSha1
       (http://www.w3.org/2000/09/xmldsig#hmac-sha1)
     - SymmetricEncryptionAlgorithm - Aes256

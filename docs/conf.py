@@ -10,8 +10,8 @@ from importlib import metadata
 project = "engiNIR-OPCUA"
 copyright = "2015-2026, opcua-asyncio contributors; 2026, engiNIR-OPCUA contributors"
 author = "opcua-asyncio and engiNIR-OPCUA contributors"
-# release = "0.95.0"
-version = metadata.version('enginir-opcua')
+release = metadata.version("enginir-opcua")
+version = release
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -20,6 +20,7 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
+    "sphinx.ext.napoleon",
     "sphinx.ext.todo",
     # "sphinx_copybutton",  # Currently not working with line numbers
 ]
@@ -32,7 +33,6 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 # https://pydata-sphinx-theme.readthedocs.io/en/latest/user_guide/index.html
 html_theme = "pydata_sphinx_theme"
-html_static_path = ["_static"]
 
 html_theme_options = {
     "github_url": "https://github.com/TUstudents/engiNIR-OPCUA",
@@ -51,4 +51,8 @@ intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 
 # -- Options for sphinx.ext.todo ---------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/todo.html
-todo_include_todos = True
+todo_include_todos = False
+
+# -- Warnings ----------------------------------------------------------------
+# Type hints name Client and Server unqualified, which matches both the async classes and their sync wrappers.
+suppress_warnings = ["ref.python"]

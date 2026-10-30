@@ -2,6 +2,7 @@
 Low level binary client.
 
 `UaClient` provides:
+
 - transport: socket and secure channel via `UASocketProtocol`,
 - sessionless services (Discovery, Register/Unregister Server),
 - a default `UaSession` accessible via `session`, plus back-compat delegating

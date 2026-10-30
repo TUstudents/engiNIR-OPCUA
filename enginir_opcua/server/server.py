@@ -1067,10 +1067,11 @@ class Server:
         """
         Export nodes of one or more namespaces to an XML file.
         Namespaces used by nodes are always exported for consistency.
+
         :param path: name of the xml file to write
-        :param namespaces: list of string uris or int indexes of the namespace to export,
+        :param namespaces: list of string uris or int indexes of the namespace to export;
+            if not provided all ns are used except 0
         :param export_values: export values from variants
-         if not provide all ns are used except 0
         """
         if namespaces is None:
             namespaces = []

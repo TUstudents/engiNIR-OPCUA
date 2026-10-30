@@ -405,13 +405,11 @@ async def get_base_data_type(datatype: Node) -> Node:
 async def get_nodes_of_namespace(server: Any, namespaces: list[str | int] | None = None) -> list[Node]:
     """
     Get the nodes of one or more namespaces from a local Server.
-    Args:
-        server: the Server whose address space is used
-        namespaces: namespace URIs or indexes; none means every namespace except 0
-    Returns:
-        List of nodes that are part of the namespaces
-    Raises:
-        UaError: a namespace URI is not in the namespace array
+
+    :param server: the Server whose address space is used
+    :param namespaces: namespace URIs or indexes; none means every namespace except 0
+    :return: List of nodes that are part of the namespaces
+    :raises UaError: a namespace URI is not in the namespace array
     """
     ns_available = await server.get_namespace_array()
     if namespaces is None or (not isinstance(namespaces, str | int) and not namespaces):

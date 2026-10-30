@@ -31,11 +31,12 @@ _FINITE_STATE_MACHINE_TYPE = ua.NodeId(ua.ObjectIds.FiniteStateMachineType)
 class State:
     """
     A State of a machine, represented by an Object of StateType.
-    name: the BrowseName of the State and the text written to CurrentState.
-    id: the value written to the Id property of CurrentState; by default the NodeId of the State
+
+    :param name: the BrowseName of the State and the text written to CurrentState.
+    :param id: the value written to the Id property of CurrentState; by default the NodeId of the State
         or its name, depending on the DataType the property declares.
-    number: the unique StateNumber (UInt32, 0 is allowed).
-    node: set by add_state, or given when the State already exists in the address space.
+    :param number: the unique StateNumber (UInt32, 0 is allowed).
+    :param node: set by add_state, or given when the State already exists in the address space.
     """
 
     def __init__(self, id: Any, name: str | None = None, number: int | None = None, node: Node | None = None) -> None:

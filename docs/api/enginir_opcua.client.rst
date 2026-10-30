@@ -6,41 +6,49 @@ Subpackages
 ===========
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 2
 
    enginir_opcua.client.ha
 
 Submodules
-===========
+==========
 
-enginir_opcua.client.client module
-----------------------------------
+enginir\_opcua.client.client module
+-----------------------------------
 
 .. automodule:: enginir_opcua.client.client
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.client.ua\_client module
---------------------------------------
+enginir\_opcua.client.ua\_client module
+---------------------------------------
 
 .. automodule:: enginir_opcua.client.ua_client
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.client.ua\_file module
-------------------------------------
+enginir\_opcua.client.ua\_file module
+-------------------------------------
 
 .. automodule:: enginir_opcua.client.ua_file
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.client.ua\_file\_transfer module
-----------------------------------------------
+enginir\_opcua.client.ua\_file\_transfer module
+-----------------------------------------------
 
 .. automodule:: enginir_opcua.client.ua_file_transfer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+enginir\_opcua.client.ua\_session module
+----------------------------------------
+
+.. automodule:: enginir_opcua.client.ua_session
    :members:
    :undoc-members:
    :show-inheritance:

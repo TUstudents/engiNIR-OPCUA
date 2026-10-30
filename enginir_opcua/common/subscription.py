@@ -1011,7 +1011,7 @@ class Subscription:
         :param evtypes: ua.ObjectIds, str, ua.NodeId or Node
         :param evfilter: ua.EventFilter which provides the SelectClauses and WhereClause
         :param queuesize: 0 for default queue size, 1 for minimum queue size, n for FIFO queue,
-        MaxUInt32 for max queue size
+            MaxUInt32 for max queue size
         :param where_clause_generation: No where_clause generation when no eventfilter is provided. Need for TwinCAT, Codesys
         :return: Handle for changing/cancelling of the subscription
         """
@@ -1048,7 +1048,7 @@ class Subscription:
         :param evtypes: ua.ObjectIds, str, ua.NodeId or Node
         :param evfilter: ua.EventFilter which provides the SelectClauses and WhereClause
         :param queuesize: 0 for default queue size, 1 for minimum queue size, n for FIFO queue,
-        MaxUInt32 for max queue size
+            MaxUInt32 for max queue size
         :return: Handle for changing/cancelling of the subscription
         """
         handle = await self.subscribe_events(sourcenode, evtypes, evfilter, queuesize)

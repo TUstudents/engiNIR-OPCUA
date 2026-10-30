@@ -6,69 +6,70 @@ Subpackages
 ===========
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 2
 
    enginir_opcua.ua.uaerrors
 
 Submodules
 ==========
 
-enginir_opcua.ua.attribute\_ids module
---------------------------------------
+enginir\_opcua.ua.attribute\_ids module
+---------------------------------------
 
 .. automodule:: enginir_opcua.ua.attribute_ids
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.ua.object\_ids module
+enginir\_opcua.ua.numeric\_range module
+---------------------------------------
+
+.. automodule:: enginir_opcua.ua.numeric_range
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+enginir\_opcua.ua.object\_ids module
+------------------------------------
+
+.. note:: This module is generated and very large, so it is left out of the API documentation.
+
+enginir\_opcua.ua.relative\_path module
+---------------------------------------
+
+.. automodule:: enginir_opcua.ua.relative_path
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+enginir\_opcua.ua.status\_codes module
+--------------------------------------
+
+.. note:: This module is generated and very large, so it is left out of the API documentation.
+
+enginir\_opcua.ua.ua\_binary module
 -----------------------------------
-
-.. note:: This module is very large and currently excluded from the API documentation
-
-.. .. automodule:: enginir_opcua.ua.object_ids
-..    :members:
-..    :undoc-members:
-..    :show-inheritance:
-
-enginir_opcua.ua.status\_codes module
--------------------------------------
-
-.. note:: This module is very large and currently excluded from the API documentation
-
-.. .. automodule:: enginir_opcua.ua.status_codes
-..    :members:
-..    :undoc-members:
-..    :show-inheritance:
-
-enginir_opcua.ua.ua\_binary module
-----------------------------------
 
 .. automodule:: enginir_opcua.ua.ua_binary
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.ua.uaprotocol\_auto module
-----------------------------------------
+enginir\_opcua.ua.uaprotocol\_auto module
+-----------------------------------------
 
-.. note:: This module is very large and currently excluded from the API documentation
+.. note:: This module is generated and very large, so it is left out of the API documentation.
 
-.. .. automodule:: enginir_opcua.ua.uaprotocol_auto
-..    :members:
-..    :undoc-members:
-..    :show-inheritance:
-
-enginir_opcua.ua.uaprotocol\_hand module
-----------------------------------------
+enginir\_opcua.ua.uaprotocol\_hand module
+-----------------------------------------
 
 .. automodule:: enginir_opcua.ua.uaprotocol_hand
    :members:
    :undoc-members:
    :show-inheritance:
 
-enginir_opcua.ua.uatypes module
--------------------------------
+enginir\_opcua.ua.uatypes module
+--------------------------------
 
 .. automodule:: enginir_opcua.ua.uatypes
    :members:

@@ -137,11 +137,13 @@ class HaClient:
     Only the Warm failover mode is implemented (OPC 10000-4 v1.05, 6.6.2.4.5.3): the standby servers hold the same
     subscriptions and monitored items, but do not sample or publish.
     The servers must have:
-        - Identical NodeIds
-        - Identical browse path and AddressSpace structure
-        - Identical Service Level logic
-        - However nodes in the server local namespace can differ
-        - Time synchronization (e.g NTP)
+
+    - Identical NodeIds
+    - Identical browse path and AddressSpace structure
+    - Identical Service Level logic
+    - However nodes in the server local namespace can differ
+    - Time synchronization (e.g NTP)
+
     It starts the OPC-UA clients and connect to the server that
     fits in the HaMode selected.
     """
