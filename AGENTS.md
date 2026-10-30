@@ -56,7 +56,7 @@ Layout: one directory per component under `tests/`, one file per behaviour of th
 
 ## Releasing
 
-Releases are published by `.github/workflows/release.yml` when a `v<version>` tag is pushed: it runs lint, mypy and the fast suite, checks that the tag matches the version in `pyproject.toml`, creates the GitHub release and publishes to PyPI with trusted publishing. Only the maintainer releases, from an up-to-date, clean `master`:
+Releases are published by `.github/workflows/release.yml` when a `v<version>` tag is pushed: it checks that the tag matches the version in `pyproject.toml`, runs lint, mypy and the fast suite, builds the distributions once, publishes them to PyPI with trusted publishing and provenance attestations, and only then creates the GitHub release with the same files attached. Only the maintainer releases, from an up-to-date, clean `master`:
 
 1. `uv version 3.0.0rc1` (any PEP 440 version) and add the date to its section in `CHANGELOG.md`.
 2. `git commit -am "Release 3.0.0rc1"` and `git tag -a v3.0.0rc1 -m "Release 3.0.0rc1"`.
