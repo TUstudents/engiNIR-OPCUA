@@ -10,7 +10,7 @@ authors = [
   { name = "engiNIR-OPCUA contributors" },
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.12",
@@ -49,11 +49,6 @@ enginir-uaserver = "enginir_opcua.tools:uaserver"
 enginir-uasubscribe = "enginir_opcua.tools:uasubscribe"
 enginir-uawrite = "enginir_opcua.tools:uawrite"
 
-[project.optional-dependencies]
-profile = [
-  "pytest-profiling",
-]
-
 [dependency-groups]
 dev = [
   "asynctest",
@@ -63,6 +58,7 @@ dev = [
   "pytest-asyncio",
   "pytest-cov",
   "pytest-mock",
+  "pytest-profiling",
   "pytest-repeat",
   "pytest-xdist",
   "ruff",
@@ -77,7 +73,7 @@ docs = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.10,<0.15"]
+requires = ["uv_build>=0.10"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]

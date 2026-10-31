@@ -17,6 +17,7 @@ Package and identity:
   ApplicationUri `urn:enginir:opcua:server` and `urn:enginir:opcua:client`, ProductUri `urn:enginir:opcua`,
   ManufacturerName `engiNIR`.
 - Python 3.12 or newer is required.
+- There are no optional extras: the `profile` extra is gone, and `pytest-profiling` is in the `dev` group.
 
 Security:
 - RegisterServer and RegisterServer2 answer `Bad_ServiceUnsupported` unless the server calls
