@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, ClassVar, Self, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Self, Union, cast, get_args, get_origin
 from urllib.parse import unquote
 
 from enginir_opcua.ua.object_ids import ObjectIds
@@ -147,75 +147,79 @@ class Number(float):
     pass
 
 
-class SByte(int):
-    pass
+if TYPE_CHECKING:
+    SByte = int
+    Byte = int
+    Bytes = bytes
+    ByteString = bytes
+    Int16 = int
+    Int32 = int
+    Int64 = int
+    UInt16 = int
+    UInt32 = int
+    UInt64 = int
+    Boolean = bool
+    Double = float
+    Float = float
+    String = str
+    CharArray = str
+    DateTime = datetime
+    Guid = uuid.UUID
+else:
+
+    class SByte(int):
+        pass
+
+    class Byte(int):
+        pass
+
+    class Bytes(bytes):
+        pass
+
+    class ByteString(bytes):
+        pass
+
+    class Int16(int):
+        pass
+
+    class Int32(int):
+        pass
+
+    class Int64(int):
+        pass
+
+    class UInt16(int):
+        pass
+
+    class UInt32(int):
+        pass
+
+    class UInt64(int):
+        pass
+
+    class Boolean:
+        pass
+
+    class Double(float):
+        pass
+
+    class Float(float):
+        pass
+
+    class String(str):
+        pass
+
+    class CharArray(str):
+        pass
+
+    class DateTime(datetime):
+        pass
+
+    class Guid(uuid.UUID):
+        pass
 
 
-class Byte(int):
-    pass
-
-
-class Bytes(bytes):
-    pass
-
-
-class ByteString(bytes):  # what is the difference between Bytes and ByteString??
-    pass
-
-
-class Int16(int):
-    pass
-
-
-class Int32(int):
-    pass
-
-
-class Int64(int):
-    pass
-
-
-class UInt16(int):
-    pass
-
-
-class UInt32(int):
-    pass
-
-
-class UInt64(int):
-    pass
-
-
-class Boolean:  # Boolean(bool) is not supported in Python
-    pass
-
-
-class Double(float):
-    pass
-
-
-class Float(float):
-    pass
-
-
-class Null:  # Null(NoneType) is not supported in Python
-    pass
-
-
-class String(str):
-    pass
-
-
-class CharArray(str):
-    pass
-
-
-class DateTime(datetime):
-    pass
-
-
-class Guid(uuid.UUID):
+class Null:
     pass
 
 
@@ -505,7 +509,7 @@ class NodeId:
 
     Identifier: "ua.UInt32 | ua.String | ua.Guid | ua.ByteString" = 0
     NamespaceIndex: "ua.UInt16" = 0
-    NodeIdType: "ua.NodeIdType" = None
+    NodeIdType: "ua.NodeIdType" = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.NodeIdType is None:
@@ -667,7 +671,7 @@ class NodeId:
         if self.NodeIdType == NodeIdType.Guid:
             return f"g={identifier!s}"
         if self.NodeIdType == NodeIdType.ByteString:
-            return f"b={b64encode(identifier).decode('ascii')}"
+            return f"b={b64encode(cast(bytes, identifier)).decode('ascii')}"
         if self.NodeIdType == NodeIdType.String:
             return f"s={identifier!s}"
         return f"i={identifier!s}"
@@ -936,8 +940,8 @@ class LocalizedText:
             )
         ):
             return LocalizedText(string)
-        values = [keyword.value.value for keyword in tree.keywords if isinstance(keyword.value, ast.Constant)]
-        return LocalizedText(Text=values[1], Locale=values[0])
+        locale, text = (cast(str | None, cast(ast.Constant, keyword.value).value) for keyword in tree.keywords)
+        return LocalizedText(Text=text, Locale=locale)
 
 
 @dataclass(frozen=True)
@@ -1021,10 +1025,10 @@ class VariantType(IntEnum):
 
 class VariantTypeCustom:
     """
-    Looks like sometime we get variant with other values than those
-    defined in VariantType.
-    FIXME: We should not need this class, as far as I understand the spec
-    variants can only be of VariantType
+    A Variant type id from 26 to 63: it fits the six type bits of the encoding byte but names no built-in type.
+
+    A decoder keeps the id and reads such a value as a ByteString, so a message from a newer peer can still be
+    decoded and passed on.
     """
 
     def __init__(self, val: int) -> None:
@@ -1084,9 +1088,8 @@ class Variant:
     :vartype is_array: If the variant is an array. Always True if Dimension is specified
     """
 
-    # FIXME: typing is wrong here
     Value: Any = None
-    VariantType: "ua.VariantType" = None
+    VariantType: "ua.VariantType | ua.VariantTypeCustom" = None  # type: ignore[assignment]
     Dimensions: "list[ua.Int32]" | None = None
     is_array: bool | None = None
 
@@ -1297,17 +1300,16 @@ def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantType
     At low level we do not have access to address space thus decoding is limited
     a better version of this method can be find in ua_utils.py
     """
-    if isinstance(int_type, NodeId):
-        int_type = int_type.Identifier
-    if not isinstance(int_type, int):
-        raise UaError(f"Expected int type for VariantType, got {type(int_type)}")
+    identifier = int_type.Identifier if isinstance(int_type, NodeId) else int_type
+    if not isinstance(identifier, int):
+        raise UaError(f"Expected int type for VariantType, got {type(identifier)}")
 
-    if 0 <= int_type <= 25:
-        return VariantType(int_type)
-    return VariantTypeCustom(int_type)
+    if 0 <= identifier <= 25:
+        return VariantType(identifier)
+    return VariantTypeCustom(identifier)
 
 
-_NULL_SCALAR_FACTORIES: dict[VariantType, Callable[[], Any]] = {
+_NULL_SCALAR_FACTORIES: dict[VariantType | VariantTypeCustom, Callable[[], Any]] = {
     VariantType.DateTime: get_win_epoch,
     VariantType.Guid: lambda: uuid.UUID(int=0),
     VariantType.NodeId: NodeId,

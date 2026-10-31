@@ -86,8 +86,8 @@ class Acknowledge:
 @dataclass(slots=True)
 class AsymmetricAlgorithmHeader:
     SecurityPolicyURI: uatypes.String = "http://opcfoundation.org/UA/SecurityPolicy#None"
-    SenderCertificate: uatypes.ByteString = None
-    ReceiverCertificateThumbPrint: uatypes.ByteString = None
+    SenderCertificate: uatypes.ByteString = None  # type: ignore[assignment]
+    ReceiverCertificateThumbPrint: uatypes.ByteString = None  # type: ignore[assignment]
 
     def __str__(self) -> str:
         size1 = len(self.SenderCertificate) if self.SenderCertificate is not None else None
@@ -111,8 +111,8 @@ class SymmetricAlgorithmHeader:
 
 @dataclass(slots=True)
 class SequenceHeader:
-    SequenceNumber: uatypes.UInt32 = None
-    RequestId: uatypes.UInt32 = None
+    SequenceNumber: uatypes.UInt32 = None  # type: ignore[assignment]
+    RequestId: uatypes.UInt32 = None  # type: ignore[assignment]
 
     @staticmethod
     def max_size() -> int:
@@ -160,7 +160,7 @@ class ObjectTypeAttributes(auto.ObjectTypeAttributes):
 
 @dataclass(slots=True)
 class VariableAttributes(auto.VariableAttributes):
-    ArrayDimensions: list[uatypes.UInt32] = None
+    ArrayDimensions: list[uatypes.UInt32] = None  # type: ignore[assignment]
     Historizing: uatypes.Boolean = False
     AccessLevel: uatypes.Byte = auto.AccessLevel.CurrentRead.mask
     UserAccessLevel: uatypes.Byte = auto.AccessLevel.CurrentRead.mask

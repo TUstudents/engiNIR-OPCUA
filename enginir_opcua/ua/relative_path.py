@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from enum import IntEnum
+from typing import cast
 
 from enginir_opcua.ua.object_ids import ObjectIdNames, ObjectIds, ReferenceTypeIds
 from enginir_opcua.ua.uaerrors import UaStringParsingError
@@ -150,7 +151,7 @@ class RelativePathElementFormatter:
             ReferenceTypeId=reference_type_id,
             IsInverse=is_inverse,
             IncludeSubtypes=include_subtypes,
-            TargetName=target_name,
+            TargetName=target_name,  # type: ignore[arg-type]
         )
 
     def to_string(self) -> str:
@@ -231,7 +232,9 @@ def _is_standard_id(node_id: NodeId, identifier: int) -> bool:
     return node_id.NamespaceIndex == 0 and node_id.Identifier == identifier
 
 
-def _find_reference_type(reference_type_name: QualifiedName) -> NodeId:
+def _find_reference_type(reference_type_name: QualifiedName | None) -> NodeId:
+    if reference_type_name is None:
+        raise UaStringParsingError("Reference type name is null in browse path.")
     if reference_type_name.NamespaceIndex == 0:
         type_id = getattr(ObjectIds, reference_type_name.Name, None)
         if isinstance(type_id, int) and type_id in ReferenceTypeIds:
@@ -243,7 +246,6 @@ def _find_reference_type_name(reference_type_id: NodeId) -> QualifiedName:
     if reference_type_id.NamespaceIndex == 0 and reference_type_id.Identifier in ReferenceTypeIds:
         id_type = reference_type_id.NodeIdType
         if id_type == NodeIdType.TwoByte or id_type == NodeIdType.FourByte or id_type == NodeIdType.Numeric:
-            type_id: int = reference_type_id.Identifier
-            return QualifiedName.from_string(ObjectIdNames[type_id])
+            return QualifiedName.from_string(ObjectIdNames[cast(int, reference_type_id.Identifier)])
         raise UaStringParsingError("Non-integer NodeIds are not supported.")
     raise UaStringParsingError(f"Non-standard ReferenceTypes are not supported: {reference_type_id}")

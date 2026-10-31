@@ -129,6 +129,15 @@ def test_ua49_expanded_node_id_with_uri_encodes_namespace_index_zero() -> None:
     assert again == node
 
 
+def test_expanded_node_id_with_uri_and_no_server_index_round_trips() -> None:
+    """Part 6, 5.2.2.10: a missing ServerIndex is 0, so the decoded node equals the encoded one."""
+    node = ua.ExpandedNodeId(100, NamespaceUri="urn:x")
+    again = nodeid_from_binary(ua.utils.Buffer(nodeid_to_binary(node)))
+    assert isinstance(again, ua.ExpandedNodeId)
+    assert again.ServerIndex == 0
+    assert again == node
+
+
 def test_ua49_expanded_node_id_without_uri_keeps_index() -> None:
     """Part 6, 5.2.2.10."""
     assert nodeid_to_binary(ua.ExpandedNodeId(100, 2)) == bytes.fromhex("01026400")

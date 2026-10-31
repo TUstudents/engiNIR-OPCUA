@@ -5,6 +5,6 @@ from .object_ids import ObjectIdNames
 from .status_codes import StatusCodes
 from .uaprotocol_auto import *
 from .uaprotocol_hand import *
-from .uatypes import *  # TODO: This should be renamed to uatypes_hand
+from .uatypes import *
 from .uaerrors import UaStatusCodeErrors
 from ..crypto.security_policy_type import SecurityPolicyType

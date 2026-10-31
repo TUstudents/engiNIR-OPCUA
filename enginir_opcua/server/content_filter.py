@@ -392,6 +392,8 @@ def _bitwise(first: Value, second: Value, use_and: bool) -> Value:
         return None
     assert first is not None and second is not None
     left, right = _scalar(first), _scalar(second)
+    if not isinstance(left.VariantType, ua.VariantType) or not isinstance(right.VariantType, ua.VariantType):
+        return None
     if left.VariantType not in INTEGER_RANGES or right.VariantType not in INTEGER_RANGES:
         return None
     if isinstance(left.Value, list) or isinstance(right.Value, list):

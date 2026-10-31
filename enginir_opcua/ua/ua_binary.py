@@ -15,9 +15,8 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import Field, dataclass, fields, is_dataclass
 from enum import Enum, IntFlag
-from io import BytesIO
 from types import UnionType
-from typing import IO, Any, get_args, get_origin
+from typing import IO, TYPE_CHECKING, Any, cast, get_args, get_origin
 
 from enginir_opcua import ua
 
@@ -32,6 +31,9 @@ from .uatypes import (
     type_is_union,
     types_or_list_from_union,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 _logger = logging.getLogger(__name__)
 
@@ -110,11 +112,12 @@ def _per_class_cache[R](build: Callable[..., R]) -> Callable[..., R]:
             hash(key)
         except TypeError:
             return build(*args)
-        if owner is None:
-            table = shared
-        else:
-            table = owner.__dict__.get("__ua_codecs__")
-            if table is None:
+        table: dict[Any, R] = shared
+        if owner is not None:
+            own_table: dict[Any, R] | None = owner.__dict__.get("__ua_codecs__")
+            if own_table is not None:
+                table = own_table
+            else:
                 table = {}
                 try:
                     type.__setattr__(owner, "__ua_codecs__", table)
@@ -333,7 +336,7 @@ class Primitives(Primitives1):
 
 
 @functools.cache
-def create_uatype_serializer(vtype: ua.VariantType) -> Callable[[Any], bytes]:
+def create_uatype_serializer(vtype: ua.VariantType | ua.VariantTypeCustom) -> Callable[[Any], bytes]:
     if hasattr(Primitives, vtype.name):
         return getattr(Primitives, vtype.name).pack
     if vtype.value > 25:
@@ -347,12 +350,12 @@ def create_uatype_serializer(vtype: ua.VariantType) -> Callable[[Any], bytes]:
     return struct_to_binary
 
 
-def pack_uatype(vtype: ua.VariantType, value: Any) -> bytes:
+def pack_uatype(vtype: ua.VariantType | ua.VariantTypeCustom, value: Any) -> bytes:
     return create_uatype_serializer(vtype)(value)
 
 
 @functools.cache
-def _create_uatype_deserializer(vtype: ua.VariantType) -> Callable[[Any], Any]:
+def _create_uatype_deserializer(vtype: ua.VariantType | ua.VariantTypeCustom) -> Callable[[Any], Any]:
     if hasattr(Primitives, vtype.name):
         return getattr(Primitives, vtype.name).unpack
     if vtype.value > 25:
@@ -369,12 +372,12 @@ def _create_uatype_deserializer(vtype: ua.VariantType) -> Callable[[Any], Any]:
     raise UaError(f"Cannot unpack unknown variant type {vtype}")
 
 
-def unpack_uatype(vtype: ua.VariantType, data: Buffer | IO) -> Any:
+def unpack_uatype(vtype: ua.VariantType | ua.VariantTypeCustom, data: Buffer | IO) -> Any:
     return _create_uatype_deserializer(vtype)(data)
 
 
 @functools.cache
-def create_uatype_array_serializer(vtype: ua.VariantType) -> Callable[[Any], bytes]:
+def create_uatype_array_serializer(vtype: ua.VariantType | ua.VariantTypeCustom) -> Callable[[Any], bytes]:
     if hasattr(Primitives1, vtype.name):
         data_type = getattr(Primitives1, vtype.name)
         return data_type.pack_array
@@ -390,16 +393,18 @@ def create_uatype_array_serializer(vtype: ua.VariantType) -> Callable[[Any], byt
     return serialize
 
 
-def pack_uatype_array(vtype: ua.VariantType, array: Iterable[Any] | None) -> bytes:
+def pack_uatype_array(vtype: ua.VariantType | ua.VariantTypeCustom, array: Iterable[Any] | None) -> bytes:
     return create_uatype_array_serializer(vtype)(array)
 
 
-def unpack_uatype_array(vtype: ua.VariantType, data: Buffer | IO) -> list[Any] | None:
+def unpack_uatype_array(vtype: ua.VariantType | ua.VariantTypeCustom, data: Buffer | IO) -> list[Any] | None:
     return _create_uatype_array_deserializer(vtype)(data)
 
 
 @functools.cache
-def _create_uatype_array_deserializer(vtype: ua.VariantType) -> Callable[[Any], list[Any] | None]:
+def _create_uatype_array_deserializer(
+    vtype: ua.VariantType | ua.VariantTypeCustom,
+) -> Callable[[Any], list[Any] | None]:
     if hasattr(Primitives1, vtype.name):  # Fast primitive array deserializer
         unpack_array = getattr(Primitives1, vtype.name).unpack_array
     else:  # Revert to slow serial unpacking.
@@ -552,6 +557,8 @@ def field_serializer(uatype: Any, is_optional: bool, dataclazz: type) -> Callabl
     serializer = create_type_serializer(uatype)
     if is_optional:
         return lambda val: b"" if val is None else serializer(val)
+    if isinstance(uatype, type) and is_dataclass(uatype) and serializer is not extensionobject_to_binary:
+        return lambda val: serializer(uatype() if val is None else val)
     return serializer
 
 
@@ -765,15 +772,15 @@ def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
         packed = struct.pack("<BHI", nodeid.NodeIdType.value, nodeid.NamespaceIndex, nodeid.Identifier)
     elif nodeid.NodeIdType == ua.NodeIdType.String:
         packed = struct.pack("<BH", nodeid.NodeIdType.value, nodeid.NamespaceIndex) + Primitives.String.pack(
-            nodeid.Identifier
+            cast(str, nodeid.Identifier)
         )
     elif nodeid.NodeIdType == ua.NodeIdType.ByteString:
         packed = struct.pack("<BH", nodeid.NodeIdType.value, nodeid.NamespaceIndex) + Primitives.Bytes.pack(
-            nodeid.Identifier
+            cast(bytes, nodeid.Identifier)
         )
     elif nodeid.NodeIdType == ua.NodeIdType.Guid:
         packed = struct.pack("<BH", nodeid.NodeIdType.value, nodeid.NamespaceIndex) + Primitives.Guid.pack(
-            nodeid.Identifier
+            cast(uuid.UUID, nodeid.Identifier)
         )
     else:
         raise UaError(f"Unknown NodeIdType: {nodeid.NodeIdType} for NodeId: {nodeid}")
@@ -791,12 +798,13 @@ def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
     return bytes(data)
 
 
-def nodeid_from_binary(data: BytesIO | Buffer) -> ua.NodeId | ua.ExpandedNodeId:
+def nodeid_from_binary(data: Buffer | IO) -> ua.NodeId | ua.ExpandedNodeId:
     encoding = _read(data, 1)[0]
     try:
         nidtype = ua.NodeIdType(encoding & 0b00111111)
     except ValueError as ex:
         raise UaError(f"Unknown NodeId encoding: {encoding & 0b00111111}") from ex
+    identifier: int | str | bytes | uuid.UUID | None
     uri = None
     server_idx = None
 
@@ -823,8 +831,8 @@ def nodeid_from_binary(data: BytesIO | Buffer) -> ua.NodeId | ua.ExpandedNodeId:
         server_idx = Primitives.UInt32.unpack(data)
 
     if uri is not None or server_idx is not None:
-        return ua.ExpandedNodeId(identifier, nidx, nidtype, uri, server_idx)
-    return ua.NodeId(identifier, nidx, nidtype)
+        return ua.ExpandedNodeId(identifier, nidx, nidtype, uri, server_idx or 0)  # type: ignore[arg-type]
+    return ua.NodeId(identifier, nidx, nidtype)  # type: ignore[arg-type]
 
 
 def variant_to_binary(var: ua.Variant) -> bytes:
@@ -999,9 +1007,8 @@ def extensionobject_to_binary(obj: Any) -> bytes:
         encoding = 0
         body = None
     else:
-        type_id = ua.uatypes.encoding_id_for_class(obj.__class__)
-        if type_id is None:
-            type_id = _encoding_for_class_via_mro(obj.__class__)
+        registered_id = ua.uatypes.encoding_id_for_class(obj.__class__)
+        type_id = registered_id if registered_id is not None else _encoding_for_class_via_mro(obj.__class__)
         encoding = 0x01
         body = struct_to_binary(obj)
     packet = [
@@ -1155,7 +1162,7 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     enc_count = 0
     dc_field_deserializers: list[tuple[Field[Any], int, Callable[[Buffer | IO], Any]]] = []
     resolved_fieldtypes = get_safe_type_hints(objtype, {"ua": ua})
-    for field in fields(objtype):
+    for field in fields(cast("type[DataclassInstance]", objtype)):
         optional_enc_bit = 0
         field_type = resolved_fieldtypes[field.name]
         # if our member has a switch and it is not set we will need to skip it
@@ -1163,8 +1170,8 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
             optional_enc_bit = 1 << enc_count
             enc_count += 1
             field_type = type_from_optional(field_type)
-        subtypes = type_allow_subclass(field_type)
-        if subtypes:
+        deserialize_field: Callable[[Buffer | IO], Any]
+        if type_allow_subclass(field_type):
             deserialize_field = extensionobject_from_binary
         else:
             deserialize_field = _create_type_deserializer(field_type, objtype)
@@ -1241,7 +1248,7 @@ def header_from_binary(data: Buffer | IO) -> ua.Header:
     return hdr
 
 
-def uatcp_to_binary(message_type: ua.MessageType, message: Any) -> bytes:
+def uatcp_to_binary(message_type: bytes, message: Any) -> bytes:
     """
     Convert OPC UA TCP message (see OPC 10000-6 v1.05, 7.1) to binary.
     The only supported types are Hello, Acknowledge and ErrorMessage

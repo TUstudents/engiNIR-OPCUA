@@ -90,6 +90,19 @@ module = "enginir_opcua.ua.uaprotocol_auto.*"
 disable_error_code = ["literal-required", "name-defined"]
 
 [[tool.mypy.overrides]]
+module = [
+  "enginir_opcua.ua.attribute_ids",
+  "enginir_opcua.ua.numeric_range",
+  "enginir_opcua.ua.relative_path",
+  "enginir_opcua.ua.ua_binary",
+  "enginir_opcua.ua.uaerrors.*",
+  "enginir_opcua.ua.uaprotocol_hand",
+  "enginir_opcua.ua.uatypes",
+]
+check_untyped_defs = true
+enable_error_code = ["misc", "arg-type", "assignment", "var-annotated"]
+
+[[tool.mypy.overrides]]
 module = "enginir_opcua.client.*"
 check_untyped_defs = true
 

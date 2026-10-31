@@ -60,7 +60,8 @@ class UaStatusCodeError(UaError):
         """
 
         if args:
-            code, *args = args
+            code = args[0]
+            args = args[1:]
             if isinstance(code, int):
                 cls = cls._subclasses.get(code & 0xFFFF0000, cls)
 

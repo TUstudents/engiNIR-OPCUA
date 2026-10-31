@@ -1,8 +1,10 @@
 import pytest
 
 from enginir_opcua import ua
+from enginir_opcua.common.utils import Buffer
 from enginir_opcua.ua.object_ids import ObjectIds
 from enginir_opcua.ua.relative_path import RelativePathElementFormatter, RelativePathElementType
+from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 from enginir_opcua.ua.uaerrors import UaStringParsingError
 from enginir_opcua.ua.uatypes import RelativePath
 
@@ -226,6 +228,14 @@ def test_ua36_target_with_namespace_and_empty_name_round_trips() -> None:
     assert path.Elements[0].TargetName.NamespaceIndex == 2
     assert path.Elements[0].TargetName.Name == ""
     assert path.to_string() == "/2:"
+
+
+def test_path_without_a_final_target_name_encodes_it_as_the_null_name() -> None:
+    """Part 4, 7.30: the TargetName of the last element may be null; it is sent as the empty QualifiedName."""
+    path = RelativePath.from_string("/2:Block/")
+    decoded = struct_from_binary(ua.RelativePath, Buffer(struct_to_binary(path)))
+    assert decoded.Elements[0].TargetName == ua.QualifiedName("Block", 2)
+    assert decoded.Elements[1].TargetName == ua.QualifiedName()
 
 
 def test_ua36_reference_without_name_cannot_be_written() -> None:

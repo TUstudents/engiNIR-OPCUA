@@ -228,6 +228,10 @@ Variant and defaults:
 - `WriteMask` has the members for bits 22 to 25.
 
 Encoding and decoding:
+- A decoded ExpandedNodeId with a NamespaceUri and no ServerIndex has ServerIndex 0, not None, so it equals the
+  ExpandedNodeId that was encoded.
+- A structure field that is None, such as the TargetName that RelativePath.from_string leaves empty, is encoded as
+  the structure's null value instead of raising TypeError.
 - Decoding malformed input raises only `UaError` subclasses: unknown enum values, bad NodeId formats, union switches
   out of range, unassigned optional-field bits, ExtensionObject length -1 for an unknown type, inconsistent Variant
   dimensions, nesting deeper than 100 levels and impossible array counts.
