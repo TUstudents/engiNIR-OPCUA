@@ -108,16 +108,11 @@ async def test_find_servers2(registrant, discovery_server):
         assert new_app_uri2 not in [s.ApplicationUri for s in servers]
         assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
         assert new_app_uri2 in [s.ApplicationUri for s in new_servers]
-        # now do a query with filer
-        new_servers = await client.find_servers(["urn:enginir:opcua:server"])
-        assert len(new_servers) - len(servers) == 0
-        assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
-        assert new_app_uri2 not in [s.ApplicationUri for s in new_servers]
-        # now do a query with filer
-        new_servers = await client.find_servers(["urn:enginir:opcua"])
-        assert len(new_servers) - len(servers) == 2
-        assert new_app_uri1 in [s.ApplicationUri for s in new_servers]
-        assert new_app_uri2 in [s.ApplicationUri for s in new_servers]
+        filtered = await client.find_servers([new_app_uri1])
+        assert [s.ApplicationUri for s in filtered] == [new_app_uri1]
+        filtered = await client.find_servers([new_app_uri1, new_app_uri2])
+        assert sorted(s.ApplicationUri for s in filtered) == sorted([new_app_uri1, new_app_uri2])
+        assert await client.find_servers(["urn:enginir:opcua"]) == []
 
 
 async def test_register_namespace(server):

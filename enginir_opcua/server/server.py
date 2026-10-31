@@ -454,7 +454,7 @@ class Server:
         await sa_node.write_value(server_array)
 
     async def find_servers(self, uris: list[str] | None = None) -> list[ua.ApplicationDescription]:
-        """Return the servers this server knows, as FindServers would; uris filters them as in Client.find_servers."""
+        """Return the servers this server knows, as FindServers would; uris keeps those with that ApplicationUri."""
         if uris is None:
             uris = []
         params = ua.FindServersParameters()

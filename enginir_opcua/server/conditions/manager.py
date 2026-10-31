@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
@@ -18,7 +18,11 @@ from . import limits as limit_logic
 from .condition import OBJECT_CHILD_FIELDS, Condition, Spec, stamp_event
 
 if TYPE_CHECKING:
+    from ..address_space import AddressSpace
     from ..internal_server import InternalServer
+    from ..internal_subscription import InternalSubscription
+
+AuditHook = Callable[[str, ua.NodeId, bytes | None, ua.LocalizedText | None], None]
 
 _logger = logging.getLogger(__name__)
 
@@ -57,6 +61,14 @@ def _is_meta(name: str) -> bool:
 
 
 class ConditionManager:
+    """
+    The Conditions of one server (OPC 10000-9): creating and deleting them, the Methods of the ConditionType and its
+    subtypes, ConditionRefresh and RefreshRequired.
+
+    audit_hook, if set, is called with the Method name, the ConditionId, the EventId and the comment after every
+    successful Method call.
+    """
+
     def __init__(self, iserver: InternalServer) -> None:
         self.iserver = iserver
         self.conditions: dict[ua.NodeId, Condition] = {}
@@ -64,19 +76,22 @@ class ConditionManager:
         self._templates: dict[ua.NodeId, Any] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._refreshing: set[int] = set()
-        self.audit_hook: Any = None
+        self.audit_hook: AuditHook | None = None
 
     @property
-    def aspace(self) -> Any:
+    def aspace(self) -> AddressSpace:
+        """The address space of the server."""
         return self.iserver.aspace
 
     def spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        """Run a coroutine as a task that stop() cancels."""
         task = asyncio.ensure_future(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def init(self) -> None:
-        handlers = {
+        """Bind the Methods of the ConditionType, AcknowledgeableConditionType and ShelvedStateMachineType."""
+        handlers: dict[Any, Callable[..., Any]] = {
             ua.ObjectIds.ConditionType_Enable: self._enable,
             ua.ObjectIds.ConditionType_Disable: self._disable,
             ua.ObjectIds.ConditionType_AddComment: self._add_comment,
@@ -101,23 +116,22 @@ class ConditionManager:
         return object_id in self.conditions
 
     async def stop(self) -> None:
+        """Cancel the shelving timers and the tasks."""
         for condition in self.conditions.values():
             condition._cancel_shelve_timer()
         for task in list(self._tasks):
             task.cancel()
 
-    # ---- delivery
-
     async def deliver(self, event: Any) -> None:
+        """Report a Condition Event to the subscriptions."""
         await self.iserver.subscription_service.trigger_event(event)
 
     def retained(self) -> list[Any]:
+        """Return the last Event of every retained state of every Condition."""
         found: list[Any] = []
         for condition in self.conditions.values():
             found.extend(condition.retained_events())
         return found
-
-    # ---- creating Conditions
 
     async def create(
         self,
@@ -146,6 +160,7 @@ class ConditionManager:
         follow_input: bool = False,
         max_time_shelved: float | None = None,
     ) -> Condition:
+        """Create a Condition instance; see Server.create_condition for the options."""
         isession = self.iserver.isession
         type_id = _nodeid(condition_type)
         aspace = self.aspace
@@ -177,7 +192,7 @@ class ConditionManager:
             raise ValueError("Severity must be between 1 and 1000")
         optional = self._optional_children(spec, limits, deadbands, severities, max_time_shelved, setpoint_node)
         parent = await self._parent_for(source_node)
-        index = namespace if namespace is not None else (type_id.NamespaceIndex or source_node_ns(source_node) or 2)
+        index = namespace if namespace is not None else (type_id.NamespaceIndex or _source_ns(source_node) or 2)
         if node_id is not None and aspace.get(node_id) is not None:
             raise ua.uaerrors.BadNodeIdExists()
         type_node = Node(isession, type_id)
@@ -395,6 +410,7 @@ class ConditionManager:
         condition.callback_handles.append(handle)
 
     async def delete(self, condition: Condition) -> None:
+        """Close a Condition, remove its HasCondition reference and delete its nodes."""
         await condition.close()
         self.conditions.pop(condition.condition_id, None)
         for path, owner in list(self._shelving_owner.items()):
@@ -419,12 +435,11 @@ class ConditionManager:
         await condition.node.delete(delete_references=True, recursive=True)
 
     def get(self, condition_id: ua.NodeId | Node) -> Condition | None:
+        """Return the Condition with this ConditionId, or None."""
         return self.conditions.get(_nodeid(condition_id))
 
-    # ---- the Methods
-
     async def _bind_instance_methods(self, condition: Condition) -> None:
-        handlers = {
+        handlers: dict[Any, Callable[..., Any]] = {
             "Enable": self._enable,
             "Disable": self._disable,
             "AddComment": self._add_comment,
@@ -494,7 +509,13 @@ class ConditionManager:
         await self._condition_of(parent, shelving=True).unshelve(_text(comment))
         self._audit("Unshelve2", parent, None, _text(comment))
 
-    def _audit(self, method: str, parent: ua.NodeId, event_id: bytes | None = None, comment: Any = None) -> None:
+    def _audit(
+        self,
+        method: str,
+        parent: ua.NodeId,
+        event_id: bytes | None = None,
+        comment: ua.LocalizedText | None = None,
+    ) -> None:
         if self.audit_hook is None:
             return
         try:
@@ -502,9 +523,7 @@ class ConditionManager:
         except Exception:
             _logger.exception("Audit hook failed for %s", method)
 
-    # ---- refresh
-
-    def _subscription_of(self, subscription_id: int) -> Any:
+    def _subscription_of(self, subscription_id: int) -> InternalSubscription:
         service = self.iserver.subscription_service
         subscription = service.subscriptions.get(subscription_id)
         if subscription is None:
@@ -570,6 +589,7 @@ class ConditionManager:
         return event
 
     async def refresh_required(self, subscription_ids: list[int] | None = None) -> None:
+        """Send a RefreshRequiredEvent (OPC 10000-9, 5.11.4) to the subscriptions, all of them by default."""
         service = self.iserver.subscription_service
         for sid in subscription_ids if subscription_ids is not None else list(service.subscriptions):
             event = self._refresh_event(ua.ObjectIds.RefreshRequiredEventType, "RefreshRequired")
@@ -585,7 +605,7 @@ def _nodeid(value: Node | ua.NodeId | int) -> ua.NodeId:
     return ua.NodeId(value)
 
 
-def source_node_ns(source: Node | None) -> int:
+def _source_ns(source: Node | None) -> int:
     return source.nodeid.NamespaceIndex if source is not None else 0
 
 
@@ -599,7 +619,7 @@ def _event_id(event_id: ua.Variant) -> bytes:
     return bytes(value) if value is not None else b""
 
 
-def _wanted(name: str, type_id: ua.NodeId, aspace: Any) -> bool:
+def _wanted(name: str, type_id: ua.NodeId, aspace: AddressSpace) -> bool:
     if name.startswith("ShelvingState"):
         return is_subtype(aspace, type_id, ALARM_TYPE)
     return is_subtype(aspace, type_id, EXCLUSIVE_LIMIT)

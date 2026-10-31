@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_BYTE_STRING_LENGTH = 1_048_576
 DEFAULT_MAX_HANDLES_PER_SESSION = 16
 DEFAULT_MAX_HANDLES_PER_FILE = 64
 DEFAULT_MAX_ENTRIES = 10_000
@@ -52,17 +51,29 @@ def _status(code: int) -> ua.UaStatusCodeError:
 class FileProvider(Protocol):
     """The storage behind one file. The service keeps the position of every handle; a provider is stateless."""
 
-    def size(self) -> int | None: ...
+    def size(self) -> int | None:
+        """The size in bytes, or None if it is not known."""
+        ...
 
-    def modified(self) -> datetime | None: ...
+    def modified(self) -> datetime | None:
+        """The time of the last change, or None if it is not known."""
+        ...
 
-    async def read(self, offset: int, length: int) -> bytes: ...
+    async def read(self, offset: int, length: int) -> bytes:
+        """Return at most length bytes from offset; fewer at the end of the file."""
+        ...
 
-    async def write(self, offset: int, data: bytes) -> None: ...
+    async def write(self, offset: int, data: bytes) -> None:
+        """Write data at offset, extending the file if needed."""
+        ...
 
-    async def truncate(self) -> None: ...
+    async def truncate(self) -> None:
+        """Empty the file (Open with EraseExisting)."""
+        ...
 
-    async def flush(self) -> None: ...
+    async def flush(self) -> None:
+        """Make the written data durable; called at Close and when the Session ends."""
+        ...
 
 
 class MemoryFile:
@@ -167,6 +178,8 @@ class PathFile:
 
 @dataclass
 class FileEntry:
+    """A FileType Object: its provider, its write permissions and limits, and the handles open on it."""
+
     node: Node
     provider: FileProvider
     writable: bool = False
@@ -183,6 +196,8 @@ class FileEntry:
 
 @dataclass
 class OpenHandle:
+    """A file handle of a Session: its mode, the provider it reads and writes, and its position."""
+
     entry: FileEntry
     mode: int
     provider: FileProvider
@@ -191,12 +206,16 @@ class OpenHandle:
 
 @dataclass
 class SessionHandles:
+    """The open handles of one Session."""
+
     handles: dict[int, OpenHandle] = field(default_factory=dict)
     next_handle: int = 1
 
 
 @dataclass
 class DirectoryTree:
+    """A FileDirectoryType Object over a directory, with the NodeIds of the files and directories below it."""
+
     root: Path
     node: Node
     namespace: int
@@ -224,6 +243,9 @@ class DirectoryTree:
 
 
 def validate_mode(mode: int) -> int:
+    """
+    Check the mode of Open: Read and/or Write, EraseExisting only with Write, no reserved bits; BadInvalidArgument.
+    """
     if mode < 0 or mode > 255 or mode & 0xF0:
         raise _status(ua.StatusCodes.BadInvalidArgument)
     if not mode & (READ | WRITE):
@@ -234,6 +256,10 @@ def validate_mode(mode: int) -> int:
 
 
 def validate_name(name: Any) -> str:
+    """
+    Check a file or directory name from a client: one component, not . or .., no separators, control characters or
+    drive letter, at most 255 bytes; BadInvalidArgument.
+    """
     if not isinstance(name, str) or not name or name in (".", ".."):
         raise _status(ua.StatusCodes.BadInvalidArgument)
     if len(name.encode("utf-8", "surrogatepass")) > MAX_NAME_BYTES:
@@ -272,14 +298,12 @@ class FileService:
         self._watched: set[ua.NodeId] = set()
         self._types_bound = False
 
-    def default_max_byte_string_length(self) -> int:
-        return int(getattr(self.iserver, "max_byte_string_length", DEFAULT_MAX_BYTE_STRING_LENGTH))
-
     def effective_max(self, entry: FileEntry) -> int:
-        return entry.max_byte_string_length or self.default_max_byte_string_length()
+        """The most bytes one Read returns or one Write takes: the file's limit, else the server's MaxByteStringLength."""
+        return entry.max_byte_string_length or self.iserver.max_byte_string_length
 
-    async def _bind_method(self, nodeid: ua.NodeId, callback: Callable[..., Any]) -> None:
-        """Bind a callback and make the Method executable (SRV-83: the standard Methods are not)."""
+    async def bind_method(self, nodeid: ua.NodeId, callback: Callable[..., Any]) -> None:
+        """Bind a callback and make the Method executable; the Methods of the standard types are not executable."""
         self.iserver.isession.add_method_callback(nodeid, callback)
         for attribute in (ua.AttributeIds.Executable, ua.AttributeIds.UserExecutable):
             await self.iserver.write_attribute_value(
@@ -288,23 +312,25 @@ class FileService:
 
     async def _bind(self, node: Node, names: tuple[str, ...], callbacks: dict[str, Callable[..., Any]]) -> None:
         for name in names:
-            await self._bind_method((await node.get_child(name)).nodeid, callbacks[name])
+            await self.bind_method((await node.get_child(name)).nodeid, callbacks[name])
 
     async def bind_types(self) -> None:
+        """Bind the Methods of FileType and FileDirectoryType once, so calls on the type Methods reach the service."""
         if self._types_bound:
             return
         self._types_bound = True
         file_callbacks = self.file_callbacks()
         for name in _FILE_METHODS:
-            await self._bind_method(ua.NodeId(getattr(ua.ObjectIds, f"FileType_{name}")), file_callbacks[name])
+            await self.bind_method(ua.NodeId(getattr(ua.ObjectIds, f"FileType_{name}")), file_callbacks[name])
         directory_callbacks = self._directory_callbacks()
         for name in _DIRECTORY_METHODS:
             type_name = _DELETE_TYPE_METHOD if name == "Delete" else name
-            await self._bind_method(
+            await self.bind_method(
                 ua.NodeId(getattr(ua.ObjectIds, f"FileDirectoryType_{type_name}")), directory_callbacks[name]
             )
 
     def file_callbacks(self) -> dict[str, Callable[..., Any]]:
+        """Return the callbacks of the FileType Methods by Method name."""
         return {
             "Open": self.open,
             "Close": self.close,
@@ -335,6 +361,7 @@ class FileService:
         write_role: UserRole = UserRole.User,
         namespace: int | None = None,
     ) -> Node:
+        """Add a FileType Object below parent; see Server.add_file."""
         if isinstance(provider, str | Path):
             path = await anyio.to_thread.run_sync(_regular_file, Path(provider))
             if path is None:
@@ -349,6 +376,10 @@ class FileService:
     async def register_file(
         self, entry: FileEntry, mime_type: str | None = None, callbacks: dict[str, Callable[..., Any]] | None = None
     ) -> None:
+        """
+        Serve an existing FileType Object: bind its Methods (callbacks replaces the standard ones) and back its
+        Size, OpenCount, UserWritable, Writable, MimeType, MaxByteStringLength and LastModifiedTime.
+        """
         await self.bind_types()
         node = entry.node
         await self._bind(node, _FILE_METHODS, callbacks or self.file_callbacks())
@@ -429,6 +460,10 @@ class FileService:
         return open_handle
 
     async def open_handle(self, entry: FileEntry, mode: int, session: InternalSession) -> int:
+        """
+        Open a handle for the Session. A write handle needs Writable, the write role and no other handle; a read
+        handle no write handle. Raises BadNotWritable, BadNotReadable or BadResourceUnavailable (handle limits).
+        """
         mode = validate_mode(mode)
         if mode & WRITE:
             if not entry.writable or not self._role_allows(entry.write_role, session):
@@ -505,10 +540,8 @@ class FileService:
             open_handle.entry.write_handles.discard((session_id, handle))
         return open_handle
 
-    def lookup_handle(self, session: InternalSession, entry: FileEntry, handle: int) -> OpenHandle:
-        return self._handle(session, entry, handle)
-
     def release_handle(self, session_id: ua.NodeId, handle: int) -> None:
+        """Forget a handle without flushing it."""
         self._release(session_id, handle)
 
     def take_handle(self, session: InternalSession, entry: FileEntry, handle: int) -> OpenHandle:
@@ -518,15 +551,18 @@ class FileService:
         return open_handle
 
     def release_file(self, entry: FileEntry) -> None:
+        """Forget every handle open on a file."""
         for session_id, handle in list(entry.handles):
             self._release(session_id, handle)
 
     async def open(self, parent: ua.NodeId, mode: ua.Variant) -> list[ua.Variant]:
+        """The Open Method: returns the FileHandle."""
         entry = self._file(parent)
         handle = await self.open_handle(entry, int(mode.Value), self._caller())
         return [_variant(handle, ua.VariantType.UInt32)]
 
     async def close(self, parent: ua.NodeId, handle: ua.Variant) -> list[ua.Variant]:
+        """The Close Method: forget the handle and flush a write handle."""
         entry, session = self._file(parent), self._caller()
         open_handle = self._handle(session, entry, handle.Value)
         self._release(session.session_id, handle.Value)
@@ -538,6 +574,7 @@ class FileService:
         return []
 
     async def read(self, parent: ua.NodeId, handle: ua.Variant, length: ua.Variant) -> list[ua.Variant]:
+        """The Read Method: at most length bytes, and at most effective_max(), from the position of the handle."""
         entry, session = self._file(parent), self._caller()
         open_handle = self._handle(session, entry, handle.Value)
         if length.Value is None or length.Value <= 0:
@@ -554,6 +591,7 @@ class FileService:
         return [_variant(data, ua.VariantType.ByteString)]
 
     async def write(self, parent: ua.NodeId, handle: ua.Variant, data: ua.Variant) -> list[ua.Variant]:
+        """The Write Method at the position of the handle; beyond max_size it is BadOutOfRange."""
         entry, session = self._file(parent), self._caller()
         open_handle = self._handle(session, entry, handle.Value)
         if not open_handle.mode & WRITE:
@@ -576,10 +614,12 @@ class FileService:
         return []
 
     async def get_position(self, parent: ua.NodeId, handle: ua.Variant) -> list[ua.Variant]:
+        """The GetPosition Method."""
         open_handle = self._handle(self._caller(), self._file(parent), handle.Value)
         return [_variant(open_handle.position, ua.VariantType.UInt64)]
 
     async def set_position(self, parent: ua.NodeId, handle: ua.Variant, position: ua.Variant) -> list[ua.Variant]:
+        """The SetPosition Method; a position past the end is the end of the file."""
         open_handle = self._handle(self._caller(), self._file(parent), handle.Value)
         size = open_handle.provider.size()
         target = int(position.Value)
@@ -598,6 +638,7 @@ class FileService:
         write_role: UserRole = UserRole.User,
         namespace: int | None = None,
     ) -> Node:
+        """Add a FileDirectoryType Object over the directory root below parent; see Server.add_directory."""
         resolved = await anyio.to_thread.run_sync(_existing_directory, Path(root))
         if resolved is None:
             raise ConfigurationError(f"{root} is not an existing directory")
@@ -695,6 +736,7 @@ class FileService:
                 await self._reconcile(tree, (*rel, name))
 
     async def refresh_directory(self, node: Node) -> None:
+        """Bring the Objects of a directory and everything below it in line with the file system."""
         tree, rel = self._tree_of(node.nodeid)
         await self._reconcile(tree, rel)
 
@@ -719,6 +761,7 @@ class FileService:
         return False
 
     async def create_directory(self, parent: ua.NodeId, directory_name: ua.Variant) -> list[ua.Variant]:
+        """The CreateDirectory Method: returns the NodeId of the new directory; BadBrowseNameDuplicated if it exists."""
         tree, rel = self._tree_of(parent)
         session = self._caller()
         self._check_write(tree, session)
@@ -747,6 +790,7 @@ class FileService:
     async def create_file(
         self, parent: ua.NodeId, file_name: ua.Variant, request_file_open: ua.Variant
     ) -> list[ua.Variant]:
+        """The CreateFile Method: returns the NodeId of the new file and, with request_file_open, a read-write handle."""
         tree, rel = self._tree_of(parent)
         session = self._caller()
         self._check_write(tree, session)
@@ -786,6 +830,7 @@ class FileService:
         return item
 
     async def delete(self, parent: ua.NodeId, object_to_delete: ua.Variant) -> list[ua.Variant]:
+        """The Delete Method: remove a file or a directory with its content; BadInvalidState while one is open."""
         tree, rel = self._tree_of(parent)
         self._check_write(tree, self._caller())
         nodeid = object_to_delete.Value
@@ -819,6 +864,7 @@ class FileService:
         create_copy: ua.Variant,
         new_name: ua.Variant,
     ) -> list[ua.Variant]:
+        """The MoveOrCopy Method: returns the NodeId of the moved object or of the copy."""
         tree, rel = self._tree_of(parent)
         self._check_write(tree, self._caller())
         nodeid = object_to_move_or_copy.Value

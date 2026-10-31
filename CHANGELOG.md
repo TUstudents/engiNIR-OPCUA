@@ -128,8 +128,10 @@ Server file transfer (OPC 10000-20):
   Handles belong to a Session and are released when it ends; one writer or many readers; bounded handles, read and
   write sizes and entries. Names, symbolic links and resolved paths are checked so nothing leaves the root.
   `Server.refresh_directory()` picks up changes made outside OPC UA.
-- `ServerCapabilities/MaxByteStringLength` has a value (`InternalServer.max_byte_string_length`, default 1 MiB).
+- `ServerCapabilities/MaxByteStringLength` has a value (`InternalServer.max_byte_string_length`, default 16 MiB).
 - `InternalSession.add_close_listener(callback)` calls `callback(session, reason)` when a Session ends.
+- `FileService.bind_method()` is public (it was `_bind_method`); `FileService.lookup_handle()` is removed, use
+  `take_handle()`.
 
 Certificate management over OPC UA (OPC 10000-12, 7.10, push model):
 - New: `Server.enable_push_management()` (needs `set_pki_directory`) serves the ServerConfiguration Object: TrustLists
@@ -351,6 +353,8 @@ Server sessions (OPC 10000-4, 5.7):
   advertised 4840.
 - `load_private_key()` refuses a key that is not RSA with ConfigurationError; the security policies failed with it
   later.
+- FindServers with ServerUris returns only the servers whose ApplicationUri is in the list (OPC 10000-4, 5.5.2); a
+  ServerUri used to match every ApplicationUri that started with its colon-separated parts.
 - BuildInfo.SoftwareVersion is the version of enginir-opcua instead of "1.0pre", and BuildDate is in UTC.
   `get_event_generator()` without a type passes None on to `EventGenerator.init()`. The `period` of
   `historize_node_data_change()` and `historize_node_event()` may be None (keep everything). GetEndpoints logs at

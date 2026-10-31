@@ -6,7 +6,6 @@ import asyncio
 import copy
 import dataclasses
 import logging
-import secrets
 from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -86,6 +85,8 @@ OBJECT_CHILD_FIELDS: dict[str, ua.VariantType] = {
 
 @dataclasses.dataclass
 class Spec:
+    """What a Condition supports, from its type and the options of create_condition."""
+
     has_ack: bool = False
     has_active: bool = False
     has_confirm: bool = False
@@ -102,6 +103,8 @@ class Spec:
 
 @dataclasses.dataclass(eq=False)
 class Branch:
+    """The state of the Condition (the trunk, BranchId null) or of one of its branches, a previous state kept open."""
+
     branch_id: ua.NodeId
     acked: bool = True
     confirmed: bool = True
@@ -127,13 +130,16 @@ class Branch:
     last_event_time: datetime | None = None
 
     def pending(self, confirmable: bool) -> bool:
+        """Return True while the branch waits for Acknowledge, or for Confirm when the Condition is confirmable."""
         return not self.acked or (confirmable and not self.confirmed)
 
     def key(self) -> tuple[Any, ...]:
+        """The state that EventIds belong to; a new state starts a new list of acceptable EventIds."""
         return (self.active, self.limit, tuple(sorted(self.tiers.items())), self.acked, self.confirmed)
 
 
-def caller_name(manager: ConditionManager) -> str:
+def caller_name() -> str:
+    """Return the ClientUserId of the calling Session: the user name or role, or "server" for the server itself."""
     session = current_call_session.get()
     if session is None or not session.external:
         return "server"
@@ -142,10 +148,18 @@ def caller_name(manager: ConditionManager) -> str:
 
 
 def comment_is_null(comment: ua.LocalizedText | None) -> bool:
+    """Return True for a missing comment or one with neither text nor locale."""
     return comment is None or (not comment.Text and not comment.Locale)
 
 
 class Condition:
+    """
+    A Condition or Alarm instance (OPC 10000-9), the handle Server.create_condition returns.
+
+    Every change raises one Event with all fields and is mirrored into the Variables of the instance. The methods
+    raise the status-coded errors of the Part 9 Methods, so the client Methods and these calls behave alike.
+    """
+
     def __init__(
         self,
         manager: ConditionManager,
@@ -193,47 +207,53 @@ class Condition:
         self.callback_handles: list[int] = []
         self._closing: list[Branch] = []
 
-    # ---- reading the state
-
     @property
     def condition_id(self) -> ua.NodeId:
+        """The ConditionId: the NodeId of the instance."""
         return self.node.nodeid
 
     @property
     def retain(self) -> bool:
+        """The Retain of the current state."""
         return self.trunk.retain
 
     @property
     def acked(self) -> bool:
+        """AckedState of the current state."""
         return self.trunk.acked
 
     @property
     def confirmed(self) -> bool:
+        """ConfirmedState of the current state."""
         return self.trunk.confirmed
 
     @property
     def active(self) -> bool:
+        """ActiveState of the current state."""
         return self.trunk.active
 
     @property
     def severity(self) -> int:
+        """The Severity of the current state."""
         return self.trunk.severity
 
     @property
     def shelving_state(self) -> str:
+        """Unshelved, TimedShelved or OneShotShelved."""
         return self.shelving
 
     @property
     def branches(self) -> list[ua.NodeId]:
+        """The BranchIds of the open branches."""
         return list(self.branch_map)
 
     def last_event_id(self, branch_id: ua.NodeId | None = None) -> bytes | None:
+        """Return the EventId of the last Event of the current state or of a branch, None if there is none."""
         branch = self.trunk if branch_id is None or branch_id.is_null() else self.branch_map.get(branch_id)
         return branch.last_event_id if branch is not None else None
 
-    # ---- public operations
-
     async def enable(self) -> None:
+        """Enable (OPC 10000-9, 5.5.5); BadConditionAlreadyEnabled if enabled."""
         async with self._lock:
             if self.enabled:
                 raise ua.uaerrors.BadConditionAlreadyEnabled()
@@ -244,6 +264,7 @@ class Condition:
             await self._publish([self.trunk], f"{self.name} enabled")
 
     async def disable(self) -> None:
+        """Disable (OPC 10000-9, 5.5.4): close the branches and clear Retain; BadConditionAlreadyDisabled."""
         async with self._lock:
             if not self.enabled:
                 raise ua.uaerrors.BadConditionAlreadyDisabled()
@@ -256,11 +277,12 @@ class Condition:
             self.branch_map = {}
             for branch in [self.trunk, *closed]:
                 branch.retain = False
-            events = [(self.trunk, True)] + [(branch, True) for branch in closed if any(branch is w for w in was)]
+            events = [self.trunk, *(branch for branch in closed if any(branch is w for w in was))]
             await self._emit(events, f"{self.name} disabled")
             await self._mirror(self.trunk)
 
     async def activate(self, severity: int | None = None, message: str | ua.LocalizedText | None = None) -> None:
+        """Make the Condition active and unacknowledged; only acknowledgeable Conditions (BadInvalidState)."""
         if not self.spec.has_ack:
             raise ua.uaerrors.BadInvalidState()
         async with self._lock:
@@ -269,6 +291,7 @@ class Condition:
             await self._publish(emits, message or f"{self.name} active")
 
     async def deactivate(self, message: str | ua.LocalizedText | None = None) -> None:
+        """Return the Condition to normal; only acknowledgeable Conditions (BadInvalidState)."""
         if not self.spec.has_ack:
             raise ua.uaerrors.BadInvalidState()
         async with self._lock:
@@ -277,6 +300,7 @@ class Condition:
             await self._publish(emits, message or f"{self.name} returned to normal")
 
     async def set_severity(self, severity: int) -> None:
+        """Set the Severity, 1 to 1000; LastSeverity keeps the previous one."""
         async with self._lock:
             self._check_severity(severity)
             if severity == self.trunk.severity:
@@ -286,6 +310,7 @@ class Condition:
             await self._publish([self.trunk], "severity changed")
 
     async def set_quality(self, quality: ua.StatusCode) -> None:
+        """Set the Quality of the underlying values."""
         async with self._lock:
             if quality == self.trunk.quality:
                 return
@@ -294,6 +319,7 @@ class Condition:
             await self._publish([self.trunk], "quality changed")
 
     async def set_retain(self, retain: bool) -> None:
+        """Keep the Condition retained (reported by ConditionRefresh) whatever its state."""
         async with self._lock:
             if retain == self.trunk.app_retain:
                 return
@@ -301,14 +327,20 @@ class Condition:
             await self._publish([self.trunk], "retain changed")
 
     async def set_suppressed(self, flag: bool) -> None:
+        """Set SuppressedState; needs suppression=True at creation."""
         await self._set_flag("suppressed", "Suppressed", flag)
 
     async def set_out_of_service(self, flag: bool) -> None:
+        """Set OutOfServiceState; needs suppression=True at creation."""
         await self._set_flag("out_of_service", "OutOfService", flag)
 
     async def acknowledge(
         self, event_id: bytes | None = None, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
     ) -> None:
+        """
+        Acknowledge (OPC 10000-9, 5.7.3) the state the EventId belongs to (the current one without EventId), with an
+        optional comment; BadConditionBranchAlreadyAcked, BadEventIdUnknown, BadConditionDisabled.
+        """
         async with self._lock:
             self._need_enabled()
             branch = self._find_branch(event_id)
@@ -321,11 +353,12 @@ class Condition:
             if self.spec.has_confirm:
                 branch.confirmed = False
                 branch.times["Confirmed"] = now
-            await self._publish_branch(branch, f"{self.name} acknowledged")
+            await self._publish([branch], f"{self.name} acknowledged")
 
     async def confirm(
         self, event_id: bytes | None = None, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
     ) -> None:
+        """Confirm (OPC 10000-9, 5.7.4) as acknowledge(); only confirmable Conditions (BadMethodInvalid)."""
         async with self._lock:
             if not self.spec.has_confirm:
                 raise ua.uaerrors.BadMethodInvalid()
@@ -337,11 +370,12 @@ class Condition:
             self._apply_comment(branch, comment, now, user, null_is_error=False)
             branch.confirmed = True
             branch.times["Confirmed"] = now
-            await self._publish_branch(branch, f"{self.name} confirmed")
+            await self._publish([branch], f"{self.name} confirmed")
 
     async def add_comment(
-        self, comment: str | ua.LocalizedText, event_id: bytes | None = None, *, user: str | None = None
+        self, comment: str | ua.LocalizedText | None, event_id: bytes | None = None, *, user: str | None = None
     ) -> None:
+        """AddComment (OPC 10000-9, 5.5.6); a null comment is BadInvalidArgument."""
         async with self._lock:
             self._need_enabled()
             branch = self._find_branch(event_id)
@@ -349,6 +383,10 @@ class Condition:
             await self._publish([branch], "comment added", forced=[branch])
 
     async def update_value(self, value: Any, setpoint: float | None = None) -> None:
+        """
+        Evaluate a new input value: against the limits and deadbands of a limit alarm (a deviation alarm against
+        value - setpoint), or against the normal value of an off-normal alarm.
+        """
         async with self._lock:
             now = datetime.now(UTC)
             if self.spec.off_normal:
@@ -374,6 +412,7 @@ class Condition:
         deadbands: Mapping[str, float] | None = None,
         severities: Mapping[str, int] | None = None,
     ) -> None:
+        """Change limits, deadbands and severities; the last value is evaluated again."""
         async with self._lock:
             new_limits = {**self.limits, **(limits or {})}
             new_bands = {**self.deadbands, **(deadbands or {})}
@@ -391,6 +430,7 @@ class Condition:
     async def shelve_timed(
         self, milliseconds: float, comment: str | ua.LocalizedText | None = None, *, user: str | None = None
     ) -> None:
+        """TimedShelve (OPC 10000-9, 5.8.17.4) for milliseconds, at most MaxTimeShelved."""
         async with self._lock:
             self._need_shelving()
             limit = min(self.spec.max_time_shelved or MAX_SHELVING_MS, MAX_SHELVING_MS)
@@ -401,6 +441,7 @@ class Condition:
             await self._shelve("TimedShelved", milliseconds, comment, user)
 
     async def shelve_one_shot(self, comment: str | ua.LocalizedText | None = None, *, user: str | None = None) -> None:
+        """OneShotShelve (OPC 10000-9, 5.8.17.6): shelved until the alarm returns to normal."""
         async with self._lock:
             self._need_shelving()
             if self.shelving == "OneShotShelved":
@@ -408,13 +449,12 @@ class Condition:
             await self._shelve("OneShotShelved", self.spec.max_time_shelved, comment, user)
 
     async def unshelve(self, comment: str | ua.LocalizedText | None = None, *, user: str | None = None) -> None:
+        """Unshelve (OPC 10000-9, 5.8.17.2); BadConditionNotShelved."""
         async with self._lock:
             self._need_shelving()
             if self.shelving == "Unshelved":
                 raise ua.uaerrors.BadConditionNotShelved()
             await self._unshelve(comment, user)
-
-    # ---- state rules
 
     def _need_enabled(self) -> None:
         if not self.enabled:
@@ -436,7 +476,8 @@ class Condition:
                 return branch
         raise ua.uaerrors.BadEventIdUnknown()
 
-    def _check_severity(self, severity: int) -> None:
+    @staticmethod
+    def _check_severity(severity: int) -> None:
         if not 1 <= severity <= 1000:
             raise ValueError("Severity must be between 1 and 1000")
 
@@ -466,7 +507,7 @@ class Condition:
             raise ua.uaerrors.BadInvalidArgument()
         branch.comment = comment
         branch.comment_time = now
-        branch.client_user_id = user if user is not None else caller_name(self.manager)
+        branch.client_user_id = user if user is not None else caller_name()
 
     def _retain_of(self, branch: Branch) -> bool:
         if not self.enabled:
@@ -583,8 +624,6 @@ class Condition:
         self.branch_map[branch.branch_id] = branch
         return branch
 
-    # ---- shelving
-
     async def _shelve(self, state: str, milliseconds: float | None, comment: Any, user: str | None) -> None:
         self._cancel_shelve_timer()
         now = datetime.now(UTC)
@@ -629,11 +668,6 @@ class Condition:
             return 0.0 if self.shelving == "Unshelved" else (self.spec.max_time_shelved or MAX_SHELVING_MS)
         return max(0.0, (self.shelve_deadline - asyncio.get_running_loop().time()) * 1000.0)
 
-    # ---- events
-
-    async def _publish_branch(self, branch: Branch, message: str) -> None:
-        await self._publish([branch], message)
-
     async def _publish(
         self,
         branches: list[Branch],
@@ -647,22 +681,22 @@ class Condition:
                 order.append(branch)
         if not any(self.trunk is other for other in order) and self._retain_of(self.trunk) != self.trunk.retain:
             order.append(self.trunk)
-        events: list[tuple[Branch, bool]] = []
+        events: list[Branch] = []
         for branch in order:
             previous = branch.retain
             branch.retain = False if any(branch is other for other in closures) else self._retain_of(branch)
             force = any(branch is other for other in forced or [])
             if branch.retain or previous or force:
-                events.append((branch, force))
+                events.append(branch)
         for branch in list(self.branch_map.values()):
             if not branch.retain:
                 del self.branch_map[branch.branch_id]
         await self._emit(events, message)
         await self._mirror(self.trunk)
 
-    async def _emit(self, events: list[tuple[Branch, bool]], message: str | ua.LocalizedText) -> None:
+    async def _emit(self, events: list[Branch], message: str | ua.LocalizedText) -> None:
         text = message if isinstance(message, ua.LocalizedText) else ua.LocalizedText(message)
-        for branch, _force in events:
+        for branch in events:
             branch.message = text
             event = self._build(branch)
             stamp_event(event)
@@ -677,6 +711,7 @@ class Condition:
             await self.manager.deliver(event)
 
     def retained_events(self) -> list[Any]:
+        """Return the last Event of every retained state, for ConditionRefresh."""
         found = []
         for branch in self._all_branches():
             if branch.retain and branch.last_event_id is not None:
@@ -684,6 +719,7 @@ class Condition:
         return found
 
     def build_replay(self, branch: Branch) -> Any:
+        """Rebuild the last Event of a state with its EventId and Time."""
         event = self._build(branch)
         event.EventId = branch.last_event_id
         event.Time = branch.last_event_time
@@ -797,8 +833,6 @@ class Condition:
         setattr(event, "ShelvingState/LastTransition/TransitionTime", self.trunk.times.get("Shelving"))
         setattr(event, "ShelvingState/UnshelveTime", self._remaining_shelve_ms())
 
-    # ---- the address space mirror
-
     async def _mirror(self, branch: Branch) -> None:
         event = self._build(branch)
         status = ua.StatusCode(ua.StatusCodes.BadConditionDisabled)
@@ -821,15 +855,12 @@ class Condition:
                 _logger.debug("Could not mirror %s of %s", name, self.name, exc_info=True)
 
     async def close(self) -> None:
+        """Stop the shelving timer and report the retained states as no longer retained, before deletion."""
         async with self._lock:
             self._cancel_shelve_timer()
-            events = [(branch, True) for branch in self._all_branches() if branch.retain]
+            events = [branch for branch in self._all_branches() if branch.retain]
             for branch in self._all_branches():
                 branch.retain = False
             self.branch_map = {}
             if events:
                 await self._emit(events, f"{self.name} deleted")
-
-
-def new_event_id() -> bytes:
-    return secrets.token_bytes(16)

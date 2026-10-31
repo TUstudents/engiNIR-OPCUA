@@ -1,4 +1,4 @@
-"""The value logic of the limit alarms (OPC 10000-9, 5.8.18 to 5.8.23). Pure functions, no address space."""
+"""The value logic of the limit alarms (OPC 10000-9, 5.8.18 to 5.8.22). Pure functions, no address space."""
 
 from __future__ import annotations
 
@@ -12,6 +12,10 @@ TIERS = ("HighHigh", "High", "Low", "LowLow")
 def validate_limits(
     limits: Mapping[str, float], deadbands: Mapping[str, float], *, deviation: bool = False, exclusive: bool = True
 ) -> None:
+    """
+    Raise ValueError unless the limits and deadbands are ordered as OPC 10000-9, 5.8.18 requires (HighHigh above High
+    above Low above LowLow, deadbands included) and, for deviation alarms, High positive and Low negative.
+    """
     unknown = (set(limits) | set(deadbands)) - set(TIERS)
     if unknown:
         raise ValueError(f"Unknown limit names: {sorted(unknown)}")
@@ -45,18 +49,20 @@ def validate_limits(
 
 
 def tier_holds(tier: str, value: float, limits: Mapping[str, float], deadbands: Mapping[str, float], was: bool) -> bool:
+    """Return True if the value is beyond the limit of a tier; a tier that holds already leaves only past its deadband."""
     limit = limits.get(tier)
     if limit is None:
         return False
     band = deadbands.get(tier, 0.0) if was else 0.0
     if tier in HIGH_SIDE:
-        return value > limit - band if was else value > limit
-    return value < limit + band if was else value < limit
+        return value > limit - band
+    return value < limit + band
 
 
 def exclusive_tier(
     value: float, limits: Mapping[str, float], deadbands: Mapping[str, float], current: str | None
 ) -> str | None:
+    """Return the one tier of an exclusive limit alarm the value is in, the outer tiers first, or None."""
     for side in (HIGH_SIDE, LOW_SIDE):
         for tier in side:
             if tier_holds(tier, value, limits, deadbands, current == tier):
@@ -67,12 +73,14 @@ def exclusive_tier(
 def non_exclusive_states(
     value: float, limits: Mapping[str, float], deadbands: Mapping[str, float], current: Mapping[str, bool]
 ) -> dict[str, bool]:
+    """Return the state of every tier of a non-exclusive limit alarm."""
     return {
         tier: tier_holds(tier, value, limits, deadbands, current.get(tier, False)) for tier in TIERS if tier in limits
     }
 
 
 def tier_severity(active_tiers: list[str], severities: Mapping[str, int], default: int) -> int:
+    """Return the severity of the most severe active tier that has one, else default."""
     for tier in ("HighHigh", "LowLow", "High", "Low"):
         if tier in active_tiers and tier in severities:
             return severities[tier]

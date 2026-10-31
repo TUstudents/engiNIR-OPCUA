@@ -432,18 +432,16 @@ class InternalServer:
     ) -> list[ua.ApplicationDescription]:
         """
         FindServers (OPC 10000-4 v1.05, 5.5.2): this server and the registered servers whose registration has not
-        expired. A ServerUri filter matches an ApplicationUri that starts with its colon-separated parts.
+        expired; with ServerUris only those whose ApplicationUri is in the list.
         """
         servers = []
-        params_server_uris = [uri.split(":") for uri in params.ServerUris] if params.ServerUris else []
+        wanted = set(params.ServerUris or [])
         our_application_uris = [edp.Server.ApplicationUri for edp in self.endpoints]
         for desc in list(self._known_servers.values()):
             if self._is_registration_expired(desc):
                 continue
-            if params_server_uris:
-                serv_uri = desc.Server.ApplicationUri.split(":")
-                if not any(serv_uri[: len(uri)] == uri for uri in params_server_uris):
-                    continue
+            if wanted and desc.Server.ApplicationUri not in wanted:
+                continue
             if desc.Server.ApplicationUri in our_application_uris:
                 serv = copy(desc.Server)
                 serv.DiscoveryUrls = [

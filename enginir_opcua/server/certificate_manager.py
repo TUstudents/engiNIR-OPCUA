@@ -12,12 +12,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import anyio
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from cryptography.hazmat.primitives.asymmetric.types import CertificateIssuerPublicKeyTypes, PrivateKeyTypes
 from cryptography.hazmat.primitives.serialization import pkcs12
 
 from enginir_opcua import ua
@@ -41,7 +42,7 @@ from enginir_opcua.crypto.uacrypto import certificate_thumbprint, split_certific
 from enginir_opcua.crypto.validator import CertificateValidator, PeerRole, Step, Suppression, ValidationContext
 from enginir_opcua.ua.ua_binary import struct_from_binary, struct_to_binary
 
-from .file_transfer import READ, WRITE, FileEntry, MemoryFile
+from .file_transfer import ERASE_EXISTING, READ, WRITE, FileEntry, MemoryFile
 from .internal_session import InternalSession, current_call_session
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ MIN_DATE = datetime(1601, 1, 1, tzinfo=UTC)
 CERTIFICATE_TYPE = ua.NodeId(ua.ObjectIds.RsaSha256ApplicationCertificateType)
 APPLICATION_GROUP = ua.NodeId(ua.ObjectIds.ServerConfiguration_CertificateGroups_DefaultApplicationGroup_TrustList)
 _STATUS = ua.StatusCodes
+ISSUER_KEY_TYPES: tuple[type, ...] = get_args(CertificateIssuerPublicKeyTypes)
 
 
 def _status(code: int) -> ua.UaStatusCodeError:
@@ -114,6 +116,8 @@ class TrustListSnapshot(MemoryFile):
 
 @dataclass
 class Group:
+    """A CertificateGroup: its Object, its TrustList Object, the store behind it and its kind (application, user)."""
+
     name: str
     node: Node
     trust_list: Node
@@ -125,6 +129,8 @@ class Group:
 
 @dataclass
 class PendingCertificate:
+    """A certificate of UpdateCertificate waiting for ApplyChanges, with its chain and key."""
+
     certificate: x509.Certificate
     chain: list[x509.Certificate]
     key: RSAPrivateKey
@@ -133,12 +139,15 @@ class PendingCertificate:
 
 @dataclass
 class Transaction:
+    """The changes one Session has queued for ApplyChanges (OPC 10000-12, 7.10.2)."""
+
     session_id: ua.NodeId
     trust_lists: dict[ua.NodeId, tuple[TrustLists, int]] = field(default_factory=dict)
     certificates: dict[ua.NodeId, PendingCertificate] = field(default_factory=dict)
 
 
 def encode_trust_list(lists: TrustLists, masks: int) -> bytes:
+    """Encode the lists that masks select as a TrustListDataType."""
     data = ua.TrustListDataType()
     data.SpecifiedLists = masks
     data.TrustedCertificates = list(lists.trusted_certificates) if masks & MASK_TRUSTED_CERTIFICATES else []
@@ -149,6 +158,7 @@ def encode_trust_list(lists: TrustLists, masks: int) -> bytes:
 
 
 def decode_trust_list(content: bytes) -> tuple[TrustLists, int]:
+    """Decode a TrustListDataType into the lists and their SpecifiedLists mask; BadInvalidArgument if malformed."""
     try:
         data = struct_from_binary(ua.TrustListDataType, Buffer(content))
     except Exception as error:
@@ -166,6 +176,7 @@ def decode_trust_list(content: bytes) -> tuple[TrustLists, int]:
 
 
 def merge_lists(current: TrustLists, new: TrustLists, masks: int) -> TrustLists:
+    """Replace the lists of current that masks select by those of new."""
     return TrustLists(
         new.trusted_certificates if masks & MASK_TRUSTED_CERTIFICATES else current.trusted_certificates,
         new.trusted_crls if masks & MASK_TRUSTED_CRLS else current.trusted_crls,
@@ -215,8 +226,11 @@ def _is_authority(certificate: x509.Certificate) -> bool:
 
 
 def _signs_crl(crl: x509.CertificateRevocationList, ca: x509.Certificate) -> bool:
+    public_key = ca.public_key()
+    if not isinstance(public_key, ISSUER_KEY_TYPES):
+        return False
     try:
-        return crl.is_signature_valid(ca.public_key())
+        return crl.is_signature_valid(cast("CertificateIssuerPublicKeyTypes", public_key))
     except Exception:
         return False
 
@@ -250,11 +264,16 @@ class CertificateManager:
 
     @property
     def application_store(self) -> TrustStore:
+        """The trust store of the application certificates."""
         store = self.iserver.trust_store
         assert store is not None
         return store
 
     async def enable(self) -> None:
+        """
+        Set up the ServerConfiguration Object: remove what is not supported, write its Properties, bind its Methods
+        and the TrustLists of DefaultApplicationGroup and, with a user PKI directory, DefaultUserTokenGroup.
+        """
         store = self.iserver.trust_store
         if store is None or store.pki_root is None or self.iserver.certificate is None:
             raise ua.uaerrors.ConfigurationError(
@@ -327,7 +346,7 @@ class CertificateManager:
 
     async def _bind_methods(self, configuration: Node) -> None:
         service = self.iserver.file_service
-        callbacks = {
+        callbacks: dict[str, Callable[..., Any]] = {
             "UpdateCertificate": self.update_certificate,
             "ApplyChanges": self.apply_changes,
             "CancelChanges": self.cancel_changes,
@@ -339,7 +358,7 @@ class CertificateManager:
             await self._add_get_certificates(configuration)
         for name, callback in callbacks.items():
             method = await configuration.get_child(name)
-            await service._bind_method(method.nodeid, self._guarded(callback))
+            await service.bind_method(method.nodeid, self._guarded(callback))
 
     async def _add_get_certificates(self, configuration: Node) -> None:
         group_id = ua.Argument()
@@ -378,15 +397,15 @@ class CertificateManager:
         group.entry = entry
         service = self.iserver.file_service
         await service.register_file(entry, callbacks=self._trust_list_callbacks(group))
-        for name_ in ("OpenWithMasks", "CloseAndUpdate", "AddCertificate", "RemoveCertificate"):
-            method = await trust_list.get_child(name_)
-            callback = {
-                "OpenWithMasks": self.open_with_masks,
-                "CloseAndUpdate": self.close_and_update,
-                "AddCertificate": self.add_certificate,
-                "RemoveCertificate": self.remove_certificate,
-            }[name_]
-            await service._bind_method(method.nodeid, self._guarded(self._for_group(group, callback)))
+        group_callbacks: dict[str, Callable[..., Any]] = {
+            "OpenWithMasks": self.open_with_masks,
+            "CloseAndUpdate": self.close_and_update,
+            "AddCertificate": self.add_certificate,
+            "RemoveCertificate": self.remove_certificate,
+        }
+        for method_name, callback in group_callbacks.items():
+            method = await trust_list.get_child(method_name)
+            await service.bind_method(method.nodeid, self._guarded(self._for_group(group, callback)))
         await self._write(await trust_list.get_child("LastUpdateTime"), MIN_DATE, ua.VariantType.DateTime)
         timeout = await self._child(trust_list, "ActivityTimeout")
         if timeout is not None:
@@ -431,7 +450,7 @@ class CertificateManager:
         async def open_(parent: ua.NodeId, mode: ua.Variant) -> Any:
             session = self._authorize()
             requested = int(mode.Value)
-            if requested not in (READ, WRITE | 4):
+            if requested not in (READ, WRITE | ERASE_EXISTING):
                 raise _status(_STATUS.BadNotSupported)
             if requested & WRITE:
                 self._check_transaction(session)
@@ -443,10 +462,10 @@ class CertificateManager:
         def wrapped(name: str) -> Callable[..., Any]:
             async def call(parent: ua.NodeId, *args: ua.Variant) -> Any:
                 session = self._authorize()
-                if args:
-                    self._arm(session.session_id, args[0].Value) if name != "Close" else self._disarm(
-                        session.session_id, args[0].Value
-                    )
+                if args and name == "Close":
+                    self._disarm(session.session_id, args[0].Value)
+                elif args:
+                    self._arm(session.session_id, args[0].Value)
                 return await base[name](parent, *args)
 
             return call
@@ -471,7 +490,7 @@ class CertificateManager:
         self._timers.pop((session_id, handle), None)
         self.iserver.file_service.release_handle(session_id, handle)
 
-    async def _open_trust_list(self, group: Group, mode: int) -> Any:
+    async def _open_trust_list(self, group: Group, mode: int) -> MemoryFile:
         if mode & WRITE:
             limit = self.max_trust_list_size or HARD_TRUST_LIST_LIMIT
             return TrustListBuffer(min(limit, HARD_TRUST_LIST_LIMIT))
@@ -479,6 +498,7 @@ class CertificateManager:
         return TrustListSnapshot(encode_trust_list(store.read_lists(), self._pending_masks), store)
 
     async def open_with_masks(self, group: Group, masks: ua.Variant) -> list[ua.Variant]:
+        """OpenWithMasks (OPC 10000-12, 7.8.2.2): open the TrustList for reading the lists that masks select."""
         session = self._session()
         self._pending_masks = int(masks.Value) & MASK_ALL
         assert group.entry is not None
@@ -506,13 +526,12 @@ class CertificateManager:
 
     def _group(self, nodeid: ua.NodeId | None) -> Group:
         if nodeid is None or nodeid.is_null():
-            for group in self.groups.values():
-                if group.kind == "application":
-                    return group
-        group = self.groups.get(nodeid) if nodeid is not None else None
-        if group is None:
+            found = next((group for group in self.groups.values() if group.kind == "application"), None)
+        else:
+            found = self.groups.get(nodeid)
+        if found is None:
             raise _status(_STATUS.BadInvalidArgument)
-        return group
+        return found
 
     def _certificate_group(self, nodeid: ua.NodeId | None, type_id: ua.NodeId | None) -> Group:
         group = self._group(nodeid)
@@ -523,12 +542,15 @@ class CertificateManager:
         return group
 
     async def close_and_update(self, group: Group, handle: ua.Variant) -> list[ua.Variant]:
+        """
+        CloseAndUpdate (OPC 10000-12, 7.8.2.3): close a write handle, check the written lists and queue them for
+        ApplyChanges; returns ApplyChangesRequired, always True.
+        """
         session = self._session()
         service = self.iserver.file_service
         assert group.entry is not None
-        open_handle = service.lookup_handle(session, group.entry, handle.Value)
+        open_handle = service.take_handle(session, group.entry, handle.Value)
         self._disarm(session.session_id, handle.Value)
-        service.release_handle(session.session_id, handle.Value)
         if not open_handle.mode & WRITE:
             raise _status(_STATUS.BadInvalidState)
         content = bytes(open_handle.provider.content) if isinstance(open_handle.provider, MemoryFile) else b""
@@ -547,6 +569,7 @@ class CertificateManager:
         return [_variant(True, ua.VariantType.Boolean)]
 
     async def add_certificate(self, group: Group, certificate: ua.Variant, is_trusted: ua.Variant) -> list[ua.Variant]:
+        """AddCertificate (OPC 10000-12, 7.8.2.4): trust one certificate at once, outside a transaction."""
         self._check_no_transaction()
         self._check_not_open_for_writing(group)
         if not is_trusted.Value:
@@ -574,6 +597,10 @@ class CertificateManager:
     async def remove_certificate(
         self, group: Group, thumbprint: ua.Variant, is_trusted: ua.Variant
     ) -> list[ua.Variant]:
+        """
+        RemoveCertificate (OPC 10000-12, 7.8.2.5): remove a trusted or issuer certificate by thumbprint, unless
+        another certificate of the lists is issued by it.
+        """
         self._check_no_transaction()
         self._check_not_open_for_writing(group)
         wanted = str(thumbprint.Value or "").lower()
@@ -638,6 +665,10 @@ class CertificateManager:
         private_key_format: ua.Variant,
         private_key: ua.Variant,
     ) -> list[ua.Variant]:
+        """
+        UpdateCertificate (OPC 10000-12, 7.10.4): check a new application certificate and its key (given, pending from
+        CreateSigningRequest, or the current one) and queue it for ApplyChanges; returns ApplyChangesRequired.
+        """
         session = self._session()
         self._check_transaction(session)
         group = self._certificate_group(group_id.Value, type_id.Value)
@@ -698,7 +729,7 @@ class CertificateManager:
         if pending is not None and matches(pending):
             return pending, True
         current = self.iserver.private_key
-        if isinstance(current, RSAPrivateKey) and matches(current):
+        if current is not None and matches(current):
             return current, False
         raise _status(_STATUS.BadSecurityChecksFailed)
 
@@ -708,6 +739,7 @@ class CertificateManager:
 
     @staticmethod
     def _parse_key(key_format: str | None, data: bytes) -> RSAPrivateKey:
+        key: PrivateKeyTypes | None
         try:
             if (key_format or "").upper() == "PEM":
                 key = serialization.load_pem_private_key(data, None)
@@ -732,6 +764,10 @@ class CertificateManager:
         regenerate: ua.Variant,
         nonce: ua.Variant,
     ) -> list[ua.Variant]:
+        """
+        CreateSigningRequest (OPC 10000-12, 7.10.6): a PKCS #10 request for the current key, or with regenerate for a
+        new key kept pending until UpdateCertificate uses it.
+        """
         session = self._session()
         self._check_transaction(session)
         group = self._certificate_group(group_id.Value, type_id.Value)
@@ -747,7 +783,10 @@ class CertificateManager:
             key = await anyio.to_thread.run_sync(cert_gen.generate_private_key)
             await anyio.to_thread.run_sync(pki.save_pending_key, self._root, self._key_name(group), key)
         else:
-            key = self.iserver.private_key
+            current_key = self.iserver.private_key
+            if current_key is None:
+                raise _status(_STATUS.BadInvalidState)
+            key = current_key
         names, usage = self._request_fields(current)
         request = cert_gen.generate_signing_request(key, subject, names, usage)
         return [_variant(request.public_bytes(serialization.Encoding.DER), ua.VariantType.ByteString)]
@@ -772,6 +811,7 @@ class CertificateManager:
         return names, usage
 
     async def get_rejected_list(self, parent: ua.NodeId) -> list[ua.Variant]:
+        """GetRejectedList (OPC 10000-12, 7.10.9): the refused certificates that fit into one response."""
         store = self.application_store
         limit = max(self._response_limit() - ENCODING_OVERHEAD, 0)
         certificates: list[bytes] = []
@@ -787,6 +827,7 @@ class CertificateManager:
         return self.iserver.max_byte_string_length * 8
 
     async def get_certificates(self, parent: ua.NodeId, group_id: ua.Variant) -> list[ua.Variant]:
+        """GetCertificates (OPC 10000-12, 7.10.10): the certificate types and the certificate with its chain."""
         group = self._group(group_id.Value)
         if group.kind != "application" or self.iserver.certificate is None:
             return [_variant([], ua.VariantType.NodeId), _variant([], ua.VariantType.ByteString)]
@@ -795,6 +836,7 @@ class CertificateManager:
         return [_variant([CERTIFICATE_TYPE], ua.VariantType.NodeId), _variant([der], ua.VariantType.ByteString)]
 
     async def cancel_changes(self, parent: ua.NodeId) -> list[ua.Variant]:
+        """CancelChanges (OPC 10000-12, 7.10.8): drop the transaction of the calling Session."""
         session = self._session()
         self._owned_transaction(session)
         self.transaction = None
@@ -809,6 +851,10 @@ class CertificateManager:
         return self.transaction
 
     async def apply_changes(self, parent: ua.NodeId) -> list[ua.Variant]:
+        """
+        ApplyChanges (OPC 10000-12, 7.10.7): write the queued trust lists and certificate to the PKI directory in one
+        step; after a new certificate the connections are closed shortly after the response.
+        """
         session = self._session()
         transaction = self._owned_transaction(session)
         for group in self.groups.values():
