@@ -134,10 +134,16 @@ def _per_class_cache[R](build: Callable[..., R]) -> Callable[..., R]:
 
 
 def get_string_encoding() -> str:
+    """The text encoding used for Strings in the current context, ``utf-8`` unless set otherwise."""
     return _string_encoding.get()
 
 
 def set_string_encoding(new_encoding: str) -> None:
+    """
+    Set the text encoding of Strings for the current context, such as the current asyncio task.
+
+    OPC UA Strings are UTF-8. Use another encoding only to talk to a peer that does not follow that.
+    """
     _string_encoding.set(new_encoding)
 
 
@@ -351,6 +357,7 @@ def create_uatype_serializer(vtype: ua.VariantType | ua.VariantTypeCustom) -> Ca
 
 
 def pack_uatype(vtype: ua.VariantType | ua.VariantTypeCustom, value: Any) -> bytes:
+    """Encode one value of the built-in type ``vtype``."""
     return create_uatype_serializer(vtype)(value)
 
 
@@ -373,6 +380,7 @@ def _create_uatype_deserializer(vtype: ua.VariantType | ua.VariantTypeCustom) ->
 
 
 def unpack_uatype(vtype: ua.VariantType | ua.VariantTypeCustom, data: Buffer | IO) -> Any:
+    """Decode one value of the built-in type ``vtype``."""
     return _create_uatype_deserializer(vtype)(data)
 
 
@@ -394,10 +402,12 @@ def create_uatype_array_serializer(vtype: ua.VariantType | ua.VariantTypeCustom)
 
 
 def pack_uatype_array(vtype: ua.VariantType | ua.VariantTypeCustom, array: Iterable[Any] | None) -> bytes:
+    """Encode an array of the built-in type ``vtype``; None is the null array."""
     return create_uatype_array_serializer(vtype)(array)
 
 
 def unpack_uatype_array(vtype: ua.VariantType | ua.VariantTypeCustom, data: Buffer | IO) -> list[Any] | None:
+    """Decode an array of the built-in type ``vtype``; the null array gives None."""
     return _create_uatype_array_deserializer(vtype)(data)
 
 
@@ -651,6 +661,7 @@ _DIAGNOSTIC_INFO_INNER_DIAGNOSTIC_INFO = 0x40
 
 
 def diagnosticinfo_to_binary(info: ua.DiagnosticInfo, _level: int = 1) -> bytes:
+    """Encode a DiagnosticInfo; nesting deeper than 10 levels raises UaError."""
     if _level > MAX_DIAGNOSTIC_INFO_DEPTH:
         raise UaError(f"DiagnosticInfo nested deeper than {MAX_DIAGNOSTIC_INFO_DEPTH} levels")
     mask = 0
@@ -673,6 +684,7 @@ def diagnosticinfo_to_binary(info: ua.DiagnosticInfo, _level: int = 1) -> bytes:
 
 
 def struct_to_binary(obj: Any) -> bytes:
+    """Encode a structure, an instance of one of the dataclasses in ``ua`` or of a registered custom type."""
     serializer = create_dataclass_serializer(obj.__class__)
     return serializer(obj)
 
@@ -725,6 +737,7 @@ def create_type_serializer(uatype: type) -> Callable[[Any], bytes]:
 
 
 def to_binary(uatype: type, val: Any) -> bytes:
+    """Encode ``val`` as the type ``uatype``, which may be a built-in type, an enum, a list type or a structure."""
     return create_type_serializer(uatype)(val)
 
 
@@ -762,6 +775,11 @@ def list_to_binary(uatype: type, val: Iterable[Any] | None) -> bytes:
 
 
 def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
+    """
+    Encode a NodeId or ExpandedNodeId in the form its NodeIdType names (OPC 10000-6 v1.05, 5.2.2.9).
+
+    An ExpandedNodeId with a NamespaceUri is written with namespace index 0, as 5.2.2.10 requires.
+    """
     if isinstance(nodeid, ua.ExpandedNodeId) and nodeid.NamespaceUri and nodeid.NamespaceIndex:
         nodeid = ua.ExpandedNodeId(nodeid.Identifier, 0, nodeid.NodeIdType, nodeid.NamespaceUri, nodeid.ServerIndex)
     if nodeid.NodeIdType == ua.NodeIdType.TwoByte:
@@ -799,6 +817,7 @@ def nodeid_to_binary(nodeid: ua.NodeId) -> bytes:
 
 
 def nodeid_from_binary(data: Buffer | IO) -> ua.NodeId | ua.ExpandedNodeId:
+    """Decode a NodeId; an ExpandedNodeId is returned when the data carries a NamespaceUri or a ServerIndex."""
     encoding = _read(data, 1)[0]
     try:
         nidtype = ua.NodeIdType(encoding & 0b00111111)
@@ -836,6 +855,11 @@ def nodeid_from_binary(data: Buffer | IO) -> ua.NodeId | ua.ExpandedNodeId:
 
 
 def variant_to_binary(var: ua.Variant) -> bytes:
+    """
+    Encode a Variant, with its array dimensions when it has two or more.
+
+    :raises UaError: the value does not fit the VariantType, for example a float in an Int32 Variant.
+    """
     encoding = var.VariantType.value & 0b0011_1111
     try:
         if var.is_array or isinstance(var.Value, list | tuple):
@@ -859,6 +883,7 @@ def variant_to_binary(var: ua.Variant) -> bytes:
 
 @_bounded
 def variant_from_binary(data: Buffer | IO) -> ua.Variant:
+    """Decode a Variant, checking strings and arrays against the active ``decode_limits``."""
     limits = decode_limits.get()
     if limits is not None and not limits.variant_values:
         token = decode_limits.set(None)
@@ -1121,9 +1146,7 @@ def create_enum_deserializer(uatype: type[IntFlag] | type[Enum]) -> Callable[[An
 
 
 def from_binary[T](uatype: type[T] | str, data: Buffer | IO) -> T:
-    """
-    unpack data given an uatype as a string or a python dataclass using ua types
-    """
+    """Decode a value of ``uatype``, given as a class or as the name of a class in ``ua``."""
     return _create_type_deserializer(uatype, type(None))(data)
 
 
@@ -1216,17 +1239,17 @@ def _diagnosticinfo_from_binary(data: Buffer | IO, level: int) -> ua.DiagnosticI
 
 @_bounded
 def diagnosticinfo_from_binary(data: Buffer | IO) -> ua.DiagnosticInfo:
+    """Decode a DiagnosticInfo; nesting deeper than 10 levels raises UaError."""
     return _diagnosticinfo_from_binary(data, 1)
 
 
 def struct_from_binary[T](objtype: type[T] | str, data: IO | Buffer) -> T:
-    """
-    unpack an ua struct. Arguments are an objtype as Python dataclass or string
-    """
+    """Decode a structure; ``objtype`` is its dataclass or the name of a class in ``ua``."""
     return _create_dataclass_deserializer(objtype)(data)
 
 
 def header_to_binary(hdr: ua.Header) -> bytes:
+    """Encode the header of an OPC UA TCP message (OPC 10000-6 v1.05, 7.1.2); secure messages carry the channel id."""
     b = [struct.pack("<3ss", hdr.MessageType, hdr.ChunkType)]
     size = hdr.body_size + 8
     if hdr.MessageType in (ua.MessageType.SecureOpen, ua.MessageType.SecureClose, ua.MessageType.SecureMessage):
@@ -1238,6 +1261,11 @@ def header_to_binary(hdr: ua.Header) -> bytes:
 
 
 def header_from_binary(data: Buffer | IO) -> ua.Header:
+    """
+    Decode the header of an OPC UA TCP message (OPC 10000-6 v1.05, 7.1.2).
+
+    :raises BadTcpMessageTypeInvalid: the message size is smaller than the header.
+    """
     hdr = ua.Header()
     hdr.MessageType, hdr.ChunkType, hdr.packet_size = struct.unpack("<3scI", _read(data, 8))
     if hdr.packet_size < hdr.header_size:

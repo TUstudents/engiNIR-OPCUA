@@ -18,11 +18,14 @@ _STRING_TYPES = (VariantType.String, VariantType.ByteString)
 
 @dataclass(frozen=True, slots=True)
 class Dimension:
+    """One dimension of a NumericRange: the indexes from low to high, both included."""
+
     low: int
     high: int
 
     @property
     def size(self) -> int:
+        """The number of indexes in the dimension."""
         return self.high - self.low + 1
 
     def __str__(self) -> str:
@@ -78,10 +81,24 @@ def _result(source: Variant, value: Any, array: bool) -> Variant:
 
 @dataclass(frozen=True, slots=True)
 class IndexRange:
+    """
+    A parsed NumericRange (OPC 10000-4 v1.05, 7.27), such as ``"2"``, ``"1:3"`` or ``"0:1,2"``.
+
+    Each comma-separated part selects one dimension of an array. For a String or ByteString value, or an array of
+    them, one more part selects characters or bytes inside each element.
+    """
+
     dimensions: tuple[Dimension, ...]
 
     @classmethod
     def parse(cls, text: str | None) -> IndexRange | None:
+        """
+        Parse the text form of a NumericRange.
+
+        :return: None for None or an empty string, which mean the whole value.
+        :raises BadIndexRangeInvalid: the syntax is wrong, a range is not ascending, an index is above 2^32 - 1 or
+            there are more than 32 dimensions.
+        """
         if text is None or text == "":
             return None
         parts = text.split(",")
@@ -96,6 +113,11 @@ class IndexRange:
         return len(self.dimensions)
 
     def fits(self, array_dimensions: Sequence[int]) -> bool:
+        """
+        Whether the range can address a value with these ArrayDimensions.
+
+        A 0 in ``array_dimensions`` means the size is not fixed, so any index fits it.
+        """
         if len(self.dimensions) > len(array_dimensions) + 1:
             return False
         return all(known == 0 or dimension.low < known for dimension, known in zip(self.dimensions, array_dimensions))
@@ -115,6 +137,14 @@ class IndexRange:
         raise BadIndexRangeNoData()
 
     def select(self, value: Variant) -> Variant:
+        """
+        Return the part of ``value`` that the range selects, as for a Read with an IndexRange.
+
+        A range that reaches past the end is cut to what exists.
+
+        :raises BadIndexRangeNoData: the value is empty, has another number of dimensions, or the range starts past
+            its end.
+        """
         array_ranges, leaf = self._split(value)
         if not value.is_array:
             assert leaf is not None
@@ -137,6 +167,15 @@ class IndexRange:
         return _result(value, selected, True)
 
     def compose(self, current: Variant, new: Variant) -> Variant:
+        """
+        Return ``current`` with the selected part replaced by ``new``, as for a Write with an IndexRange.
+
+        ``new`` must have exactly the size of the selection. A ByteString may be written into a range of a Byte
+        array.
+
+        :raises BadIndexRangeNoData: the selection does not lie completely inside ``current``.
+        :raises BadIndexRangeDataMismatch: ``new`` has another type or size than the selection.
+        """
         array_ranges, leaf = self._split(current)
         if new.VariantType != current.VariantType:
             if not (
@@ -207,6 +246,12 @@ def _replace(data: list[Any], ranges: Sequence[Dimension], incoming: list[Any], 
 
 
 def select_index_range(value: Any, text: str) -> tuple[int, Any]:
+    """
+    Apply the NumericRange ``text`` to a plain value or a Variant and report the outcome as a status code.
+
+    :return: ``(0, selection)`` on success, the value unchanged when ``text`` is empty, or
+        ``(status code, None)`` when the range is invalid or selects nothing.
+    """
     try:
         parsed = IndexRange.parse(text)
         if parsed is None:

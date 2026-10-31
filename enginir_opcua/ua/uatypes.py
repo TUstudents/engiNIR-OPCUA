@@ -231,6 +231,11 @@ _microsecond = timedelta(microseconds=1)
 
 
 def datetime_to_win_epoch(dt: datetime) -> int:
+    """
+    Convert a datetime to an OPC UA DateTime: 100 ns intervals since 1601-01-01 UTC (OPC 10000-6 v1.05, 5.2.2.5).
+
+    Times before 1601 give 0, times from 9999-12-31 on give the largest Int64. A naive datetime is taken as UTC.
+    """
     if dt.tzinfo is None:
         ref = FILETIME_EPOCH_AS_DATETIME
         max_ep = MAX_FILETIME_EPOCH_DATETIME
@@ -249,10 +254,12 @@ def datetime_to_win_epoch(dt: datetime) -> int:
 
 
 def get_win_epoch() -> datetime:
+    """The OPC UA null DateTime, 1601-01-01 00:00 UTC."""
     return win_epoch_to_datetime(0)
 
 
 def win_epoch_to_datetime(epch: int) -> datetime:
+    """Convert an OPC UA DateTime to an aware UTC datetime; values outside 1601 to 9999 are clamped."""
     if epch >= MAX_OPC_FILETIME:
         # FILETIMEs after 31 Dec 9999 are truncated to max value
         return MAX_FILETIME_EPOCH_AS_UTC_DATETIME
@@ -440,16 +447,20 @@ class StatusCode:
 
     @property
     def name(self) -> str:
+        """The symbolic name of the code, such as ``BadNodeIdUnknown``; the low 16 info bits are ignored."""
         name, _ = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return name
 
     @property
     def doc(self) -> str:
+        """The description of the code from the specification; the low 16 info bits are ignored."""
         _, doc = status_codes.get_name_and_doc(self.value & 0xFFFF0000)
         return doc
 
 
 class NodeIdType(IntEnum):
+    """The encoding of a NodeId on the wire (OPC 10000-6 v1.05, 5.2.2.9); TwoByte and FourByte are compact numeric forms."""
+
     TwoByte = 0
     FourByte = 1
     Numeric = 2
@@ -587,11 +598,13 @@ class NodeId:
         return self._sort_key() >= other._sort_key()
 
     def is_null(self) -> bool:
+        """Whether this is the null NodeId: namespace 0 and a null identifier (OPC 10000-3 v1.05, 8.2.4)."""
         if self.NamespaceIndex != 0:
             return False
         return self.has_null_identifier()
 
     def has_null_identifier(self) -> bool:
+        """Whether the identifier is null: 0, an empty string or ByteString, or the all-zero Guid."""
         if not self.Identifier:
             return True
         if self.NodeIdType is NodeIdType.Guid:
@@ -602,6 +615,13 @@ class NodeId:
 
     @staticmethod
     def from_string(string: str) -> NodeId:
+        """
+        Parse the string form of OPC 10000-6 v1.05, 5.1.12, such as ``i=85``, ``ns=2;s=Pump`` or ``nsu=urn:x;i=7``.
+
+        An ``nsu=`` or ``svr=`` part gives an ExpandedNodeId.
+
+        :raises UaStringParsingError: the string is not a valid NodeId.
+        """
         try:
             return NodeId._from_string(string)
         except ValueError as ex:
@@ -677,11 +697,13 @@ class NodeId:
         return f"i={identifier!s}"
 
     def to_string(self) -> str:
+        """The string form of OPC 10000-6 v1.05, 5.1.12, which ``from_string`` reads back."""
         if self.NamespaceIndex != 0:
             return f"ns={self.NamespaceIndex};{self._identifier_string()}"
         return self._identifier_string()
 
     def to_binary(self) -> bytes | bytearray:
+        """The binary encoding of the NodeId (OPC 10000-6 v1.05, 5.2.2.9)."""
         import enginir_opcua
 
         return enginir_opcua.ua.ua_binary.nodeid_to_binary(self)
@@ -745,6 +767,13 @@ class StringNodeId(NodeId):
 
 @dataclass(eq=False, order=False, slots=True)
 class ExpandedNodeId(NodeId):
+    """
+    A NodeId that may name its namespace by URI and may live on another server (OPC 10000-6 v1.05, 5.2.2.10).
+
+    With a NamespaceUri the NamespaceIndex is ignored. A ServerIndex other than 0 points into the server array of
+    the server that sent the node.
+    """
+
     NamespaceUri: String | None = field(default=None, compare=True)
     ServerIndex: UInt32 = field(default=0, compare=True)
 
@@ -777,6 +806,7 @@ class ExpandedNodeId(NodeId):
         )
 
     def to_string(self) -> str:
+        """The string form with ``svr=`` and ``nsu=`` in front of the identifier (OPC 10000-6 v1.05, 5.1.12)."""
         parts = []
         if self.ServerIndex:
             parts.append(f"svr={self.ServerIndex}")
@@ -814,6 +844,7 @@ class QualifiedName:
         object.__setattr__(self, "NamespaceIndex", NamespaceIndex)
 
     def to_string(self) -> str:
+        """``<index>:<name>``, or the bare name in namespace 0, as ``from_string`` reads it back."""
         name = self.Name or ""
         if self.NamespaceIndex == 0:
             if _INDEX_PREFIX_PATTERN.match(name):
@@ -823,6 +854,12 @@ class QualifiedName:
 
     @staticmethod
     def from_string(string: str, default_idx: int = 0, namespaces: list[str] | None = None) -> QualifiedName:
+        """
+        Parse ``<index>:<name>``, ``nsu=<uri>;<name>`` or a bare name, which gets ``default_idx``.
+
+        :param namespaces: the namespace array, needed for the ``nsu=`` form.
+        :raises UaStringParsingError: an ``nsu=`` string without a name, without ``namespaces`` or with an unknown URI.
+        """
         if string.startswith("nsu="):
             uri, separator, name = string[4:].partition(";")
             if not separator:
@@ -878,11 +915,17 @@ class RelativePath:
 
     @staticmethod
     def from_string(string: str) -> RelativePath:
+        """
+        Parse the text form of a RelativePath (OPC 10000-4 v1.05, Annex A.2), such as ``/2:Block/2:Temperature``.
+
+        :raises UaStringParsingError: the text is malformed or names a ReferenceType outside namespace 0.
+        """
         from enginir_opcua.ua.relative_path import RelativePathFormatter
 
         return RelativePathFormatter.parse(string).build()
 
     def to_string(self) -> str:
+        """The text form of OPC 10000-4 v1.05, Annex A.2, which ``from_string`` reads back."""
         from enginir_opcua.ua.relative_path import RelativePathFormatter
 
         # Note: RelativePathFormatter will raise ValueError if ReferenceType is non-standard.
@@ -920,10 +963,12 @@ class LocalizedText:
                 )
 
     def to_string(self) -> str:
+        """``LocalizedText(Locale=..., Text=...)``, which ``from_string`` reads back exactly."""
         return f"LocalizedText(Locale={self.Locale!r}, Text={self.Text!r})"
 
     @staticmethod
     def from_string(string: str) -> LocalizedText:
+        """Read the form that ``to_string`` writes; any other string becomes the Text, without a Locale."""
         try:
             tree = ast.parse(string, mode="eval").body
         except (SyntaxError, ValueError, RecursionError, MemoryError):
@@ -1183,6 +1228,7 @@ class Variant:
 
 
 def flatten_and_get_shape(mylist: list[Any]) -> tuple[list[Any], list[int]]:
+    """Flatten a nested list and return it with the length of each dimension."""
     dims = [len(mylist)]
     while isinstance(mylist[0], list | tuple):
         dims.append(len(mylist[0]))
@@ -1193,6 +1239,7 @@ def flatten_and_get_shape(mylist: list[Any]) -> tuple[list[Any], list[int]]:
 
 
 def flatten(mylist: list[Any] | None) -> list[Any] | None:
+    """Flatten a nested list into one list of its elements; None stays None."""
     if mylist is None:
         return None
     if len(mylist) == 0:
@@ -1205,6 +1252,7 @@ def flatten(mylist: list[Any] | None) -> list[Any] | None:
 
 
 def get_shape(mylist: Any) -> list[int]:
+    """The length of each dimension of a nested list, read along the first elements."""
     dims: list[int] = []
     while isinstance(mylist, list | tuple):
         dims.append(len(mylist))
@@ -1412,7 +1460,7 @@ class TypeRegistry:
             self._encodings = extension_objects_by_typeid  # type: ignore[assignment]
             self._class_encoding = typeid_by_extension_objects  # type: ignore[assignment]
 
-    def _key(self, nodeid: NodeId) -> TypeKey | None:
+    def _key(self, nodeid: NodeId) -> TypeKey:
         if self._namespaces is None or nodeid.NamespaceIndex == 0:
             return nodeid
         table = self._namespaces()
@@ -1427,13 +1475,8 @@ class TypeRegistry:
         assert self._namespaces is not None
         return NodeId(identifier, list(self._namespaces()).index(uri))
 
-    def _required_key(self, nodeid: NodeId) -> TypeKey:
-        key = self._key(nodeid)
-        return key
-
     def _own(self, table: dict[TypeKey, type], nodeid: NodeId) -> type | None:
-        key = self._key(nodeid)
-        return None if key is None else table.get(key)
+        return table.get(self._key(nodeid))
 
     def _lookup(self, table_name: str, nodeid: NodeId) -> type | None:
         found = self._own(getattr(self, table_name), nodeid)
@@ -1455,12 +1498,13 @@ class TypeRegistry:
                 self._named.setdefault((table[nodeid.NamespaceIndex], name), cls)
 
     def register_struct(self, data_type: NodeId | None, encoding_id: NodeId | None, cls: type, name: str) -> None:
+        """Register the class of a structure or union under its DataType and binary encoding id; a class registered again replaces the old one."""
         if data_type is not None and not data_type.is_null():
-            key = self._required_key(data_type)
+            key = self._key(data_type)
             self._claim(self._datatypes, key, cls, data_type)
             self._class_datatype[cls] = key
         if encoding_id is not None and not encoding_id.is_null():
-            key = self._required_key(encoding_id)
+            key = self._key(encoding_id)
             self._claim(self._encodings, key, cls, encoding_id)
             self._class_encoding[cls] = key
         cls.__ua_registry__ = weakref.ref(self)  # type: ignore[attr-defined]
@@ -1472,7 +1516,8 @@ class TypeRegistry:
         self._bind(name, cls, data_type or encoding_id)
 
     def register_enum(self, data_type: NodeId, cls: type, name: str) -> None:
-        key = self._required_key(data_type)
+        """Register the class of an enumeration under its DataType."""
+        key = self._key(data_type)
         self._claim(self._datatypes, key, cls, data_type)
         self._class_datatype[cls] = key
         if not self._is_base:
@@ -1481,7 +1526,8 @@ class TypeRegistry:
         self._bind(name, cls, data_type)
 
     def register_alias(self, data_type: NodeId, base_cls: type, name: str) -> None:
-        key = self._required_key(data_type)
+        """Register a DataType that is an alias of ``base_cls``, such as a subtype of String."""
+        key = self._key(data_type)
         self._claim(self._datatypes, key, base_cls, data_type)
         self._bind(name, base_cls, data_type)
 
@@ -1492,18 +1538,22 @@ class TypeRegistry:
         table[key] = cls
 
     def find_own(self, data_type: NodeId) -> type | None:
+        """The class registered for the DataType in this registry, without asking the parents."""
         return self._own(self._datatypes, data_type)
 
     def find(self, data_type: NodeId) -> type | None:
+        """The class registered for the DataType here or in a parent, or None."""
         return self._lookup("_datatypes", data_type)
 
     def get(self, data_type: NodeId) -> type:
+        """Like ``find``, but raises KeyError when no class is registered."""
         found = self.find(data_type)
         if found is None:
             raise KeyError(f"No registered type for DataType {data_type}")
         return found
 
     def class_for_encoding(self, encoding_id: NodeId) -> type | None:
+        """The class registered for the binary encoding id of an ExtensionObject, or None."""
         return self._lookup("_encodings", encoding_id)
 
     def _reverse(self, table_name: str, cls: type) -> NodeId | None:
@@ -1517,18 +1567,21 @@ class TypeRegistry:
         return None
 
     def encoding_id_of(self, cls: type) -> NodeId:
+        """The binary encoding id registered for ``cls``; raises KeyError when there is none."""
         found = self._reverse("_class_encoding", cls)
         if found is None:
             raise KeyError(f"No registered encoding for class {cls}")
         return found
 
     def data_type_of(self, cls: type) -> NodeId:
+        """The DataType registered for ``cls``; raises KeyError when there is none."""
         found = self._reverse("_class_datatype", cls)
         if found is None:
             raise KeyError(f"No registered DataType for class {cls}")
         return found
 
     def by_name(self, name: str, namespace_uri: str | None = None) -> type:
+        """The class registered under ``name``, in the given namespace or, without one, here or in a parent; raises KeyError."""
         if namespace_uri is not None:
             found = self._named.get((namespace_uri, name))
             if found is not None:
@@ -1544,12 +1597,15 @@ class TypeRegistry:
         raise KeyError(f"No registered type named {name}")
 
     def names(self) -> dict[str, type]:
+        """The names and classes registered in this registry, without the parents."""
         return dict(self._names)
 
     def includes(self, other: TypeRegistry) -> bool:
+        """Whether ``other`` is this registry or one of its ancestors."""
         return other is self or any(parent.includes(other) for parent in self._parents)
 
     def snapshot(self) -> tuple[Any, ...]:
+        """A copy of the registry's own tables, for ``restore``."""
         return tuple(
             dict(table)
             for table in (
@@ -1563,6 +1619,7 @@ class TypeRegistry:
         )
 
     def restore(self, saved: tuple[Any, ...]) -> None:
+        """Put back the tables from a ``snapshot``."""
         tables: tuple[dict[Any, Any], ...] = (
             self._datatypes,
             self._class_datatype,
@@ -1577,6 +1634,7 @@ class TypeRegistry:
 
     @contextlib.contextmanager
     def encoding(self) -> Iterator[None]:
+        """A context for encoding with this registry: a class from an unrelated registry, such as another session's, raises UaError."""
         token = _encoding_registry.set(self)
         try:
             yield
