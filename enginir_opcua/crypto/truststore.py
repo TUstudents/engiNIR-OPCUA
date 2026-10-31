@@ -41,6 +41,8 @@ def _der(certificate: x509.Certificate) -> bytes:
 
 @dataclass(frozen=True)
 class StoreSnapshot:
+    """The certificates and revocation lists of a trust store as loaded at one moment; a validation uses one snapshot."""
+
     trusted: tuple[x509.Certificate, ...] = ()
     issuers: tuple[x509.Certificate, ...] = ()
     crls: tuple[x509.CertificateRevocationList, ...] = ()
@@ -50,6 +52,7 @@ class StoreSnapshot:
 
     @property
     def has_revocation_lists(self) -> bool:
+        """Whether any revocation list was loaded."""
         return bool(self.crls or self.trusted_crls or self.issuer_crls)
 
     @cached_property
@@ -57,6 +60,7 @@ class StoreSnapshot:
         return frozenset(_der(certificate) for certificate in (*self.trusted, *self.pinned))
 
     def is_trusted(self, certificate: x509.Certificate) -> bool:
+        """Whether the certificate is in the trusted list or was pinned by the application."""
         return _der(certificate) in self.trusted_der
 
 
@@ -294,6 +298,7 @@ class TrustStore:
 
     @property
     def snapshot(self) -> StoreSnapshot:
+        """The contents loaded last."""
         return self._snapshot
 
     def pin(self, certificate: x509.Certificate) -> None:
@@ -511,6 +516,7 @@ class TrustStore:
                 self._replace_folder(folder, extensions, suffix, wanted, crl, journal)
 
     def write_certificate(self, der: bytes, trusted: bool, journal: FileJournal) -> None:
+        """Store a certificate in the trusted or issuer folder unless it is there already; undo through the journal."""
         folder = self._folder("trusted/certs" if trusted else "issuer/certs", journal)
         if der not in self._stored(folder, CERTIFICATE_EXTENSIONS, False):
             journal.write(folder / f"{certificate_thumbprint(der).hex()}.der", der, 0o644)
@@ -543,6 +549,7 @@ class TrustStore:
         return certificates
 
     def remove_rejected(self, der: bytes) -> None:
+        """Delete a certificate from the rejected folder."""
         location = self._rejected_location
         if location is not None:
             (location / f"{certificate_thumbprint(der).hex()}.der").unlink(missing_ok=True)

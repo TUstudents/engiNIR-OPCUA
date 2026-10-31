@@ -37,6 +37,8 @@ WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
 @dataclass(frozen=True)
 class OwnCredentials:
+    """The certificate of the application, the CA certificates that issued it, and its private key."""
+
     certificate: x509.Certificate
     chain: list[x509.Certificate]
     private_key: RSAPrivateKey
@@ -58,6 +60,7 @@ def create_directories(root: Path, *, own: bool = True) -> None:
 
 
 def host_name_entries(host_names: Iterable[str | None]) -> list[x509.GeneralName]:
+    """Subject alternative name entries for the host names: IP addresses as IP entries, the rest as DNS names; wildcard addresses and None are left out."""
     entries: list[x509.GeneralName] = []
     for host_name in host_names:
         if host_name is None or host_name in WILDCARD_HOSTS:
@@ -72,6 +75,7 @@ def host_name_entries(host_names: Iterable[str | None]) -> list[x509.GeneralName
 
 
 def default_host_names(*others: str | None) -> list[str | None]:
+    """The host names a generated certificate names by default: this host's name, ``localhost`` and ``others``."""
     return [socket.gethostname(), "localhost", *others]
 
 
@@ -189,6 +193,7 @@ def save_pending_key(root: Path, name: str, key: RSAPrivateKey, journal: FileJou
 
 
 def load_pending_key(root: Path, name: str) -> RSAPrivateKey | None:
+    """The private key kept for a certificate request under ``name``, or None when there is no readable RSA key."""
     path = _pending_path(root, name)
     try:
         key = serialization.load_pem_private_key(path.read_bytes(), None)
@@ -198,6 +203,7 @@ def load_pending_key(root: Path, name: str) -> RSAPrivateKey | None:
 
 
 def discard_pending_key(root: Path, name: str, journal: FileJournal | None = None) -> None:
+    """Remove the private key kept for a certificate request under ``name``."""
     (journal or FileJournal()).remove(_pending_path(root, name))
 
 

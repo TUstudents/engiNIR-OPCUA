@@ -397,6 +397,12 @@ History (OPC 10000-11):
   event history includes the events of the sources below it.
 
 Crypto:
+- A security policy whose keys are not derived yet raises UaError naming the missing key instead of AttributeError,
+  and an RSA policy refuses a certificate or key that is not RSA, or a missing one, with UaError.
+- `SECURITY_POLICY_TYPE_MAP` values are tuples. `encrypt_asymmetric` and `sign_asymmetric` of the policy classes are
+  class methods built from `encrypt_function` and `asymmetric_signer`. `Verifier.reset`, `Decryptor.reset` and
+  `validator.check_uri` are removed.
+- `setup_self_signed_certificate` raises ConfigurationError when the key file holds a key that is not RSA.
 - The server writes the certificate of a refused peer to `rejected/certs` before it sends the error, so `GetRejectedList`
   right after a failed connect lists it. `CertificateValidator.keep_rejected()` lost its `background` argument and
   writes synchronously; a vanished rejected folder is logged at debug level only.

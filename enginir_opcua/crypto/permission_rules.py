@@ -63,6 +63,8 @@ DEFAULT_MINIMUM_ROLES: dict[ua.NodeId, UserRole] = {
 
 @dataclass
 class User:
+    """The user of a session: its role, its name, an id, and when its credentials expire, if they do."""
+
     role: UserRole = UserRole.Anonymous
     name: str | None = None
     id: str | None = None
@@ -75,6 +77,7 @@ class PermissionRuleset:
     """
 
     def check_validity(self, user: User, action_type_id: ua.NodeId, body: Any) -> bool:
+        """Whether ``user`` may send a request of the type ``action_type_id`` (the NodeId of its binary encoding)."""
         raise NotImplementedError
 
 

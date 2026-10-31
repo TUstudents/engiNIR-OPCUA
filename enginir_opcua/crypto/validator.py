@@ -35,12 +35,16 @@ DEFAULT_MAX_CHAIN_LENGTH = 10
 
 
 class PeerRole(Enum):
+    """Whose certificate is validated: a client's, a server's, or a user's X509 identity token."""
+
     CLIENT = "client"
     SERVER = "server"
     USER = "user"
 
 
 class Step(Enum):
+    """The steps of certificate validation, in the order of OPC 10000-4 v1.05, 6.1.3, Table 100."""
+
     STRUCTURE = "structure"
     CHAIN = "chain"
     SIGNATURE = "signature"
@@ -68,6 +72,11 @@ class Suppression(Enum):
 
 @dataclass(frozen=True)
 class ValidationContext:
+    """
+    What a validation checks against: the peer's role, the security policy of the channel, and the
+    ApplicationUri and host name the certificate must name.
+    """
+
     peer_role: PeerRole
     policy_uri: str | None = None
     expected_application_uri: str | None = None
@@ -76,6 +85,8 @@ class ValidationContext:
 
 @dataclass(frozen=True)
 class SuppressedError:
+    """An error that was accepted because the validator was told to suppress it."""
+
     step: Step
     status: int
     subject: str
@@ -83,6 +94,11 @@ class SuppressedError:
 
 @dataclass(frozen=True)
 class Outcome:
+    """
+    The result of a validation. A rejected certificate has the StatusCode, the failing step, the subject and a
+    detail text; an accepted one has the leaf certificate and the errors that were suppressed.
+    """
+
     accepted: bool
     leaf: x509.Certificate | None = None
     suppressed: tuple[SuppressedError, ...] = ()
@@ -94,6 +110,7 @@ class Outcome:
     """The DER certificates of a peer that is valid in every step but not trusted; see CertificateValidator.keep_rejected."""
 
     def raise_for_status(self) -> None:
+        """Raise UaStatusCodeError with the status and detail unless the certificate was accepted."""
         if not self.accepted:
             raise UaStatusCodeError(self.status, self.detail)
 
@@ -193,7 +210,7 @@ class _Validation:
         self.check_validity()
         self.check_host_name()
         if self.context.expected_application_uri is not None:
-            check_uri(self.chain[0], self.context.expected_application_uri)
+            _check_uri(self.chain[0], self.context.expected_application_uri)
         self.check_usage()
         self.check_revocation()
         return self.chain[0]
@@ -568,7 +585,7 @@ def _extension_of_crl[T: x509.ExtensionType](crl: x509.CertificateRevocationList
         return None
 
 
-def check_uri(leaf: x509.Certificate, application_uri: str) -> None:
+def _check_uri(leaf: x509.Certificate, application_uri: str) -> None:
     alternative_names = _extension(leaf, x509.SubjectAlternativeName)
     uris = alternative_names.get_values_for_type(x509.UniformResourceIdentifier) if alternative_names else []
     if application_uri not in uris:
@@ -616,8 +633,9 @@ def untrusted_hint(peer: str, outcome: Outcome, trust_store: TrustStore | None) 
 
 
 def check_application_uri(certificate: x509.Certificate, application_uri: str) -> Outcome:
+    """Check only that the ApplicationUri is in the certificate's subject alternative name (OPC 10000-4 v1.05, 6.1.3)."""
     try:
-        check_uri(certificate, application_uri)
+        _check_uri(certificate, application_uri)
     except _Rejected as rejection:
         return _rejected(rejection, ())
     return Outcome(True, certificate)

@@ -44,6 +44,8 @@ HEADER = (
 
 @dataclass(frozen=True)
 class ScryptHash:
+    """The parts of a stored password hash: the scrypt parameters N, r and p, the salt and the derived key."""
+
     n: int
     r: int
     p: int
@@ -53,6 +55,8 @@ class ScryptHash:
 
 @dataclass(frozen=True)
 class UserRecord:
+    """One user of a users file: the name, the role and the stored password hash."""
+
     name: str
     role: str
     password_hash: str
@@ -63,6 +67,7 @@ def _maxmem(n: int, r: int) -> int:
 
 
 def hash_password(password: str) -> str:
+    """Hash a password with scrypt and a random salt, in the form ``scrypt$N$r$p$salt$key`` that users files store."""
     salt = secrets.token_bytes(SALT_LENGTH)
     key = hashlib.scrypt(
         password.encode("utf-8"),
@@ -78,6 +83,7 @@ def hash_password(password: str) -> str:
 
 
 def parse_hash(stored: str) -> ScryptHash:
+    """Split a stored hash into its parts; raises ConfigurationError when it is malformed or its parameters are out of the accepted range."""
     parts = stored.split("$") if isinstance(stored, str) else []
     if len(parts) != 6 or parts[0] != "scrypt":
         raise ConfigurationError("password_hash is not a scrypt hash: expected scrypt$N$r$p$salt$key")
@@ -102,6 +108,7 @@ def parse_hash(stored: str) -> ScryptHash:
 
 
 def verify_password(password: str, stored: str) -> bool:
+    """Whether ``password`` matches the stored hash; the comparison takes the same time whatever the result."""
     parsed = parse_hash(stored)
     key = hashlib.scrypt(
         password.encode("utf-8"),
@@ -121,6 +128,7 @@ def dummy_hash() -> str:
 
 
 def check_password_rules(password: str) -> None:
+    """Raise ConfigurationError unless the password is 8 to 1024 bytes long in UTF-8."""
     size = len(password.encode("utf-8"))
     if not MIN_PASSWORD_BYTES <= size <= MAX_PASSWORD_BYTES:
         raise ConfigurationError(
@@ -145,7 +153,7 @@ def _record(entry: Any, number: int, seen: set[str], source: Path) -> UserRecord
     if unknown:
         raise ConfigurationError(f"{label}: unknown key {unknown[0]!r}; the keys are name, role and password_hash")
     problem = _check_name(name)
-    if problem:
+    if problem or not isinstance(name, str):
         raise ConfigurationError(f"{label}: {problem}")
     if entry.get("role") not in ROLES:
         raise ConfigurationError(f"{label}: role must be one of {', '.join(ROLES)}, got {entry.get('role')!r}")
@@ -162,6 +170,7 @@ def _record(entry: Any, number: int, seen: set[str], source: Path) -> UserRecord
 
 
 def read_users(path: Path) -> list[UserRecord]:
+    """Read a users file, TOML or, with a ``.json`` suffix, JSON; every error is a ConfigurationError that names the file and the entry."""
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
@@ -193,6 +202,7 @@ def _toml_string(text: str) -> str:
 
 
 def write_users(path: Path, users: list[UserRecord]) -> None:
+    """Write a users file atomically, readable by its owner only; the format follows the suffix as in ``read_users``."""
     path = Path(path)
     if path.suffix.lower() == ".json":
         document = {

@@ -1,5 +1,6 @@
 """Writes and removals of files that can be undone together, for changes that must apply all or nothing."""
 
+import functools
 import os
 import stat
 from collections.abc import Callable
@@ -34,7 +35,7 @@ class FileJournal:
             current = current.parent
         path.mkdir(mode=mode, parents=True, exist_ok=True)
         for directory in missing:
-            self._undo.append(lambda directory=directory: self._remove_directory(directory))
+            self._undo.append(functools.partial(self._remove_directory, directory))
 
     @staticmethod
     def _remember(path: Path) -> tuple[bytes, int] | None:

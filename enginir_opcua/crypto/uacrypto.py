@@ -20,12 +20,15 @@ _logger = logging.getLogger(__name__)
 
 @dataclass
 class CertProperties:
+    """Where a certificate or key comes from: a path or the content itself, its format if the path does not tell, a key password."""
+
     path_or_content: bytes | Path | str
     extension: str | None = None
     password: str | bytes | None = None
 
 
 async def get_content(path_or_content: str | bytes | Path) -> bytes:
+    """The bytes of a file, or ``path_or_content`` itself when it is bytes already."""
     if isinstance(path_or_content, bytes):
         return path_or_content
 
@@ -49,6 +52,7 @@ def _is_pem_format(path_or_content: bytes | str | Path, extension: str | None) -
 
 
 async def load_certificate(path_or_content: bytes | str | Path, extension: str | None = None) -> x509.Certificate:
+    """Load a certificate from a file or bytes: PEM when ``extension`` or the file suffix says ``pem``, DER otherwise."""
     content = await get_content(path_or_content)
     if _is_pem_format(path_or_content, extension):
         return x509.load_pem_x509_certificate(content, default_backend())
@@ -119,6 +123,7 @@ async def load_private_key(
     password: str | bytes | None = None,
     extension: str | None = None,
 ) -> PrivateKeyTypes:
+    """Load a private key, PEM or DER as for ``load_certificate``, decrypted with ``password`` if given."""
     if isinstance(password, str):
         password = password.encode("utf-8")
 
@@ -129,6 +134,7 @@ async def load_private_key(
 
 
 def der_from_x509(certificate: x509.Certificate | None) -> bytes:
+    """The DER encoding of a certificate; empty bytes for None."""
     if certificate is None:
         return b""
     return certificate.public_bytes(serialization.Encoding.DER)
@@ -329,6 +335,7 @@ def p_sha256(secret: bytes, seed: bytes, sizes: tuple[int, ...] = ()) -> tuple[b
 
 
 def x509_name_to_string(name: x509.Name) -> str:
+    """A distinguished name as ``CN=..., O=...``, with the attribute names of the cryptography package."""
     parts = [f"{attr.oid._name}={attr.value!s}" for attr in name]
     return ", ".join(parts)
 

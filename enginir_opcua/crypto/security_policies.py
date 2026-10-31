@@ -5,7 +5,11 @@ import logging
 import struct
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.ciphers import algorithms
 
 from ..ua import MessageSecurityMode, UaError
 from ..ua.uaerrors import SignatureError
@@ -18,6 +22,15 @@ from ..crypto import uacrypto
 
 _logger = logging.getLogger(__name__)
 
+_AES_BLOCK_SIZE = algorithms.AES.block_size // 8
+
+
+def _rsa_public_key(certificate: x509.Certificate) -> rsa.RSAPublicKey:
+    key = certificate.public_key()
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise UaError(f"The certificate has a {type(key).__name__}, the security policy needs an RSA key")
+    return key
+
 
 class Signer(ABC):
     """
@@ -25,11 +38,11 @@ class Signer(ABC):
     """
 
     @abstractmethod
-    def signature_size(self):
+    def signature_size(self) -> int:
         pass
 
     @abstractmethod
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         pass
 
 
@@ -39,17 +52,12 @@ class Verifier(ABC):
     """
 
     @abstractmethod
-    def signature_size(self):
+    def signature_size(self) -> int:
         pass
 
     @abstractmethod
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         pass
-
-    def reset(self):
-        attrs = self.__dict__
-        for k in attrs:
-            attrs[k] = None
 
 
 class Encryptor(ABC):
@@ -58,15 +66,15 @@ class Encryptor(ABC):
     """
 
     @abstractmethod
-    def plain_block_size(self):
+    def plain_block_size(self) -> int:
         pass
 
     @abstractmethod
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         pass
 
     @abstractmethod
-    def encrypt(self, data):
+    def encrypt(self, data: bytes) -> bytes:
         pass
 
 
@@ -76,21 +84,16 @@ class Decryptor(ABC):
     """
 
     @abstractmethod
-    def plain_block_size(self):
+    def plain_block_size(self) -> int:
         pass
 
     @abstractmethod
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         pass
 
     @abstractmethod
-    def decrypt(self, data):
+    def decrypt(self, data: bytes) -> bytes:
         pass
-
-    def reset(self):
-        attrs = self.__dict__
-        for k in attrs:
-            attrs[k] = None
 
 
 class CryptographyNone:
@@ -98,22 +101,19 @@ class CryptographyNone:
     Base class for symmetric/asymmetric cryptography
     """
 
-    def __init__(self):
-        pass
-
-    def plain_block_size(self):
+    def plain_block_size(self) -> int:
         """
         Size of plain text block for block cipher.
         """
         return 1
 
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         """
         Size of encrypted text block for block cipher.
         """
         return 1
 
-    def padding(self, size):
+    def padding(self, size: int) -> bytes:
         """
         Create padding for a block of given size.
         plain_size = size + len(padding) + signature_size()
@@ -121,30 +121,30 @@ class CryptographyNone:
         """
         return b""
 
-    def min_padding_size(self):
+    def min_padding_size(self) -> int:
         return 0
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return 0
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return b""
 
-    def encrypt(self, data):
+    def encrypt(self, data: bytes) -> bytes:
         return data
 
-    def decrypt(self, data):
+    def decrypt(self, data: bytes) -> bytes:
         return data
 
-    def vsignature_size(self):
+    def vsignature_size(self) -> int:
         return 0
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         """
         Verify signature and raise exception if signature is invalid
         """
 
-    def remove_padding(self, data):
+    def remove_padding(self, data: bytes) -> bytes:
         return data
 
 
@@ -153,32 +153,52 @@ class Cryptography(CryptographyNone):
     Security policy: Sign or SignAndEncrypt
     """
 
-    def __init__(self, mode=MessageSecurityMode.Sign):
-        self.Signer = None
-        self.Verifier = None
-        self.Encryptor = None
-        self.Decryptor = None
+    def __init__(self, mode: MessageSecurityMode = MessageSecurityMode.Sign) -> None:
+        self.Signer: Signer | None = None
+        self.Verifier: Verifier | None = None
+        self.Encryptor: Encryptor | None = None
+        self.Decryptor: Decryptor | None = None
         if mode not in (MessageSecurityMode.Sign, MessageSecurityMode.SignAndEncrypt):
             raise ValueError(f"unknown security mode {mode}")
         self.is_encrypted = mode == MessageSecurityMode.SignAndEncrypt
 
-    def plain_block_size(self):
+    def _signer(self) -> Signer:
+        if self.Signer is None:
+            raise UaError("The secure channel has no signing key yet")
+        return self.Signer
+
+    def _verifier(self) -> Verifier:
+        if self.Verifier is None:
+            raise UaError("The secure channel has no key to verify signatures yet")
+        return self.Verifier
+
+    def _encryptor(self) -> Encryptor:
+        if self.Encryptor is None:
+            raise UaError("The secure channel has no encryption key yet")
+        return self.Encryptor
+
+    def _decryptor(self) -> Decryptor:
+        if self.Decryptor is None:
+            raise UaError("The secure channel has no decryption key yet")
+        return self.Decryptor
+
+    def plain_block_size(self) -> int:
         """
         Size of plain text block for block cipher.
         """
         if self.is_encrypted:
-            return self.Encryptor.plain_block_size()
+            return self._encryptor().plain_block_size()
         return 1
 
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         """
         Size of encrypted text block for block cipher.
         """
         if self.is_encrypted:
-            return self.Encryptor.encrypted_block_size()
+            return self._encryptor().encrypted_block_size()
         return 1
 
-    def padding(self, size):
+    def padding(self, size: int) -> bytes:
         """
         Create padding for a block of given size.
         plain_size = size + len(padding) + signature_size()
@@ -186,49 +206,50 @@ class Cryptography(CryptographyNone):
         """
         if not self.is_encrypted:
             return b""
-        block_size = self.Encryptor.plain_block_size()
-        extrapad_size = 2 if self.Encryptor.encrypted_block_size() > 256 else 1
+        encryptor = self._encryptor()
+        block_size = encryptor.plain_block_size()
+        extrapad_size = 2 if encryptor.encrypted_block_size() > 256 else 1
         rem = (size + self.signature_size() + extrapad_size) % block_size
         if rem != 0:
             rem = block_size - rem
         data = bytes(bytearray([rem % 256])) * (rem + 1)
-        if self.Encryptor.encrypted_block_size() > 256:
+        if encryptor.encrypted_block_size() > 256:
             data += bytes(bytearray([rem >> 8]))
         return data
 
-    def min_padding_size(self):
+    def min_padding_size(self) -> int:
         if self.is_encrypted:
             return 1
         return 0
 
-    def signature_size(self):
-        return self.Signer.signature_size()
+    def signature_size(self) -> int:
+        return self._signer().signature_size()
 
-    def signature(self, data):
-        return self.Signer.signature(data)
+    def signature(self, data: bytes) -> bytes:
+        return self._signer().signature(data)
 
-    def vsignature_size(self):
-        return self.Verifier.signature_size()
+    def vsignature_size(self) -> int:
+        return self._verifier().signature_size()
 
-    def verify(self, data, sig):
-        self.Verifier.verify(data, sig)
+    def verify(self, data: bytes, signature: bytes) -> None:
+        self._verifier().verify(data, signature)
 
-    def encrypt(self, data):
+    def encrypt(self, data: bytes) -> bytes:
         if self.is_encrypted:
-            if not len(data) % self.Encryptor.plain_block_size() == 0:
+            encryptor = self._encryptor()
+            if not len(data) % encryptor.plain_block_size() == 0:
                 raise ValueError
-            return self.Encryptor.encrypt(data)
+            return encryptor.encrypt(data)
         return data
 
-    def decrypt(self, data):
+    def decrypt(self, data: bytes) -> bytes:
         if self.is_encrypted:
-            return self.Decryptor.decrypt(data)
+            return self._decryptor().decrypt(data)
         return data
 
-    def remove_padding(self, data):
-        decryptor = self.Decryptor
+    def remove_padding(self, data: bytes) -> bytes:
         if self.is_encrypted:
-            if decryptor.encrypted_block_size() > 256:
+            if self._decryptor().encrypted_block_size() > 256:
                 pad_size = struct.unpack("<h", data[-2:])[0] + 2
             else:
                 pad_size = bytearray(data[-1:])[0] + 1
@@ -237,64 +258,75 @@ class Cryptography(CryptographyNone):
 
 
 class SignerRsa(Signer):
-    def __init__(self, host_privkey):
+    def __init__(self, host_privkey: rsa.RSAPrivateKey) -> None:
         self.host_privkey = host_privkey
         self.key_size = self.host_privkey.key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return uacrypto.sign_sha1(self.host_privkey, data)
 
 
 class VerifierRsa(Verifier):
-    def __init__(self, peer_cert):
+    def __init__(self, peer_cert: x509.Certificate) -> None:
         self.peer_cert = peer_cert
-        self.key_size = self.peer_cert.public_key().key_size // 8
+        self.key_size = _rsa_public_key(peer_cert).key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         uacrypto.verify_sha1(self.peer_cert, data, signature)
 
 
 class EncryptorRsa(Encryptor):
-    def __init__(self, peer_cert, enc_fn, padding_size):
+    def __init__(
+        self,
+        peer_cert: x509.Certificate,
+        enc_fn: Callable[[rsa.RSAPublicKey, bytes], bytes],
+        padding_size: int,
+    ) -> None:
         self.peer_cert = peer_cert
-        self.key_size = self.peer_cert.public_key().key_size // 8
+        self.public_key = _rsa_public_key(peer_cert)
+        self.key_size = self.public_key.key_size // 8
         self.encryptor = enc_fn
         self.padding_size = padding_size
 
-    def plain_block_size(self):
+    def plain_block_size(self) -> int:
         return self.key_size - self.padding_size
 
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         return self.key_size
 
-    def encrypt(self, data):
+    def encrypt(self, data: bytes) -> bytes:
         encrypted = b""
         block_size = self.plain_block_size()
         for i in range(0, len(data), block_size):
-            encrypted += self.encryptor(self.peer_cert.public_key(), data[i : i + block_size])
+            encrypted += self.encryptor(self.public_key, data[i : i + block_size])
         return encrypted
 
 
 class DecryptorRsa(Decryptor):
-    def __init__(self, host_privkey, dec_fn, padding_size):
+    def __init__(
+        self,
+        host_privkey: rsa.RSAPrivateKey,
+        dec_fn: Callable[[rsa.RSAPrivateKey, bytes], bytes],
+        padding_size: int,
+    ) -> None:
         self.host_privkey = host_privkey
         self.key_size = self.host_privkey.key_size // 8
         self.decryptor = dec_fn
         self.padding_size = padding_size
 
-    def plain_block_size(self):
+    def plain_block_size(self) -> int:
         return self.key_size - self.padding_size
 
-    def encrypted_block_size(self):
+    def encrypted_block_size(self) -> int:
         return self.key_size
 
-    def decrypt(self, data):
+    def decrypt(self, data: bytes) -> bytes:
         decrypted = b""
         block_size = self.encrypted_block_size()
         for i in range(0, len(data), block_size):
@@ -303,126 +335,126 @@ class DecryptorRsa(Decryptor):
 
 
 class SignerAesCbc(Signer):
-    def __init__(self, key):
+    def __init__(self, key: bytes) -> None:
         self.key = key
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return uacrypto.sha1_size()
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return uacrypto.hmac_sha1(self.key, data)
 
 
 class VerifierAesCbc(Verifier):
-    def __init__(self, key):
+    def __init__(self, key: bytes) -> None:
         self.key = key
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return uacrypto.sha1_size()
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         expected = uacrypto.hmac_sha1(self.key, data)
         if not hmac.compare_digest(signature, expected):
             raise SignatureError("signature does not match the data")
 
 
 class EncryptorAesCbc(Encryptor):
-    def __init__(self, key, init_vec):
+    def __init__(self, key: bytes, init_vec: bytes) -> None:
         self.cipher = uacrypto.cipher_aes_cbc(key, init_vec)
 
-    def plain_block_size(self):
-        return self.cipher.algorithm.block_size // 8
+    def plain_block_size(self) -> int:
+        return _AES_BLOCK_SIZE
 
-    def encrypted_block_size(self):
-        return self.cipher.algorithm.block_size // 8
+    def encrypted_block_size(self) -> int:
+        return _AES_BLOCK_SIZE
 
-    def encrypt(self, data):
+    def encrypt(self, data: bytes) -> bytes:
         return uacrypto.cipher_encrypt(self.cipher, data)
 
 
 class DecryptorAesCbc(Decryptor):
-    def __init__(self, key, init_vec):
+    def __init__(self, key: bytes, init_vec: bytes) -> None:
         self.cipher = uacrypto.cipher_aes_cbc(key, init_vec)
 
-    def plain_block_size(self):
-        return self.cipher.algorithm.block_size // 8
+    def plain_block_size(self) -> int:
+        return _AES_BLOCK_SIZE
 
-    def encrypted_block_size(self):
-        return self.cipher.algorithm.block_size // 8
+    def encrypted_block_size(self) -> int:
+        return _AES_BLOCK_SIZE
 
-    def decrypt(self, data):
+    def decrypt(self, data: bytes) -> bytes:
         return uacrypto.cipher_decrypt(self.cipher, data)
 
 
 class SignerSha256(Signer):
-    def __init__(self, host_privkey):
+    def __init__(self, host_privkey: rsa.RSAPrivateKey) -> None:
         self.host_privkey = host_privkey
         self.key_size = self.host_privkey.key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return uacrypto.sign_sha256(self.host_privkey, data)
 
 
 class VerifierSha256(Verifier):
-    def __init__(self, peer_cert):
+    def __init__(self, peer_cert: x509.Certificate) -> None:
         self.peer_cert = peer_cert
-        self.key_size = self.peer_cert.public_key().key_size // 8
+        self.key_size = _rsa_public_key(peer_cert).key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         uacrypto.verify_sha256(self.peer_cert, data, signature)
 
 
 class SignerHMac256(Signer):
-    def __init__(self, key):
+    def __init__(self, key: bytes) -> None:
         self.key = key
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return uacrypto.sha256_size()
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return uacrypto.hmac_sha256(self.key, data)
 
 
 class VerifierHMac256(Verifier):
-    def __init__(self, key):
+    def __init__(self, key: bytes) -> None:
         self.key = key
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return uacrypto.sha256_size()
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         expected = uacrypto.hmac_sha256(self.key, data)
         if not hmac.compare_digest(signature, expected):
             raise SignatureError("signature does not match the data")
 
 
 class SignerPssSha256(Signer):
-    def __init__(self, host_privkey):
+    def __init__(self, host_privkey: rsa.RSAPrivateKey) -> None:
         self.host_privkey = host_privkey
         self.key_size = self.host_privkey.key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def signature(self, data):
+    def signature(self, data: bytes) -> bytes:
         return uacrypto.sign_pss_sha256(self.host_privkey, data)
 
 
 class VerifierPssSha256(Verifier):
-    def __init__(self, peer_cert):
+    def __init__(self, peer_cert: x509.Certificate) -> None:
         self.peer_cert = peer_cert
-        self.key_size = self.peer_cert.public_key().key_size // 8
+        self.key_size = _rsa_public_key(peer_cert).key_size // 8
 
-    def signature_size(self):
+    def signature_size(self) -> int:
         return self.key_size
 
-    def verify(self, data, signature):
+    def verify(self, data: bytes, signature: bytes) -> None:
         uacrypto.verify_pss_sha256(self.peer_cert, data, signature)
 
 
@@ -447,31 +479,41 @@ class SecurityPolicy(ABC):
     host_certificate_chain: list[bytes]
 
     @abstractmethod
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
+    def __init__(
+        self,
+        peer_cert: x509.Certificate | bytes | None,
+        host_cert: x509.Certificate | None,
+        host_privkey: rsa.RSAPrivateKey | None,
+        mode: MessageSecurityMode,
+        permission_ruleset: PermissionRuleset | None = None,
+        host_cert_chain: list[x509.Certificate] | None = None,
+    ) -> None:
         pass
 
-    @staticmethod
-    def encrypt_asymmetric(pubkey, data):
+    @classmethod
+    def encrypt_asymmetric(cls, pubkey: rsa.RSAPublicKey, data: bytes) -> bytes:
         raise UaError("The security policy has no asymmetric encryption")
 
-    @staticmethod
-    def sign_asymmetric(privkey, data):
+    @classmethod
+    def sign_asymmetric(cls, privkey: rsa.RSAPrivateKey, data: bytes) -> bytes:
         raise UaError("The security policy has no asymmetric signature")
 
     @abstractmethod
-    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+    def make_symmetric_cryptography(self, local_nonce: bytes, remote_nonce: bytes) -> CryptographyNone:
         pass
 
     @abstractmethod
-    def make_local_symmetric_key(self, secret, seed):
+    def make_local_symmetric_key(self, secret: bytes, seed: bytes) -> None:
         pass
 
     @abstractmethod
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
+    def make_remote_symmetric_key(self, secret: bytes, seed: bytes, lifetime: int) -> None:
         pass
 
 
 class SecurityPolicyNone(SecurityPolicy):
+    """The None security policy: messages are neither signed nor encrypted and certificates are not used."""
+
     URI = "http://opcfoundation.org/UA/SecurityPolicy#None"
     AsymmetricEncryptionURI: str = ""
     AsymmetricSignatureURI: str = ""
@@ -479,13 +521,13 @@ class SecurityPolicyNone(SecurityPolicy):
 
     def __init__(
         self,
-        peer_cert=None,
-        host_cert=None,
-        host_privkey=None,
-        mode=MessageSecurityMode.None_,
-        permission_ruleset=None,
-        host_cert_chain=None,
-    ):
+        peer_cert: x509.Certificate | bytes | None = None,
+        host_cert: x509.Certificate | None = None,
+        host_privkey: rsa.RSAPrivateKey | None = None,
+        mode: MessageSecurityMode = MessageSecurityMode.None_,
+        permission_ruleset: PermissionRuleset | None = None,
+        host_cert_chain: list[x509.Certificate] | None = None,
+    ) -> None:
         if isinstance(peer_cert, bytes):
             peer_cert = uacrypto.x509_from_der(peer_cert)
         self.asymmetric_cryptography = CryptographyNone()
@@ -493,38 +535,54 @@ class SecurityPolicyNone(SecurityPolicy):
         self.Mode = mode
         self.peer_certificate = uacrypto.der_from_x509(peer_cert)
         self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
+        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain or []]
         self.permissions = permission_ruleset
 
-    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+    def make_symmetric_cryptography(self, local_nonce: bytes, remote_nonce: bytes) -> CryptographyNone:
         return self.symmetric_cryptography
 
-    def make_local_symmetric_key(self, secret, seed):
+    def make_local_symmetric_key(self, secret: bytes, seed: bytes) -> None:
         return None
 
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
+    def make_remote_symmetric_key(self, secret: bytes, seed: bytes, lifetime: int) -> None:
         return None
 
 
 class RsaSecurityPolicy(SecurityPolicy):
+    """
+    The base of the RSA security policies. A subclass names its algorithms; this class builds the asymmetric
+    cryptography of OpenSecureChannel and derives the symmetric keys of the channel from the nonces.
+    """
+
     signature_key_size: int
     symmetric_key_size: int
     deprecated: bool = False
     asymmetric_padding_size: int
-    asymmetric_signer: type[Signer]
-    asymmetric_verifier: type[Verifier]
-    symmetric_signer: type[Signer]
-    symmetric_verifier: type[Verifier]
-    encrypt_function: Callable[[Any, bytes], bytes]
-    decrypt_function: Callable[[Any, bytes], bytes]
+    asymmetric_signer: type[SignerRsa | SignerSha256 | SignerPssSha256]
+    asymmetric_verifier: type[VerifierRsa | VerifierSha256 | VerifierPssSha256]
+    symmetric_signer: type[SignerAesCbc | SignerHMac256]
+    symmetric_verifier: type[VerifierAesCbc | VerifierHMac256]
+    encrypt_function: Callable[[rsa.RSAPublicKey, bytes], bytes]
+    decrypt_function: Callable[[rsa.RSAPrivateKey, bytes], bytes]
     p_hash: Callable[[bytes, bytes, tuple[int, ...]], tuple[bytes, ...]]
+    asymmetric_cryptography: Cryptography
+    symmetric_cryptography: Cryptography
 
-    def __init__(self, peer_cert, host_cert, host_privkey, mode, permission_ruleset=None, host_cert_chain=None):
+    def __init__(
+        self,
+        peer_cert: x509.Certificate | bytes | None,
+        host_cert: x509.Certificate | None,
+        host_privkey: rsa.RSAPrivateKey | None,
+        mode: MessageSecurityMode,
+        permission_ruleset: PermissionRuleset | None = None,
+        host_cert_chain: list[x509.Certificate] | None = None,
+    ) -> None:
         if self.deprecated:
             _logger.warning("DEPRECATED! Do not use %s anymore!", type(self).__name__)
         if isinstance(peer_cert, bytes):
             peer_cert = uacrypto.x509_from_der(peer_cert)
+        if peer_cert is None or host_privkey is None:
+            raise UaError(f"{type(self).__name__} needs the peer certificate and the own private key")
         self.asymmetric_cryptography = Cryptography(MessageSecurityMode.SignAndEncrypt)
         self.asymmetric_cryptography.Signer = self.asymmetric_signer(host_privkey)
         self.asymmetric_cryptography.Verifier = self.asymmetric_verifier(peer_cert)
@@ -538,14 +596,21 @@ class RsaSecurityPolicy(SecurityPolicy):
         self.Mode = mode
         self.peer_certificate = uacrypto.der_from_x509(peer_cert)
         self.host_certificate = uacrypto.der_from_x509(host_cert)
-        host_cert_chain = host_cert_chain or []
-        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain]
+        self.host_certificate_chain = [uacrypto.der_from_x509(cert) for cert in host_cert_chain or []]
         self.permissions = permission_ruleset
 
-    def _derive_keys(self, secret, seed):
+    @classmethod
+    def encrypt_asymmetric(cls, pubkey: rsa.RSAPublicKey, data: bytes) -> bytes:
+        return cls.encrypt_function(pubkey, data)
+
+    @classmethod
+    def sign_asymmetric(cls, privkey: rsa.RSAPrivateKey, data: bytes) -> bytes:
+        return cls.asymmetric_signer(privkey).signature(data)
+
+    def _derive_keys(self, secret: bytes, seed: bytes) -> tuple[bytes, ...]:
         return self.p_hash(secret, seed, (self.signature_key_size, self.symmetric_key_size, 16))
 
-    def make_symmetric_cryptography(self, local_nonce, remote_nonce):
+    def make_symmetric_cryptography(self, local_nonce: bytes, remote_nonce: bytes) -> Cryptography:
         cryptography = Cryptography(self.Mode)
         (sigkey, key, init_vec) = self._derive_keys(remote_nonce, local_nonce)
         cryptography.Signer = self.symmetric_signer(sigkey)
@@ -555,12 +620,12 @@ class RsaSecurityPolicy(SecurityPolicy):
         cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
         return cryptography
 
-    def make_local_symmetric_key(self, secret, seed):
+    def make_local_symmetric_key(self, secret: bytes, seed: bytes) -> None:
         (sigkey, key, init_vec) = self._derive_keys(secret, seed)
         self.symmetric_cryptography.Signer = self.symmetric_signer(sigkey)
         self.symmetric_cryptography.Encryptor = EncryptorAesCbc(key, init_vec)
 
-    def make_remote_symmetric_key(self, secret, seed, lifetime):
+    def make_remote_symmetric_key(self, secret: bytes, seed: bytes, lifetime: int) -> None:
         (sigkey, key, init_vec) = self._derive_keys(secret, seed)
         self.symmetric_cryptography.Verifier = self.symmetric_verifier(sigkey)
         self.symmetric_cryptography.Decryptor = DecryptorAesCbc(key, init_vec)
@@ -609,8 +674,6 @@ class SecurityPolicyAes128Sha256RsaOaep(RsaSecurityPolicy):
     encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
     decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
     p_hash = staticmethod(uacrypto.p_sha256)
-    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
-    sign_asymmetric = staticmethod(uacrypto.sign_sha256)
 
 
 class SecurityPolicyAes256Sha256RsaPss(RsaSecurityPolicy):
@@ -653,8 +716,6 @@ class SecurityPolicyAes256Sha256RsaPss(RsaSecurityPolicy):
     encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep_sha256)
     decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep_sha256)
     p_hash = staticmethod(uacrypto.p_sha256)
-    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep_sha256)
-    sign_asymmetric = staticmethod(uacrypto.sign_pss_sha256)
 
 
 class SecurityPolicyBasic128Rsa15(RsaSecurityPolicy):
@@ -705,8 +766,6 @@ class SecurityPolicyBasic128Rsa15(RsaSecurityPolicy):
     encrypt_function = staticmethod(uacrypto.encrypt_rsa15)
     decrypt_function = staticmethod(uacrypto.decrypt_rsa15)
     p_hash = staticmethod(uacrypto.p_sha1)
-    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa15)
-    sign_asymmetric = staticmethod(uacrypto.sign_sha1)
 
 
 class SecurityPolicyBasic256(RsaSecurityPolicy):
@@ -757,8 +816,6 @@ class SecurityPolicyBasic256(RsaSecurityPolicy):
     encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
     decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
     p_hash = staticmethod(uacrypto.p_sha1)
-    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
-    sign_asymmetric = staticmethod(uacrypto.sign_sha1)
 
 
 class SecurityPolicyBasic256Sha256(RsaSecurityPolicy):
@@ -804,11 +861,10 @@ class SecurityPolicyBasic256Sha256(RsaSecurityPolicy):
     encrypt_function = staticmethod(uacrypto.encrypt_rsa_oaep)
     decrypt_function = staticmethod(uacrypto.decrypt_rsa_oaep)
     p_hash = staticmethod(uacrypto.p_sha256)
-    encrypt_asymmetric = staticmethod(uacrypto.encrypt_rsa_oaep)
-    sign_asymmetric = staticmethod(uacrypto.sign_sha256)
 
 
 def policy_class_for_uri(policy_uri: str | None) -> type[SecurityPolicy] | None:
+    """The security policy class for a SecurityPolicyUri, or None for the None policy and unknown URIs."""
     for cls in [
         SecurityPolicyBasic256Sha256,
         SecurityPolicyBasic256,
@@ -821,7 +877,7 @@ def policy_class_for_uri(policy_uri: str | None) -> type[SecurityPolicy] | None:
     return None
 
 
-def encrypt_asymmetric(pubkey, data, policy_uri):
+def encrypt_asymmetric(pubkey: rsa.RSAPublicKey, data: bytes, policy_uri: str | None) -> tuple[bytes, str]:
     """
     Encrypt data with pubkey using an asymmetric algorithm.
     The algorithm is selected by policy_uri.
@@ -848,7 +904,15 @@ class SecurityPolicyFactory:
     SecurityPolicy for every client and client's certificate
     """
 
-    def __init__(self, cls, mode, certificate=None, private_key=None, permission_ruleset=None, certificate_chain=None):
+    def __init__(
+        self,
+        cls: type[SecurityPolicy],
+        mode: MessageSecurityMode,
+        certificate: x509.Certificate | None = None,
+        private_key: rsa.RSAPrivateKey | None = None,
+        permission_ruleset: PermissionRuleset | None = None,
+        certificate_chain: list[x509.Certificate] | None = None,
+    ) -> None:
         self.cls = cls
         self.mode = mode
         self.certificate = certificate
@@ -856,10 +920,12 @@ class SecurityPolicyFactory:
         self.certificate_chain = certificate_chain
         self.permission_ruleset = permission_ruleset
 
-    def matches(self, uri, mode=None):
+    def matches(self, uri: str | None, mode: MessageSecurityMode | None = None) -> bool:
+        """Whether the factory makes policies for this SecurityPolicyUri and, if given, this mode."""
         return self.cls.URI == uri and (mode is None or self.mode == mode)
 
-    def create(self, peer_certificate):
+    def create(self, peer_certificate: x509.Certificate | bytes | None) -> SecurityPolicy:
+        """A new security policy for one client, with that client's certificate."""
         return self.cls(
             peer_certificate,
             self.certificate,
@@ -870,7 +936,7 @@ class SecurityPolicyFactory:
         )
 
 
-def sign_asymmetric(privkey, data, policy_uri: str | None):
+def sign_asymmetric(privkey: rsa.RSAPrivateKey, data: bytes, policy_uri: str | None) -> tuple[bytes, str]:
     """
     Sign data with privkey using an asymmetric algorithm.
     The algorithm is selected by policy_uri.
@@ -890,33 +956,32 @@ def sign_asymmetric(privkey, data, policy_uri: str | None):
     raise UaError(f"Unsupported security policy `{policy_uri}`")
 
 
-# policy, mode, security_level
-SECURITY_POLICY_TYPE_MAP = {
-    SecurityPolicyType.NoSecurity: [SecurityPolicyNone, MessageSecurityMode.None_, 0],
-    SecurityPolicyType.Basic128Rsa15_Sign: [SecurityPolicyBasic128Rsa15, MessageSecurityMode.Sign, 1],
-    SecurityPolicyType.Basic128Rsa15_SignAndEncrypt: [
+SECURITY_POLICY_TYPE_MAP: dict[SecurityPolicyType, tuple[type[SecurityPolicy], MessageSecurityMode, int]] = {
+    SecurityPolicyType.NoSecurity: (SecurityPolicyNone, MessageSecurityMode.None_, 0),
+    SecurityPolicyType.Basic128Rsa15_Sign: (SecurityPolicyBasic128Rsa15, MessageSecurityMode.Sign, 1),
+    SecurityPolicyType.Basic128Rsa15_SignAndEncrypt: (
         SecurityPolicyBasic128Rsa15,
         MessageSecurityMode.SignAndEncrypt,
         2,
-    ],
-    SecurityPolicyType.Basic256_Sign: [SecurityPolicyBasic256, MessageSecurityMode.Sign, 11],
-    SecurityPolicyType.Basic256_SignAndEncrypt: [SecurityPolicyBasic256, MessageSecurityMode.SignAndEncrypt, 21],
-    SecurityPolicyType.Basic256Sha256_Sign: [SecurityPolicyBasic256Sha256, MessageSecurityMode.Sign, 50],
-    SecurityPolicyType.Basic256Sha256_SignAndEncrypt: [
+    ),
+    SecurityPolicyType.Basic256_Sign: (SecurityPolicyBasic256, MessageSecurityMode.Sign, 11),
+    SecurityPolicyType.Basic256_SignAndEncrypt: (SecurityPolicyBasic256, MessageSecurityMode.SignAndEncrypt, 21),
+    SecurityPolicyType.Basic256Sha256_Sign: (SecurityPolicyBasic256Sha256, MessageSecurityMode.Sign, 50),
+    SecurityPolicyType.Basic256Sha256_SignAndEncrypt: (
         SecurityPolicyBasic256Sha256,
         MessageSecurityMode.SignAndEncrypt,
         70,
-    ],
-    SecurityPolicyType.Aes128Sha256RsaOaep_Sign: [SecurityPolicyAes128Sha256RsaOaep, MessageSecurityMode.Sign, 55],
-    SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt: [
+    ),
+    SecurityPolicyType.Aes128Sha256RsaOaep_Sign: (SecurityPolicyAes128Sha256RsaOaep, MessageSecurityMode.Sign, 55),
+    SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt: (
         SecurityPolicyAes128Sha256RsaOaep,
         MessageSecurityMode.SignAndEncrypt,
         75,
-    ],
-    SecurityPolicyType.Aes256Sha256RsaPss_Sign: [SecurityPolicyAes256Sha256RsaPss, MessageSecurityMode.Sign, 60],
-    SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt: [
+    ),
+    SecurityPolicyType.Aes256Sha256RsaPss_Sign: (SecurityPolicyAes256Sha256RsaPss, MessageSecurityMode.Sign, 60),
+    SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt: (
         SecurityPolicyAes256Sha256RsaPss,
         MessageSecurityMode.SignAndEncrypt,
         80,
-    ],
+    ),
 }
