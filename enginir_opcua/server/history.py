@@ -1,3 +1,8 @@
+"""
+Historical access of the server (OPC 10000-11): the storage interface, the in-memory backend and the manager that
+captures data changes and events.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,10 +11,10 @@ import logging
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from enginir_opcua import ua
-from enginir_opcua.common.subscription import Subscription
+from enginir_opcua.common.subscription import DataChangeNotif, Subscription
 
 if TYPE_CHECKING:
     from enginir_opcua.common.events import Event
@@ -28,29 +33,39 @@ HISTORY_READ_EVENTS = 1 << ua.EventNotifier.HistoryRead
 
 
 class UaNodeAlreadyHistorizedError(ua.UaError):
-    pass
+    """The node's data changes or events are already historized."""
 
 
 def to_ticks(moment: datetime) -> int:
+    """Return a datetime as Int64 ticks of 100 ns since 1601-01-01 UTC."""
     return ua.datetime_to_win_epoch(moment)
 
 
 def from_ticks(ticks: int) -> datetime:
+    """Return the datetime of Int64 ticks of 100 ns since 1601-01-01 UTC."""
     return ua.win_epoch_to_datetime(ticks)
 
 
 def key_of_value(datavalue: ua.DataValue) -> int:
+    """Return the time a value is stored under: its SourceTimestamp, else its ServerTimestamp, else now."""
     moment = datavalue.SourceTimestamp or datavalue.ServerTimestamp or datetime.now(UTC)
     return to_ticks(moment)
 
 
 class HistoryPosition(NamedTuple):
+    """The place of an entry in a history: its key time in ticks, then its capture sequence."""
+
     key: int
     seq: int
 
 
 @dataclass(frozen=True, slots=True)
 class TimeDomain:
+    """
+    What a storage read returns: the entries from start to end (inclusive ticks, None for open), at most limit, oldest
+    first or with backward newest first, and only those past the position after in that direction.
+    """
+
     start: int | None
     end: int | None
     limit: int
@@ -60,12 +75,16 @@ class TimeDomain:
 
 @dataclass(slots=True)
 class HistoryEntry:
+    """One stored entry: a DataValue, or for events a dict of field name to Variant."""
+
     position: HistoryPosition
     value: Any
 
 
 @dataclass(slots=True)
 class Page:
+    """The entries of one storage read and whether more follow."""
+
     entries: list[HistoryEntry]
     more: bool
 
@@ -84,36 +103,51 @@ class HistoryStorageInterface:
         self.max_history_data_response_size = max_history_data_response_size
 
     async def init(self) -> None:
+        """Open the backend; the server calls it once at start."""
         raise NotImplementedError
 
     async def has_node(self, node_id: ua.NodeId) -> bool:
+        """Return True if the backend keeps a data history for the node."""
         raise NotImplementedError
 
     async def has_event(self, node_id: ua.NodeId) -> bool:
+        """Return True if the backend keeps an event history for the notifier."""
         raise NotImplementedError
 
     async def new_historized_node(self, node_id: ua.NodeId, period: timedelta | None, count: int = 0) -> None:
+        """
+        Start or keep the data history of a node.
+
+        :param period: Drop values older than this; keep all if None.
+        :param count: Keep at most this many values; 0 for no limit.
+        """
         raise NotImplementedError
 
     async def save_node_value(self, node_id: ua.NodeId, datavalue: ua.DataValue) -> None:
+        """Store a value under key_of_value()."""
         raise NotImplementedError
 
     async def read_node_history(self, node_id: ua.NodeId, domain: TimeDomain) -> Page:
+        """Return the stored values in the domain; an empty page for an unknown node."""
         raise NotImplementedError
 
     async def new_historized_event(self, source_id: ua.NodeId, period: timedelta | None, count: int = 0) -> None:
+        """Start or keep the event history of a notifier; period and count as for new_historized_node()."""
         raise NotImplementedError
 
     async def save_event(self, source_id: ua.NodeId, fields: dict[str, ua.Variant], time: datetime) -> None:
+        """Store the fields of an event under its time."""
         raise NotImplementedError
 
     async def read_event_history(self, source_id: ua.NodeId, domain: TimeDomain) -> Page:
+        """Return the stored events in the domain; an empty page for an unknown notifier."""
         raise NotImplementedError
 
     async def flush(self) -> None:
-        return None
+        """Make the saved entries durable; the manager calls it whenever its capture queue runs empty."""
 
     async def stop(self) -> None:
+        """Close the backend; calling it again, or after a failed init(), does nothing."""
         raise NotImplementedError
 
 
@@ -166,7 +200,7 @@ class _MemoryStore:
 
 class HistoryDict(HistoryStorageInterface):
     """
-    Very minimal history backend storing data in memory, in lists ordered by position
+    History backend that keeps the entries in memory, in lists ordered by position. They are lost at shutdown.
     """
 
     def __init__(self, max_history_data_response_size: int = 10000) -> None:
@@ -221,22 +255,29 @@ class HistoryDict(HistoryStorageInterface):
 
 @dataclass(slots=True)
 class Registration:
-    kind: str
-    handle: Any
+    """How a node is historized: by a monitored item (data) or by an event sink (event), with its handle."""
+
+    kind: Literal["data", "event"]
+    handle: int
 
 
 class SubHandler:
+    """Hands the data changes of the capture subscription to the manager."""
+
     def __init__(self, manager: HistoryManager) -> None:
         self.manager = manager
 
-    def datachange_notification(self, node: Node, val: Any, data: Any) -> None:
+    def datachange_notification(self, node: Node, val: Any, data: DataChangeNotif) -> None:
         self.manager.enqueue_value(node.nodeid, data.monitored_item.Value)
-
-    def event_notification(self, event: Event) -> None:
-        pass
 
 
 class HistoryManager:
+    """
+    Captures the data changes and events of historized nodes into the active storage and answers HistoryRead.
+
+    Captured entries go through one queue, so a slow storage never blocks the subscriptions.
+    """
+
     def __init__(self, iserver: InternalServer) -> None:
         self.iserver = iserver
         self.storage: HistoryStorageInterface = HistoryDict()
@@ -277,9 +318,7 @@ class HistoryManager:
             await self._set_trusted(ua.NodeId(node_id), ua.AttributeIds.Value, size, ua.VariantType.UInt32)
 
     def set_storage(self, storage: HistoryStorageInterface) -> None:
-        """
-        set the desired HistoryStorageInterface which History Manager will use for historizing
-        """
+        """Replace the storage; only allowed while no node is historized."""
         if self._registry:
             raise ua.UaError("The history storage cannot be replaced while nodes are historized")
         self.storage = storage
@@ -307,13 +346,16 @@ class HistoryManager:
                     _logger.exception("History storage could not be flushed")
 
     def enqueue_value(self, node_id: ua.NodeId, datavalue: ua.DataValue) -> None:
+        """Queue a value of a historized node for storing."""
         self._ensure_consumer()
         self._queue.put_nowait(("value", node_id, datavalue))
 
     def enqueue_event(self, node_id: ua.NodeId, event: Event) -> None:
+        """Queue an event for the history of a notifier; an event without a Time is stored at the current time."""
         self._ensure_consumer()
         fields = event.get_event_props_as_fields_dict()
-        self._queue.put_nowait(("event", node_id, copy.deepcopy(fields), getattr(event, "Time", datetime.now(UTC))))
+        time = getattr(event, "Time", None) or datetime.now(UTC)
+        self._queue.put_nowait(("event", node_id, copy.deepcopy(fields), time))
 
     async def _create_subscription(self) -> Subscription:
         params = ua.CreateSubscriptionParameters()
@@ -327,13 +369,16 @@ class HistoryManager:
         await subscription.init()
         return subscription
 
-    async def _set_trusted(self, node_id: ua.NodeId, attribute: ua.AttributeIds, value: Any, vtype: Any) -> None:
+    async def _set_trusted(
+        self, node_id: ua.NodeId, attribute: ua.AttributeIds, value: Any, vtype: ua.VariantType
+    ) -> None:
         status = await self.iserver.aspace.write_attribute_value(
             node_id, attribute, ua.DataValue(ua.Variant(value, vtype))
         )
         status.check()
 
     def integer_attribute(self, node_id: ua.NodeId, attribute: ua.AttributeIds) -> int:
+        """Return an integer attribute of a node, 0 if it has no value."""
         value = self.iserver.aspace.read_attribute_value(node_id, attribute).Value
         return int(value.Value) if value is not None and value.Value is not None else 0
 
@@ -349,13 +394,17 @@ class HistoryManager:
 
     @property
     def sampling_interval_ms(self) -> float:
+        """The sampling interval of the capture items: history_sampling_interval_ms, else min_sampling_interval_ms."""
         return self.iserver.history_sampling_interval_ms or self.iserver.min_sampling_interval_ms
 
     async def historize_data_change(
         self, node: Node, period: timedelta | None = timedelta(days=7), count: int = 0
     ) -> None:
         """
-        Subscribe to the nodes' data changes and store the data in the active storage.
+        Store the data changes of a Variable and set its HistoryRead access bit and Historizing attribute.
+
+        :param period: Drop values older than this; keep all if None.
+        :param count: Keep at most this many values; 0 for no limit.
         """
         node_id = node.nodeid
         if self._node_class(node_id) != ua.NodeClass.Variable:
@@ -381,7 +430,10 @@ class HistoryManager:
     async def historize_event(self, source: Node, period: timedelta | None = timedelta(days=7), count: int = 0) -> None:
         """
         Store the events that reach the source node: its own and those of every source below it in the notifier
-        hierarchy, whatever their event type.
+        hierarchy, whatever their event type. Sets the HistoryRead bit of its EventNotifier.
+
+        :param period: Drop events older than this; keep all if None.
+        :param count: Keep at most this many events; 0 for no limit.
         """
         node_id = source.nodeid
         if self._node_class(node_id) not in (ua.NodeClass.Object, ua.NodeClass.View):
@@ -416,6 +468,12 @@ class HistoryManager:
     async def read_history(
         self, params: ua.HistoryReadParameters, points: ContinuationPoints[HistoryCursor], trusted: bool = False
     ) -> list[ua.HistoryReadResult]:
+        """
+        HistoryRead (OPC 10000-4 v1.05, 5.10.3) for raw data and events.
+
+        :param points: The history continuation points of the calling session.
+        :param trusted: Skip the UserAccessLevel check (the server's own session).
+        """
         from .history_read import HistoryReader
 
         return await HistoryReader(self).read(params, points, trusted)

@@ -5,14 +5,16 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from enginir_opcua import ua
 from enginir_opcua.common import sql_injection
+from enginir_opcua.common.event_objects import BaseEvent
 from enginir_opcua.common.node import Node
 from enginir_opcua.common.sql_injection import quote_identifier
-from enginir_opcua.server.history import HistoryDict, TimeDomain, to_ticks
+from enginir_opcua.server.history import HistoryDict, HistoryManager, TimeDomain, to_ticks
 from enginir_opcua.server.history_sql import HistorySQLite, event_table
 
 
@@ -455,3 +457,33 @@ async def test_com15_read_event_history_without_arguments_reads_everything_until
     """Part 11, 6.5.2: a read needs two of start, end and count; the client fills in a valid range."""
     res = await history_server.srv_node.read_event_history()
     assert [ev.Severity for ev in res] == history_server.ev_values
+
+
+async def test_sql_stop_after_a_refused_file_and_a_second_stop_do_not_raise(tmp_path: Path) -> None:
+    old = tmp_path / "old.db"
+    connection = sqlite3.connect(old)
+    connection.execute('CREATE TABLE "2_77" (_Id INTEGER PRIMARY KEY)')
+    connection.commit()
+    connection.close()
+    refused = HistorySQLite(str(old))
+    with pytest.raises(ua.UaError):
+        await refused.init()
+    await refused.stop()
+    storage = HistorySQLite(str(tmp_path / "new.db"))
+    await storage.init()
+    await storage.stop()
+    await storage.stop()
+
+
+async def test_an_event_without_time_is_stored_at_the_capture_time() -> None:
+    manager = HistoryManager(SimpleNamespace())
+    source = ua.NodeId(ua.ObjectIds.Server)
+    await manager.storage.new_historized_event(source, None)
+    event = BaseEvent()
+    before = to_ticks(datetime.now(UTC))
+    manager.enqueue_event(source, event)
+    await manager._queue.join()
+    page = await manager.storage.read_event_history(source, TimeDomain(None, None, 10))
+    await manager.stop()
+    assert len(page.entries) == 1
+    assert page.entries[0].position.key >= before

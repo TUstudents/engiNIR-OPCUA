@@ -1,3 +1,7 @@
+"""
+A history backend in a SQLite file: one table per historized node and per event notifier.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,10 +38,12 @@ DATA_COLUMNS = '"_Id", "Key", "SourceTimestamp", "ServerTimestamp", "StatusCode"
 
 
 def data_table(node_id: ua.NodeId) -> str:
+    """Return the name of the table that holds the values of a node."""
     return f"data:{node_id.to_string()}"
 
 
 def event_table(node_id: ua.NodeId) -> str:
+    """Return the name of the table that holds the events of a notifier."""
     return f"event:{node_id.to_string()}"
 
 
@@ -64,26 +70,36 @@ class _Retention:
 
 class HistorySQLite(HistoryStorageInterface):
     """
-    history backend which stores data values and object events in a SQLite database
-    this backend is intended to only be accessed via OPC UA, therefore all UA Variants saved in
-    the history database are in binary format (SQLite BLOBs); times are Int64 ticks of 100 ns since 1601-01-01 UTC
+    History backend that stores data values and events in a SQLite file.
+
+    It is meant to be read through OPC UA: Variants are stored in their binary encoding (BLOBs), times as Int64 ticks
+    of 100 ns since 1601-01-01 UTC, and each event field in its own column. PRAGMA user_version marks the layout;
+    files of earlier releases are refused, not migrated. Retention runs on a save: on every 100th save or once 10 s
+    have passed, and on every save for a count limit below 10 000.
     """
 
     def __init__(self, path: str = "history.db", max_history_data_response_size: int = 10000) -> None:
         super().__init__(max_history_data_response_size)
         self.logger = logging.getLogger(__name__)
         self._db_file = path
-        self._db: aiosqlite.Connection = None  # type: ignore[assignment]
+        self._connection: aiosqlite.Connection | None = None
         self._tables: set[str] = set()
         self._retention: dict[str, _Retention] = {}
         self._event_columns: dict[str, set[str]] = {}
         self._table_locks: dict[str, asyncio.Lock] = {}
 
+    @property
+    def _db(self) -> aiosqlite.Connection:
+        if self._connection is None:
+            raise ua.UaError(f"The history file {self._db_file} is not open")
+        return self._connection
+
     def _lock(self, table: str) -> asyncio.Lock:
         return self._table_locks.setdefault(table, asyncio.Lock())
 
     async def init(self) -> None:
-        self._db = await aiosqlite.connect(self._db_file)
+        """Open the file and check its layout; raise UaError for a file of an earlier release."""
+        self._connection = await aiosqlite.connect(self._db_file)
         async with self._db.execute("PRAGMA user_version") as cursor:
             row = await cursor.fetchone()
         version = row[0] if row else 0
@@ -94,6 +110,7 @@ class HistorySQLite(HistoryStorageInterface):
             await self._db.commit()
         elif version != LAYOUT_VERSION:
             await self._db.close()
+            self._connection = None
             raise ua.UaError(
                 f"The history file {self._db_file} has the layout of an earlier release (user_version {version}) "
                 "and cannot be used; move it away or convert it"
@@ -101,12 +118,16 @@ class HistorySQLite(HistoryStorageInterface):
         self._tables = names
 
     async def stop(self) -> None:
-        if self._db is not None:
-            await self._db.commit()
-            await self._db.close()
-            self.logger.info("Historizing SQL connection closed")
+        """Commit and close the file; does nothing if it is not open."""
+        if self._connection is None:
+            return
+        connection, self._connection = self._connection, None
+        await connection.commit()
+        await connection.close()
+        self.logger.info("Historizing SQL connection closed")
 
     async def flush(self) -> None:
+        """Commit the saved entries."""
         await self._db.commit()
 
     async def has_node(self, node_id: ua.NodeId) -> bool:

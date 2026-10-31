@@ -434,6 +434,10 @@ History (OPC 10000-11):
 - `HistoryStorageInterface` is replaced for custom backends: reads take a `TimeDomain` and return a `Page`; saves are
   `save_node_value()` and `save_event()`; new `has_node()`, `has_event()`, `flush()` and `stores_server_timestamp`.
 - SQLite history files from earlier releases are refused with an error naming the file.
+- `HistorySQLite.stop()` after a refused file, or a second time, does nothing; it raised ValueError (no active
+  connection).
+- An event without a Time (one that was not stamped by an EventGenerator or a Condition) is stored at the capture
+  time; it was dropped with a logged exception.
 - A HistoryRead of a node that isn't historized gives `Bad_HistoryOperationUnsupported`, without the HistoryRead bit
   `Bad_NotReadable`. Two of start, end and count are required. Equal timestamps return the latest value with the
   ExtraData bit; empty ranges give `Good_NoData`.

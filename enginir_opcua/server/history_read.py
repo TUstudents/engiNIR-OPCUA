@@ -6,7 +6,7 @@ import dataclasses
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from enginir_opcua import ua
 from enginir_opcua.common.events import Event
@@ -31,6 +31,8 @@ SCAN_CHUNK = 64
 
 @dataclass(slots=True)
 class HistoryCursor:
+    """The state behind a history continuation point: the request it continues and the last position returned."""
+
     node_id: ua.NodeId
     fingerprint: bytes
     start: int | None
@@ -62,7 +64,13 @@ def _status(code: int) -> ua.StatusCode:
     return ua.StatusCode(code)
 
 
+def _supported(details: object) -> TypeGuard[ua.ReadRawModifiedDetails | ua.ReadEventDetails]:
+    return type(details) in SUPPORTED_DETAILS
+
+
 class HistoryReader:
+    """Answers one HistoryRead request for raw data (ReadRawModifiedDetails) and events (ReadEventDetails)."""
+
     def __init__(self, manager: HistoryManager) -> None:
         self.manager = manager
         self.iserver = manager.iserver
@@ -70,6 +78,7 @@ class HistoryReader:
 
     @property
     def page_cap(self) -> int:
+        """The most values or events one result returns: the smaller limit of the server and the storage."""
         return max(
             1, min(self.iserver.max_history_data_response_size, self.manager.storage.max_history_data_response_size)
         )
@@ -80,12 +89,19 @@ class HistoryReader:
         points: ContinuationPoints[HistoryCursor],
         trusted: bool,
     ) -> list[ua.HistoryReadResult]:
+        """
+        Read the history of each node; a failure of one node is its result's StatusCode.
+
+        Raises for an invalid or unsupported request: no details (BadHistoryOperationInvalid); Processed, AtTime,
+        annotations, sorted events and modified values (BadHistoryOperationUnsupported); TimestampsToReturn Neither
+        (BadTimestampsToReturnInvalid).
+        """
         details = params.HistoryReadDetails
         if details is None or (isinstance(details, ua.ExtensionObject) and details.TypeId.is_null()):
             raise ua.uaerrors.BadHistoryOperationInvalid()
-        if type(details) not in SUPPORTED_DETAILS or getattr(details, "IsReadModified", False):
+        if not _supported(details):
             raise ua.uaerrors.BadHistoryOperationUnsupported()
-        if getattr(details, "ReadModified", False):
+        if getattr(details, "IsReadModified", False) or getattr(details, "ReadModified", False):
             raise ua.uaerrors.BadHistoryOperationUnsupported()
         if params.TimestampsToReturn not in (
             ua.TimestampsToReturn.Source,
@@ -110,7 +126,7 @@ class HistoryReader:
 
     async def _read_node(
         self,
-        details: Any,
+        details: ua.ReadRawModifiedDetails | ua.ReadEventDetails,
         item: ua.HistoryReadValueId,
         timestamps: ua.TimestampsToReturn,
         points: ContinuationPoints[HistoryCursor],
@@ -127,7 +143,7 @@ class HistoryReader:
             and not self.manager.storage.stores_server_timestamp
         ):
             raise ua.uaerrors.BadTimestampNotSupported()
-        if is_event and not details.Filter.SelectClauses:
+        if isinstance(details, ua.ReadEventDetails) and not details.Filter.SelectClauses:
             raise ua.uaerrors.BadEventFilterInvalid()
         fingerprint = self._fingerprint(details, timestamps, item)
         token = item.ContinuationPoint or None
@@ -141,7 +157,7 @@ class HistoryReader:
         else:
             request = self._request_of(details)
         try:
-            if is_event:
+            if isinstance(details, ua.ReadEventDetails):
                 return await self._events(details, item, request, cursor, token, points, created, fingerprint)
             return await self._values(
                 details, item, request, cursor, token, points, created, fingerprint, timestamps, index_range
@@ -177,14 +193,18 @@ class HistoryReader:
             raise ua.uaerrors.BadHistoryOperationUnsupported()
 
     @staticmethod
-    def _fingerprint(details: Any, timestamps: ua.TimestampsToReturn, item: ua.HistoryReadValueId) -> bytes:
+    def _fingerprint(
+        details: ua.ReadRawModifiedDetails | ua.ReadEventDetails,
+        timestamps: ua.TimestampsToReturn,
+        item: ua.HistoryReadValueId,
+    ) -> bytes:
         digest = hashlib.sha256()
         digest.update(struct_to_binary(details))
         digest.update(bytes([int(timestamps)]))
         digest.update((item.IndexRange or "").encode())
         return digest.digest()
 
-    def _request_of(self, details: Any) -> _Request:
+    def _request_of(self, details: ua.ReadRawModifiedDetails | ua.ReadEventDetails) -> _Request:
         epoch = ua.get_win_epoch()
         start_given = details.StartTime is not None and details.StartTime > epoch
         end_given = details.EndTime is not None and details.EndTime > epoch
@@ -244,7 +264,7 @@ class HistoryReader:
 
     async def _values(
         self,
-        details: Any,
+        details: ua.ReadRawModifiedDetails,
         item: ua.HistoryReadValueId,
         request: _Request,
         cursor: HistoryCursor | None,
@@ -256,9 +276,11 @@ class HistoryReader:
         index_range: IndexRange | None,
     ) -> ua.HistoryReadResult:
         bounds = bool(details.ReturnBounds) and cursor is None
-        first_bound = await self._first_bound(item.NodeId, request, details) if bounds else None
-        budget = request.page_size - (1 if first_bound is not None else 0)
-        limit = budget if request.total is None else min(budget, request.total - (1 if first_bound else 0))
+        first_edge = request.end if request.backward else request.start
+        first_bound = await self._bound(item.NodeId, first_edge, not request.backward) if bounds else None
+        extra = 1 if first_bound is not None else 0
+        budget = request.page_size - extra
+        limit = budget if request.total is None else min(budget, request.total - extra)
         entries: list[tuple[ua.DataValue, bool]] = []
         more = False
         last: HistoryPosition | None = None
@@ -272,7 +294,8 @@ class HistoryReader:
         if first_bound is not None:
             values.insert(0, self._present(first_bound, False, timestamps, None))
         if bounds and not more:
-            last_bound = await self._last_bound(item.NodeId, request, details, values, len(entries))
+            last_edge = request.start if request.backward else request.end
+            last_bound = await self._bound(item.NodeId, last_edge, request.backward)
             if (
                 last_bound is not None
                 and (request.total is None or len(values) < request.total)
@@ -314,28 +337,15 @@ class HistoryReader:
             finished.append(group)
         return finished[:need], len(finished) > need
 
-    async def _first_bound(self, node_id: ua.NodeId, request: _Request, details: Any) -> ua.DataValue | None:
-        edge = request.end if request.backward else request.start
+    async def _bound(self, node_id: ua.NodeId, edge: int | None, toward_older: bool) -> ua.DataValue | None:
         if edge is None:
             return None
-        outside = await self._nearest(node_id, edge, toward_older=not request.backward)
+        outside = await self._nearest(node_id, edge, toward_older)
         if outside is not None and outside.position.key == edge:
             return None
         if outside is not None:
-            return outside.value
-        return ua.DataValue(StatusCode=_status(ua.StatusCodes.BadBoundNotFound), SourceTimestamp=from_ticks(edge))
-
-    async def _last_bound(
-        self, node_id: ua.NodeId, request: _Request, details: Any, values: list[ua.DataValue], count: int
-    ) -> ua.DataValue | None:
-        edge = request.start if request.backward else request.end
-        if edge is None:
-            return None
-        outside = await self._nearest(node_id, edge, toward_older=request.backward)
-        if outside is not None and outside.position.key == edge:
-            return None
-        if outside is not None:
-            return outside.value
+            value: ua.DataValue = outside.value
+            return value
         return ua.DataValue(StatusCode=_status(ua.StatusCodes.BadBoundNotFound), SourceTimestamp=from_ticks(edge))
 
     async def _nearest(self, node_id: ua.NodeId, edge: int, toward_older: bool) -> HistoryEntry | None:
@@ -344,10 +354,7 @@ class HistoryReader:
         else:
             domain = TimeDomain(edge, None, 1, False)
         page = await self.manager.storage.read_node_history(node_id, domain)
-        if not page.entries:
-            return None
-        newest = page.entries[0]
-        return HistoryEntry(newest.position, newest.value)
+        return page.entries[0] if page.entries else None
 
     @staticmethod
     def _present(
@@ -378,7 +385,7 @@ class HistoryReader:
 
     async def _events(
         self,
-        details: Any,
+        details: ua.ReadEventDetails,
         item: ua.HistoryReadValueId,
         request: _Request,
         cursor: HistoryCursor | None,
