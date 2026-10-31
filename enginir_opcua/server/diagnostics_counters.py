@@ -9,6 +9,8 @@ UINT32_MASK = 0xFFFFFFFF
 
 @dataclass
 class SubscriptionCounters:
+    """The counters of SubscriptionDiagnostics that the subscription code increments."""
+
     modify_count: int = 0
     enable_count: int = 0
     disable_count: int = 0

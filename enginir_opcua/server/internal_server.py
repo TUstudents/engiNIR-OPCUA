@@ -1,6 +1,5 @@
 """
-Internal server implementing opcu-ua interface.
-Can be used on server side or to implement binary/https opc-ua servers
+The internal server: the address space, the services and the limits behind the network front end of Server.
 """
 
 from __future__ import annotations
@@ -15,6 +14,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from enginir_opcua import ua
 
@@ -43,6 +45,8 @@ _logger = logging.getLogger(__name__)
 
 @dataclass
 class OperationLimits:
+    """The OperationLimits of ServerCapabilities: the most operations one request of each service may carry."""
+
     max_nodes_per_read: int = 10_000
     max_nodes_per_history_read_data: int = 10_000
     max_nodes_per_history_read_events: int = 10_000
@@ -82,7 +86,17 @@ OPERATION_LIMIT_NODES: dict[str, int] = {
 
 
 class ServerDesc:
-    def __init__(self, serv: Any, cap: Any = None, registered_at: float | None = None) -> None:
+    """
+    A server this one knows for FindServers: itself, or a server registered with RegisterServer(2), with its
+    discovery configurations and the clock time of its registration.
+    """
+
+    def __init__(
+        self,
+        serv: ua.ApplicationDescription,
+        cap: list[ua.DiscoveryConfiguration] | None = None,
+        registered_at: float | None = None,
+    ) -> None:
         self.Server = serv
         self.Capabilities = cap
         self.registered_at = registered_at
@@ -91,6 +105,13 @@ class ServerDesc:
 class InternalServer:
     """
     There is one `InternalServer` for every `Server`.
+
+    Its attributes hold the server limits; set them before `Server.init()`. Among them:
+    max_pending_messages_per_connection, the parsed messages queued behind one connection before it is closed;
+    max_connections, the accepted TCP connections, refused at connection_made; hello_timeout_seconds and
+    max_pending_activation_seconds (0 disables), after which a connection without Hello or without an activated
+    session is closed; max_lifetime_count, max_keep_alive_count and max_subscription_lifetime_ms, which bound how long
+    an orphaned subscription lives; max_subscriptions, the subscriptions of the whole server.
     """
 
     def _namespace_uris(self) -> list[str]:
@@ -104,15 +125,13 @@ class InternalServer:
         self._channel_id_counter = 5
         self.allow_plaintext_password = False
         self.identity_guard = IdentityGuard()
-        self.disabled_clock = False  # for debugging, we may want to disable clock that writes too much in log
-        self._known_servers: dict[str, ServerDesc] = {}  # used if we are a discovery server
+        self.disabled_clock = False
+        self._known_servers: dict[str, ServerDesc] = {}
         self.accept_server_registrations: bool = False
         self.max_registered_servers: int = 100
         self.registration_timeout: float = 600.0
         self.clock: Callable[[], float] = time.monotonic
         self.untrusted_hints_logged: dict[str, float] = {}
-        # Server-side limits — clamp client-requested values to avoid resource exhaustion
-        # when clients abandon long-lived sessions. Tighten on a per-deployment basis.
         self.max_session_timeout_ms: float = 600_000
         self.min_session_timeout_ms: float = 5_000
         self.max_unacked_messages_per_subscription: int = 5_000
@@ -125,33 +144,17 @@ class InternalServer:
         self.max_sampling_interval_ms: float = 3_600_000.0
         self.max_monitored_items_per_subscription: int = 10_000
         self.max_monitored_items: int = 100_000
-        # Per-connection inbound message queue depth. data_received() refuses
-        # further frames and closes the transport once this many parsed
-        # messages are queued behind the processor coroutine.
         self.max_pending_messages_per_connection: int = 500
-        # Maximum number of accepted TCP connections (pre-activation included).
-        # Refused at connection_made() to prevent FD exhaustion via parked sockets
-        # that never call ActivateSession.
         self.max_connections: int = 1_000
         self.channel_settings: ChannelSettings = ChannelSettings()
-        # A connection that has not sent its Hello this many seconds after connecting is closed.
         self.hello_timeout_seconds: float = 30.0
-        # Connections that haven't activated a session this many seconds after
-        # connecting are closed by the binary server. 0 disables the watchdog.
         self.max_pending_activation_seconds: float = 30.0
-        # Subscription parameter clamps — protect against clients that ask for
-        # near-infinite RevisedLifetimeCount and then close the session without
-        # deleting subscriptions (CVE-2022-24298 family). Orphaned-subscription
-        # lifetime is RevisedLifetimeCount * RevisedPublishingInterval, so the
-        # count cap is what matters; PublishingInterval is left to the client.
         self.max_lifetime_count: int = 15_000
         self.max_keep_alive_count: int = 5_000
         self.min_publishing_interval_ms: float = 50.0
         self.max_publishing_interval_ms: float = 3_600_000.0
         self.max_subscription_lifetime_ms: float = 86_400_000.0
         self.max_notifications_per_publish: int = 10_000
-        # Total subscription count cap across the whole server. Past this,
-        # CreateSubscription returns BadTooManySubscriptions.
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
         self.max_browse_continuation_points: int = 10
@@ -161,9 +164,9 @@ class InternalServer:
         self.max_byte_string_length: int = 16_777_216
         self.max_array_length: int = 1_000_000
         self._file_service: FileService | None = None
-        self.certificate: Any = None
-        self.certificate_chain: list[Any] = []
-        self.private_key: Any = None
+        self.certificate: x509.Certificate | None = None
+        self.certificate_chain: list[x509.Certificate] = []
+        self.private_key: rsa.RSAPrivateKey | None = None
         self.aspace = AddressSpace()
         self.types = ua.TypeRegistry(namespaces=self._namespace_uris, parents=(ua.default_types,))
         self.attribute_service = AttributeService(self.aspace)
@@ -173,9 +176,7 @@ class InternalServer:
         self.asyncio_transports: list[Any] = []
         self.subscription_service: SubscriptionService = SubscriptionService(self.aspace, iserver=self)
         self.history_manager = HistoryManager(self)
-        # --- Alarms and Conditions (Part 9) ---
         self.condition_manager = ConditionManager(self)
-        # --- end Alarms and Conditions ---
         if user_manager is None:
             user_manager = AnonymousReadOnlyUserManager()
         self.user_manager: UserManager = user_manager
@@ -189,8 +190,8 @@ class InternalServer:
         self.application_hook: ApplicationHook | None = None
         """extra check after the certificate validator accepted a certificate, raises a ServiceError to reject"""
         self.operation_limits = OperationLimits()
-        self.diagnostics = DiagnosticsCollector(self)  # J: diagnostics (SRV-91)
-        self.model_changes = ModelChangeNotifier(self)  # J: model change events (SRV-96)
+        self.diagnostics = DiagnosticsCollector(self)
+        self.model_changes = ModelChangeNotifier(self)
         self.model_change_events: str = "all"
         self.session_manager = SessionManager(self)
         self.dispatcher = Dispatcher(self, build_service_table())
@@ -201,29 +202,30 @@ class InternalServer:
         self._time_task_stop = asyncio.Event()
         self.match_discovery_endpoint_url: bool = True
         self.match_discovery_source_ip: bool = True
-        self.supported_tokens = (ua.AnonymousIdentityToken, ua.X509IdentityToken, ua.UserNameIdentityToken)
+        self.supported_tokens: tuple[type, ...] = (
+            ua.AnonymousIdentityToken,
+            ua.X509IdentityToken,
+            ua.UserNameIdentityToken,
+        )
 
-    # --- File transfer and certificate management (Part 20, Part 12) ---
     @property
     def file_service(self) -> FileService:
+        """The FileType and FileDirectoryType Objects of the server, created on first use."""
         if self._file_service is None:
             self._file_service = FileService(self)
         return self._file_service
 
-    # --- end of File transfer and certificate management ---
-
     async def init(self, shelffile: Path | None = None) -> None:
+        """Build the standard address space and install diagnostics, history and conditions."""
         await self.load_standard_address_space(shelffile)
         await self._address_space_fixes()
         await self.setup_nodes()
-        await self.diagnostics.install()  # J: diagnostics (SRV-91)
+        await self.diagnostics.install()
         await self.history_manager.init()
         await self.condition_manager.init()
 
     async def setup_nodes(self) -> None:
-        """
-        Set up some nodes as defined by spec
-        """
+        """Write the NamespaceArray, the ServerArray, the OperationLimits and the ServerCapabilities limits."""
         uries = ["http://opcfoundation.org/UA/"]
         ns_node = Node(self.isession, ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
         await ns_node.write_value(uries)
@@ -276,25 +278,24 @@ class InternalServer:
             status.check()
 
     async def load_standard_address_space(self, shelf_file: Path | None = None) -> None:
+        """
+        Fill namespace 0 from the shelf file if it exists, else from the generated code, and then write the shelf
+        file if one was named.
+        """
         if shelf_file:
             if shelf_file.is_file() or shelf_file.with_suffix(".db").is_file():  # noqa: ASYNC240
-                # import address space from shelf
                 self.aspace.load_aspace_shelf(shelf_file)
                 return
-        # import address space from code generated from xml
         from .standard_address_space import standard_address_space
 
         await asyncio.to_thread(standard_address_space.fill_address_space, self.node_mgt_service)
-        # import address space directly from xml, this has performance impact so disabled
-        # importer = xmlimporter.XmlImporter(self.node_mgt_service)
-        # importer.import_xml("/path/to/enginir-opcua/schemas/Opc.Ua.NodeSet2.xml", self)
         if shelf_file:
-            # path was supplied, but file doesn't exist - create one for next start up
             await asyncio.to_thread(self.aspace.make_aspace_shelf, shelf_file)
 
     async def _address_space_fixes(self) -> None:
         """
-        Looks like the xml definition of address space has some error. This is a good place to fix them
+        Add the inverse Organizes references of BaseObjectType and BaseDataType to their folders, which the NodeSet
+        lacks.
         """
         it = ua.AddReferencesItem()
         it.SourceNodeId = ua.NodeId(ua.ObjectIds.BaseObjectType)
@@ -327,6 +328,7 @@ class InternalServer:
         self.aspace.dump(path)
 
     async def start(self) -> None:
+        """Set the server state to Running, write the StartTime and start the clock and the session timeouts."""
         self.logger.info("starting internal server")
         for edp in self.endpoints:
             self._known_servers[edp.Server.ApplicationUri] = ServerDesc(edp.Server)
@@ -340,9 +342,10 @@ class InternalServer:
             self._time_task_stop.clear()
             self.time_task = asyncio.create_task(self._set_current_time_loop())
         self.session_manager.start()
-        self.model_changes.enabled = True  # J: model change events (SRV-96)
+        self.model_changes.enabled = True
 
     async def set_server_state(self, state: ua.ServerState) -> None:
+        """Write the State of ServerStatus."""
         status = copy(await self.server_status_node.read_value()) or ua.ServerStatusDataType()
         status.State = state
         await self.server_status_node.write_value(status)
@@ -351,8 +354,9 @@ class InternalServer:
         )
 
     async def stop(self) -> None:
+        """Close all sessions, delete the subscriptions and stop history, diagnostics and conditions."""
         self.logger.info("stopping internal server")
-        self.model_changes.enabled = False  # J: model change events (SRV-96)
+        self.model_changes.enabled = False
         if self.time_task:
             self._time_task_stop.set()
             await self.time_task
@@ -361,8 +365,8 @@ class InternalServer:
         for sub_id, sub in list(self.subscription_service.subscriptions.items()):
             await self.subscription_service.delete_subscriptions([sub_id], sub.session_id)
         await self.history_manager.stop()
-        await self.diagnostics.stop()  # J: diagnostics (SRV-91)
-        await self.condition_manager.stop()  # Alarms and Conditions (Part 9)
+        await self.diagnostics.stop()
+        await self.condition_manager.stop()
 
     async def _set_current_time_loop(self) -> None:
         while not self._time_task_stop.is_set():
@@ -376,10 +380,12 @@ class InternalServer:
                 pass
 
     def get_new_channel_id(self) -> int:
+        """Return the next SecureChannel id."""
         self._channel_id_counter += 1
         return self._channel_id_counter
 
     def add_endpoint(self, endpoint: ua.EndpointDescription) -> None:
+        """Offer an endpoint."""
         self.endpoints.append(endpoint)
 
     def _mangle_endpoint_url(
@@ -403,7 +409,11 @@ class InternalServer:
     async def get_endpoints(
         self, params: ua.GetEndpointsParameters | None = None, sockname: tuple[str, int] | None = None
     ) -> list[ua.EndpointDescription]:
-        self.logger.info("get endpoint")
+        """
+        GetEndpoints (OPC 10000-4 v1.05, 5.5.4): the endpoints, with the host of their URLs taken from the request URL
+        or the local socket address as set by match_discovery_endpoint_url and match_discovery_source_ip.
+        """
+        self.logger.debug("get endpoint")
         edps = []
         params_ep_url = params.EndpointUrl if params else None
         for edp in self.endpoints:
@@ -420,6 +430,10 @@ class InternalServer:
     def find_servers(
         self, params: ua.FindServersParameters, sockname: tuple[str, int] | None = None
     ) -> list[ua.ApplicationDescription]:
+        """
+        FindServers (OPC 10000-4 v1.05, 5.5.2): this server and the registered servers whose registration has not
+        expired. A ServerUri filter matches an ApplicationUri that starts with its colon-separated parts.
+        """
         servers = []
         params_server_uris = [uri.split(":") for uri in params.ServerUris] if params.ServerUris else []
         our_application_uris = [edp.Server.ApplicationUri for edp in self.endpoints]
@@ -447,7 +461,11 @@ class InternalServer:
     def _registered_uris(self) -> list[str]:
         return [uri for uri, desc in self._known_servers.items() if desc.registered_at is not None]
 
-    def register_server(self, server: Any, conf: Any = None) -> None:
+    def register_server(self, server: ua.RegisteredServer, conf: list[ua.DiscoveryConfiguration] | None = None) -> None:
+        """
+        Register a server, or remove it when IsOnline is False (OPC 10000-4 v1.05, 5.5.5); raise
+        BadServerUriInvalid for the URI of this server and BadResourceUnavailable when the registry is full.
+        """
         uri = server.ServerUri
         known = self._known_servers.get(uri)
         if known is not None and known.registered_at is None:
@@ -470,54 +488,43 @@ class InternalServer:
         self._known_servers[uri] = ServerDesc(appdesc, conf, registered_at=self.clock())
 
     def register_server2(self, params: ua.RegisterServer2Parameters) -> None:
+        """RegisterServer2: register_server with the discovery configurations."""
         return self.register_server(params.Server, params.DiscoveryConfiguration)
 
     async def enable_history_data_change(
         self, node: Node, period: timedelta | None = timedelta(days=7), count: int = 0
     ) -> None:
-        """
-        Set attribute Historizing of node to True and start storing data for history
-        """
+        """Start storing the data changes of node; see HistoryManager.historize_data_change."""
         await self.history_manager.historize_data_change(node, period, count)
 
     async def disable_history_data_change(self, node: Node) -> None:
-        """
-        Set attribute Historizing of node to False and stop storing data for history
-        """
+        """Stop storing the data changes of node; the stored history stays readable."""
         await self.history_manager.dehistorize(node)
 
     async def enable_history_event(
         self, source: Node, period: timedelta | None = timedelta(days=7), count: int = 0
     ) -> None:
-        """
-        Set attribute History Read of object events to True and start storing data for history
-        """
+        """Start storing the events that reach source; see HistoryManager.historize_event."""
         await self.history_manager.historize_event(source, period, count)
 
     async def disable_history_event(self, source: Node) -> None:
-        """
-        Set attribute History Read of node to False and stop storing data for history
-        """
+        """Stop storing the events of source; the stored history stays readable."""
         await self.history_manager.dehistorize(source)
 
     def subscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
-        """
-        Call handle for every event of this type
-        """
+        """Call handle for every server callback of this type."""
         self.callback_service.addListener(event, handle)
 
     def unsubscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
-        """
-        Remove a subscription from event to handle
-        """
+        """Stop calling handle for this callback type."""
         self.callback_service.removeListener(event, handle)
 
     async def write_attribute_value(
         self, nodeid: ua.NodeId, datavalue: ua.DataValue, attr: ua.AttributeIds = ua.AttributeIds.Value
     ) -> None:
         """
-        directly write datavalue to the Attribute as the application itself: the access bits are not checked, the
-        type, shape and range are. Raises the error of a bad result
+        Write datavalue to the Attribute as the application itself: the access bits are not checked, the type, shape
+        and range are. Raises the error of a bad result.
         """
         status = await self.aspace.write_attribute_value(nodeid, attr, datavalue)
         status.check()
@@ -549,12 +556,14 @@ class InternalServer:
         self.aspace.set_attribute_value_setter(nodeid, attr, setter)
 
     def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value) -> ua.DataValue:
-        """
-        directly read datavalue of the Attribute
-        """
+        """Read an Attribute directly, without the access checks of a client read."""
         return self.aspace.read_attribute_value(nodeid, attr)
 
     def user_certificate_validator(self) -> CertificateValidator | None:
+        """
+        Return the validator for the certificates of X509 identity tokens: one on the user trust store, else one on
+        the certificates the user manager pins, else None.
+        """
         store = self.user_trust_store
         if store is not None:
             if self._user_validator is None or self._user_validator.trust_store is not store:
@@ -573,14 +582,12 @@ class InternalServer:
         return self._pinned_user_validator[1]
 
     def offered_token_classes(self) -> tuple[type, ...]:
+        """Return the supported identity token types that the user manager also accepts."""
         accepted = getattr(self.user_manager, "accepted_token_types", None)
         if accepted is None:
             return tuple(self.supported_tokens)
         return tuple(token for token in self.supported_tokens if TOKEN_TYPES.get(token) in accepted)
 
     def set_user_manager(self, user_manager: UserManager) -> None:
-        """
-        set up a function which that will check for authorize users. Input function takes username
-        and password as parameters and returns True of user is allowed access, False otherwise.
-        """
+        """Set the user manager that authenticates the identity tokens of ActivateSession."""
         self.user_manager = user_manager

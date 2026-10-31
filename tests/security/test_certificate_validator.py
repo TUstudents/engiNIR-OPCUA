@@ -1027,6 +1027,7 @@ async def test_cry15_server_sends_its_intermediate_chain(chain: Chain, intermedi
         client = await unpinned_client(srv, chain, intermediate_server)
         async with client:
             assert await client.nodes.objects.get_children()
+            assert srv.iserver.certificate is not None
             assert client.security_policy.peer_certificate == srv.iserver.certificate.public_bytes(
                 serialization.Encoding.DER
             )

@@ -343,6 +343,18 @@ Server sessions (OPC 10000-4, 5.7):
   `Bad_InternalError`.
 - RegisterNodes and UnregisterNodes no longer log "Node registration not implemented" at INFO on every call; returning
   the NodeIds unchanged is what OPC 10000-4, 5.9.5 allows.
+- `register_to_discovery()` and `unregister_from_discovery()` take an iterable of discovery configurations, as
+  `Client.register_server()` does; a single configuration raised TypeError.
+- `create_custom_variable_type()` creates a VariableType (it created an ObjectType below BaseVariableType) and takes a
+  `datatype` (default BaseDataType).
+- `set_endpoint()` without a port uses 4840, as a configuration does; the server listened on a random port while it
+  advertised 4840.
+- `load_private_key()` refuses a key that is not RSA with ConfigurationError; the security policies failed with it
+  later.
+- BuildInfo.SoftwareVersion is the version of enginir-opcua instead of "1.0pre", and BuildDate is in UTC.
+  `get_event_generator()` without a type passes None on to `EventGenerator.init()`. The `period` of
+  `historize_node_data_change()` and `historize_node_event()` may be None (keep everything). GetEndpoints logs at
+  DEBUG.
 - `CertificateUserManager.add_role` raises `ValueError` instead of a bare `KeyError` for a missing name, and logs
   through the module logger.
 

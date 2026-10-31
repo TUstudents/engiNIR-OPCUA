@@ -112,6 +112,11 @@ module = [
   "enginir_opcua.server.history",
   "enginir_opcua.server.history_read",
   "enginir_opcua.server.history_sql",
+  "enginir_opcua.server.diagnostics",
+  "enginir_opcua.server.diagnostics_counters",
+  "enginir_opcua.server.internal_server",
+  "enginir_opcua.server.server",
+  "enginir_opcua.server.standard_address_space.standard_address_space",
   "enginir_opcua.server.internal_subscription",
   "enginir_opcua.server.monitored_item_service",
   "enginir_opcua.server.subscription_service",
@@ -212,5 +217,5 @@ ignore = [
 "enginir_opcua/ua/object_ids.py" = ["ANN"]
 "enginir_opcua/ua/attribute_ids.py" = ["ANN"]
 "enginir_opcua/pubsub/**" = ["ANN"]
-"enginir_opcua/server/standard_address_space/**" = ["ANN"]
+"enginir_opcua/server/standard_address_space/standard_address_space_services*.py" = ["ANN"]
 "enginir_opcua/common/event_objects.py" = ["ANN"]

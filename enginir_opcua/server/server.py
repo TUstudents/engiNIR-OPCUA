@@ -1,5 +1,5 @@
 """
-High level interface to pure python OPC-UA server
+The high-level OPC UA server.
 """
 
 from __future__ import annotations
@@ -10,14 +10,16 @@ import logging
 import math
 import socket
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import ParseResult, urlparse
 
 import anyio
 from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import rsa
 
+import enginir_opcua
 from enginir_opcua import ua
 
 from ..client import Client
@@ -29,7 +31,7 @@ from ..common.node import Node
 from ..common.shortcuts import Shortcuts
 from ..common.structures import load_enums, load_type_definitions
 from ..common.structures104 import load_data_type_definitions
-from ..common.subscription import Subscription
+from ..common.subscription import Subscription, SubscriptionHandler
 from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
@@ -66,6 +68,8 @@ _logger = logging.getLogger(__name__)
 
 MAX_DISCOVERY_PERIOD_SECONDS = 600
 DISCOVERY_UNREGISTER_TIMEOUT_SECONDS = 5.0
+DEFAULT_BUFFER_SIZE = 65535
+DEFAULT_MAX_MESSAGE_SIZE = 100 * 1024 * 1024
 
 
 def _get_node(isession: InternalSession, whatever: Node | ua.NodeId | int) -> Node:
@@ -153,7 +157,7 @@ class Server:
         self._reverse_connections: list[ReverseConnection] = []
         self.socket_address: tuple[str, int] | None = None
         self._discovery_clients: dict[str, Client] = {}
-        self._discovery_configurations: dict[str, ua.DiscoveryConfiguration | None] = {}
+        self._discovery_configurations: dict[str, list[ua.DiscoveryConfiguration]] = {}
         self._discovery_period: int = 60
         self._discovery_handle: asyncio.Task[None] | None = None
         self._policies: list[security_policies.SecurityPolicyFactory] = []
@@ -161,7 +165,6 @@ class Server:
         self._certificate_manager: CertificateManager | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
         self.allow_deprecated_policies: bool = allow_deprecated_policies
-        # the secure endpoints are enabled by default, the None endpoint only when asked for
         self._security_policy: list[ua.SecurityPolicyType] = [
             *([ua.SecurityPolicyType.NoSecurity] if allow_no_security else []),
             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
@@ -171,16 +174,12 @@ class Server:
             ua.SecurityPolicyType.Aes256Sha256RsaPss_Sign,
             ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt,
         ]
-        # allow all certificates by default
         self._permission_ruleset: SimpleRoleRuleset = SimpleRoleRuleset()
-        # Use acceptable limits
-        buffer_sz = 65535
-        max_msg_sz = 100 * 1024 * 1024  # 100mb
         self.limits: TransportLimits = TransportLimits(
-            max_recv_buffer=buffer_sz,
-            max_send_buffer=buffer_sz,
-            max_chunk_count=math.ceil(max_msg_sz / buffer_sz),  # Round up to allow max msg size
-            max_message_size=max_msg_sz,
+            max_recv_buffer=DEFAULT_BUFFER_SIZE,
+            max_send_buffer=DEFAULT_BUFFER_SIZE,
+            max_chunk_count=math.ceil(DEFAULT_MAX_MESSAGE_SIZE / DEFAULT_BUFFER_SIZE),
+            max_message_size=DEFAULT_MAX_MESSAGE_SIZE,
         )
         self._pubsub: PubSub | None = None
         if config is not None:
@@ -262,17 +261,24 @@ class Server:
         return cast("x509.Certificate", self.iserver.certificate)
 
     async def init(self, shelf_file: Path | None = None) -> None:
+        """
+        Build the address space, set the application URI, load the PKI directory of the configuration and write
+        ServerArray, ServiceLevel (255) and BuildInfo (the version of enginir-opcua; set_build_info replaces it).
+
+        :param shelf_file: Cache of the standard address space; created if it does not exist (see the class).
+        """
         await self.iserver.init(shelf_file)
         await self.set_application_uri(self._application_uri)
         if self._config is not None:
             await self._apply_pki(self._config)
         sa_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerArray))
         await sa_node.write_value([self._application_uri])
-        # TODO: ServiceLevel is 255 default, should be calculated in later Versions
         sl_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))
         await sl_node.write_value(ua.Variant(255, ua.VariantType.Byte))
 
-        await self.set_build_info(self.product_uri, self.manufacturer_name, self.name, "1.0pre", "0", datetime.now())
+        await self.set_build_info(
+            self.product_uri, self.manufacturer_name, self.name, enginir_opcua.__version__, "0", datetime.now(UTC)
+        )
 
     def set_match_discovery_endpoint_url(self, match_discovery_endpoint_url: bool) -> None:
         """
@@ -317,6 +323,7 @@ class Server:
         build_number: str,
         build_date: datetime,
     ) -> None:
+        """Write the BuildInfo of ServerStatus and its component Variables."""
         if not all(
             isinstance(arg, str)
             for arg in [product_uri, manufacturer_name, product_name, software_version, build_number]
@@ -351,7 +358,6 @@ class Server:
         await status_node.write_value(status)
         await build_node.write_value(status.BuildInfo)
 
-        # we also need to update all individual nodes :/
         product_uri_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_BuildInfo_ProductUri))
         product_name_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_BuildInfo_ProductName))
         product_manufacturer_name_node = self.get_node(
@@ -385,14 +391,12 @@ class Server:
     __repr__ = __str__
 
     async def load_certificate(self, path_or_content: str | bytes | Path, format: str | None = None) -> None:
-        """
-        load server certificate from file, either pem or der
-        """
+        """Load the server certificate from a PEM or DER file, or from its bytes."""
         self.iserver.certificate = await uacrypto.load_certificate(path_or_content, format)
 
     async def load_certificate_chain(self, chain: Iterable[str | bytes | Path]) -> None:
         """
-        load the intermediate CA certificates between the server certificate and its root, leaf side first.
+        Load the intermediate CA certificates between the server certificate and its root, leaf side first.
         Each item is a DER or PEM file (a PEM file may hold several certificates) or the bytes of one.
         The server sends the chain after its certificate wherever it sends its certificate.
         """
@@ -404,16 +408,21 @@ class Server:
     async def load_private_key(
         self, path_or_content: str | Path | bytes, password: str | bytes | None = None, format: str | None = None
     ) -> None:
-        self.iserver.private_key = await uacrypto.load_private_key(path_or_content, password, format)
+        """
+        Load the private key of the server certificate from a PEM or DER file, or from its bytes; the security
+        policies need an RSA key, any other raises ConfigurationError.
+        """
+        key = await uacrypto.load_private_key(path_or_content, password, format)
+        if not isinstance(key, rsa.RSAPrivateKey):
+            raise ConfigurationError(f"private_key: the security policies need an RSA key, got {type(key).__name__}")
+        self.iserver.private_key = key
 
     def disable_clock(self, val: bool = True) -> None:
-        """
-        for debugging you may want to disable clock that write every second
-        to address space
-        """
+        """Stop writing ServerStatus/CurrentTime every second, for example to keep debug logs short."""
         self.iserver.disabled_clock = val
 
     def get_application_uri(self) -> str:
+        """Return the application URI."""
         return self._application_uri
 
     async def set_application_uri(self, uri: str) -> None:
@@ -431,12 +440,11 @@ class Server:
         ns_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_NamespaceArray))
         uries = await ns_node.read_value()
         if len(uries) > 1:
-            uries[1] = uri  # application uri is always namespace 1
+            uries[1] = uri
         else:
             uries.append(uri)
         await ns_node.write_value(uries)
 
-        # Keep ServerArray in sync (OPC 10000-5 v1.05, 6.3.1)
         sa_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerArray))
         server_array = await sa_node.read_value()
         if server_array:
@@ -446,9 +454,7 @@ class Server:
         await sa_node.write_value(server_array)
 
     async def find_servers(self, uris: list[str] | None = None) -> list[ua.ApplicationDescription]:
-        """
-        find_servers. mainly implemented for symmetry with client
-        """
+        """Return the servers this server knows, as FindServers would; uris filters them as in Client.find_servers."""
         if uris is None:
             uris = []
         params = ua.FindServersParameters()
@@ -471,7 +477,7 @@ class Server:
         self,
         url: str = "opc.tcp://localhost:4840",
         period: int = 60,
-        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None:
         """
         Register to an OPC-UA Discovery server. Registering must be renewed at
@@ -482,7 +488,8 @@ class Server:
         The discovery server accepts the registration only on a secure channel, so the server needs its
         certificate and private key, and an application URI (set_application_uri) equal to the ApplicationUri of
         its certificate. The certificate of the discovery server is validated against the trust store of this
-        server (set_trust_store).
+        server (set_trust_store). discovery_configuration, for example [ua.MdnsDiscoveryConfiguration(...)], is
+        sent with RegisterServer2.
         """
         if not 0 <= period <= MAX_DISCOVERY_PERIOD_SECONDS:
             raise ValueError(f"period must be between 0 and {MAX_DISCOVERY_PERIOD_SECONDS} seconds")
@@ -494,7 +501,7 @@ class Server:
         finally:
             await client.disconnect_sessionless()
         self._discovery_clients[url] = client
-        self._discovery_configurations[url] = discovery_configuration
+        self._discovery_configurations[url] = list(discovery_configuration or [])
         self._discovery_period = period
         if period and (self._discovery_handle is None or self._discovery_handle.done()):
             self._discovery_handle = asyncio.create_task(self._run_renewal_loop())
@@ -508,10 +515,13 @@ class Server:
             await asyncio.sleep(self._discovery_period)
 
     async def unregister_from_discovery(
-        self, url: str = "opc.tcp://localhost:4840", discovery_configuration: ua.DiscoveryConfiguration | None = None
+        self,
+        url: str = "opc.tcp://localhost:4840",
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None:
         """
-        stop registration thread
+        Withdraw the registration from a discovery server and stop renewing it when it was the last one. Without
+        discovery_configuration the configurations of the registration are sent.
         """
         client = self._discovery_clients.get(url)
         if client is None:
@@ -549,6 +559,7 @@ class Server:
 
     @property
     def allow_plaintext_password(self) -> bool:
+        """Offer the UserName token in plaintext when no endpoint can encrypt the password; off by default."""
         return self.iserver.allow_plaintext_password
 
     @allow_plaintext_password.setter
@@ -583,10 +594,13 @@ class Server:
         self.iserver.max_array_length = value
 
     def set_endpoint(self, url: str) -> None:
-        """Set the endpoint URL: opc.tcp://host[:port][/path]. A URL without scheme or host is refused."""
-        self.endpoint = parse_opc_tcp_url(url, "endpoint")
+        """
+        Set the endpoint URL: opc.tcp://host[:port][/path], port 4840 if none. A URL without scheme or host is refused.
+        """
+        self.endpoint = with_default_port(parse_opc_tcp_url(url, "endpoint"))
 
     async def get_endpoints(self) -> list[ua.EndpointDescription]:
+        """Return the endpoints the server offers; they exist after start()."""
         return await self.iserver.get_endpoints()
 
     def set_security_policy(
@@ -595,8 +609,7 @@ class Server:
         permission_ruleset: SimpleRoleRuleset | None = None,
     ) -> None:
         """
-        Method setting up the security policies for connections
-        to the server, where security_policy is a list of integers.
+        Set the security policies of the endpoints, and optionally the rules that map user roles to permissions.
         During server initialization, all secure endpoints are enabled. The None endpoint is only
         enabled with Server(allow_no_security=True) or by listing ua.SecurityPolicyType.NoSecurity here.
         The deprecated Basic128Rsa15 and Basic256 policies need Server(allow_deprecated_policies=True).
@@ -630,7 +643,7 @@ class Server:
         Use set_identity_tokens instead.
         """
         _logger.warning("set_security_IDs is deprecated, use set_identity_tokens instead!")
-        tokens = []
+        tokens: list[type] = []
         if "Anonymous" in policy_ids:
             tokens.append(ua.AnonymousIdentityToken)
         if "Basic256Sha256" in policy_ids:
@@ -641,7 +654,7 @@ class Server:
 
     def set_identity_tokens(self, tokens: list[type]) -> None:
         """
-        Method setting up allowed identity token types for authentication.
+        Set the identity token types the endpoints offer for authentication.
 
         E.g. to disable anonymous clients:
 
@@ -695,7 +708,7 @@ class Server:
             for token_policy_type in self._security_policy:
                 token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
                 if token_mode == ua.MessageSecurityMode.SignAndEncrypt:
-                    return token_policy.URI  # type: ignore[attr-defined,no-any-return]
+                    return token_policy.URI
         if self.allow_plaintext_password:
             _logger.warning("No encrypting policy available, the password is advertised for transfer in plaintext")
             return security_policies.SecurityPolicyNone.URI
@@ -718,14 +731,12 @@ class Server:
             idtoken = ua.UserTokenPolicy()
             idtoken.PolicyId = "certificate"
             idtoken.TokenType = ua.UserTokenType.Certificate
-            # always request signing
             if mode == ua.MessageSecurityMode.None_:
-                # find first policy with signing
                 for token_policy_type in self._security_policy:
                     token_policy, token_mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[token_policy_type]
                     if token_mode == ua.MessageSecurityMode.None_:
                         continue
-                    idtoken.SecurityPolicyUri = token_policy.URI  # type: ignore[attr-defined]
+                    idtoken.SecurityPolicyUri = token_policy.URI
                     idtokens.append(idtoken)
                     break
                 else:
@@ -766,6 +777,7 @@ class Server:
         self.iserver.add_endpoint(edp)
 
     def set_server_name(self, name: str) -> None:
+        """Set the application name; set it before start()."""
         self.name = name
 
     async def start(self) -> None:
@@ -774,7 +786,6 @@ class Server:
         """
         self._check_development_bind()
         if self.iserver.certificate is not None:
-            # Log warnings about the certificate
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
         await self._prepare_certificate_validation()
         if self.iserver.user_trust_store is not None:
@@ -788,10 +799,10 @@ class Server:
             for connection in self._reverse_connections:
                 self.bserver.add_reverse_connection(connection)
             await self.bserver.start()
-        except Exception as exp:
+        except Exception:
             _logger.exception("%s error starting server", self)
             await self.iserver.stop()
-            raise exp
+            raise
         else:
             _logger.debug("%s server started", self)
 
@@ -822,7 +833,7 @@ class Server:
         if config is None or config.profile != "development":
             return
         host = self._get_bind_socket_info()[0]
-        if host is None or not is_loopback(host):
+        if not is_loopback(host):
             raise ConfigurationError(
                 f"server.endpoint: the development profile only listens on loopback addresses, but socket_address "
                 f"is {self.socket_address}"
@@ -832,15 +843,13 @@ class Server:
             self.endpoint.geturl(),
         )
 
-    def _get_bind_socket_info(self) -> tuple[str | None, int | None]:
+    def _get_bind_socket_info(self) -> tuple[str, int]:
         if self.socket_address is not None:
             return self.socket_address
-        return self.endpoint.hostname, self.endpoint.port
+        return self.endpoint.hostname or "0.0.0.0", self.endpoint.port or 4840
 
     async def stop(self) -> None:
-        """
-        Stop server
-        """
+        """Set the state to Shutdown, withdraw discovery registrations, close the connections and stop."""
         try:
             await self.iserver.set_server_state(ua.ServerState.Shutdown)
         except Exception:
@@ -874,10 +883,11 @@ class Server:
     async def create_subscription(
         self,
         period: float,
-        handler: Any = None,
+        handler: SubscriptionHandler | None = None,
         *,
         queue_maxsize: int = 1000,
     ) -> Subscription:
+        """Create a subscription in the server's own session, as Client.create_subscription does."""
         params = ua.CreateSubscriptionParameters()
         params.RequestedPublishingInterval = period
         params.RequestedLifetimeCount = 3000
@@ -896,18 +906,15 @@ class Server:
 
     @property
     def types(self) -> ua.TypeRegistry:
+        """The registry of the data types of the server."""
         return self.iserver.types
 
     async def get_namespace_array(self) -> list[str]:
-        """
-        get all namespace defined in server
-        """
+        """Return the NamespaceArray."""
         return await self.nodes.namespace_array.read_value()
 
     async def register_namespace(self, uri: str) -> int:
-        """
-        Register a new namespace. Nodes should in custom namespace, not 0.
-        """
+        """Add a namespace URI to the NamespaceArray if it is not there and return its index."""
         uries = await self.nodes.namespace_array.read_value()
         if uri in uries:
             return uries.index(uri)
@@ -916,9 +923,7 @@ class Server:
         return len(uries) - 1
 
     async def get_namespace_index(self, uri: str) -> int:
-        """
-        get index of a namespace using its uri
-        """
+        """Return the index of a namespace URI; raise ValueError if it is not registered."""
         uries = await self.get_namespace_array()
         return uries.index(uri)
 
@@ -928,11 +933,8 @@ class Server:
         emitting_node: Node | ua.NodeId | int = ua.ObjectIds.Server,
     ) -> EventGenerator:
         """
-        Returns an event object using an event type from address space.
-        Use this object to fire events
+        Return an initialised EventGenerator that fires events of etype (BaseEventType if None) from emitting_node.
         """
-        if not etype:
-            etype = BaseEvent()
         ev_gen = EventGenerator(self.iserver.isession)
         await ev_gen.init(etype, emitting_node=emitting_node)
         return ev_gen
@@ -945,18 +947,12 @@ class Server:
         properties: list[tuple] | None = None,
         description: str | None = None,
     ) -> Node:
-        if properties is None:
-            properties = []
+        """
+        Add a DataType as subtype of basetype. properties are (name, VariantType[, DataType]) tuples.
+        """
         base_t = _get_node(self.iserver.isession, basetype)
-
         custom_t = await base_t.add_data_type(idx, name, description)
-        for prop in properties:
-            datatype = None
-            if len(prop) > 2:
-                datatype = prop[2]
-            await custom_t.add_property(
-                idx, prop[0], ua.get_default_value(prop[1]), varianttype=prop[1], datatype=datatype
-            )
+        await self._add_members(custom_t, idx, properties or [], [], [])
         return custom_t
 
     async def create_custom_event_type(
@@ -966,9 +962,11 @@ class Server:
         basetype: ua.NodeId | int = ua.ObjectIds.BaseEventType,
         properties: list[tuple] | None = None,
     ) -> Node:
-        if properties is None:
-            properties = []
-        return await self._create_custom_type(idx, name, basetype, properties, [], [])
+        """Add an event type (an ObjectType) as subtype of basetype; properties as in create_custom_data_type."""
+        base_t = _get_node(self.iserver.isession, basetype)
+        custom_t = await base_t.add_object_type(idx, name)
+        await self._add_members(custom_t, idx, properties or [], [], [])
+        return custom_t
 
     async def create_custom_object_type(
         self,
@@ -979,16 +977,14 @@ class Server:
         variables: list[tuple] | None = None,
         methods: list[tuple] | None = None,
     ) -> Node:
-        if properties is None:
-            properties = []
-        if variables is None:
-            variables = []
-        if methods is None:
-            methods = []
-        return await self._create_custom_type(idx, name, basetype, properties, variables, methods)
-
-    # def create_custom_reference_type(self, idx, name, basetype=ua.ObjectIds.BaseReferenceType, properties=[]):
-    # return self._create_custom_type(idx, name, basetype, properties)
+        """
+        Add an ObjectType as subtype of basetype. properties and variables are (name, VariantType[, DataType])
+        tuples, methods (name, callback, input argument types, output argument types) tuples.
+        """
+        base_t = _get_node(self.iserver.isession, basetype)
+        custom_t = await base_t.add_object_type(idx, name)
+        await self._add_members(custom_t, idx, properties or [], variables or [], methods or [])
+        return custom_t
 
     async def create_custom_variable_type(
         self,
@@ -998,26 +994,24 @@ class Server:
         properties: list[tuple] | None = None,
         variables: list[tuple] | None = None,
         methods: list[tuple] | None = None,
+        datatype: ua.NodeId | int = ua.ObjectIds.BaseDataType,
     ) -> Node:
-        if properties is None:
-            properties = []
-        if variables is None:
-            variables = []
-        if methods is None:
-            methods = []
-        return await self._create_custom_type(idx, name, basetype, properties, variables, methods)
+        """
+        Add a VariableType of datatype as subtype of basetype; members as in create_custom_object_type.
+        """
+        base_t = _get_node(self.iserver.isession, basetype)
+        custom_t = await base_t.add_variable_type(idx, name, datatype)
+        await self._add_members(custom_t, idx, properties or [], variables or [], methods or [])
+        return custom_t
 
-    async def _create_custom_type(
-        self,
+    @staticmethod
+    async def _add_members(
+        custom_t: Node,
         idx: int | ua.NodeId,
-        name: str | ua.QualifiedName,
-        basetype: ua.NodeId | int,
         properties: list[tuple],
         variables: list[tuple],
         methods: list[tuple],
-    ) -> Node:
-        base_t = _get_node(self.iserver.isession, basetype)
-        custom_t = await base_t.add_object_type(idx, name)
+    ) -> None:
         for prop in properties:
             datatype = None
             if len(prop) > 2:
@@ -1034,7 +1028,6 @@ class Server:
             )
         for method in methods:
             await custom_t.add_method(idx, method[0], method[1], method[2], method[3])
-        return custom_t
 
     async def import_xml(
         self,
@@ -1043,9 +1036,7 @@ class Server:
         strict_mode: bool = True,
         auto_load_definitions: bool = True,
     ) -> list[ua.NodeId]:
-        """
-        Import nodes defined in xml
-        """
+        """Import the nodes of a NodeSet XML file or string and return their NodeIds; see XmlImporter."""
         importer = XmlImporter(self, strict_mode, auto_load_definitions)
         return await importer.import_xml(path, xmlstring)
 
@@ -1054,7 +1045,7 @@ class Server:
     ) -> None:
         """
         Export defined nodes to xml
-        :param export_value: export values from variants
+        :param export_values: export values from variants
         :param model_uris: namespaces that are written as models, with their version and required models
         """
         exp = XmlExporter(self, export_values=export_values)
@@ -1083,16 +1074,17 @@ class Server:
     async def delete_nodes(
         self, nodes: Iterable[Node], recursive: bool = False
     ) -> tuple[list[Node], list[ua.StatusCode]]:
+        """Delete the nodes, with recursive also their children; return the deleted nodes and the results."""
         return await delete_nodes(self.iserver.isession, nodes, recursive)
 
     async def historize_node_data_change(
-        self, node: Node | list[Node] | tuple[Node, ...], period: timedelta = timedelta(days=7), count: int = 0
+        self, node: Node | list[Node] | tuple[Node, ...], period: timedelta | None = timedelta(days=7), count: int = 0
     ) -> None:
         """
         Start historizing supplied nodes; see history module
         :param node: node or list of nodes that can be historized (variables/properties)
-        :param period: time delta to store the history; older data will be deleted from the storage
-        :param count: number of changes to store in the history
+        :param period: time delta to store the history; older data will be deleted from the storage; None keeps all
+        :param count: number of changes to store in the history; 0 for no limit
         """
         nodes = node if isinstance(node, list | tuple) else [node]
         for n in nodes:
@@ -1108,13 +1100,13 @@ class Server:
             await self.iserver.disable_history_data_change(n)
 
     async def historize_node_event(
-        self, node: Node | list[Node] | tuple[Node, ...], period: timedelta = timedelta(days=7), count: int = 0
+        self, node: Node | list[Node] | tuple[Node, ...], period: timedelta | None = timedelta(days=7), count: int = 0
     ) -> None:
         """
         Start historizing events from node (typically a UA object); see history module
         :param node: node or list of nodes that can be historized (UA objects)
-        :param period: time delta to store the history; older data will be deleted from the storage
-        :param count: number of events to store in the history
+        :param period: time delta to store the history; older data will be deleted from the storage; None keeps all
+        :param count: number of events to store in the history; 0 for no limit
         """
         nodes = node if isinstance(node, list | tuple) else [node]
         for n in nodes:
@@ -1130,9 +1122,11 @@ class Server:
             await self.iserver.disable_history_event(n)
 
     def subscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
+        """Call handle for every server callback of this type, such as PreWrite and PostWrite."""
         self.iserver.subscribe_server_callback(event, handle)
 
     def unsubscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
+        """Stop calling handle for this callback type."""
         self.iserver.unsubscribe_server_callback(event, handle)
 
     def link_method(self, node: Node, callback: Callable[..., Any]) -> None:
@@ -1144,7 +1138,7 @@ class Server:
         """
         self.iserver.isession.add_method_callback(node.nodeid, callback)
 
-    async def load_type_definitions(self, nodes: Iterable[Node] | None = None) -> Any:
+    async def load_type_definitions(self, nodes: list[Node] | None = None) -> Any:
         """
         load custom structures from our server.
         Server side this can be used to create python objects from custom structures
@@ -1207,22 +1201,16 @@ class Server:
         self.iserver.set_attribute_value_setter(nodeid, setter, attr)
 
     def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value) -> ua.DataValue:
-        """
-        directly read datavalue of the Attribute
-        """
+        """Read an Attribute directly, without the access checks of a client read."""
         return self.iserver.read_attribute_value(nodeid, attr)
 
     async def read_attributes(
         self, nodes: Iterable[Node], attr: ua.AttributeIds = ua.AttributeIds.Value
     ) -> list[ua.DataValue]:
-        """
-        directly read the attributes of multiple nodes.
-        async for compatibility with client API
-        """
+        """Read an Attribute of several nodes directly; async like the client API."""
         nodeids = [node.nodeid for node in nodes]
         return [self.iserver.read_attribute_value(nodeid, attr) for nodeid in nodeids]
 
-    # --- File transfer and certificate management (Part 20, Part 12) ---
     async def add_file(
         self,
         parent: Node | ua.NodeId,
@@ -1311,8 +1299,6 @@ class Server:
         self._certificate_manager = manager
         return manager
 
-    # --- end of File transfer and certificate management ---
-
     def set_trust_store(self, trust_store: TrustStore) -> None:
         """
         Set the trusted certificates, issuer certificates and revocation lists that client certificates are
@@ -1398,15 +1384,11 @@ class Server:
         self.iserver.application_hook = hook
 
     async def get_pubsub(self) -> PubSub:
-        """
-        gets the pubsub model
-        """
+        """Return the PubSub of the server, creating its information model on the first call."""
         if self._pubsub is None:
             self._pubsub = PubSub(server=self)
             await self._pubsub.init_information_model()
         return self._pubsub
-
-    # --- Diagnostics, programs, reverse connect, model change ---
 
     def add_reverse_connect(
         self, client_url: str, endpoint_url: str | None = None, retry_interval: float = 5.0
@@ -1434,6 +1416,7 @@ class Server:
         return connection
 
     def remove_reverse_connect(self, connection: ReverseConnection) -> None:
+        """Stop a reverse connection of add_reverse_connect."""
         self._reverse_connections.remove(connection)
         if self.bserver is not None:
             self.bserver.remove_reverse_connection(connection)
@@ -1475,8 +1458,6 @@ class Server:
         """
         return self.iserver.diagnostics
 
-    # --- Alarms and Conditions (Part 9) ---
-
     async def create_condition(
         self,
         source: Node | ua.NodeId | None,
@@ -1494,17 +1475,18 @@ class Server:
         return await self.iserver.condition_manager.create(source, condition_type, name, **options)
 
     async def delete_condition(self, condition: Condition) -> None:
+        """Delete a Condition and its nodes."""
         await self.iserver.condition_manager.delete(condition)
 
     def get_condition(self, condition_id: ua.NodeId | Node) -> Condition | None:
+        """Return the handle of a Condition by its ConditionId, or None."""
         return self.iserver.condition_manager.get(condition_id)
 
     @property
     def conditions(self) -> list[Condition]:
+        """The handles of all Conditions."""
         return list(self.iserver.condition_manager.conditions.values())
 
     async def refresh_required(self, subscription_ids: list[int] | None = None) -> None:
         """Tell clients that their Condition state may be out of date (RefreshRequiredEvent, Part 9, 5.11.4)."""
         await self.iserver.condition_manager.refresh_required(subscription_ids)
-
-    # --- end Alarms and Conditions ---

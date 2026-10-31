@@ -12,7 +12,7 @@ import logging
 import time
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from enginir_opcua import ua
 
@@ -51,7 +51,6 @@ SECURITY_STATUS_NAMES = (
     "BadCertificateRevoked",
     "BadCertificateIssuerRevoked",
     "BadCertificatePolicyCheckFailed",
-    "BadSecurityPolicyRejected",
 )
 SECURITY_STATUSES = frozenset(
     getattr(ua.StatusCodes, name) for name in SECURITY_STATUS_NAMES if hasattr(ua.StatusCodes, name)
@@ -75,6 +74,8 @@ def _u32(value: int) -> int:
 
 @dataclass
 class ServerCounters:
+    """The counters of ServerDiagnosticsSummary that the server keeps itself."""
+
     cumulated_sessions: int = 0
     security_rejected_sessions: int = 0
     rejected_sessions: int = 0
@@ -87,6 +88,8 @@ class ServerCounters:
 
 @dataclass
 class SessionStats:
+    """What SessionDiagnostics and SessionSecurityDiagnostics report about one Session beyond its live state."""
+
     connected_at: datetime
     client_description: ua.ApplicationDescription
     server_uri: str
@@ -117,6 +120,7 @@ class DiagnosticsCollector:
 
     @property
     def enabled(self) -> bool:
+        """The EnabledFlag: whether the Session and Subscription details are kept and shown."""
         return self._enabled
 
     @enabled.setter
@@ -147,6 +151,7 @@ class DiagnosticsCollector:
             sub.counters = SubscriptionCounters()
 
     def session_object_names(self) -> list[str]:
+        """Return the names of the Sessions that have a diagnostics Object."""
         manager = self.iserver.session_manager
         return [session.name for session_id in self._objects if (session := manager.session_by_id(session_id))]
 
@@ -154,6 +159,7 @@ class DiagnosticsCollector:
         return self.sessions.get(session.id)
 
     def session_created(self, session: Session, params: ua.CreateSessionParameters) -> None:
+        """Hook of CreateSession: count the Session and keep what its diagnostics report."""
         self.counters.cumulated_sessions = _u32(self.counters.cumulated_sessions + 1)
         self.sessions[session.id] = SessionStats(
             connected_at=datetime.now(UTC),
@@ -165,10 +171,12 @@ class DiagnosticsCollector:
             self._create_session_nodes(session)
 
     def iserver_application_uri(self) -> str:
+        """Return the ApplicationUri of the first endpoint, or an empty string."""
         endpoints = self.iserver.endpoints
         return endpoints[0].Server.ApplicationUri if endpoints else ""
 
     def session_activated(self, session: Session, params: ua.ActivateSessionParameters) -> None:
+        """Hook of ActivateSession: keep the locales, the user history and the authentication mechanism."""
         stats = self._stats(session)
         if stats is None:
             return
@@ -182,22 +190,26 @@ class DiagnosticsCollector:
             (label for cls, label in AUTHENTICATION_MECHANISM if isinstance(token, cls)), "Anonymous"
         )
 
-    def session_ended(self, session: Session, reason: str) -> None:
+    def session_ended(self, session: Session, reason: Literal["timeout", "abort"]) -> None:
+        """Hook of a Session that timed out or was aborted with its channel."""
         if reason == "timeout":
             self.counters.session_timeouts = _u32(self.counters.session_timeouts + 1)
         elif reason == "abort":
             self.counters.session_aborts = _u32(self.counters.session_aborts + 1)
 
     def session_forgotten(self, session: Session) -> None:
+        """Hook of a removed Session: drop its statistics and its diagnostics Object."""
         self.sessions.pop(session.id, None)
         self._delete_session_nodes(session.id)
 
     def channel_rejected(self, status: int) -> None:
+        """Hook of a request refused before a Session: counts only security rejections."""
         if _is_security(status):
             self.counters.security_rejected_requests = _u32(self.counters.security_rejected_requests + 1)
             self.counters.rejected_requests = _u32(self.counters.rejected_requests + 1)
 
     def request_done(self, session: Session | None, service: str | None, status: int) -> None:
+        """Hook of every answered request: count it per Session and service, and the rejected ones per server."""
         stats = self._stats(session) if session is not None else None
         bad = status != ua.StatusCodes.Good
         if stats is not None:
@@ -220,9 +232,11 @@ class DiagnosticsCollector:
                 self.counters.security_rejected_sessions = _u32(self.counters.security_rejected_sessions + 1)
 
     def subscription_created(self) -> None:
+        """Hook of CreateSubscription."""
         self.counters.cumulated_subscriptions = _u32(self.counters.cumulated_subscriptions + 1)
 
     def summary(self) -> ua.ServerDiagnosticsSummaryDataType:
+        """Return the ServerDiagnosticsSummary."""
         counters = self.counters
         subscriptions = self.iserver.subscription_service.subscriptions
         views = sum(
@@ -248,6 +262,7 @@ class DiagnosticsCollector:
         return node is not None and self.iserver.aspace.node_class_of(node) == ua.NodeClass.View
 
     def session_diagnostics(self) -> list[ua.SessionDiagnosticsDataType]:
+        """Return the SessionDiagnostics of every Session, oldest first; empty while disabled."""
         if not self._enabled:
             return []
         manager = self.iserver.session_manager
@@ -298,6 +313,7 @@ class DiagnosticsCollector:
         return _u32(sum(counter[1] for counter in stats.services.values()))
 
     def security_diagnostics(self, session: Session) -> ua.SessionSecurityDiagnosticsDataType:
+        """Return the SessionSecurityDiagnostics of a Session."""
         stats = self.sessions.get(session.id)
         history = list(stats.user_history) if stats else []
         return ua.SessionSecurityDiagnosticsDataType(
@@ -313,6 +329,7 @@ class DiagnosticsCollector:
         )
 
     def subscription_diagnostics(self, session_id: ua.NodeId | None = None) -> list[ua.SubscriptionDiagnosticsDataType]:
+        """Return the SubscriptionDiagnostics of all subscriptions or of one Session; empty while disabled."""
         if not self._enabled:
             return []
         result = []
@@ -360,6 +377,10 @@ class DiagnosticsCollector:
         )
 
     def may_read_security(self, owner: ua.NodeId | None) -> bool:
+        """
+        Return True if the calling Session may read security diagnostics: the server itself, or a SignAndEncrypt
+        channel and the SecurityAdmin role or the Session the diagnostics are about (owner).
+        """
         reader = current_call_session.get()
         if reader is None:
             return True
@@ -371,6 +392,7 @@ class DiagnosticsCollector:
         return owner is not None and owner == reader.session_id
 
     def may_switch(self) -> bool:
+        """Return True if the caller may write the EnabledFlag: the server itself or the Admin role and above."""
         reader = current_call_session.get()
         return reader is None or ROLE_RANK.get(reader.user.role, -1) >= ROLE_RANK[UserRole.Admin]
 
@@ -378,10 +400,15 @@ class DiagnosticsCollector:
     def _value(content: Any) -> ua.DataValue:
         return ua.DataValue(ua.Variant(content, ua.VariantType.ExtensionObject))
 
-    def _denied(self) -> ua.DataValue:
+    @staticmethod
+    def _denied() -> ua.DataValue:
         return ua.DataValue(StatusCode=ua.StatusCode(ua.StatusCodes.BadUserAccessDenied))
 
     async def install(self) -> None:
+        """
+        Back the diagnostics Variables with callbacks, make the EnabledFlag writable and remove the
+        SamplingIntervalDiagnosticsArray, which is not supported.
+        """
         aspace = self.iserver.aspace
         ids = ua.ObjectIds
         with suppress_model_change():
@@ -412,14 +439,13 @@ class DiagnosticsCollector:
             ua.AttributeIds.Value,
             lambda n, a: self._value(self.subscription_diagnostics()),
         )
-        sessions_base = ids.Server_ServerDiagnostics_SessionsDiagnosticsSummary
         aspace.set_attribute_value_callback(
-            ua.NodeId(sessions_base + 1),
+            ua.NodeId(ids.Server_ServerDiagnostics_SessionsDiagnosticsSummary_SessionDiagnosticsArray),
             ua.AttributeIds.Value,
             lambda n, a: self._value(self.session_diagnostics()),
         )
         aspace.set_attribute_value_callback(
-            ua.NodeId(sessions_base + 2),
+            ua.NodeId(ids.Server_ServerDiagnostics_SessionsDiagnosticsSummary_SessionSecurityDiagnosticsArray),
             ua.AttributeIds.Value,
             self._security_array,
         )
@@ -552,21 +578,18 @@ class DiagnosticsCollector:
         item.BrowseName = browse_name
         item.NodeClass = node_class
         item.TypeDefinition = type_definition
-        attributes: Any
         if node_class == ua.NodeClass.Variable:
-            attributes = ua.VariableAttributes()
-            attributes.DisplayName = ua.LocalizedText(browse_name.Name)
-            attributes.DataType = data_type or ua.NodeId(ua.ObjectIds.BaseDataType)
-            attributes.ValueRank = 1 if array else -1
-            attributes.ArrayDimensions = [0] if array else None
-            attributes.AccessLevel = ua.AccessLevel.CurrentRead.mask
-            attributes.UserAccessLevel = ua.AccessLevel.CurrentRead.mask
-            attributes.Value = ua.Variant(None)
+            item.NodeAttributes = ua.VariableAttributes(
+                DisplayName=ua.LocalizedText(browse_name.Name),
+                DataType=data_type or ua.NodeId(ua.ObjectIds.BaseDataType),
+                ValueRank=1 if array else -1,
+                ArrayDimensions=[0] if array else [],
+                AccessLevel=ua.AccessLevel.CurrentRead.mask,
+                UserAccessLevel=ua.AccessLevel.CurrentRead.mask,
+                Value=ua.Variant(None),
+            )
         else:
-            attributes = ua.ObjectAttributes()
-            attributes.DisplayName = ua.LocalizedText(browse_name.Name)
-            attributes.EventNotifier = 0
-        item.NodeAttributes = attributes
+            item.NodeAttributes = ua.ObjectAttributes(DisplayName=ua.LocalizedText(browse_name.Name), EventNotifier=0)
         [result] = self.iserver.node_mgt_service.add_nodes([item], trusted=True)
         result.StatusCode.check()
 
@@ -587,5 +610,6 @@ class DiagnosticsCollector:
             )
 
     async def stop(self) -> None:
+        """Wait for the pending deletions of Session Objects."""
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)

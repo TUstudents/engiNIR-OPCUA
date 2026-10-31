@@ -1094,14 +1094,14 @@ class Server(_Owner):
         self,
         url: str = "opc.tcp://localhost:4840",
         period: int = 60,
-        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None: ...
 
     @syncmethod
     def unregister_from_discovery(
         self,
         url: str = "opc.tcp://localhost:4840",
-        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None: ...
 
     @syncmethod
@@ -1143,6 +1143,7 @@ class Server(_Owner):
         properties: list[tuple[Any, ...]] | None = None,
         variables: list[tuple[Any, ...]] | None = None,
         methods: list[tuple[Any, ...]] | None = None,
+        datatype: ua.NodeId | int = ua.ObjectIds.BaseDataType,
     ) -> SyncNode: ...
 
     @syncmethod
@@ -1173,7 +1174,7 @@ class Server(_Owner):
     def historize_node_data_change(
         self,
         node: SyncNode | list[SyncNode] | tuple[SyncNode, ...],
-        period: timedelta = timedelta(days=7),
+        period: timedelta | None = timedelta(days=7),
         count: int = 0,
     ) -> None: ...
 
@@ -1184,7 +1185,7 @@ class Server(_Owner):
     def historize_node_event(
         self,
         node: SyncNode | list[SyncNode] | tuple[SyncNode, ...],
-        period: timedelta = timedelta(days=7),
+        period: timedelta | None = timedelta(days=7),
         count: int = 0,
     ) -> None: ...
 

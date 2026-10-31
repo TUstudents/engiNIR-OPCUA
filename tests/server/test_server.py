@@ -14,6 +14,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 import enginir_opcua
 from enginir_opcua import Client, Server, ua, uamethod
@@ -76,6 +78,17 @@ async def test_unregister_discovery(registrant, discovery_server):
         await registrant.register_to_discovery(discovery_server.endpoint.geturl(), period=60)
         # unregister, cancel scheduled renewal
         await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
+
+
+async def test_register_to_discovery_sends_the_discovery_configurations(registrant, discovery_server):
+    uri = "urn:enginir:opcua:server:test_mdns"
+    await give_identity(registrant, uri, discovery_server)
+    mdns = ua.MdnsDiscoveryConfiguration(MdnsServerName="mdns-name", ServerCapabilities=["LDS"])
+    await registrant.register_to_discovery(discovery_server.endpoint.geturl(), 0, [mdns])
+    known = discovery_server.iserver._known_servers[uri]
+    assert [config.MdnsServerName for config in known.Capabilities] == ["mdns-name"]
+    await registrant.unregister_from_discovery(discovery_server.endpoint.geturl())
+    assert uri not in discovery_server.iserver._known_servers
 
 
 async def test_find_servers2(registrant, discovery_server):
@@ -443,6 +456,7 @@ async def test_create_custom_variable_type_object_id(server):
         [("PropertyNum", ua.VariantType.Int32), ("PropertyString", ua.VariantType.String)],
     )
     await check_custom_type(type, ua.ObjectIds.BaseVariableType, server)
+    assert await type.read_node_class() == ua.NodeClass.VariableType
 
 
 async def test_get_event_from_type_node_custom_event(server):
@@ -1035,6 +1049,22 @@ def test_srv103_set_endpoint_rejects_a_bad_url(url: str) -> None:
     with pytest.raises(ConfigurationError, match="endpoint"):
         srv.set_endpoint(url)
     assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
+
+
+def test_set_endpoint_without_a_port_uses_4840() -> None:
+    srv = Server(allow_no_security=True)
+    srv.set_endpoint("opc.tcp://127.0.0.1/path")
+    assert srv.endpoint.port == 4840
+    assert srv.endpoint.geturl() == "opc.tcp://127.0.0.1:4840/path"
+
+
+async def test_load_private_key_refuses_a_key_that_is_not_rsa() -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    srv = Server()
+    with pytest.raises(ConfigurationError, match="RSA"):
+        await srv.load_private_key(pem, format="pem")
+    assert srv.iserver.private_key is None
 
 
 def test_srv104_set_security_policy_and_identity_tokens_refuse_an_empty_list() -> None:
