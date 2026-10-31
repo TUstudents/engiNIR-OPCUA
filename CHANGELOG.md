@@ -227,6 +227,13 @@ Variant and defaults:
   longer discards the oldest value. Code that built these structures without setting the field must set it.
 - `WriteMask` has the members for bits 22 to 25.
 
+XML import and export:
+- Exporting a variable whose XmlElement value is null no longer raises AttributeError.
+- `XMLParser.parse` and `XmlImporter.import_xml` with an empty `xmlstring` report the XML parse error instead of
+  looking for a file; `get_used_namespaces` and `get_used_servers` return an empty string for an empty entry.
+- `xmlexporter.indent` uses `xml.etree.ElementTree.indent`, which removes a DeprecationWarning;
+  `XmlExporter.extobj_ordered_elements`, which nothing read, is removed.
+
 Encoding and decoding:
 - A decoded ExpandedNodeId with a NamespaceUri and no ServerIndex has ServerIndex 0, not None, so it equals the
   ExpandedNodeId that was encoded.

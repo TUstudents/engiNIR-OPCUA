@@ -5,11 +5,11 @@ parse xml file from enginir_opcua-spec
 import asyncio
 import base64
 import logging
-import re
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from dateutil.tz import tzutc
@@ -119,61 +119,60 @@ def ua_type_to_python(val: str, uatype_as_str: str) -> Any:
     return parse_scalar(val, uatype_as_str)
 
 
-def _to_bool(val: str) -> bool:
-    return xs_boolean(val)
-
-
 def local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
 class NodeData:
-    def __init__(self):
-        self.nodetype = None
-        self.nodeid = None
-        self.browsename = None
-        self.displayname = None
+    """
+    The attributes, references and value of one node of a NodeSet, as read from the XML.
+
+    The parser leaves NodeIds and the BrowseName as the text of the file. XmlImporter replaces them in place with
+    NodeId and QualifiedName objects in the namespaces of the server, so those fields hold either.
+    """
+
+    def __init__(self) -> None:
+        self.nodetype: str | None = None
+        self.nodeid: Any = None
+        self.browsename: Any = None
+        self.displayname: str | None = None
         self.has_displayname = False
-        self.symname = None
-        self.parent = None
-        self.parent_attr = None
-        self.parentlink = None
-        self.desc = ""
-        self.typedef = None
-        self.refs = []
-        self.nodeclass = None
+        self.symname: str | None = None
+        self.parent: Any = None
+        self.parent_attr: Any = None
+        self.parentlink: Any = None
+        self.desc: str | None = ""
+        self.typedef: Any = None
+        self.refs: list[RefStruct] = []
+        self.nodeclass: ua.NodeClass | None = None
         self.eventnotifier = 0
         self.design_tool_only = False
-        self.writemask = None
-        self.containsnoloops = None
+        self.writemask: int | None = None
+        self.containsnoloops: bool | None = None
 
-        # variable
-        self.datatype = None
-        self.rank = -1  # check default value
-        self.value = None
-        self.valuetype = None
-        self.dimensions = None
-        self.accesslevel = None
-        self.useraccesslevel = None
-        self.minsample = None
+        self.datatype: Any = None
+        self.rank = -1
+        self.value: Any = None
+        self.valuetype: str | None = None
+        self.dimensions: list[int] | None = None
+        self.accesslevel: int | None = None
+        self.useraccesslevel: int | None = None
+        self.minsample: float | None = None
         self.historizing = False
 
-        # method
-        self.executable = None
-        self.userexecutable = None
+        self.executable: bool | None = None
+        self.userexecutable: bool | None = None
 
-        # referencetype
-        self.inversename = ""
+        self.inversename: str | None = ""
         self.abstract = False
         self.symmetric = False
 
-        # datatype
-        self.definitions = []
+        self.definitions: list[Field] = []
         self.struct_type = ""
         self.option_set = False
         self.has_definition = False
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"NodeData(nodeid:{self.nodeid})"
 
     __repr__ = __str__
@@ -186,43 +185,55 @@ def _array_dimensions(text: str | None) -> list[int] | None:
 
 
 class Field:
-    def __init__(self, data):
-        self.datatype = data.get("DataType", "i=24")  # Default is BaseDataType
+    """One field of a DataType definition, or one value of an enumeration or option set."""
+
+    def __init__(self, data: dict[str, str]) -> None:
+        self.datatype: Any = data.get("DataType", "i=24")
         self.name = data.get("Name")
         self.dname = data.get("DisplayName", "")
         self.optional = xs_boolean(data.get("IsOptional", "false"))
         self.allow_subtypes = xs_boolean(data.get("AllowSubTypes", "false"))
-        self.valuerank = int(data.get("ValueRank", -1))
+        self.valuerank = int(data.get("ValueRank", "-1"))
         self.arraydim = data.get("ArrayDimensions", None)
-        self.value = int(data.get("Value", -1))
+        self.value = int(data.get("Value", "-1"))
         self.desc = data.get("Description", "")
-        self.max_str_len = int(data.get("MaxStringLength", 0))
+        self.max_str_len = int(data.get("MaxStringLength", "0"))
 
 
 class RefStruct:
-    def __init__(self):
-        self.reftype = None
-        self.forward = True
-        self.target = None
+    """One reference of a node: its type, its direction and the target NodeId as written in the XML."""
 
-    def __str__(self):
+    def __init__(self) -> None:
+        self.reftype: Any = None
+        self.forward = True
+        self.target: Any = None
+
+    def __str__(self) -> str:
         return f"RefStruct({self.reftype, self.forward, self.target})"
 
     __repr__ = __str__
 
 
 class ExtObj:
-    def __init__(self):
-        self.typeid = None
-        self.objname = None
-        self.bodytype = None
-        self.body = {}
-        self.body_namespace = None
+    """An ExtensionObject value of a NodeSet: its TypeId, the name of the body element and the parsed body."""
 
-    def __str__(self):
+    def __init__(self) -> None:
+        self.typeid: str | None = None
+        self.objname: str | None = None
+        self.bodytype: str | None = None
+        self.body: Any = {}
+        self.body_namespace: str | None = None
+
+    def __str__(self) -> str:
         return f"ExtObj({self.objname}, {self.body})"
 
     __repr__ = __str__
+
+
+def _required_path(xmlpath: str | Path | None) -> str | Path:
+    if xmlpath is None:
+        raise ValueError("Expected either xmlpath or xmlstring")
+    return xmlpath
 
 
 def _choose_localized(entries: list[tuple[str, str | None]]) -> str | None:
@@ -233,31 +244,27 @@ def _choose_localized(entries: list[tuple[str, str | None]]) -> str | None:
 
 
 class XMLParser:
-    def __init__(self, keep_empty_body_values: bool = False):
+    """Reads a NodeSet2 XML document (OPC 10000-6 v1.05, Annex F) into NodeData objects."""
+
+    def __init__(self, keep_empty_body_values: bool = False) -> None:
         self.keep_empty_body_values = keep_empty_body_values
         self.logger = logging.getLogger(__name__)
-        self._retag = re.compile(r"(\{.*\})?(.*)")
-        self.root = None
-        self.ns = {
-            "base": "http://opcfoundation.org/UA/2011/03/UANodeSet.xsd",
-            "uax": "http://opcfoundation.org/UA/2008/02/Types.xsd",
-            "xsd": "http://www.w3.org/2001/XMLSchema",
-            "xsi": "http://www.w3.org/2001/XMLSchema-instance",
-        }
+        self.root: ET.Element | None = None
 
-    async def parse(self, xmlpath=None, xmlstring=None):
-        if xmlstring:
+    async def parse(self, xmlpath: str | Path | None = None, xmlstring: str | bytes | None = None) -> None:
+        """Parse a file, in a worker thread, or the given string."""
+        if xmlstring is not None:
             self.root = ET.fromstring(xmlstring)
         else:
-            tree = await asyncio.get_running_loop().run_in_executor(None, ET.parse, xmlpath)
+            tree = await asyncio.get_running_loop().run_in_executor(None, ET.parse, _required_path(xmlpath))
             self.root = tree.getroot()
 
-    def parse_sync(self, xmlpath=None, xmlstring=None):
-        if xmlstring:
+    def parse_sync(self, xmlpath: str | Path | None = None, xmlstring: str | bytes | None = None) -> None:
+        """Parse a file or the given string in the calling thread."""
+        if xmlstring is not None:
             self.root = ET.fromstring(xmlstring)
         else:
-            tree = ET.parse(xmlpath)
-            self.root = tree.getroot()
+            self.root = ET.parse(_required_path(xmlpath)).getroot()
 
     def _children(self, name: str) -> list[ET.Element]:
         assert self.root is not None
@@ -266,22 +273,25 @@ class XMLParser:
                 return list(child)
         return []
 
-    def get_used_namespaces(self):
+    def get_used_namespaces(self) -> list[str]:
         """
         Return the used namespace uris in this import file
         """
-        return [ns_element.text for ns_element in self._children("NamespaceUris")]
+        return [ns_element.text or "" for ns_element in self._children("NamespaceUris")]
 
     def get_used_servers(self) -> list[str]:
-        return [el.text for el in self._children("ServerUris")]
+        """Return the server URIs of the ServerUris table of the file."""
+        return [el.text or "" for el in self._children("ServerUris")]
 
-    def get_aliases(self) -> dict:
+    def get_aliases(self) -> dict[str, str | None]:
         """
         Return the used node aliases in this import file
         """
         return {el.attrib["Alias"]: el.text for el in self._children("Aliases")}
 
-    def get_node_datas(self):
+    def get_node_datas(self) -> list[NodeData]:
+        """Return the nodes of the file in document order; other top-level elements are skipped."""
+        assert self.root is not None
         nodes = []
         for child in self.root:
             tag = local_name(child.tag)
@@ -291,7 +301,7 @@ class XMLParser:
                 self.logger.debug("Skipping element %s: it does not define a node", tag)
         return nodes
 
-    def _parse_node(self, nodetype, child):
+    def _parse_node(self, nodetype: str, child: ET.Element) -> NodeData:
         """
         Parse a XML node and create a NodeData object.
         """
@@ -318,7 +328,7 @@ class XMLParser:
             obj.desc = _choose_localized(descriptions)
         return obj
 
-    def _set_attr(self, key, val, obj):
+    def _set_attr(self, key: str, val: str, obj: NodeData) -> None:
         if key == "NodeId":
             obj.nodeid = val
         elif key == "BrowseName":
@@ -361,7 +371,7 @@ class XMLParser:
         else:
             self.logger.info("Attribute not implemented: %s:%s", key, val)
 
-    def _parse_attr(self, el, obj):
+    def _parse_attr(self, el: ET.Element, obj: NodeData) -> None:
         tag = local_name(el.tag)
 
         if tag == "References":
@@ -384,7 +394,7 @@ class XMLParser:
         else:
             self.logger.info("Not implemented tag: %s", el)
 
-    def _parse_field(self, el):
+    def _parse_field(self, el: ET.Element) -> Field:
         field = Field(el.attrib)
         names: list[tuple[str, str | None]] = []
         descriptions: list[tuple[str, str | None]] = []
@@ -400,14 +410,14 @@ class XMLParser:
             field.desc = _choose_localized(descriptions) or ""
         return field
 
-    def _parse_contained_value(self, el, obj):
+    def _parse_contained_value(self, el: ET.Element, obj: NodeData) -> None:
         """
         Parse the child of el as a constant.
         """
         val_el = next(iter(el), None)
         self._parse_value(val_el, obj)
 
-    def _parse_value(self, val_el, obj):
+    def _parse_value(self, val_el: ET.Element | None, obj: NodeData) -> None:
         """
         Parse the node val_el as a constant.
         """
@@ -458,21 +468,21 @@ class XMLParser:
         else:
             raise ValueError(f"Parsing value of type '{ntag}' is not implemented")
 
-    def _scalar(self, el, ntag: str) -> Any:
-        if not (el.text or "").strip():
+    def _scalar(self, el: ET.Element, ntag: str) -> Any:
+        if el.text is None or not el.text.strip():
             return b"" if ntag == "ByteString" else None
         return parse_scalar(el.text, ntag)
 
-    def _child_text(self, el, name: str) -> str | None:
+    def _child_text(self, el: ET.Element, name: str) -> str | None:
         for child in el:
             if local_name(child.tag) == name:
                 return child.text
         return None
 
-    def _parse_matrix(self, el) -> tuple[list[int], str, list]:
+    def _parse_matrix(self, el: ET.Element) -> tuple[list[int], str | None, list[Any]]:
         dimensions: list[int] = []
-        elements: list = []
-        element_type = "Null"
+        elements: list[Any] = []
+        element_type: str | None = "Null"
         for child in el:
             tag = local_name(child.tag)
             if tag == "Dimensions":
@@ -485,30 +495,27 @@ class XMLParser:
                     elements.append(tmp.value)
         return dimensions, element_type, elements
 
-    def _get_text(self, el):
+    def _get_text(self, el: ET.Element) -> str:
         txtlist = [txt.strip() for txt in el.itertext()]
         return "".join(txtlist)
 
-    def _parse_list_of_localized_text(self, el):
+    def _parse_list_of_localized_text(self, el: ET.Element) -> list[dict[str, Any]]:
         value = []
         for localized_text in el:
-            mylist = self._parse_body(localized_text)
-            # each localized text is in a dictionary with "Locale" and "Text" keys
-            item = {"Text": None, "Locale": None}
-            for name, val in mylist:
-                item.update({str(name): val})
-            # value is an array of dictionaries with localized texts
+            item: dict[str, Any] = {"Text": None, "Locale": None}
+            for name, val in self._parse_body(localized_text):
+                item[str(name)] = val
             value.append(item)
         return value
 
-    def _parse_list_of_extension_object(self, el):
+    def _parse_list_of_extension_object(self, el: ET.Element) -> list[ExtObj]:
         """
         Parse an uax:ListOfExtensionObject Value
         Return a list of ExtObj
         """
         return [self._parse_ext_obj(extension_object) for extension_object in el]
 
-    def _parse_ext_obj(self, el):
+    def _parse_ext_obj(self, el: ET.Element) -> ExtObj:
         ext = ExtObj()
         for extension_object_part in el:
             ntag = local_name(extension_object_part.tag)
@@ -528,8 +535,8 @@ class XMLParser:
                 self.logger.warning("Unknown ntag: %s", ntag)
         return ext
 
-    def _parse_body(self, el):
-        body = []
+    def _parse_body(self, el: ET.Element) -> list[tuple[str, Any]]:
+        body: list[tuple[str, Any]] = []
         for body_item in el:
             otag = local_name(body_item.tag)
             if len(body_item):
@@ -540,13 +547,14 @@ class XMLParser:
                     body.append((otag, text))
         return body
 
-    def _parse_qualifed_name(self, el):
+    def _parse_qualifed_name(self, el: ET.Element) -> ua.QualifiedName:
         name = self._child_text(el, "Name")
         namespace = self._child_text(el, "NamespaceIndex")
         return ua.QualifiedName(name, xs_integer(namespace, "UInt16") if namespace is not None else 0)
 
-    def _parse_refs(self, el, obj):
-        parent, parentlink = obj.parent, None
+    def _parse_refs(self, el: ET.Element, obj: NodeData) -> None:
+        parent: str | None = obj.parent
+        parentlink: str | None = None
 
         for ref in el:
             struct = RefStruct()
@@ -563,7 +571,6 @@ class XMLParser:
                     obj.parentlink = parentlink
 
         if obj.parent and not obj.parentlink:
-            # the case of asimple parent attribute without any reverse link
             obj.parentlink = "HasComponent"
         if not obj.parent:
             obj.parent, obj.parentlink = parent, parent and parentlink
@@ -571,19 +578,15 @@ class XMLParser:
             self.logger.info("Could not find parent for node '%s'", obj.nodeid)
 
     @staticmethod
-    def list_required_models(xmlpath, xmlstring):
+    def list_required_models(xmlpath: str | Path | None, xmlstring: str | bytes | None) -> list[dict[str, str]]:
         """
         Try getting required XML Models, before parsing NodeSet
         """
-        if xmlpath:
-            tree = ET.parse(xmlpath)
-        else:
-            tree = ET.fromstring(xmlstring)
+        root = ET.parse(xmlpath).getroot() if xmlpath else ET.fromstring(xmlstring or "")
         required_models = []
 
-        for child in tree.iter():
+        for child in root.iter():
             if child.tag.endswith("RequiredModel"):
-                # check if ModelUri X, in Version Y from time Z was already imported
                 required_models.append(child.attrib)
         return required_models
 

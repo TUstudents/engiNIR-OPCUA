@@ -91,6 +91,9 @@ disable_error_code = ["literal-required", "name-defined"]
 
 [[tool.mypy.overrides]]
 module = [
+  "enginir_opcua.common.xmlexporter",
+  "enginir_opcua.common.xmlimporter",
+  "enginir_opcua.common.xmlparser",
   "enginir_opcua.crypto.*",
   "enginir_opcua.ua.attribute_ids",
   "enginir_opcua.ua.numeric_range",
@@ -197,6 +200,3 @@ ignore = [
 # Non-typed files still needing work
 "enginir_opcua/client/ha/**" = ["ANN"]
 "enginir_opcua/server/uaprocessor.py" = ["ANN"]
-"enginir_opcua/common/xmlexporter.py" = ["ANN"]
-"enginir_opcua/common/xmlimporter.py" = ["ANN"]
-"enginir_opcua/common/xmlparser.py" = ["ANN"]
