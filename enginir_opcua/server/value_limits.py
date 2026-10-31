@@ -1,3 +1,7 @@
+"""
+The string, ByteString and array limits of the server, checked on the values of Write and Call requests.
+"""
+
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass

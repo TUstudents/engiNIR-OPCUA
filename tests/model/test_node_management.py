@@ -374,3 +374,14 @@ async def test_srv64_delete_nodes_with_and_without_target_references(access_rig:
         )
     )
     assert other.RequestedNewNodeId not in [r.NodeId for r in descriptions[0].References]
+
+
+def test_a_generated_node_id_skips_any_number_of_taken_ids() -> None:
+    """AddNodes with a null NodeId gets a free one even after a long run of NodeIds that are taken."""
+    from enginir_opcua.server.address_space import AddressSpace, NodeData
+
+    aspace = AddressSpace()
+    for identifier in range(2001, 4001):
+        nodeid = ua.NodeId(identifier, 1)
+        aspace[nodeid] = NodeData(nodeid)
+    assert aspace.generate_nodeid(1) == ua.NodeId(4001, 1)

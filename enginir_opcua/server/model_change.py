@@ -12,6 +12,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from enginir_opcua import ua
@@ -36,28 +37,37 @@ _VERB_TEXT = (
 )
 
 
+@dataclass
+class Change:
+    """What happened to one Node: the OR of the verbs and the TypeDefinition it had."""
+
+    type_definition: ua.NodeId
+    verbs: int
+
+
 class ChangeSet:
     """The Nodes changed by one request or one block, in the order of their first change, with the OR of the verbs."""
 
     def __init__(self, discard: bool = False) -> None:
-        self.entries: dict[ua.NodeId, list[object]] = {}
+        self.entries: dict[ua.NodeId, Change] = {}
         self.discard = discard
 
     def add(self, node_id: ua.NodeId, verb: int, type_definition: ua.NodeId) -> None:
+        """Record a change; a deletion keeps the TypeDefinition the node had."""
         entry = self.entries.get(node_id)
         if entry is None:
-            self.entries[node_id] = [type_definition, verb]
-        else:
-            entry[1] = int(entry[1]) | verb  # type: ignore[call-overload]
-            if verb & NODE_DELETED:
-                entry[0] = type_definition if not type_definition.is_null() else entry[0]
+            self.entries[node_id] = Change(type_definition, verb)
+            return
+        entry.verbs |= verb
+        if verb & NODE_DELETED and not type_definition.is_null():
+            entry.type_definition = type_definition
 
 
 _current: ContextVar[ChangeSet | None] = ContextVar("model_change_set", default=None)
 
 
 def record_change(node_id: ua.NodeId, verb: int, type_definition: Callable[[], ua.NodeId]) -> None:
-    """Called by the node management service for every change that happened (SRV-96)."""
+    """Called by the node management service for every change that happened; type_definition is only asked if needed."""
     changes = _current.get()
     if changes is not None and not changes.discard:
         changes.add(node_id, verb, type_definition())
@@ -84,6 +94,10 @@ class ModelChangeNotifier:
 
     @contextlib.asynccontextmanager
     async def request(self) -> AsyncIterator[None]:
+        """
+        The block of one node management request: its changes raise one event when it ends. Nested blocks and a
+        disabled notifier collect nothing of their own.
+        """
         if not self.enabled or _current.get() is not None:
             yield
             return
@@ -136,7 +150,7 @@ class ModelChangeNotifier:
                     return
             verbs = 0
             for _, entry in entries:
-                verbs |= int(entry[1])  # type: ignore[call-overload]
+                verbs |= entry.verbs
             message = ", ".join(text for bit, text in _VERB_TEXT if verbs & bit)
             event: Any
             if len(entries) > self.max_changes:
@@ -144,7 +158,9 @@ class ModelChangeNotifier:
             else:
                 event = event_objects.GeneralModelChangeEvent()
                 event.Changes = [
-                    ua.ModelChangeStructureDataType(Affected=node_id, AffectedType=entry[0], Verb=entry[1])
+                    ua.ModelChangeStructureDataType(
+                        Affected=node_id, AffectedType=entry.type_definition, Verb=entry.verbs
+                    )
                     for node_id, entry in entries
                 ]
             from .event_generator import EventGenerator

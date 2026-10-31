@@ -382,6 +382,11 @@ Attribute, method and view services (OPC 10000-4, 5.8 to 5.12):
 - AddNodes from a client: namespace 0 is refused (`Bad_NodeIdRejected`, also `instantiate()` with `idx=0`), the
   parent reference must be hierarchical and the BrowseName unique. AddReferences refuses duplicates; DeleteNodes and
   DeleteReferences refuse namespace 0.
+- A NodeId generated for AddNodes (null RequestedNewNodeId) no longer fails with RecursionError after a long run of
+  NodeIds that are taken, as in namespace 1, whose counter starts at 2000.
+- A write of a Variant with a type id that is not built in (26 to 63) to a typed Variable gets `Bad_TypeMismatch`
+  instead of `Bad_InternalError`.
+- `AddressSpace.dump()` documents that it removes the Python implementations of the Methods.
 
 Monitored items and events (OPC 10000-4, 5.13):
 - QueueSize 0 or 1 means 1 for data items (it used to mean 10 000); the maximum is 1000. The sampling interval is

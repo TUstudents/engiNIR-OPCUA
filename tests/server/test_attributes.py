@@ -218,6 +218,14 @@ async def test_srv16_in_process_write_skips_access_bits_only(access_rig: AccessR
     assert await node.read_value() == 5
 
 
+async def test_a_value_of_an_unknown_variant_type_is_a_type_mismatch(access_rig: AccessRig) -> None:
+    """Part 4, 5.11.4.4: a Variant type id a newer peer uses (26 to 63) fits no typed Variable."""
+    node = await access_rig.add_variable("UnknownVariantType", 1.0, ua.VariantType.Double)
+    with pytest.raises(ua.UaStatusCodeError) as error:
+        await node.write_value(ua.DataValue(ua.Variant(b"x", ua.VariantTypeCustom(40))))
+    assert error.value.code == ua.StatusCodes.BadTypeMismatch
+
+
 async def test_srv16_write_mask_and_user_write_mask(access_rig: AccessRig) -> None:
     """Part 3, 5.2.7, 5.2.8; Part 4, 5.11.4.4."""
     node = await access_rig.add_variable("Masked", 1, ua.VariantType.Int32)

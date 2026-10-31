@@ -1,4 +1,7 @@
-"""Checks of a Variant against a DataType, ValueRank and ArrayDimensions (OPC 10000-4 v1.05, 5.11.4; OPC 10000-3 v1.05, 5.6.2)."""
+"""
+Checks of a Variant against a DataType, ValueRank and ArrayDimensions (OPC 10000-4 v1.05, 5.11.4; OPC 10000-3
+v1.05, 5.6.2).
+"""
 
 from __future__ import annotations
 
@@ -17,18 +20,25 @@ MAX_SUPERTYPE_DEPTH = 64
 
 
 class HasReferences(Protocol):
+    """A node with its references."""
+
     references: list[ua.ReferenceDescription]
 
 
 class NodeLookup(Protocol):
+    """Where the checker finds the DataType nodes."""
+
     def get(self, nodeid: ua.NodeId) -> HasReferences | None: ...
 
 
 class DataTypeChecker:
+    """Whether values fit DataTypes, by the HasSubtype hierarchy of the address space."""
+
     def __init__(self, nodes: NodeLookup) -> None:
         self._nodes = nodes
 
     def parent_of(self, datatype: ua.NodeId) -> ua.NodeId | None:
+        """The supertype of a type node."""
         node = self._nodes.get(datatype)
         if node is None:
             return None
@@ -38,6 +48,7 @@ class DataTypeChecker:
         return None
 
     def is_subtype(self, datatype: ua.NodeId, ancestor: ua.NodeId) -> bool:
+        """Whether datatype is ancestor or derives from it, at most 64 levels deep."""
         current: ua.NodeId | None = datatype
         for _ in range(MAX_SUPERTYPE_DEPTH):
             if current is None:
@@ -48,11 +59,21 @@ class DataTypeChecker:
         return False
 
     def is_known(self, datatype: ua.NodeId) -> bool:
+        """Whether the address space has the type node."""
         return self._nodes.get(datatype) is not None
 
-    def element_matches(self, vtype: ua.VariantType, items: Sequence[Any], datatype: ua.NodeId) -> bool:
+    def element_matches(
+        self, vtype: ua.VariantType | ua.VariantTypeCustom, items: Sequence[Any], datatype: ua.NodeId
+    ) -> bool:
+        """
+        Whether values of the VariantType fit the DataType: a built-in type, a subtype or supertype of it, Int32 for an
+        Enumeration, ByteString and Byte arrays for each other, a structure of the type or a subtype. Unknown types
+        and BaseDataType accept anything; a Variant type id that is not built in (VariantTypeCustom) fits nothing else.
+        """
         if datatype == BASE_DATA_TYPE or datatype.is_null() or not self.is_known(datatype):
             return True
+        if isinstance(vtype, ua.VariantTypeCustom):
+            return False
         if vtype == ua.VariantType.ExtensionObject:
             return all(self._structure_matches(item, datatype) for item in items if item is not None)
         builtin = ua.NodeId(int(vtype))
@@ -73,10 +94,12 @@ class DataTypeChecker:
         return self.is_subtype(item_type, datatype)
 
     def allows_null(self, datatype: ua.NodeId, allow_nulls: bool) -> bool:
+        """Whether a null value fits: with allow_nulls, or for BaseDataType and unknown types."""
         return allow_nulls or datatype == BASE_DATA_TYPE or datatype.is_null() or not self.is_known(datatype)
 
 
 def dimensions_of(variant: ua.Variant) -> list[int]:
+    """The length of each dimension of the Variant; [] for a scalar."""
     if not variant.is_array:
         return []
     if variant.Dimensions:
@@ -85,6 +108,7 @@ def dimensions_of(variant: ua.Variant) -> list[int]:
 
 
 def rank_allows(value_rank: int, dimension_count: int) -> bool:
+    """Whether a value with this many dimensions fits the ValueRank (OPC 10000-3 v1.05, 5.6.2)."""
     if value_rank == ua.ValueRank.Any:
         return True
     if value_rank == ua.ValueRank.ScalarOrOneDimension:
@@ -97,10 +121,12 @@ def rank_allows(value_rank: int, dimension_count: int) -> bool:
 
 
 def array_dimensions_allow(array_dimensions: Sequence[int], dimensions: Sequence[int]) -> bool:
+    """Whether every dimension is within its ArrayDimensions entry; 0 means unlimited."""
     return all(limit == 0 or size <= limit for limit, size in zip(array_dimensions, dimensions))
 
 
 def effective_shape(variant: ua.Variant, datatype: ua.NodeId, checker: DataTypeChecker) -> list[int]:
+    """The dimensions the value counts as: a ByteString for a Byte array is one dimension and a Byte array for a ByteString none."""
     dimensions = dimensions_of(variant)
     if variant.VariantType == ua.VariantType.ByteString and not variant.is_array and checker.is_subtype(datatype, BYTE):
         return [len(variant.Value) if variant.Value is not None else 0]
@@ -122,6 +148,7 @@ def check_variant(
     array_dimensions: Sequence[int],
     allow_nulls: bool,
 ) -> bool:
+    """Whether a Variant fits a Variable or Argument of this DataType, ValueRank and ArrayDimensions."""
     if variant.VariantType == ua.VariantType.Null:
         return checker.allows_null(datatype, allow_nulls)
     items: Sequence[Any]
