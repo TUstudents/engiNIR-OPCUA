@@ -1,3 +1,8 @@
+"""
+The ContentFilter of event monitored items: checking an EventFilter and evaluating its WhereClause
+(OPC 10000-4 v1.05, 7.7 and 7.22.3).
+"""
+
 from __future__ import annotations
 
 import math
@@ -14,6 +19,7 @@ from .address_space import AddressSpace
 from .node_walk import is_subtype
 
 VT = ua.VariantType
+AnyVariantType = ua.VariantType | ua.VariantTypeCustom
 Operator = ua.FilterOperator
 Value = ua.Variant | None
 
@@ -81,7 +87,7 @@ OPERAND_COUNTS: dict[int, tuple[int, int | None]] = {
 UNSUPPORTED_OPERATORS = (Operator.InView, Operator.RelatedTo)
 
 
-def _rank(vtype: ua.VariantType) -> int | None:
+def _rank(vtype: AnyVariantType) -> int | None:
     return PRECEDENCE.index(vtype) if vtype in PRECEDENCE else None
 
 
@@ -122,7 +128,7 @@ def _convert_number(value: Any, target: ua.VariantType) -> Any:
     return _to_integer(value, target)
 
 
-def _to_text(value: Any, source: ua.VariantType) -> str | None:
+def _to_text(value: Any, source: AnyVariantType) -> str | None:
     if source == VT.Boolean:
         return "1" if value else "0"
     if source in NUMERIC_TYPES:
@@ -164,7 +170,7 @@ def _from_text(text: str, target: ua.VariantType) -> Any:
     return None
 
 
-def _convert_status_code(value: Any, source: ua.VariantType, target: ua.VariantType) -> Any:
+def _convert_status_code(value: Any, source: AnyVariantType, target: ua.VariantType) -> Any:
     if source == VT.StatusCode and target in INTEGER_RANGES:
         if target in (VT.UInt16, VT.Int16):
             return _to_integer(value.value >> 16, target)
@@ -180,7 +186,8 @@ def _signed(number: int, bits: int) -> int:
     return number - (1 << bits) if number >= 1 << (bits - 1) else number
 
 
-def convert_value(value: Any, source: ua.VariantType, target: ua.VariantType) -> Any:
+def convert_value(value: Any, source: AnyVariantType, target: ua.VariantType) -> Any:
+    """Convert a scalar between built-in types by the casting rules of OPC 10000-4 v1.05, 7.7.3; None on failure."""
     if source == target:
         return value
     if VT.StatusCode in (source, target):
@@ -203,6 +210,7 @@ def convert_value(value: Any, source: ua.VariantType, target: ua.VariantType) ->
 
 
 def convert_variant(variant: ua.Variant, target: ua.VariantType) -> ua.Variant | None:
+    """Convert a scalar or every array element to target; None if any conversion fails."""
     if isinstance(variant.Value, list):
         converted = [convert_value(item, variant.VariantType, target) for item in variant.Value]
         if any(item is None for item in converted):
@@ -212,7 +220,7 @@ def convert_variant(variant: ua.Variant, target: ua.VariantType) -> ua.Variant |
     return None if result is None else ua.Variant(result, target)
 
 
-def _implicitly_convertible(source: ua.VariantType, target: ua.VariantType) -> bool:
+def _implicitly_convertible(source: AnyVariantType, target: ua.VariantType) -> bool:
     if source == target:
         return True
     if source in NUMBER_OR_BOOLEAN and target in NUMBER_OR_BOOLEAN:
@@ -245,7 +253,7 @@ def _common(first: ua.Variant, second: ua.Variant) -> tuple[ua.Variant, ua.Varia
     low, high = _rank(first.VariantType), _rank(second.VariantType)
     if low is None or high is None:
         return None
-    target = first.VariantType if low < high else second.VariantType
+    target = PRECEDENCE[min(low, high)]
     if not (_implicitly_convertible(first.VariantType, target) and _implicitly_convertible(second.VariantType, target)):
         return None
     left, right = convert_variant(first, target), convert_variant(second, target)
@@ -255,6 +263,11 @@ def _common(first: ua.Variant, second: ua.Variant) -> tuple[ua.Variant, ua.Varia
 
 
 def values_equal(first: Value, second: Value) -> bool | None:
+    """
+    The Equals operator: compare after implicit conversion to the type of higher precedence.
+
+    Returns None (NULL) if an operand is null; an empty String or ByteString equals another empty one.
+    """
     if first is None or second is None:
         return None
     if _empty_text(first) and _empty_text(second):
@@ -300,6 +313,7 @@ def _wrap(result: bool | None) -> Value:
 
 
 def like_match(text: str, pattern: str) -> bool:
+    """The Like operator: % matches any run, _ one character, [..] and [^..] a set; a backslash escapes."""
     tokens = _like_tokens(pattern)
     t = p = 0
     star = -1
@@ -421,12 +435,19 @@ def _cast_target(variant: Value) -> ua.VariantType | None:
 
 
 class WhereClauseEvaluator:
+    """
+    Evaluates the WhereClause of an EventFilter against events.
+
+    Without an address space, OfType compares the EventType exactly and type attributes are NULL.
+    """
+
     def __init__(self, logger: Logger, aspace: AddressSpace | None, whereclause: ua.ContentFilter) -> None:
         self.logger = logger
         self.elements = whereclause.Elements
         self._aspace = aspace
 
     def eval(self, event: Any) -> bool:
+        """Return True if the event passes; an empty clause passes everything, NULL and errors fail."""
         if not self.elements:
             return True
         try:
@@ -579,11 +600,14 @@ def _good() -> ua.StatusCode:
 
 
 class EventFilterChecker:
+    """Checks the SelectClauses and the WhereClause of an EventFilter against the event types of the server."""
+
     def __init__(self, aspace: AddressSpace) -> None:
         self._aspace = aspace
         self._all_event_types: list[ua.NodeId] | None = None
 
     def check(self, flt: ua.EventFilter) -> tuple[bool, ua.EventFilterResult]:
+        """Return whether the filter is usable (a good select and a good WhereClause) and the result per clause."""
         result = ua.EventFilterResult()
         result.SelectClauseResults = [self.select_clause_status(clause) for clause in flt.SelectClauses]
         selects_ok = any(status.is_good() for status in result.SelectClauseResults)
@@ -591,6 +615,7 @@ class EventFilterChecker:
         return selects_ok and where_ok, result
 
     def select_clause_status(self, clause: Any) -> ua.StatusCode:
+        """Return the status of one SelectClause (OPC 10000-4 v1.05, 7.22.3)."""
         return ua.StatusCode(self._select_clause_code(clause))
 
     def _select_clause_code(self, clause: Any) -> int:
@@ -685,6 +710,7 @@ class EventFilterChecker:
         return None
 
     def check_where(self, where: ua.ContentFilter) -> tuple[bool, ua.ContentFilterResult]:
+        """Return whether every element of the WhereClause is valid and the result per element."""
         result = ua.ContentFilterResult()
         if len(where.Elements) > MAX_FILTER_ELEMENTS:
             return False, result

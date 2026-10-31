@@ -492,7 +492,7 @@ class Setup:
             item = ua.MonitoredItemNotification(
                 ClientHandle=mid, Value=ua.DataValue(ua.Variant(mid, ua.VariantType.Int32))
             )
-            await self.sub.enqueue_datachange_event(mid, item, 0)
+            self.sub.queue_of(mid, False).append(item)
             await self.sub.timer_expired()
 
 
@@ -659,7 +659,7 @@ def make_sub(
 
 async def add_change(sub: InternalSubscription, mid: int = 1, value: int = 1) -> None:
     item = ua.MonitoredItemNotification(ClientHandle=mid, Value=ua.DataValue(ua.Variant(value, ua.VariantType.Int32)))
-    await sub.enqueue_datachange_event(mid, item, 0)
+    sub.queue_of(mid, False).append(item)
 
 
 def is_keepalive(result: ua.PublishResult) -> bool:

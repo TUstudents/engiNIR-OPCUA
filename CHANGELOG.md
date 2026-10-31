@@ -361,7 +361,13 @@ Subscriptions (OPC 10000-4, 5.13 and 5.14):
   `Bad_TooManyPublishRequests`. At most 100 subscriptions per session (`max_subscriptions_per_session`).
 - TransferSubscriptions requires the same user (anonymous only with the same client certificate), moves the queue
   and both Publish bindings, tells the previous owner `Good_SubscriptionTransferred` and honours SendInitialValues.
-- `InternalSubscription.publish()`, `has_published_results()` and `_trigger_publish` are removed.
+- `InternalSubscription.publish()`, `has_published_results()` and `_trigger_publish` are removed, and so are
+  `enqueue_datachange_event()`, `enqueue_event()` and `enqueue_statuschange()`, which only tests used.
+  `publish_results()` requires the Publish request.
+- A transfer to a Session of another client application (another ApplicationUri) counts as
+  TransferredToAltClientCount in the SubscriptionDiagnostics (OPC 10000-5, 12.15); every transfer used to count as
+  TransferredToSameClientCount.
+- The log messages of each subscription and monitored item request (Publish included) are DEBUG instead of INFO.
 
 Attribute, method and view services (OPC 10000-4, 5.8 to 5.12):
 - No role bypasses AccessLevel or WriteMask, Admin included; only the server's own in-process session is exempt. Remote
@@ -396,6 +402,7 @@ Monitored items and events (OPC 10000-4, 5.13):
 - Events also reach the Server object and every notifier above their source. `EventGenerator` no longer clears other
   EventNotifier bits; the default Message is a LocalizedText; DaylightSavingInOffset is set only while DST applies.
   68 fields of the generated event classes now declare built-in types.
+- `EventGenerator.init()` without an event type fires BaseEventType events; it raised UaError.
 
 Alarms and Conditions (OPC 10000-9):
 - New server API: `await server.create_condition(source, condition_type, name, **options)` creates a Condition or

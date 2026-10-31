@@ -442,6 +442,30 @@ async def test_srv93_transfer_counts_move_to_the_same_client(server: Server) -> 
         await second.disconnect()
 
 
+async def test_srv93_transfer_to_another_application_counts_as_alt_client(server: Server) -> None:
+    """Part 5, 12.15: a Subscription that moves to a Session of another client application."""
+    server.diagnostics.enabled = True
+    first = await plain(server, "alice")
+    second = Client(f"opc.tcp://alice:{PASSWORD}@127.0.0.1:{server.endpoint.port}", timeout=5)
+    second.application_uri = "urn:enginir:opcua:other-client"
+    await second.connect()
+    try:
+        subscription = await first.create_subscription(
+            100, type("H", (), {"datachange_notification": lambda *a: None})()
+        )
+        params = ua.TransferSubscriptionsParameters(
+            SubscriptionIds=[subscription.subscription_id], SendInitialValues=False
+        )
+        await second.uaclient.session.transfer_subscriptions(params)
+        entry = await subscription_entry(server, subscription.subscription_id)
+        assert entry.TransferRequestCount == 1
+        assert entry.TransferredToSameClientCount == 0
+        assert entry.TransferredToAltClientCount == 1
+    finally:
+        await first.disconnect()
+        await second.disconnect()
+
+
 async def security_entries(client: Client) -> Any:
     return await read(client, SECURITY_ARRAY)
 

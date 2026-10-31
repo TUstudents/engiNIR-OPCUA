@@ -1,5 +1,6 @@
 """
-server side implementation of a subscription object
+The server side of one Subscription: the publishing timer, the notification queues and the retransmission queue
+(OPC 10000-4 v1.05, 5.14.1).
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ _SERVE_ORDER = itertools.count()
 
 
 class SubscriptionState(Enum):
+    """The states of the publishing state machine (OPC 10000-4 v1.05, 5.14.1.2) a running Subscription can be in."""
+
     NORMAL = "normal"
     LATE = "late"
     KEEPALIVE = "keepalive"
@@ -41,8 +44,10 @@ class SubscriptionState(Enum):
 
 class InternalSubscription:
     """
-    Server internal subscription.
-    Runs the publication loop and stores the Publication Results until they are acknowledged.
+    One Subscription of the server.
+
+    Runs the publishing timer, queues the notifications of its monitored items and keeps the sent
+    NotificationMessages until the client acknowledges them.
     """
 
     def __init__(
@@ -61,18 +66,20 @@ class InternalSubscription:
         priority: int = 0,
     ) -> None:
         """
-        :param loop: Event loop instance
-        :param data: Create Subscription Result
-        :param aspace: Server Address Space
-        :param callback: Callback for publishing
+        :param data: The revised parameters and the SubscriptionId.
+        :param aspace: The address space of the server.
+        :param callback: Called with each PublishResult, and with the PublishRequestData it answers.
         :param session_id: Id of the session that owns this subscription.
-        :param request_callback: Callback for getting queued publish requests.
-            If None, publishing will be done without waiting for a token and no
-            acknowledging will be expected (for server internal subscriptions)
-        :param delete_callback: Optional callback to call when the subscription
-            is stopped due to the publish count exceeding the
-            RevisedLifetimeCount.
-        :param expire_callback: Optional callback called with the Bad_Timeout result when the lifetime ends.
+        :param request_callback: Returns a queued Publish request of the owning session, or None.
+            If None, publishing is done without waiting for a request and no
+            acknowledgement is expected (for server internal subscriptions).
+        :param delete_callback: Called when the lifetime ends and no expire_callback is given.
+        :param expire_callback: Called with the Bad_Timeout result when the lifetime ends.
+        :param no_acks_limit: Maximum number of unacknowledged NotificationMessages kept for Republish.
+        :param limits: Server limits for the monitored items.
+        :param publishing_enabled: Initial PublishingEnabled flag.
+        :param max_notifications_per_publish: Maximum number of notifications in one NotificationMessage.
+        :param priority: Priority among the subscriptions of the session for Publish requests.
         """
         self.logger = logging.getLogger(__name__)
         self.data: ua.CreateSubscriptionResult = data
@@ -85,13 +92,13 @@ class InternalSubscription:
         self.session_id: ua.NodeId = session_id
         self._triggered_datachanges: dict[int, list[ua.MonitoredItemNotification]] = {}
         self._triggered_events: dict[int, list[ua.EventFieldList]] = {}
-        self._triggered_statuschanges: list[ua.StatusCode] = []
         self._sequence = 1
         self._no_acks_limit = no_acks_limit
         self.max_notifications_per_publish: int = max_notifications_per_publish
         self.priority: int = priority
         self.owner_user: User | None = None
         self.owner_certificate: bytes | None = None
+        self.owner_application_uri: str | None = None
         self._not_acknowledged_results: dict[int, ua.PublishResult] = {}
         self._publishing_enabled = publishing_enabled
         self.state: SubscriptionState = SubscriptionState.NORMAL
@@ -99,7 +106,7 @@ class InternalSubscription:
         self._keep_alive_counter = data.RevisedMaxKeepAliveCount
         self._lifetime_counter = data.RevisedLifetimeCount
         self.served_at = next(_SERVE_ORDER)
-        self.counters = SubscriptionCounters()  # J: diagnostics (SRV-93)
+        self.counters = SubscriptionCounters()
         self._task: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -107,6 +114,7 @@ class InternalSubscription:
         return f"Subscription(id:{self.data.SubscriptionId})"
 
     async def start(self) -> None:
+        """Start the publishing timer."""
         self.logger.debug("starting subscription %s", self.data.SubscriptionId)
         self._closing = False
         self._task = asyncio.create_task(self._subscription_loop())
@@ -119,6 +127,7 @@ class InternalSubscription:
         max_notifications_per_publish: int,
         priority: int,
     ) -> None:
+        """Apply the revised parameters of ModifySubscription and restart the lifetime counter."""
         self.data.RevisedPublishingInterval = interval
         self.data.RevisedLifetimeCount = lifetime_count
         self.data.RevisedMaxKeepAliveCount = keep_alive_count
@@ -128,24 +137,30 @@ class InternalSubscription:
         self._keep_alive_counter = min(self._keep_alive_counter, keep_alive_count)
 
     def next_sequence_number(self) -> int:
+        """Return the sequence number the next NotificationMessage will get."""
         return self._sequence
 
     def queue_of(self, mid: int, event: bool) -> list[Any]:
+        """Return the notification queue of a monitored item, creating it if needed."""
         return (self._triggered_events if event else self._triggered_datachanges).setdefault(mid, [])
 
     def take_queue(self, mid: int, event: bool) -> list[Any]:
+        """Remove and return the notification queue of a monitored item."""
         return (self._triggered_events if event else self._triggered_datachanges).pop(mid, [])
 
     def has_queued_datachange(self, mid: int) -> bool:
+        """Return True if a data change of the monitored item waits to be published."""
         return bool(self._triggered_datachanges.get(mid))
 
     def reset_lifetime(self) -> None:
+        """Restart the lifetime counter (OPC 10000-4 v1.05, 5.14.1.1)."""
         self._lifetime_counter = self.data.RevisedLifetimeCount
 
     async def stop(self) -> None:
+        """Stop the publishing timer and delete all monitored items."""
         self._closing = True
         if self._task:
-            self.logger.info("stopping internal subscription %s", self.data.SubscriptionId)
+            self.logger.debug("stopping internal subscription %s", self.data.SubscriptionId)
             self._task.cancel()
             try:
                 await self._task
@@ -162,15 +177,16 @@ class InternalSubscription:
                 await asyncio.sleep(max(ts - time.monotonic(), 0))
                 await self.timer_expired()
         except asyncio.CancelledError:
-            self.logger.info("exiting _subscription_loop for %s", self.data.SubscriptionId)
+            self.logger.debug("exiting _subscription_loop for %s", self.data.SubscriptionId)
             raise
         except Exception:
             self.logger.exception("Exception in subscription loop")
             raise
 
     async def set_publishing_mode(self, enabled: bool) -> None:
-        self.logger.info("set publishing mode to %s for subscription %s", enabled, self.data.SubscriptionId)
-        if enabled != self._publishing_enabled:  # J: diagnostics (SRV-93)
+        """Set the PublishingEnabled flag and restart the lifetime counter."""
+        self.logger.debug("set publishing mode to %s for subscription %s", enabled, self.data.SubscriptionId)
+        if enabled != self._publishing_enabled:
             if enabled:
                 self.counters.enable_count += 1
             else:
@@ -183,22 +199,20 @@ class InternalSubscription:
             any(self._triggered_datachanges.values()) or any(self._triggered_events.values())
         )
 
-    def _has_notifications(self) -> bool:
-        return self._has_data() or bool(self._triggered_statuschanges)
-
     def _take_request(self) -> PublishRequestData | None:
         assert self.pub_request_callback is not None
         requestdata = self.pub_request_callback(self.data.SubscriptionId)
         if requestdata is None:
             if self.state is not SubscriptionState.LATE:
-                self.counters.late_publish_request_count += 1  # J: diagnostics (SRV-93)
+                self.counters.late_publish_request_count += 1
             self.state = SubscriptionState.LATE
             return None
-        self.counters.publish_request_count += 1  # J: diagnostics (SRV-93)
+        self.counters.publish_request_count += 1
         self.reset_lifetime()
         return requestdata
 
     async def timer_expired(self) -> None:
+        """Run one publishing cycle: send a NotificationMessage or keep-alive if due, and count down the lifetime."""
         if self.pub_request_callback is None:
             await self._publish_in_process()
             return
@@ -213,27 +227,24 @@ class InternalSubscription:
         if self.state is SubscriptionState.LATE:
             return None
         if self.state is SubscriptionState.NORMAL:
-            if self._has_notifications() or not self._message_sent:
+            if self._has_data() or not self._message_sent:
                 return self._take_request()
             self.state = SubscriptionState.KEEPALIVE
-            self.counters.keep_alive_entered_count += 1  # J: diagnostics (SRV-93)
+            self.counters.keep_alive_entered_count += 1
             self._keep_alive_counter = self.data.RevisedMaxKeepAliveCount
-        if self._has_notifications() or self._keep_alive_counter <= 1:
+        if self._has_data() or self._keep_alive_counter <= 1:
             return self._take_request()
         self._keep_alive_counter -= 1
         return None
 
-    async def publish_results(self, requestdata: PublishRequestData | None = None) -> bool:
+    async def publish_results(self, requestdata: PublishRequestData) -> bool:
         """
         Answer a Publish request with the next message if the subscription is LATE.
         Returns True if the request was consumed.
         """
-        if requestdata is None:
-            await self.timer_expired()
-            return False
         if self.state is not SubscriptionState.LATE or self._closing:
             return False
-        self.counters.publish_request_count += 1  # J: diagnostics (SRV-93)
+        self.counters.publish_request_count += 1
         self.reset_lifetime()
         await self._send_and_flush(requestdata)
         return True
@@ -249,7 +260,7 @@ class InternalSubscription:
             await self.pub_result_callback(result, next_request)
 
     async def _publish_in_process(self) -> None:
-        while self._has_notifications() and not self._closing:
+        while self._has_data() and not self._closing:
             await self.pub_result_callback(self._build_result(has_request=False))
 
     def _expire(self) -> None:
@@ -282,8 +293,6 @@ class InternalSubscription:
             budget = self.max_notifications_per_publish
             budget -= self._pop_triggered_datachanges(result, budget)
             self._pop_triggered_events(result, budget)
-        elif self._triggered_statuschanges:
-            self._pop_triggered_statuschanges(result)
         message.PublishTime = datetime.now(UTC)
         if message.NotificationData:
             message.SequenceNumber = self._consume_sequence()
@@ -319,7 +328,7 @@ class InternalSubscription:
 
     def _pop_triggered_datachanges(self, result: ua.PublishResult, budget: int) -> int:
         items = self._take(self._triggered_datachanges, budget)
-        self.counters.data_change_notifications_count += len(items)  # J: diagnostics (SRV-93)
+        self.counters.data_change_notifications_count += len(items)
         if items:
             notif = ua.DataChangeNotification()
             notif.MonitoredItems = items
@@ -328,81 +337,39 @@ class InternalSubscription:
 
     def _pop_triggered_events(self, result: ua.PublishResult, budget: int) -> None:
         items = self._take(self._triggered_events, budget)
-        self.counters.event_notifications_count += len(items)  # J: diagnostics (SRV-93)
+        self.counters.event_notifications_count += len(items)
         if items:
             notif = ua.EventNotificationList()
             notif.Events = items
             result.NotificationMessage.NotificationData.append(notif)
 
-    def _pop_triggered_statuschanges(self, result: ua.PublishResult) -> None:
-        notif = ua.StatusChangeNotification()
-        notif.Status = self._triggered_statuschanges.pop(0)
-        result.NotificationMessage.NotificationData.append(notif)
-
     def acknowledge(self, sequence_number: int) -> bool:
+        """Drop an acknowledged NotificationMessage; return False if the sequence number is unknown."""
         return self._not_acknowledged_results.pop(sequence_number, None) is not None
 
     def available_sequence_numbers(self) -> list[int]:
+        """Return the sequence numbers of the NotificationMessages kept for Republish."""
         return list(self._not_acknowledged_results)
 
     @property
     def unacknowledged_count(self) -> int:
+        """The number of NotificationMessages kept for Republish."""
         return len(self._not_acknowledged_results)
 
     def drop_oldest_unacknowledged(self) -> bool:
+        """Drop the oldest unacknowledged NotificationMessage; return False if there is none."""
         if not self._not_acknowledged_results:
             return False
         del self._not_acknowledged_results[next(iter(self._not_acknowledged_results))]
-        self.counters.discarded_message_count += 1  # J: diagnostics (SRV-93)
+        self.counters.discarded_message_count += 1
         return True
 
     def republish(self, sequence_number: int) -> ua.NotificationMessage:
-        self.counters.republish_request_count += 1  # J: diagnostics (SRV-93)
+        """Return a kept NotificationMessage (OPC 10000-4 v1.05, 5.14.6); raise BadMessageNotAvailable if gone."""
+        self.counters.republish_request_count += 1
         result = self._not_acknowledged_results.get(sequence_number)
         if result is None:
-            self.logger.info("republish of unavailable message %s in subscription %s", sequence_number, self)
+            self.logger.debug("republish of unavailable message %s in subscription %s", sequence_number, self)
             raise utils.ServiceError(ua.StatusCodes.BadMessageNotAvailable)
-        self.counters.republish_message_count += 1  # J: diagnostics (SRV-93)
+        self.counters.republish_message_count += 1
         return result.NotificationMessage
-
-    async def enqueue_datachange_event(self, mid: int, eventdata: ua.MonitoredItemNotification, maxsize: int) -> None:
-        """
-        Enqueue a monitored item data change.
-        :param mid: Monitored Item Id
-        :param eventdata: Monitored Item Notification
-        :param maxsize: Max queue size (0: No limit)
-        """
-        await self._enqueue_event(mid, eventdata, maxsize, self._triggered_datachanges)
-
-    async def enqueue_event(self, mid: int, eventdata: ua.EventFieldList, maxsize: int) -> None:
-        """
-        Enqueue a event.
-        :param mid: Monitored Item Id
-        :param eventdata: Event Field List
-        :param maxsize: Max queue size (0: No limit)
-        """
-        await self._enqueue_event(mid, eventdata, maxsize, self._triggered_events)
-
-    async def enqueue_statuschange(self, code: ua.StatusCode) -> None:
-        """
-        Enqueue a status change.
-        :param code:
-        """
-        self._triggered_statuschanges.append(code)
-
-    async def _enqueue_event(
-        self,
-        mid: int,
-        eventdata: ua.MonitoredItemNotification | ua.EventFieldList,
-        size: int,
-        queue: dict[int, list[Any]],
-    ) -> None:
-        if mid not in queue:
-            # New Monitored Item Id
-            queue[mid] = [eventdata]
-            return
-        if size != 0:
-            # Limit queue size
-            if len(queue[mid]) >= size:
-                queue[mid].pop(0)
-        queue[mid].append(eventdata)

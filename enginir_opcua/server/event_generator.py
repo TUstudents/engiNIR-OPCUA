@@ -1,3 +1,7 @@
+"""
+Fire events from the server: build an event object of an event type and report it to the subscriptions.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -13,6 +17,11 @@ from ..common import Node, event_objects, events
 
 
 def stamp_event(event: Any, time_attr: datetime | None = None) -> None:
+    """
+    Give an event a new EventId and set its Time, ReceiveTime and LocalTime.
+
+    :param time_attr: The Time of the event; now if None.
+    """
     event.EventId = ua.Variant(secrets.token_bytes(16), ua.VariantType.ByteString)
     event.Time = time_attr if time_attr else datetime.now(UTC)
     event.ReceiveTime = datetime.now(UTC)
@@ -24,14 +33,10 @@ def stamp_event(event: Any, time_attr: datetime | None = None) -> None:
 
 class EventGenerator:
     """
-    Create an event based on an event type. Per default is BaseEventType used.
-    Object members are dynamically created from the base event type and send to
-    client when evebt is triggered (see example code in source)
+    Fires events of one event type from one emitting node.
 
-    Arguments to constructor are:
-        server: The InternalSession object to use for query and event triggering
-        source: The emiting source for the node, either an objectId, NodeId or a Node
-        etype: The event type, either an objectId, a NodeId or a Node object
+    Create it with an InternalSession and call init() before trigger(). The event object in the
+    event attribute has one member per field of the event type; set them before each trigger().
     """
 
     def __init__(self, isession: InternalSession) -> None:
@@ -41,12 +46,24 @@ class EventGenerator:
 
     async def init(
         self,
-        etype: Any = None,
-        emitting_node: Any = ua.ObjectIds.Server,
+        etype: event_objects.BaseEvent | Node | ua.NodeId | int | None = None,
+        emitting_node: Node | ua.NodeId | int = ua.ObjectIds.Server,
         add_generates_event: bool = True,
     ) -> None:
-        node = None
+        """
+        Build the event object and prepare the emitting node.
 
+        A Condition event gets a NodeId property for its ConditionId, which the ConditionType does not model as a
+        component (OPC 10000-9 v1.05, 5.5.2). The emitting node gets the SubscribeToEvents bit and, with
+        add_generates_event, a GeneratesEvent reference to the event type.
+
+        :param etype: An event object, or the event type as Node, NodeId or numeric id; BaseEventType if None.
+        :param emitting_node: The node the event is reported through, as Node, NodeId or numeric id.
+        :param add_generates_event: Add the GeneratesEvent reference.
+        """
+        node = None
+        if etype is None:
+            etype = event_objects.BaseEvent()
         if isinstance(etype, event_objects.BaseEvent):
             self.event = etype
         elif isinstance(etype, Node):
@@ -59,7 +76,6 @@ class EventGenerator:
         if node:
             self.event = await events.get_event_obj_from_type_node(node)
         if isinstance(self.event, event_objects.Condition):
-            # Part 9, 5.5.2: the ConditionId is not modelled as a component of the ConditionType
             self.event.add_property("NodeId", None, ua.VariantType.NodeId)
 
         if isinstance(emitting_node, Node):
@@ -115,7 +131,11 @@ class EventGenerator:
         subscription_id: int | None = None,
     ) -> None:
         """
-        Trigger the event. This will send a notification to all subscribed clients
+        Stamp the event and report it to the subscriptions.
+
+        :param time_attr: The Time of the event; now if None.
+        :param message: The Message; without one, an empty Message becomes the BrowseName of the SourceNode.
+        :param subscription_id: Report only to this subscription.
         """
         stamp_event(self.event, time_attr)
 

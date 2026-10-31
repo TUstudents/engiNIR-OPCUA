@@ -178,6 +178,7 @@ class Session:
         self.nonce: bytes = create_nonce(SERVER_NONCE_LENGTH)
         self.channel_security: ChannelSecurity = channel.security
         self.client_certificate: bytes | None = None
+        self.client_application_uri: str | None = None
         self.revised_timeout_ms = revised_timeout_ms
         self.created_at = time.monotonic()
         self.last_activity = self.created_at
@@ -537,6 +538,7 @@ class SessionManager:
             self._revise_timeout(float(params.RequestedSessionTimeout or 0)),
         )
         session.client_certificate = params.ClientCertificate
+        session.client_application_uri = params.ClientDescription.ApplicationUri
         self.sessions[session.token] = session
         self.iserver.diagnostics.session_created(session, params)
         result = ua.CreateSessionResult()

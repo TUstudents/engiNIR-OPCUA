@@ -1,3 +1,7 @@
+"""
+The DataChangeFilter of data change monitored items (OPC 10000-4 v1.05, 7.22.2).
+"""
+
 from __future__ import annotations
 
 import math
@@ -32,6 +36,7 @@ def _same_scalar(first: Any, second: Any) -> bool:
 
 
 def values_equal(first: ua.Variant | None, second: ua.Variant | None) -> bool:
+    """Return True if two values have the same type, dimensions and elements; NaN equals NaN."""
     if first is None or second is None:
         return first is None and second is None
     if first.VariantType != second.VariantType or first.Dimensions != second.Dimensions:
@@ -44,6 +49,7 @@ def values_equal(first: ua.Variant | None, second: ua.Variant | None) -> bool:
 
 
 def is_numeric(value: ua.Variant | None) -> bool:
+    """Return True if the value has an integer or floating point type."""
     return value is not None and value.VariantType in NUMERIC_TYPES
 
 
@@ -56,6 +62,11 @@ def _differs_by_more(first: Any, second: Any, band: float) -> bool:
 
 
 def exceeds_deadband(last: ua.Variant, sample: ua.Variant, band: float) -> bool:
+    """
+    Return True if the sample differs from the last value by more than band.
+
+    For arrays any element counts; a change of type, dimensions or array length always counts.
+    """
     if last.VariantType != sample.VariantType or last.Dimensions != sample.Dimensions:
         return True
     if isinstance(last.Value, list) and isinstance(sample.Value, list):
@@ -68,6 +79,7 @@ def exceeds_deadband(last: ua.Variant, sample: ua.Variant, band: float) -> bool:
 
 
 def deadband_width(flt: ua.DataChangeFilter, eu_range: tuple[float, float] | None) -> float:
+    """Return the absolute deadband: the DeadbandValue, or for Percent that share of the EURange (0 without one)."""
     if flt.DeadbandType == ua.DeadbandType.Percent:
         if eu_range is None:
             return 0.0
@@ -81,6 +93,11 @@ def data_change_passes(
     flt: ua.DataChangeFilter | None,
     eu_range: tuple[float, float] | None,
 ) -> bool:
+    """
+    Return True if a sample is to be reported after the last reported value.
+
+    A changed status always counts. Without a filter the trigger is StatusValue and no deadband applies.
+    """
     if last is None:
         return True
     if _status_value(last.StatusCode) != _status_value(sample.StatusCode):

@@ -10,6 +10,7 @@ import pytest
 
 from enginir_opcua import Server, ua
 from enginir_opcua.common import event_objects
+from enginir_opcua.server.event_generator import EventGenerator
 from tests.monitoring import create_items, item_request, make_server, open_subscription, publish
 
 """Event delivery: the notifier hierarchy and the BaseEventType stamping of the EventGenerator."""
@@ -179,3 +180,9 @@ async def test_event_ids_are_16_random_bytes(server: Server) -> None:
     await generator.trigger(message="id")
     assert len(first.Value) == 16
     assert first != generator.event.EventId
+
+
+async def test_an_event_generator_without_an_event_type_fires_base_events(server: Server) -> None:
+    generator = EventGenerator(server.iserver.isession)
+    await generator.init()
+    assert generator.event.EventType == ua.NodeId(ua.ObjectIds.BaseEventType)

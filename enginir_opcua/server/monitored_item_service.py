@@ -1,5 +1,5 @@
 """
-server side implementation of a subscription object
+The monitored items of one Subscription: sampling, filters, queues and triggering (OPC 10000-4 v1.05, 5.13).
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class MonitoredItemLimits:
+    """The server limits a Subscription applies when it creates and revises monitored items."""
+
     max_queue_size: int = 1000
     default_event_queue_size: int = 100
     min_sampling_interval: float = 10.0
@@ -54,6 +56,8 @@ VALID_TIMESTAMPS = (
 
 
 class MonitoredItemData:
+    """The state of one monitored item: its revised parameters, filter, last values and triggering links."""
+
     def __init__(self) -> None:
         self.client_handle: int | None = None
         self.callback_handle: int | None = None
@@ -78,9 +82,7 @@ class MonitoredItemData:
 
 
 class MonitoredItemService:
-    """
-    Implements monitored item service for one subscription
-    """
+    """The MonitoredItem service set for the monitored items of one subscription."""
 
     def __init__(self, isub: "InternalSubscription", aspace: AddressSpace) -> None:
         self.logger = logging.getLogger(f"{__name__}.{isub.data.SubscriptionId}")
@@ -95,13 +97,16 @@ class MonitoredItemService:
         return f"MonitoredItemService({self.isub.data.SubscriptionId})"
 
     def item_count(self) -> int:
+        """Return the number of monitored items."""
         return len(self._monitored_items)
 
     def disabled_count(self) -> int:
+        """Return the number of monitored items in MonitoringMode Disabled."""
         return sum(1 for mdata in self._monitored_items.values() if mdata.mode == ua.MonitoringMode.Disabled)
 
     def delete_all_monitored_items(self) -> None:
-        self.delete_monitored_items([mdata.monitored_item_id for mdata in self._monitored_items.values()])
+        """Delete every monitored item and stop its sampling."""
+        self.delete_monitored_items(list(self._monitored_items))
 
     @staticmethod
     def _check_timestamps(timestamps: ua.TimestampsToReturn) -> None:
@@ -111,6 +116,7 @@ class MonitoredItemService:
     async def create_monitored_items(
         self, params: ua.CreateMonitoredItemsParameters
     ) -> list[ua.MonitoredItemCreateResult]:
+        """Create the requested event and data change items; each gets its own result."""
         self._check_timestamps(params.TimestampsToReturn)
         results: list[ua.MonitoredItemCreateResult] = []
         for item in params.ItemsToCreate:
@@ -124,6 +130,7 @@ class MonitoredItemService:
         return results
 
     async def resend_initial_values(self) -> None:
+        """Queue the current value of each reporting data change item that has none queued (SendInitialValues)."""
         for mid, mdata in list(self._monitored_items.items()):
             read_value_id = mdata.read_value_id
             if mdata.mode != ua.MonitoringMode.Reporting or read_value_id is None or mdata.callback_handle is None:
@@ -138,6 +145,7 @@ class MonitoredItemService:
             self._queue_data(mdata, value)
 
     def modify_monitored_items(self, params: ua.ModifyMonitoredItemsParameters) -> list[ua.MonitoredItemModifyResult]:
+        """Revise the parameters of the given items; each gets its own result."""
         self._check_timestamps(params.TimestampsToReturn)
         results: list[ua.MonitoredItemModifyResult] = []
         for item in params.ItemsToModify:
@@ -145,6 +153,7 @@ class MonitoredItemService:
         return results
 
     async def trigger_datachange(self, handle: int, nodeid: ua.NodeId, attr: ua.AttributeIds) -> None:
+        """Read the attribute now and sample it for the item registered under handle."""
         self.logger.debug("triggering datachange for handle %s, nodeid %s, and attribute %s", handle, nodeid, attr)
         dv = self.aspace.read_attribute_value(nodeid, attr)
         await self.datachange_callback(handle, dv)
@@ -251,7 +260,7 @@ class MonitoredItemService:
     def _create_events_monitored_item(
         self, params: ua.MonitoredItemCreateRequest, timestamps: ua.TimestampsToReturn
     ) -> ua.MonitoredItemCreateResult:
-        self.logger.info(
+        self.logger.debug(
             "request to subscribe to events for node %s and attribute %s",
             params.ItemToMonitor.NodeId,
             params.ItemToMonitor.AttributeId,
@@ -291,7 +300,7 @@ class MonitoredItemService:
     async def _create_data_change_monitored_item(
         self, params: ua.MonitoredItemCreateRequest, timestamps: ua.TimestampsToReturn
     ) -> ua.MonitoredItemCreateResult:
-        self.logger.info(
+        self.logger.debug(
             "request to subscribe to datachange for node %s and attribute %s",
             params.ItemToMonitor.NodeId,
             params.ItemToMonitor.AttributeId,
@@ -322,7 +331,8 @@ class MonitoredItemService:
         return result
 
     async def set_monitoring_mode(self, mode: ua.MonitoringMode, ids: list[int]) -> list[ua.StatusCode]:
-        self.logger.info("set monitoring mode to %s for items %s", mode, ids)
+        """Set the MonitoringMode of the given items; each gets its own result."""
+        self.logger.debug("set monitoring mode to %s for items %s", mode, ids)
         if mode not in tuple(ua.MonitoringMode):
             raise utils.ServiceError(ua.StatusCodes.BadMonitoringModeInvalid)
         results: list[ua.StatusCode] = []
@@ -430,7 +440,6 @@ class MonitoredItemService:
         excess = len(entries) - size + 1
         if excess <= 0:
             if mdata.condition_events_lost and excess <= -1 and target is None:
-                # Part 9, 5.11.4: ask for a refresh once the queue is out of overflow
                 mdata.condition_events_lost = False
                 queue.append(self._refresh_required_notification(mdata))
             queue.append(notification)
@@ -438,7 +447,7 @@ class MonitoredItemService:
             return
         first_discard = not mdata.overflowed
         if first_discard:
-            self.isub.counters.event_queue_overflow_count += 1  # J: diagnostics (SRV-93)
+            self.isub.counters.event_queue_overflow_count += 1
         mdata.overflowed = True
         discarded = entries[:excess] if mdata.discard_oldest else entries[len(entries) - excess :]
         queue[:] = [entry for entry in queue if not any(entry is gone for gone in discarded)]
@@ -500,7 +509,7 @@ class MonitoredItemService:
         if size == 1:
             queue[:] = [notification]
             return
-        self.isub.counters.monitoring_queue_overflow_count += excess  # J: diagnostics (SRV-93)
+        self.isub.counters.monitoring_queue_overflow_count += excess
         if mdata.discard_oldest:
             del queue[:excess]
             queue.append(notification)
@@ -534,12 +543,13 @@ class MonitoredItemService:
     async def datachange_callback(
         self, handle: int, value: ua.DataValue | None, error: ua.StatusCode | None = None
     ) -> None:
+        """Sample a new value, or a Bad status in error, for the data change item registered under handle."""
         mid = self._monitored_datachange.get(handle)
         mdata = self._monitored_items.get(mid) if mid is not None else None
         if mdata is None:
             return
         if error is not None and value is None:
-            self.logger.info("subscription %s: handle '%s' reports error '%s'", self, handle, error)
+            self.logger.debug("subscription %s: handle '%s' reports error '%s'", self, handle, error)
             self._sample(mdata, ua.DataValue(StatusCode=error, ServerTimestamp=datetime.now(UTC)), check_access=False)
         elif value is not None:
             self._sample(mdata, value)
@@ -714,9 +724,11 @@ class MonitoredItemService:
         return data_type == BASE_DATA_TYPE or is_subtype(self.aspace, data_type, NUMBER)
 
     def event_item_ids(self) -> list[int]:
+        """Return the ids of the event items."""
         return [mid for mid, mdata in self._monitored_items.items() if self._is_event_item(mdata)]
 
     def item_node(self, mid: int) -> ua.NodeId | None:
+        """Return the NodeId an item monitors, or None for an unknown item."""
         mdata = self._monitored_items.get(mid)
         return mdata.read_value_id.NodeId if mdata is not None and mdata.read_value_id is not None else None
 
@@ -727,6 +739,12 @@ class MonitoredItemService:
         notifiers: list[ua.NodeId] | None = None,
         bypass_where: bool = False,
     ) -> bool:
+        """
+        Queue an event for the event items monitoring one of the notifiers (default: the event's source).
+
+        With mid only that item is considered. bypass_where skips the WhereClause, as ConditionRefresh needs for
+        RefreshStart and RefreshEnd (OPC 10000-9 v1.05, 4.5). Returns False if no item monitors the notifiers.
+        """
         nodes = notifiers if notifiers is not None else [event.emitting_node]
         mids = [item for node in nodes for item in self._monitored_events.get(node, [])]
         if mid is not None:
@@ -748,9 +766,8 @@ class MonitoredItemService:
         mdata = self._monitored_items[mid]
         if mdata.mode == ua.MonitoringMode.Disabled:
             return
-        # Part 9, 4.5: the refresh events ignore the content filter (bypass_where)
         if not bypass_where and (mdata.where_clause_evaluator is None or not mdata.where_clause_evaluator.eval(event)):
-            self.logger.info("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
+            self.logger.debug("%s, %s, Event %s does not fit WhereClause, not generating event", self, mid, event)
             return
         fieldlist = self._field_list(mdata, event)
         self._push(mdata, fieldlist)

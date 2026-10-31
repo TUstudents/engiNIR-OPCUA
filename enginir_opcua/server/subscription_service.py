@@ -1,5 +1,5 @@
 """
-server side implementation of subscription service
+The Subscription and MonitoredItem service sets of the server (OPC 10000-4 v1.05, 5.13 and 5.14).
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 
 
 def same_owner(owner_user: User | None, owner_certificate: bytes | None, user: User, certificate: bytes | None) -> bool:
+    """
+    Return True if a user may take over a Subscription (OPC 10000-4 v1.05, 5.14.7).
+
+    A named user must match the owner by name; an anonymous user must present the owner's client certificate.
+    """
     if owner_user is None:
         return False
     if owner_user.name is not None:
@@ -49,11 +54,13 @@ class SubscriptionService:
         self._event_sink_counter = 0
 
     def add_event_sink(self, notifier: ua.NodeId, sink: Callable[[Any], None]) -> int:
+        """Call sink with every event reported through notifier; return a handle for remove_event_sink."""
         self._event_sink_counter += 1
         self._event_sinks[self._event_sink_counter] = (notifier, sink)
         return self._event_sink_counter
 
     def remove_event_sink(self, handle: int) -> None:
+        """Stop an event sink; an unknown handle is ignored."""
         self._event_sinks.pop(handle, None)
 
     def _deliver_to_sinks(self, event: Any, notifiers: list[ua.NodeId]) -> None:
@@ -71,7 +78,8 @@ class SubscriptionService:
         session_id: ua.NodeId,
         request_callback: Callable[..., Any] | None = None,
     ) -> ua.CreateSubscriptionResult:
-        self.logger.info("create subscription")
+        """CreateSubscription (OPC 10000-4 v1.05, 5.14.2): revise the parameters and start the subscription."""
+        self.logger.debug("create subscription")
         max_subs = self.iserver.max_subscriptions if self.iserver else 1_000
         if len(self.subscriptions) >= max_subs:
             self.logger.warning("Refusing subscription: at max_subscriptions=%s", max_subs)
@@ -105,10 +113,10 @@ class SubscriptionService:
         await internal_sub.start()
         owner = self._session(session_id)
         if owner is not None:
-            internal_sub.owner_user, internal_sub.owner_certificate = owner.user, owner.client_certificate
+            self._set_owner(internal_sub, owner)
         self.subscriptions[result.SubscriptionId] = internal_sub
         if self.iserver:
-            self.iserver.diagnostics.subscription_created()  # J: diagnostics (SRV-93)
+            self.iserver.diagnostics.subscription_created()
         return result
 
     def _owned_count(self, session_id: ua.NodeId) -> int:
@@ -128,6 +136,7 @@ class SubscriptionService:
         return getattr(self.iserver, name, default) if self.iserver else default
 
     def monitored_item_count(self) -> int:
+        """Return the number of monitored items in all subscriptions of the server."""
         return sum(sub.monitored_item_srv.item_count() for sub in self.subscriptions.values())
 
     def _monitored_item_limits(self) -> MonitoredItemLimits:
@@ -183,6 +192,7 @@ class SubscriptionService:
         pending.append((notice, callback))
 
     def has_pending_notice(self, session_id: ua.NodeId) -> bool:
+        """Return True if a StatusChangeNotification waits for a Publish request of the session."""
         return bool(self._pending_notices.get(session_id))
 
     def _on_expired(self, sub: InternalSubscription, notice: ua.PublishResult) -> None:
@@ -195,6 +205,7 @@ class SubscriptionService:
             task.add_done_callback(self._background.discard)
 
     def pending_notice(self, session_id: ua.NodeId) -> tuple[ua.PublishResult, Callable[..., Any]] | None:
+        """Remove and return the oldest StatusChangeNotification held for the session, with its callback."""
         pending = self._pending_notices.get(session_id)
         if not pending:
             return None
@@ -204,9 +215,16 @@ class SubscriptionService:
         return notice
 
     def drop_pending_notices(self, session_id: ua.NodeId) -> None:
+        """Forget the StatusChangeNotifications held for a session."""
         self._pending_notices.pop(session_id, None)
 
     async def on_publish_request(self, session_id: ua.NodeId, requestdata: "PublishRequestData") -> bool:
+        """
+        Answer a new Publish request with a held notice or a message of a LATE subscription.
+
+        Late subscriptions are served by priority, then the one served longest ago first. Returns True if the
+        request was consumed.
+        """
         notice = self.pending_notice(session_id)
         if notice is not None:
             result, callback = notice
@@ -226,13 +244,14 @@ class SubscriptionService:
     def modify_subscription(
         self, params: ua.ModifySubscriptionParameters, session_id: ua.NodeId
     ) -> ua.ModifySubscriptionResult:
-        self.logger.info("modify subscription")
+        """ModifySubscription (OPC 10000-4 v1.05, 5.14.3)."""
+        self.logger.debug("modify subscription")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         result = ua.ModifySubscriptionResult()
         result.RevisedPublishingInterval, result.RevisedLifetimeCount, result.RevisedMaxKeepAliveCount = self._revise(
             params.RequestedPublishingInterval, params.RequestedLifetimeCount, params.RequestedMaxKeepAliveCount
         )
-        sub.counters.modify_count += 1  # J: diagnostics (SRV-93)
+        sub.counters.modify_count += 1
         sub.update_parameters(
             result.RevisedPublishingInterval,
             result.RevisedLifetimeCount,
@@ -243,7 +262,8 @@ class SubscriptionService:
         return result
 
     async def delete_subscriptions(self, ids: list[int], session_id: ua.NodeId) -> list[ua.StatusCode]:
-        self.logger.info("delete subscriptions: %s", ids)
+        """DeleteSubscriptions (OPC 10000-4 v1.05, 5.14.8) for the subscriptions the session owns."""
+        self.logger.debug("delete subscriptions: %s", ids)
         res: list[ua.StatusCode] = []
         existing_subs: list[InternalSubscription] = []
         for i in ids:
@@ -263,7 +283,13 @@ class SubscriptionService:
     def publish(
         self, acks: Iterable[ua.SubscriptionAcknowledgement], session_id: ua.NodeId
     ) -> tuple[int, list[ua.StatusCode]]:
-        self.logger.info("publish request with acks %s", acks)
+        """
+        Process the acknowledgements of a Publish request (OPC 10000-4 v1.05, 5.14.5).
+
+        Returns the number of subscriptions the session owns and one result per acknowledgement. Raises
+        BadNoSubscription if the session has neither a subscription nor a held notice.
+        """
+        self.logger.debug("publish request with acks %s", acks)
         owned = [sub for sub in self.subscriptions.values() if sub.session_id == session_id]
         if not owned and not self.has_pending_notice(session_id):
             raise utils.ServiceError(ua.StatusCodes.BadNoSubscription)
@@ -281,26 +307,30 @@ class SubscriptionService:
     async def create_monitored_items(
         self, params: ua.CreateMonitoredItemsParameters, session_id: ua.NodeId
     ) -> list[ua.MonitoredItemCreateResult]:
-        self.logger.info("create monitored items")
+        """CreateMonitoredItems (OPC 10000-4 v1.05, 5.13.2)."""
+        self.logger.debug("create monitored items")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return await sub.monitored_item_srv.create_monitored_items(params)
 
     def modify_monitored_items(
         self, params: ua.ModifyMonitoredItemsParameters, session_id: ua.NodeId
     ) -> list[ua.MonitoredItemModifyResult]:
-        self.logger.info("modify monitored items")
+        """ModifyMonitoredItems (OPC 10000-4 v1.05, 5.13.3)."""
+        self.logger.debug("modify monitored items")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return sub.monitored_item_srv.modify_monitored_items(params)
 
     async def set_triggering(self, params: ua.SetTriggeringParameters, session_id: ua.NodeId) -> ua.SetTriggeringResult:
-        self.logger.info("set triggering")
+        """SetTriggering (OPC 10000-4 v1.05, 5.13.5)."""
+        self.logger.debug("set triggering")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return sub.monitored_item_srv.set_triggering(params.TriggeringItemId, params.LinksToAdd, params.LinksToRemove)
 
     async def set_publishing_mode(
         self, params: ua.SetPublishingModeParameters, session_id: ua.NodeId
     ) -> list[ua.StatusCode]:
-        self.logger.info("set publishing mode")
+        """SetPublishingMode (OPC 10000-4 v1.05, 5.14.4)."""
+        self.logger.debug("set publishing mode")
         results: list[ua.StatusCode] = []
         for sid in params.SubscriptionIds:
             sub = self._owned(sid, session_id)
@@ -314,18 +344,21 @@ class SubscriptionService:
     async def set_monitoring_mode(
         self, params: ua.SetMonitoringModeParameters, session_id: ua.NodeId
     ) -> list[ua.StatusCode]:
-        self.logger.info("set monitoring mode")
+        """SetMonitoringMode (OPC 10000-4 v1.05, 5.13.4)."""
+        self.logger.debug("set monitoring mode")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return await sub.monitored_item_srv.set_monitoring_mode(params.MonitoringMode, params.MonitoredItemIds)
 
     def delete_monitored_items(
         self, params: ua.DeleteMonitoredItemsParameters, session_id: ua.NodeId
     ) -> list[ua.StatusCode]:
-        self.logger.info("delete monitored items")
+        """DeleteMonitoredItems (OPC 10000-4 v1.05, 5.13.6)."""
+        self.logger.debug("delete monitored items")
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return sub.monitored_item_srv.delete_monitored_items(params.MonitoredItemIds)
 
     def republish(self, params: ua.RepublishParameters, session_id: ua.NodeId) -> ua.NotificationMessage:
+        """Republish (OPC 10000-4 v1.05, 5.14.6)."""
         sub = self._owned_or_raise(params.SubscriptionId, session_id)
         return sub.republish(params.RetransmitSequenceNumber)
 
@@ -336,14 +369,19 @@ class SubscriptionService:
         callback: Callable[..., Any],
         request_callback: Callable[..., Any] | None = None,
     ) -> list[ua.TransferResult]:
-        self.logger.info("transfer_subscriptions: %s", params.SubscriptionIds)
+        """
+        TransferSubscriptions (OPC 10000-4 v1.05, 5.14.7): move subscriptions to the calling session.
+
+        The previous session is told with a GoodSubscriptionTransferred StatusChangeNotification.
+        """
+        self.logger.debug("transfer_subscriptions: %s", params.SubscriptionIds)
         results: list[ua.TransferResult] = []
         previous_owners: list[ua.NodeId] = []
         for sub_id in params.SubscriptionIds:
             result = ua.TransferResult()
             sub = self.subscriptions.get(int(sub_id))
             if sub is not None:
-                sub.counters.transfer_request_count += 1  # J: diagnostics (SRV-93)
+                sub.counters.transfer_request_count += 1
             if sub is None:
                 result.StatusCode = ua.StatusCode(ua.StatusCodes.BadSubscriptionIdInvalid)
             elif sub.session_id == session_id:
@@ -354,7 +392,6 @@ class SubscriptionService:
                 result.StatusCode = ua.StatusCode(ua.StatusCodes.BadTooManySubscriptions)
             else:
                 previous_owners.append(sub.session_id)
-                sub.counters.transferred_to_same_client_count += 1  # J: diagnostics (SRV-93)
                 await self._move(sub, session_id, callback, request_callback, params.SendInitialValues)
                 result.AvailableSequenceNumbers = sorted(sub.available_sequence_numbers())
             results.append(result)
@@ -366,6 +403,11 @@ class SubscriptionService:
 
     def _session(self, session_id: ua.NodeId) -> "Session | None":
         return self.iserver.session_manager.session_by_id(session_id) if self.iserver else None
+
+    @staticmethod
+    def _set_owner(sub: InternalSubscription, owner: "Session") -> None:
+        sub.owner_user, sub.owner_certificate = owner.user, owner.client_certificate
+        sub.owner_application_uri = owner.client_application_uri
 
     def _may_take_over(self, sub: InternalSubscription, session_id: ua.NodeId) -> bool:
         caller = self._session(session_id)
@@ -386,8 +428,12 @@ class SubscriptionService:
         sub.session_id = session_id
         sub.pub_result_callback = callback
         sub.pub_request_callback = request_callback
+        if caller is not None and caller.client_application_uri == sub.owner_application_uri:
+            sub.counters.transferred_to_same_client_count += 1
+        else:
+            sub.counters.transferred_to_alt_client_count += 1
         if caller is not None:
-            sub.owner_user, sub.owner_certificate = caller.user, caller.client_certificate
+            self._set_owner(sub, caller)
         sub.reset_lifetime()
         if sub.state is SubscriptionState.LATE:
             sub.state = SubscriptionState.NORMAL
@@ -407,15 +453,19 @@ class SubscriptionService:
         return notice
 
     async def trigger_event(self, event: Any, subscription_id: int | None = None) -> None:
+        """
+        Report an event to the event items whose notifier the event's source reaches.
+
+        Without subscription_id the event goes to the event sinks and all subscriptions; with it, only to that one.
+        """
         notifiers = notifiers_of(self.aspace, event.emitting_node)
-        if subscription_id is None:
-            self._deliver_to_sinks(event, notifiers)
         if subscription_id is not None:
             if subscription_id in self.subscriptions:
                 await self.subscriptions[subscription_id].monitored_item_srv.trigger_event(event, notifiers=notifiers)
-        else:
-            for sub in list(self.subscriptions.values()):
-                await sub.monitored_item_srv.trigger_event(event, notifiers=notifiers)
+            return
+        self._deliver_to_sinks(event, notifiers)
+        for sub in list(self.subscriptions.values()):
+            await sub.monitored_item_srv.trigger_event(event, notifiers=notifiers)
 
     async def deliver_to_subscription(
         self,
@@ -424,7 +474,12 @@ class SubscriptionService:
         item_ids: list[int] | None = None,
         bypass_where: bool = False,
     ) -> None:
-        # Part 9, 5.5.7: the hook ConditionRefresh uses to queue an Event for the items of one Subscription
+        """
+        Queue an event for event items of one subscription, regardless of their notifier.
+
+        ConditionRefresh (OPC 10000-9 v1.05, 5.5.7) uses this; bypass_where skips the WhereClause for the
+        RefreshStart and RefreshEnd events. Without item_ids all event items of the subscription get it.
+        """
         sub = self.subscriptions.get(subscription_id)
         if sub is None:
             return
