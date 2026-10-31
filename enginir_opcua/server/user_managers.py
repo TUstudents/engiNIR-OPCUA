@@ -1,3 +1,7 @@
+"""
+Who the user of a Session is: the UserManager interface and the managers the library brings.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +11,8 @@ import stat
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from cryptography import x509
 
 from enginir_opcua import ua
 from enginir_opcua.crypto import uacrypto, users_file
@@ -38,6 +44,10 @@ class UserManager:
         password: str | None = None,
         certificate: Any = None,
     ) -> User | None:
+        """
+        The user of a login, or None to refuse it. username and password come from a UserName token (username is None
+        for the other kinds), certificate is the DER certificate of an X509 token, or of the SecureChannel otherwise.
+        """
         raise NotImplementedError
 
     async def authenticate(
@@ -118,7 +128,7 @@ class CertificateUserManager(UserManager):
     accepted_token_types = frozenset({ua.UserTokenType.Anonymous, ua.UserTokenType.Certificate})
 
     def __init__(self, allow_anonymous: bool = False) -> None:
-        self._trusted_certificates: dict[str, dict[str, Any]] = {}
+        self._trusted_certificates: dict[str, tuple[bytes, User]] = {}
         self.allow_anonymous = allow_anonymous
 
     async def add_role(
@@ -128,18 +138,14 @@ class CertificateUserManager(UserManager):
         name: str,
         format: str | None = None,
     ) -> None:
+        """Register the user name with the role for the certificate file (format pem or der, default from the suffix)."""
         certificate = await uacrypto.load_certificate(certificate_path, format)
         if name is None:
-            raise KeyError
-
+            raise ValueError("A certificate user needs a name")
         user = User(role=user_role, name=name)
-
         if name in self._trusted_certificates:
-            logging.warning(
-                "certificate with name %s attempted to be added multiple times, only the last version will be kept.",
-                name,
-            )
-        self._trusted_certificates[name] = {"certificate": uacrypto.der_from_x509(certificate), "user": user}
+            _logger.warning("The certificate user %s was added again; the last certificate is kept", name)
+        self._trusted_certificates[name] = (uacrypto.der_from_x509(certificate), user)
 
     def get_user(
         self,
@@ -148,27 +154,28 @@ class CertificateUserManager(UserManager):
         password: str | None = None,
         certificate: Any = None,
     ) -> User | None:
-        correct_users = [
-            prospective_certificate["user"]
-            for prospective_certificate in self._trusted_certificates.values()
-            if certificate is not None and certificate == prospective_certificate["certificate"]
-        ]
-        if correct_users:
-            return correct_users[0]
+        for known_certificate, user in self._trusted_certificates.values():
+            if certificate is not None and certificate == known_certificate:
+                return user
         if self.allow_anonymous and username is None:
             return User(role=UserRole.Anonymous)
         return None
 
-    def pinned_certificates(self) -> list[Any]:
-        return [uacrypto.x509_from_der(entry["certificate"]) for entry in self._trusted_certificates.values()]
+    def pinned_certificates(self) -> list[x509.Certificate]:
+        """The registered certificates, which the server trusts as user certificates."""
+        parsed = (uacrypto.x509_from_der(known) for known, _user in self._trusted_certificates.values())
+        return [certificate for certificate in parsed if certificate is not None]
 
     async def add_user(self, certificate_path: Path, name: str, format: str | None = None) -> None:
+        """add_role with the User role."""
         await self.add_role(certificate_path=certificate_path, user_role=UserRole.User, name=name, format=format)
 
     async def add_admin(self, certificate_path: Path, name: str, format: str | None = None) -> None:
+        """add_role with the Admin role."""
         await self.add_role(certificate_path=certificate_path, user_role=UserRole.Admin, name=name, format=format)
 
     async def add_security_admin(self, certificate_path: Path, name: str, format: str | None = None) -> None:
+        """add_role with the SecurityAdmin role."""
         await self.add_role(
             certificate_path=certificate_path, user_role=UserRole.SecurityAdmin, name=name, format=format
         )

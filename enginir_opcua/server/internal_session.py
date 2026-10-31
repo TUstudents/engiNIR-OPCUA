@@ -1,3 +1,8 @@
+"""
+The sessions of the server: their creation, activation, timeouts and Publish queues (SessionManager, Session), and
+the service set every session and the server itself use (InternalSession).
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -54,6 +59,8 @@ SESSION_ID_NAMESPACE = 1
 
 
 class SessionState(Enum):
+    """The life of a Session: created, activated (it may serve requests) and closed."""
+
     Created = 0
     Activated = 1
     Closed = 2
@@ -61,12 +68,16 @@ class SessionState(Enum):
 
 @dataclass(frozen=True)
 class ChannelSecurity:
+    """The client certificate (DER), SecurityPolicyUri and mode of a SecureChannel."""
+
     certificate: bytes | None
     policy_uri: str
     mode: ua.MessageSecurityMode
 
 
 class SessionChannel(Protocol):
+    """What a Session needs from the SecureChannel it is bound to; UaProcessor implements it."""
+
     @property
     def channel_id(self) -> int: ...
 
@@ -96,27 +107,34 @@ class SessionChannel(Protocol):
     def verify(self, data: bytes, signature: bytes | None) -> None: ...
 
     def send_response(
-        self, requesthandle: int, seqhdr: Any, response: Any, msgtype: Any = ua.MessageType.SecureMessage
+        self,
+        requesthandle: int,
+        seqhdr: ua.SequenceHeader,
+        response: Any,
+        msgtype: bytes = ua.MessageType.SecureMessage,
     ) -> None: ...
 
 
 def is_empty_identity_token(params: ua.ActivateSessionParameters) -> bool:
+    """Whether the UserIdentityToken is a null ExtensionObject, which counts as Anonymous."""
     token = params.UserIdentityToken
     return isinstance(token, ua.ExtensionObject) and token.TypeId == ua.NodeId(ua.ObjectIds.Null)
 
 
 def identity_token(params: ua.ActivateSessionParameters) -> Any:
-    token = params.UserIdentityToken
-    if isinstance(token, ua.ExtensionObject) and token.TypeId == ua.NodeId(ua.ObjectIds.Null):
+    """The UserIdentityToken of the request, an AnonymousIdentityToken for an empty one."""
+    if is_empty_identity_token(params):
         return ua.AnonymousIdentityToken()
-    return token
+    return params.UserIdentityToken
 
 
 class PublishRequestData:
+    """A Publish request waiting in a Session's queue for a NotificationMessage to answer it with."""
+
     def __init__(
         self,
         requesthdr: ua.RequestHeader,
-        seqhdr: Any,
+        seqhdr: ua.SequenceHeader,
         results: list[ua.StatusCode] | None = None,
         channel: SessionChannel | None = None,
     ) -> None:
@@ -127,9 +145,11 @@ class PublishRequestData:
         self.timestamp = time.monotonic()
 
     def has_timed_out(self, now: float) -> bool:
+        """Whether its TimeoutHint (0: none) passed by the monotonic time now."""
         return self.requesthdr.TimeoutHint != 0 and self.requesthdr.TimeoutHint / 1000 < now - self.timestamp
 
     def answer(self, status: int) -> None:
+        """Answer it with a ServiceFault of this status."""
         if self.channel is None:
             return
         fault = ua.ServiceFault()
@@ -187,35 +207,44 @@ class Session:
 
     @property
     def bound_channel(self) -> SessionChannel | None:
+        """The SecureChannel the session is bound to, None after it closed."""
         return self._channel() if self._channel is not None else None
 
     def is_activated(self) -> bool:
+        """Whether ActivateSession succeeded."""
         return self.state == SessionState.Activated
 
     def touch(self) -> None:
+        """A request of the session arrived: the timeout starts again."""
         self.last_activity = time.monotonic()
 
     def enter_request(self) -> None:
+        """A request starts; Bad_ServerTooBusy above max_requests_in_flight_per_session."""
         if self.in_flight >= self.manager.max_requests_in_flight_per_session:
             raise ServiceError(ua.StatusCodes.BadServerTooBusy)
         self.in_flight += 1
 
     def leave_request(self) -> None:
+        """A request ended."""
         self.in_flight -= 1
 
     def idle_seconds(self, now: float) -> float:
+        """Seconds since the last request."""
         return now - self.last_activity
 
     def bind(self, channel: SessionChannel) -> None:
+        """Bind the session to a SecureChannel."""
         self.bound_channel_id = channel.channel_id
         self._channel = weakref.ref(channel)
 
     def unbind(self) -> None:
+        """The channel closed: the session waits for an ActivateSession on another one."""
         self.bound_channel_id = None
         self._channel = None
         self.publish_queue.clear()
 
     def move_to(self, channel: SessionChannel) -> None:
+        """Bind to a new channel; Publish requests of the old one get Bad_SecureChannelClosed."""
         previous = self.bound_channel_id
         self.bind(channel)
         remaining: deque[PublishRequestData] = deque()
@@ -227,11 +256,13 @@ class Session:
         self.publish_queue = remaining
 
     def flush_publish_queue(self, status: int) -> None:
+        """Answer every queued Publish request with a ServiceFault of this status."""
         queued, self.publish_queue = self.publish_queue, deque()
         for requestdata in queued:
             requestdata.answer(status)
 
     def cancel_publish_requests(self, request_handle: int) -> int:
+        """Cancel (OPC 10000-4 v1.05, 5.7.5) for the queued Publish requests; how many it cancelled."""
         cancelled = [r for r in self.publish_queue if r.requesthdr.RequestHandle == request_handle]
         for requestdata in cancelled:
             self.publish_queue.remove(requestdata)
@@ -240,9 +271,11 @@ class Session:
 
     @property
     def publish_request_limit(self) -> int:
+        """How many Publish requests the session may queue."""
         return self.manager.max_publish_requests_per_session
 
     def trim_retransmission_queue(self) -> None:
+        """Drop the oldest unacknowledged NotificationMessages above twice the Publish request limit."""
         subscriptions = self.iserver.subscription_service.subscriptions
         owned = [subscriptions[sub_id] for sub_id in self.subscription_ids()]
         bound = 2 * self.publish_request_limit
@@ -252,6 +285,7 @@ class Session:
             oldest.drop_oldest_unacknowledged()
 
     def subscription_ids(self) -> list[int]:
+        """The ids of the Subscriptions the session owns."""
         return [
             sub_id
             for sub_id, sub in self.iserver.subscription_service.subscriptions.items()
@@ -259,6 +293,10 @@ class Session:
         ]
 
     async def validate_identity(self, params: ua.ActivateSessionParameters, security: ChannelSecurity) -> User:
+        """
+        The user of an ActivateSession: the token is matched to a UserTokenPolicy, decrypted or its signature
+        verified, and the user manager decides. A ServiceError with the StatusCode of the first failing check.
+        """
         id_token = identity_token(params)
         matched = match_token_policy(self.iserver.endpoints, security, id_token, is_empty_identity_token(params))
         username: str | None = None
@@ -299,6 +337,7 @@ class Session:
         return user
 
     def get_publish_request(self, subscription_id: int) -> PublishRequestData | None:
+        """The oldest queued Publish request that has not timed out; the timed-out ones get Bad_Timeout."""
         now = time.monotonic()
         while True:
             if not self.publish_queue:
@@ -309,14 +348,19 @@ class Session:
             requestdata.answer(ua.StatusCodes.BadTimeout)
 
     async def forward_publish_response(self, result: ua.PublishResult, requestdata: PublishRequestData) -> None:
+        """Answer a Publish request with a NotificationMessage and the acknowledgement results."""
         response = ua.PublishResponse()
         response.Parameters = result
-        result.Results = requestdata.results
+        result.Results = requestdata.results or []
         if requestdata.channel is not None:
             requestdata.channel.send_response(requestdata.requesthdr.RequestHandle, requestdata.seqhdr, response)
         self.trim_retransmission_queue()
 
     async def enqueue_publish(self, requestdata: PublishRequestData, subscription_count: int) -> None:
+        """
+        Answer a Publish request at once if a Subscription has something to send, else queue it; a full queue drops
+        a timed-out request, or the oldest with Bad_TooManyPublishRequests.
+        """
         if await self.iserver.subscription_service.on_publish_request(self.id, requestdata):
             return
         if len(self.publish_queue) >= max(self.publish_request_limit, subscription_count + 1):
@@ -334,6 +378,7 @@ class Session:
             self.publish_queue.popleft().answer(ua.StatusCodes.BadTooManyPublishRequests)
 
     async def settle_publish_queue(self) -> None:
+        """Answer queued requests with pending notifications; without Subscriptions they get Bad_NoSubscription."""
         service = self.iserver.subscription_service
         while self.publish_queue and service.has_pending_notice(self.id):
             requestdata = self.get_publish_request(0)
@@ -344,6 +389,10 @@ class Session:
             self.flush_publish_queue(ua.StatusCodes.BadNoSubscription)
 
     async def close(self, delete_subscriptions: bool, reason: ua.StatusCode | None = None) -> None:
+        """
+        Close the session: its continuation points are released, the close listeners hear reason (default
+        Bad_SessionClosed) and the queued Publish requests get Bad_SessionClosed.
+        """
         if self.state == SessionState.Closed:
             return
         _logger.info("close session %s", self.name)
@@ -373,10 +422,12 @@ class SessionManager:
         self._sweep_task: asyncio.Task[None] | None = None
 
     def next_session_id(self) -> ua.NodeId:
+        """A new SessionId, numeric in namespace 1."""
         self._counter += 1
         return ua.NodeId(self._counter, SESSION_ID_NAMESPACE)
 
     def new_in_process_session(self, name: str = "Internal") -> InternalSession:
+        """An InternalSession with the Admin role for code that runs in the server process."""
         return InternalSession(
             self.iserver,
             self.iserver.aspace,
@@ -387,19 +438,27 @@ class SessionManager:
         )
 
     def session_by_id(self, session_id: ua.NodeId) -> Session | None:
+        """The session with this SessionId."""
         return next((session for session in self.sessions.values() if session.id == session_id), None)
 
     def forget(self, session: Session) -> None:
+        """Remove a closed session."""
         self.sessions.pop(session.token, None)
-        self.iserver.diagnostics.session_forgotten(session)  # J: diagnostics (SRV-93)
+        self.iserver.diagnostics.session_forgotten(session)
 
     def has_session(self, channel_id: int) -> bool:
+        """Whether a session is bound to the channel."""
         return any(s.bound_channel_id == channel_id for s in self.sessions.values())
 
     def has_activated_session(self, channel_id: int) -> bool:
+        """Whether an activated session is bound to the channel."""
         return any(s.bound_channel_id == channel_id and s.is_activated() for s in self.sessions.values())
 
     def resolve(self, channel: SessionChannel, token: ua.NodeId, requires_activated: bool = True) -> Session:
+        """
+        The session of a request's AuthenticationToken on this channel: Bad_SessionIdInvalid for an unknown token,
+        Bad_SecureChannelIdInvalid for another channel, Bad_SessionNotActivated before activation if required.
+        """
         session = self.sessions.get(token)
         if session is None:
             raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
@@ -452,6 +511,10 @@ class SessionManager:
     async def create_session(
         self, channel: SessionChannel, params: ua.CreateSessionParameters, sockname: tuple[str, int] | None = None
     ) -> ua.CreateSessionResult:
+        """
+        CreateSession (OPC 10000-4 v1.05, 5.7.2): check the client nonce, certificate and ApplicationUri, make room
+        (closing the oldest unactivated session at max_sessions) and sign the client certificate and nonce.
+        """
         nonce = params.ClientNonce
         if nonce is None or not CLIENT_NONCE_MIN_LENGTH <= len(nonce) <= CLIENT_NONCE_MAX_LENGTH:
             raise ServiceError(ua.StatusCodes.BadNonceInvalid)
@@ -475,7 +538,7 @@ class SessionManager:
         )
         session.client_certificate = params.ClientCertificate
         self.sessions[session.token] = session
-        self.iserver.diagnostics.session_created(session, params)  # J: diagnostics (SRV-93)
+        self.iserver.diagnostics.session_created(session, params)
         result = ua.CreateSessionResult()
         result.SessionId = session.id
         result.AuthenticationToken = session.token
@@ -502,6 +565,10 @@ class SessionManager:
     async def activate_session(
         self, channel: SessionChannel, token: ua.NodeId, params: ua.ActivateSessionParameters
     ) -> ua.ActivateSessionResult:
+        """
+        ActivateSession (OPC 10000-4 v1.05, 5.7.3), also to move a session to a new channel. A peer that keeps
+        failing the identity check is delayed by the IdentityGuard.
+        """
         if token not in self.sessions:
             raise ServiceError(ua.StatusCodes.BadSessionIdInvalid)
         guard = self.iserver.identity_guard
@@ -567,20 +634,22 @@ class SessionManager:
         if moving:
             session.move_to(channel)
         session.touch()
-        self.iserver.diagnostics.session_activated(session, params)  # J: diagnostics (SRV-93)
+        self.iserver.diagnostics.session_activated(session, params)
         _logger.info("Activated session %s for user %s", session.name, user)
         return result
 
     async def close_session(self, channel: SessionChannel, token: ua.NodeId, delete_subscriptions: bool) -> None:
+        """CloseSession (OPC 10000-4 v1.05, 5.7.4), also for a session that was never activated."""
         session = self.resolve(channel, token, requires_activated=False)
         await session.close(delete_subscriptions, ua.StatusCode(ua.StatusCodes.Good))
 
     async def on_channel_closed(self, channel: SessionChannel) -> None:
+        """A channel closed: its unactivated sessions are closed, its activated ones wait for a new channel."""
         for session in list(self.sessions.values()):
             if session.bound_channel_id != channel.channel_id:
                 continue
             if session.state == SessionState.Created:
-                self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
+                self.iserver.diagnostics.session_ended(session, "abort")
                 await session.close(False, ua.StatusCode(ua.StatusCodes.BadSecureChannelClosed))
             else:
                 session.unbind()
@@ -599,11 +668,15 @@ class SessionManager:
             session.services.user = session.user
             return True
         _logger.info("The user certificate of session %s expired, closing the session", session.name)
-        self.iserver.diagnostics.session_ended(session, "abort")  # J: diagnostics (SRV-93)
+        self.iserver.diagnostics.session_ended(session, "abort")
         await session.close(False, ua.StatusCode(ua.StatusCodes.BadSessionClosed))
         return False
 
     async def sweep(self) -> float:
+        """
+        Close the sessions that timed out or were never activated in time and handle expired user certificates;
+        the seconds until the next sweep is due.
+        """
         now = time.monotonic()
         wait = 1.0
         pending_limit = self.iserver.max_pending_activation_seconds
@@ -616,13 +689,14 @@ class SessionManager:
                 remaining = session.revised_timeout_ms / 1000 - session.idle_seconds(now)
             if remaining <= 0:
                 _logger.info("Session %s expired", session.name)
-                self.iserver.diagnostics.session_ended(session, "timeout")  # J: diagnostics (SRV-93)
+                self.iserver.diagnostics.session_ended(session, "timeout")
                 await session.close(False, ua.StatusCode(ua.StatusCodes.BadTimeout))
             else:
                 wait = min(wait, remaining)
         return max(wait, 0.05)
 
     def start(self) -> None:
+        """Start the timeout sweep."""
         if self._sweep_task is None or self._sweep_task.done():
             self._sweep_task = asyncio.create_task(self._sweep_loop())
 
@@ -636,6 +710,7 @@ class SessionManager:
             await asyncio.sleep(wait)
 
     async def close_all(self) -> None:
+        """Stop the sweep and close every session, for the server's shutdown."""
         if self._sweep_task is not None:
             self._sweep_task.cancel()
             try:
@@ -688,14 +763,19 @@ class InternalSession(AbstractSession):
         self._close_listeners: list[Callable[[InternalSession, ua.StatusCode], Any]] = []
 
     def add_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
-        """Call `callback(session, reason)` (reason: a StatusCode; Good for CloseSession) when the Session closes, expires or is deleted; it may be a coroutine function."""
+        """
+        Call `callback(session, reason)` (reason: a StatusCode; Good for CloseSession) when the Session closes,
+        expires or is deleted; it may be a coroutine function.
+        """
         self._close_listeners.append(callback)
 
     def remove_close_listener(self, callback: Callable[[InternalSession, ua.StatusCode], Any]) -> None:
+        """Remove a close listener; an unknown one is ignored."""
         if callback in self._close_listeners:
             self._close_listeners.remove(callback)
 
     async def run_close_listeners(self, reason: ua.StatusCode) -> None:
+        """Call the close listeners once each; one that raises is logged."""
         listeners, self._close_listeners = self._close_listeners, []
         for listener in listeners:
             try:
@@ -711,13 +791,11 @@ class InternalSession(AbstractSession):
     async def get_endpoints(
         self, params: ua.GetEndpointsParameters | None = None, sockname: tuple[str, int] | None = None
     ) -> list[ua.EndpointDescription]:
+        """The endpoints of the server, with the host of the socket the request came on."""
         return await self.iserver.get_endpoints(params, sockname)
 
     async def read(self, params: ua.ReadParameters) -> list[ua.DataValue]:
-        if self.user is None:
-            user = User()
-        else:
-            user = self.user
+        user = self.user
         await self.iserver.callback_service.dispatch(
             CallbackType.PreRead, ServerItemCallback(params, None, user, self.external)
         )
@@ -735,13 +813,11 @@ class InternalSession(AbstractSession):
         return await self.iserver.history_manager.read_history(params, self.history_points, not self.external)
 
     async def history_update(self, params: ua.HistoryUpdateParameters) -> list[ua.HistoryUpdateResult]:
+        """HistoryUpdate is not supported: Bad_ServiceUnsupported."""
         raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
 
     async def write(self, params: ua.WriteParameters) -> list[ua.StatusCode]:
-        if self.user is None:
-            user = User()
-        else:
-            user = self.user
+        user = self.user
         await self.iserver.callback_service.dispatch(
             CallbackType.PreWrite, ServerItemCallback(params, None, user, self.external)
         )
@@ -758,37 +834,40 @@ class InternalSession(AbstractSession):
         return self.iserver.view_service.browse_next(parameters, self.continuation_points)
 
     async def register_nodes(self, nodes: list[ua.NodeId]) -> list[ua.NodeId]:
-        self.logger.info("Node registration not implemented")
+        """RegisterNodes returns the NodeIds as they are, which OPC 10000-4 v1.05, 5.9.5 allows."""
         return nodes
 
     async def unregister_nodes(self, nodes: list[ua.NodeId]) -> None:
-        self.logger.info("Node registration not implemented")
+        """UnregisterNodes has nothing to release."""
 
     async def translate_browsepaths_to_nodeids(self, params: list[ua.BrowsePath]) -> list[ua.BrowsePathResult]:
         return self.iserver.view_service.translate_browsepaths_to_nodeids(params)
 
     async def add_nodes(self, params: list[ua.AddNodesItem]) -> list[ua.AddNodesResult]:
-        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+        async with self.iserver.model_changes.request():
             return self.iserver.node_mgt_service.add_nodes(params, trusted=not self.external)
 
     async def delete_nodes(self, params: ua.DeleteNodesParameters) -> list[ua.StatusCode]:
-        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+        async with self.iserver.model_changes.request():
             return await self.iserver.node_mgt_service.delete_nodes(params, trusted=not self.external)
 
     async def add_references(self, params: list[ua.AddReferencesItem]) -> list[ua.StatusCode]:
-        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+        async with self.iserver.model_changes.request():
             return self.iserver.node_mgt_service.add_references(params, trusted=not self.external)
 
     async def delete_references(self, params: list[ua.DeleteReferencesItem]) -> list[ua.StatusCode]:
-        async with self.iserver.model_changes.request():  # J: model change events (SRV-96)
+        async with self.iserver.model_changes.request():
             return self.iserver.node_mgt_service.delete_references(params, trusted=not self.external)
 
     def add_method_callback(self, methodid: ua.NodeId, callback: Callable[..., Any]) -> ua.StatusCode:
+        """Bind the Python implementation of a Method node."""
         return self.aspace.add_method_callback(methodid, callback)
 
     async def call(self, params: list[ua.CallMethodRequest]) -> list[ua.CallMethodResult]:
-        """COROUTINE"""
-        # Part 9, 5.5.7 and 5.7.3: Condition Methods need the calling Session (ownership of a Subscription, ClientUserId)
+        """
+        Call Methods. The calling session is current_call_session while they run, since Condition Methods need it
+        (Subscription ownership, ClientUserId; OPC 10000-9 v1.05, 5.5.7 and 5.7.3).
+        """
         token = current_call_session.set(self)
         try:
             return await self.iserver.method_service.call(params, trusted=not self.external)
@@ -809,7 +888,6 @@ class InternalSession(AbstractSession):
     async def create_monitored_items(
         self, params: ua.CreateMonitoredItemsParameters
     ) -> list[ua.MonitoredItemCreateResult]:
-        """Returns Future"""
         subscription_result = await self.subscription_service.create_monitored_items(params, self.session_id)
         await self.iserver.callback_service.dispatch(
             CallbackType.ItemSubscriptionCreated, ServerItemCallback(params, subscription_result, None, self.external)
@@ -835,29 +913,29 @@ class InternalSession(AbstractSession):
         return await self.subscription_service.set_publishing_mode(params, self.session_id)
 
     def republish(self, params: ua.RepublishParameters) -> ua.NotificationMessage:
+        """Republish (OPC 10000-4 v1.05, 5.14.6) a NotificationMessage the client has not acknowledged."""
         return self.subscription_service.republish(params, self.session_id)
 
     async def delete_subscriptions(self, ids: list[int]) -> list[ua.StatusCode]:
         return await self.subscription_service.delete_subscriptions(ids, self.session_id)
 
     async def delete_monitored_items(self, params: ua.DeleteMonitoredItemsParameters) -> list[ua.StatusCode]:
-        # This is an async method, dues to symmetry with client code
         subscription_result = self.subscription_service.delete_monitored_items(params, self.session_id)
         await self.iserver.callback_service.dispatch(
             CallbackType.ItemSubscriptionDeleted, ServerItemCallback(params, subscription_result, None, self.external)
         )
-
         return subscription_result
 
     def publish(self, acks: Iterable[ua.SubscriptionAcknowledgement] | None = None) -> tuple[int, list[ua.StatusCode]]:
+        """Process the acknowledgements of a Publish request; the session's Subscription count and the results."""
         return self.subscription_service.publish(acks or [], self.session_id)
 
     def modify_subscription(self, params: ua.ModifySubscriptionParameters) -> ua.ModifySubscriptionResult:
-        # Sync because the underlying service is sync; the client-side UaSession
-        # is async (RPC). Not part of AbstractSession because the shapes diverge.
+        """ModifySubscription; synchronous, since the subscription service is."""
         return self.subscription_service.modify_subscription(params, self.session_id)
 
     async def transfer_subscriptions(self, params: ua.TransferSubscriptionsParameters) -> list[ua.TransferResult]:
+        """TransferSubscriptions to this session; Bad_ServiceUnsupported for a session without a Publish queue."""
         if self.publish_callback is None:
             raise ServiceError(ua.StatusCodes.BadServiceUnsupported)
         return await self.subscription_service.transfer_subscriptions(

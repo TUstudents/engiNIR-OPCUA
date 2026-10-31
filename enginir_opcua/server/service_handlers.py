@@ -272,6 +272,10 @@ async def delete_monitored_items(
 
 
 def build_service_table() -> list[ServiceEntry]:
+    """
+    The services of the server with their checks. HistoryUpdate, QueryFirst, QueryNext and FindServersOnNetwork are
+    not offered and are answered with Bad_ServiceUnsupported.
+    """
     sessionless: dict[str, Any] = {"requires": Requires.NoSession, "permission": Permission.Unchecked}
     return [
         entry("GetEndpoints", ua.GetEndpointsParameters, get_endpoints, **sessionless),

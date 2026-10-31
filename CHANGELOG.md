@@ -339,6 +339,12 @@ Server sessions (OPC 10000-4, 5.7):
   `stop()` sets ServerState to Shutdown, withdraws discovery registrations and closes sessions and subscriptions.
   `register_to_discovery()` refuses a period above 600 s; `unregister_from_discovery()` of an unknown URL raises
   `UaError`.
+- An ActivateSession without a ClientSignature on a secure channel gets `Bad_ApplicationSignatureInvalid` instead of
+  `Bad_InternalError`.
+- RegisterNodes and UnregisterNodes no longer log "Node registration not implemented" at INFO on every call; returning
+  the NodeIds unchanged is what OPC 10000-4, 5.9.5 allows.
+- `CertificateUserManager.add_role` raises `ValueError` instead of a bare `KeyError` for a missing name, and logs
+  through the module logger.
 
 Subscriptions (OPC 10000-4, 5.13 and 5.14):
 - The publishing interval is revised to between 50 ms and 1 h (0 or less gets 50 ms), also for in-process

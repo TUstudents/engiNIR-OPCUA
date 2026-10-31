@@ -109,22 +109,23 @@ async def test_cry13_symmetric_decryption_failure_raises_decryption_error(
         policy.symmetric_cryptography.decrypt(bytes(17))
 
 
-def _corrupt_signature(monkeypatch: pytest.MonkeyPatch, user_token: bool) -> None:
+def _corrupt_signature(monkeypatch: pytest.MonkeyPatch, user_token: bool, missing: bool = False) -> None:
     activate_session = UaClient.activate_session
 
     async def corrupted(self: UaClient, params: ua.ActivateSessionParameters) -> ua.ActivateSessionResult:
         signature = params.UserTokenSignature if user_token else params.ClientSignature
-        signature.Signature = bytes(len(signature.Signature))
+        signature.Signature = None if missing else bytes(len(signature.Signature))  # type: ignore[assignment]
         return await activate_session(self, params)
 
     monkeypatch.setattr(UaClient, "activate_session", corrupted)
 
 
+@pytest.mark.parametrize("missing", [False, True], ids=["cry7_zeroed", "cry7_missing"])
 async def test_cry7_bad_client_signature_is_application_signature_invalid(
-    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch
+    shared_signing_server: Server, monkeypatch: pytest.MonkeyPatch, missing: bool
 ) -> None:
     """Part 4, 5.7.3: Bad_ApplicationSignatureInvalid for a missing or invalid clientSignature."""
-    _corrupt_signature(monkeypatch, user_token=False)
+    _corrupt_signature(monkeypatch, user_token=False, missing=missing)
     client = await signing_client(shared_signing_server)
     with pytest.raises(ua.uaerrors.BadApplicationSignatureInvalid):
         await client.connect()

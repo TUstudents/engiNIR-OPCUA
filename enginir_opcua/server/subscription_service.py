@@ -20,8 +20,7 @@ from .node_walk import notifiers_of
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
-    from .internal_session import Session
-    from .uaprocessor import PublishRequestData
+    from .internal_session import PublishRequestData, Session
 
 
 def same_owner(owner_user: User | None, owner_certificate: bytes | None, user: User, certificate: bytes | None) -> bool:

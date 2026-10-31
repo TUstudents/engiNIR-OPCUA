@@ -1,5 +1,5 @@
 """
-Socket server forwarding request to internal server
+The TCP side of the server: one OPCUAProtocol per connection (Hello, the inbound queue, timers) and reverse connect.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from ..common.connection import (
     reverse_hello_to_binary,
 )
 from ..common.utils import Buffer
+from ..crypto.security_policies import SecurityPolicyFactory
 from ..ua.ua_binary import struct_from_binary
 from ..ua.uaprotocol_hand import SECURE_MESSAGE_TYPES
 from .internal_server import InternalServer
@@ -35,13 +36,15 @@ REVERSE_QUICK_CLOSE_SECONDS = 1.0
 
 class OPCUAProtocol(asyncio.Protocol):
     """
-    Instantiated for every connection.
+    One client connection. Frames are checked here (Hello first, sizes, types); secure messages go through a bounded
+    queue to the UaProcessor in order. A connection without Hello, without an activated session or without a valid
+    security token in time is closed. A reverse connection waits for the client's Hello without these deadlines.
     """
 
     def __init__(
         self,
         iserver: InternalServer,
-        policies: list[Any],
+        policies: list[SecurityPolicyFactory],
         clients: list[OPCUAProtocol],
         closing_tasks: list[asyncio.Task[Any]],
         limits: TransportLimits,
@@ -58,13 +61,12 @@ class OPCUAProtocol(asyncio.Protocol):
         self.policies = policies
         self.clients = clients
         self.closing_tasks = closing_tasks
-        self.messages: asyncio.Queue[tuple[Any, Any]] = asyncio.Queue(
+        self.messages: asyncio.Queue[tuple[ua.Header | None, Buffer | None]] = asyncio.Queue(
             maxsize=iserver.max_pending_messages_per_connection
         )
         self.limits = limits
         self._task: asyncio.Task[Any] | None = None
         self._activation_watchdog_task: asyncio.Task[Any] | None = None
-        # Reverse connect (SRV-95): the server opened this socket and waits for the Hello of the client
         self.reverse: ReverseConnection | None = reverse
         self.reverse_pending: bool = reverse is not None
         self.reverse_outcome: asyncio.Future[tuple[str, int]] | None = None
@@ -88,7 +90,7 @@ class OPCUAProtocol(asyncio.Protocol):
             refused.close()
             return
         _logger.info("New connection from %s", self.peer_name)
-        self.transport = transport  # type: ignore[assignment]
+        self.transport = cast(asyncio.Transport, transport)
         self.processor = UaProcessor(self.iserver, self.transport, self.limits)
         self.processor.set_policies(self.policies)
         self.processor.on_token_window = self._schedule_channel_expiry
@@ -97,7 +99,6 @@ class OPCUAProtocol(asyncio.Protocol):
         self._task = asyncio.create_task(self._process_received_message_loop())
         if self.reverse is not None:
             self.reverse_outcome = asyncio.get_running_loop().create_future()
-            # SRV-95: no Hello deadline and no activation watchdog on a pending reverse socket, a client may park it
             cast(asyncio.Transport, transport).write(self.reverse.reverse_hello())
             return
         self._hello_timer = asyncio.get_running_loop().call_later(
@@ -159,8 +160,7 @@ class OPCUAProtocol(asyncio.Protocol):
         try:
             self.messages.put_nowait((None, None))
         except asyncio.QueueFull:
-            # Queue is already saturated; the cancel below will tear the loop down.
-            pass
+            _logger.debug("Inbound queue of %s is full; the message loop is cancelled instead", self.peer_name)
         if self._task is not None:
             self._task.cancel()
         if self._activation_watchdog_task is not None:
@@ -281,8 +281,7 @@ class OPCUAProtocol(asyncio.Protocol):
         """
         while True:
             header, buf = await self.messages.get()
-            if header is None and buf is None:
-                # Connection was closed, end task
+            if header is None or buf is None:
                 break
             try:
                 if not await self._process_one_msg(header, buf):
@@ -290,7 +289,7 @@ class OPCUAProtocol(asyncio.Protocol):
             except Exception:
                 _logger.exception("Exception raised while processing message from client")
 
-    async def _process_one_msg(self, header: Any, buf: Buffer) -> bool:
+    async def _process_one_msg(self, header: ua.Header, buf: Buffer) -> bool:
         _logger.debug("_process_received_message %s %s", header.body_size, len(buf))
         if self.processor is None:
             return True
@@ -304,6 +303,8 @@ class OPCUAProtocol(asyncio.Protocol):
 
 
 class BinaryServer:
+    """The listening socket of the server, its connections and its reverse connections."""
+
     def __init__(
         self,
         internal_server: InternalServer,
@@ -316,7 +317,7 @@ class BinaryServer:
         self.port = port
         self.iserver: InternalServer = internal_server
         self._server: asyncio.AbstractServer | None = None
-        self._policies: list[Any] = []
+        self._policies: list[SecurityPolicyFactory] = []
         self.clients: list[OPCUAProtocol] = []
         self.closing_tasks: list[asyncio.Task[Any]] = []
         self.cleanup_task: asyncio.Task[Any] | None = None
@@ -324,7 +325,8 @@ class BinaryServer:
         self.reverse_connections: list[ReverseConnection] = []
         self._started = False
 
-    def set_policies(self, policies: list[Any]) -> None:
+    def set_policies(self, policies: list[SecurityPolicyFactory]) -> None:
+        """The security policies of the endpoints, for the connections made from now on."""
         self._policies = policies
 
     def _make_protocol(self, reverse: ReverseConnection | None = None) -> OPCUAProtocol:
@@ -339,6 +341,7 @@ class BinaryServer:
         )
 
     def add_reverse_connection(self, connection: ReverseConnection) -> None:
+        """Keep a reverse connection to a client open; it starts now if the server runs. ValueError for a duplicate."""
         if any(
             c.client_url == connection.client_url and c.endpoint_url == connection.endpoint_url
             for c in self.reverse_connections
@@ -350,16 +353,14 @@ class BinaryServer:
             connection.start()
 
     def remove_reverse_connection(self, connection: ReverseConnection) -> None:
+        """Stop a reverse connection; its open socket stays until it closes."""
         self.reverse_connections.remove(connection)
         connection.stop()
 
     async def start(self) -> None:
+        """Listen; with port 0 the port the system picked (one socket) is stored in port and hostname."""
         self._server = await asyncio.get_running_loop().create_server(self._make_protocol, self.hostname, self.port)
-        # get the port and the hostname from the created server socket
-        # only relevant for dynamic port asignment (when self.port == 0)
         if self.port == 0 and len(self._server.sockets) == 1:
-            # will work for AF_INET and AF_INET6 socket names
-            # these are to only families supported by the create_server call
             sockname = self._server.sockets[0].getsockname()
             self.hostname = sockname[0]
             self.port = sockname[1]
@@ -370,14 +371,13 @@ class BinaryServer:
             connection.start()
 
     async def stop(self) -> None:
+        """Stop the reverse connections, close every connection, wait for their cleanup and stop listening."""
         self.logger.info("Closing asyncio socket server")
         self._started = False
         for connection in self.reverse_connections:
             connection.stop()
         for transport in self.iserver.asyncio_transports:
             transport.close()
-
-        # stop cleanup process and run it a last time
         if self.cleanup_task is not None:
             self.cleanup_task.cancel()
             try:
@@ -438,20 +438,25 @@ class ReverseConnection:
 
     @property
     def endpoint_url(self) -> str:
+        """The EndpointUrl announced in the ReverseHello."""
         return self._endpoint_url() if callable(self._endpoint_url) else self._endpoint_url
 
     @property
     def server_uri(self) -> str:
+        """The ServerUri announced in the ReverseHello."""
         return self._server_uri() if callable(self._server_uri) else self._server_uri
 
     def reverse_hello(self) -> bytes:
+        """The ReverseHello message to send on a new socket."""
         return reverse_hello_to_binary(self.server_uri, self.endpoint_url)
 
     def start(self) -> None:
+        """Start keeping a socket open to the client."""
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
 
     def stop(self) -> None:
+        """Stop opening sockets to the client."""
         if self._task is not None:
             self._task.cancel()
             self._task = None

@@ -93,6 +93,13 @@ disable_error_code = ["literal-required", "name-defined"]
 module = [
   "enginir_opcua.common.*",
   "enginir_opcua.client.*",
+  "enginir_opcua.server.binary_server_asyncio",
+  "enginir_opcua.server.identity",
+  "enginir_opcua.server.internal_session",
+  "enginir_opcua.server.service_dispatch",
+  "enginir_opcua.server.service_handlers",
+  "enginir_opcua.server.uaprocessor",
+  "enginir_opcua.server.user_managers",
   "enginir_opcua.crypto.*",
   "enginir_opcua.ua.attribute_ids",
   "enginir_opcua.ua.numeric_range",
@@ -192,5 +199,3 @@ ignore = [
 "enginir_opcua/pubsub/**" = ["ANN"]
 "enginir_opcua/server/standard_address_space/**" = ["ANN"]
 "enginir_opcua/common/event_objects.py" = ["ANN"]
-# Non-typed files still needing work
-"enginir_opcua/server/uaprocessor.py" = ["ANN"]

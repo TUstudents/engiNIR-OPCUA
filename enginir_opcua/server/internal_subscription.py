@@ -22,7 +22,7 @@ from .diagnostics_counters import SubscriptionCounters
 from .monitored_item_service import MonitoredItemLimits, MonitoredItemService
 
 if TYPE_CHECKING:
-    from enginir_opcua.server.uaprocessor import PublishRequestData
+    from enginir_opcua.server.internal_session import PublishRequestData
 
     PublishResultCallback = Callable[..., Awaitable[None]]
     PublishRequestCallback = Callable[[int], PublishRequestData | None]

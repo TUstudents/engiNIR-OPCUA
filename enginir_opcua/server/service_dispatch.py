@@ -22,12 +22,16 @@ _logger = logging.getLogger(__name__)
 
 
 class Requires(Enum):
+    """What session a service needs: none, any (CloseSession and the like) or an activated one."""
+
     NoSession = 0
     AnySession = 1
     ActivatedSession = 2
 
 
 class Permission(Enum):
+    """The lowest role a service needs when the endpoint has no permission rules; Unchecked for sessionless ones."""
+
     Unchecked = 0
     Anonymous = 1
     User = 2
@@ -43,6 +47,11 @@ MINIMUM_RANK: dict[Permission, int] = {
 
 @dataclass(frozen=True)
 class OperationBound:
+    """
+    The array of the request whose length is checked (empty is Bad_NothingToDo) against the operation limit named
+    limit (event_limit for event history), over which the request is Bad_TooManyOperations.
+    """
+
     array: str
     limit: str | None
     event_limit: str | None = None
@@ -50,14 +59,17 @@ class OperationBound:
 
 @dataclass
 class ServiceContext:
+    """What a service handler gets besides the parameters: the server, the channel, the session and the headers."""
+
     iserver: InternalServer
     channel: SessionChannel
     session: Session | None
     header: ua.RequestHeader
-    seqhdr: Any
+    seqhdr: ua.SequenceHeader
 
     @property
     def active_session(self) -> Session:
+        """The session of a service that requires one."""
         assert self.session is not None
         return self.session
 
@@ -67,6 +79,8 @@ ServiceHandler = Callable[[ServiceContext, Any], Awaitable[Any]]
 
 @dataclass(frozen=True)
 class ServiceEntry:
+    """One service: how its request is decoded, its handler and what it requires; checks_values decodes Variants lazily."""
+
     name: str
     type_id: ua.NodeId
     decode: Callable[[Buffer], Any]
@@ -87,7 +101,9 @@ def entry(
     operations: OperationBound | None = None,
     checks_values: bool = False,
 ) -> ServiceEntry:
+    """A ServiceEntry for the request type named request_type, decoding the parameters type or with a function."""
     type_id = ua.NodeId(getattr(ua.ObjectIds, f"{request_type}Request_Encoding_DefaultBinary"))
+    decode: Callable[[Buffer], Any]
     if isinstance(parameters, type):
         parameter_type = parameters
 
@@ -100,12 +116,15 @@ def entry(
 
 
 def status_of(error: Exception) -> int:
+    """The StatusCode a failed request is answered with; Bad_InternalError for anything unexpected."""
     if isinstance(error, ServiceError | ua.uaerrors.UaStatusCodeError):
         return error.code
     return ua.StatusCodes.BadInternalError
 
 
 class Dispatcher:
+    """Routes each request to its ServiceEntry after the session, permission, decoding and operation checks."""
+
     def __init__(self, iserver: InternalServer, entries: list[ServiceEntry]) -> None:
         self.iserver = iserver
         self.table: dict[ua.NodeId, ServiceEntry] = {}
@@ -113,11 +132,12 @@ class Dispatcher:
             self.register(service)
 
     def register(self, service: ServiceEntry) -> None:
+        """Add a service; ValueError for a request type that has one."""
         if service.type_id in self.table:
             raise ValueError(f"duplicate service entry {service.name}")
         self.table[service.type_id] = service
 
-    def _answer_fault(self, channel: SessionChannel, handle: int, seqhdr: Any, status: int) -> None:
+    def _answer_fault(self, channel: SessionChannel, handle: int, seqhdr: ua.SequenceHeader, status: int) -> None:
         fault = ua.ServiceFault()
         fault.ResponseHeader.ServiceResult = ua.StatusCode(status)
         channel.send_response(handle, seqhdr, fault)
@@ -155,7 +175,8 @@ class Dispatcher:
             channel, header.AuthenticationToken, requires_activated=service.requires is Requires.ActivatedSession
         )
 
-    async def dispatch(self, channel: SessionChannel, seqhdr: Any, body: Buffer) -> None:
+    async def dispatch(self, channel: SessionChannel, seqhdr: ua.SequenceHeader, body: Buffer) -> None:
+        """Answer one request: the handler's response, nothing for a deferred one (Publish), or a ServiceFault."""
         handle = 0
         try:
             type_id = nodeid_from_binary(body)
@@ -177,7 +198,7 @@ class Dispatcher:
             service_name = service.name
             session = self._session_for(service, channel, header)
             if session is not None:
-                reader_token = current_call_session.set(session.services)  # J: reader of the request (SRV-94)
+                reader_token = current_call_session.set(session.services)
                 session.enter_request()
                 counted = True
                 self._check_permission(service, session, channel, body)
@@ -203,12 +224,12 @@ class Dispatcher:
             self._check_operations(service, params)
             context = ServiceContext(self.iserver, channel, session, header, seqhdr)
             response = await service.handler(context, params)
-            self.iserver.diagnostics.request_done(session, service_name, ua.StatusCodes.Good)  # J: diagnostics (SRV-93)
+            self.iserver.diagnostics.request_done(session, service_name, ua.StatusCodes.Good)
             if response is not None:
                 channel.send_response(handle, seqhdr, response)
         except Exception as error:
             status = status_of(error)
-            self.iserver.diagnostics.request_done(session, service_name, status)  # J: diagnostics (SRV-93)
+            self.iserver.diagnostics.request_done(session, service_name, status)
             if status == ua.StatusCodes.BadInternalError:
                 _logger.exception("Error while processing a request")
             else:

@@ -1,7 +1,15 @@
+"""
+The secure channel of one server connection: Hello, OpenSecureChannel and the decoding of messages, which it hands
+to the dispatcher.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from enginir_opcua import ua
 
@@ -16,14 +24,14 @@ from ..common.connection import (
     TransportLimits,
     error_message_to_binary,
 )
-from ..common.utils import Buffer, ServiceError
+from ..common.utils import Buffer
 from ..crypto.permission_rules import PermissionRuleset
-from ..crypto.security_policies import SecurityPolicyNone
+from ..crypto.security_policies import SecurityPolicyFactory, SecurityPolicyNone
+from ..crypto.uacrypto import certificate_thumbprint
 from ..crypto.validator import CertificateValidator, Outcome, PeerRole, ValidationContext, untrusted_hint
 from ..ua.ua_binary import struct_from_binary, struct_to_binary, uatcp_to_binary
 from .internal_server import InternalServer
 from .internal_session import ChannelSecurity
-from .internal_session import PublishRequestData as PublishRequestData
 
 _logger = logging.getLogger(__name__)
 
@@ -32,16 +40,17 @@ UNTRUSTED_HINT_INTERVAL_SECONDS = 600.0
 
 class UaProcessor:
     """
-    Processor for OPC UA messages. Implements the OPC UA protocol for the server side.
+    The server side of one connection's secure channel. It is the SessionChannel the sessions are bound to: it holds
+    the channel's security, signs and verifies with its keys and sends the responses.
     """
 
-    def __init__(self, internal_server: InternalServer, transport, limits: TransportLimits):
+    def __init__(self, internal_server: InternalServer, transport: asyncio.Transport, limits: TransportLimits) -> None:
         self.iserver: InternalServer = internal_server
-        self.name = transport.get_extra_info("peername")
+        self.name: Any = transport.get_extra_info("peername")
         self.sockname: tuple[str, int] | None = transport.get_extra_info("sockname")
         self._transport = transport
         self._request_tasks: set[asyncio.Task[None]] = set()
-        self._limits = copy.deepcopy(limits)  # Copy limits because they get overriden
+        self._limits = copy.deepcopy(limits)
         self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
         self._channel.peer_certificate_check = self._check_client_certificate
         self._channel.types = internal_server.types
@@ -73,7 +82,7 @@ class UaProcessor:
             return
         logged = self.iserver.untrusted_hints_logged
         now = self.iserver.clock()
-        key = hint.split(" ", 3)[2]
+        key = certificate_thumbprint(outcome.untrusted_chain[0]).hex()
         if key in logged and now - logged[key] < UNTRUSTED_HINT_INTERVAL_SECONDS:
             return
         if len(logged) > 1000:
@@ -83,51 +92,64 @@ class UaProcessor:
 
     @property
     def last_used(self) -> float:
+        """The monotonic time of the last chunk received."""
         return self._channel.last_used
 
     def channel_expires_in(self) -> float:
+        """Seconds until the channel has no valid security token."""
         return self._channel.expires_in()
 
     @property
     def channel_id(self) -> int:
+        """The SecureChannelId."""
         return self._channel.channel_id
 
     @property
     def security(self) -> ChannelSecurity:
+        """The client certificate, policy and mode of the channel."""
         policy = self._channel.security_policy
         return ChannelSecurity(policy.peer_certificate, policy.URI, policy.Mode)
 
     @property
     def peer_address(self) -> str | None:
+        """The IP address of the client."""
         return self.name[0] if self.name else None
 
     @property
     def max_request_message_size(self) -> int:
+        """The largest request this side accepts, in bytes."""
         return self._limits.max_message_size
 
     @property
     def permissions(self) -> PermissionRuleset | None:
+        """The permission rules of the endpoint the channel uses."""
         return self._channel.security_policy.permissions
 
     @property
     def server_certificate(self) -> bytes | None:
+        """The server certificate of the channel's policy, DER."""
         return self._channel.security_policy.host_certificate
 
     @property
     def signature_algorithm(self) -> str | None:
+        """The asymmetric signature algorithm URI of the channel's policy."""
         return self._channel.security_policy.AsymmetricSignatureURI
 
     def sign(self, data: bytes) -> bytes:
+        """Sign with the server's private key under the channel's policy."""
         return self._channel.security_policy.asymmetric_cryptography.signature(data)
 
     def verify(self, data: bytes, signature: bytes | None) -> None:
-        self._channel.security_policy.asymmetric_cryptography.verify(data, signature)
+        """Verify a signature of the client; a missing one fails like a wrong one (SignatureError)."""
+        self._channel.security_policy.asymmetric_cryptography.verify(data, signature or b"")
 
     @property
     def hello_received(self) -> bool:
+        """Whether the Hello was accepted."""
         return self._hello_received
 
     def accept_hello(self, body: Buffer) -> bytes:
+        """Check the Hello, revise the limits and return the Acknowledge message to send."""
         try:
             hello = struct_from_binary(ua.Hello, body)
         except ua.UaError as e:
@@ -138,14 +160,26 @@ class UaProcessor:
         return uatcp_to_binary(ua.MessageType.Acknowledge, ack)
 
     def max_receive_chunk_size(self) -> int:
+        """The largest chunk accepted: the negotiated receive buffer, or 8192 bytes before the Hello."""
         if self._hello_received:
             return self._limits.max_recv_buffer
         return HELLO_MAX_CHUNK_SIZE
 
-    def set_policies(self, policies):
+    def set_policies(self, policies: list[SecurityPolicyFactory]) -> None:
+        """The security policies of the server's endpoints."""
         self._channel.set_policy_factories(policies)
 
-    def send_response(self, requesthandle, seqhdr, response, msgtype=ua.MessageType.SecureMessage):
+    def send_response(
+        self,
+        requesthandle: int,
+        seqhdr: ua.SequenceHeader,
+        response: Any,
+        msgtype: bytes = ua.MessageType.SecureMessage,
+    ) -> None:
+        """
+        Encode and send a response; one above the client's limits becomes a ServiceFault Bad_ResponseTooLarge, and
+        one that fails after its first chunk is aborted (OPC 10000-6 v1.05, 6.7.3).
+        """
         response.ResponseHeader.RequestHandle = requesthandle
         try:
             with self.iserver.types.encoding():
@@ -167,6 +201,10 @@ class UaProcessor:
         self._transport.write(data)
 
     def open_secure_channel(self, message: ua.Message) -> bool:
+        """
+        Answer an OpenSecureChannel request; False when the connection is to be closed. A request that fails a
+        transport check gets an Error message, one with a bad parameter a ServiceFault.
+        """
         algohdr = message.security_header()
         assert isinstance(algohdr, ua.AsymmetricAlgorithmHeader)
         seqhdr = message.sequence_header()
@@ -201,49 +239,44 @@ class UaProcessor:
     def _send_error(self, status: int) -> None:
         self._transport.write(error_message_to_binary(status))
 
-    async def process(self, header, body):
+    async def process(self, header: ua.Header, body: Buffer) -> bool:
+        """
+        Process one secure message (OPN, MSG or CLO; the connection handles the others). False when the connection
+        is to be closed: after a channel failure, which the client is told with an Error message, or a CLO.
+        """
         try:
             msg = self._channel.receive_from_header_and_body(header, body)
-        except ua.uaerrors.BadUserAccessDenied:
-            _logger.warning("Unauthenticated user attempted to connect")
-            return False
         except TransportError as e:
             _logger.warning("Closing connection from %s: %s", self.name, e.reason)
-            self.iserver.diagnostics.channel_rejected(e.status)  # J: diagnostics (SRV-93)
+            self.iserver.diagnostics.channel_rejected(e.status)
             self._send_error(e.status)
             return False
         except Exception as e:
             _logger.warning("Closing connection from %s: channel failure", self.name, exc_info=True)
             status = e.code if isinstance(e, ua.UaStatusCodeError) else ua.StatusCodes.BadSecurityChecksFailed
-            self.iserver.diagnostics.channel_rejected(status)  # J: diagnostics (SRV-93)
+            self.iserver.diagnostics.channel_rejected(status)
             self._send_error(status)
             return False
-        if isinstance(msg, ua.Message):
+        if isinstance(msg, AbortedMessage):
+            _logger.warning("Request %s was aborted by the client", msg.request_id)
+        elif isinstance(msg, ua.Message):
             if header.MessageType == ua.MessageType.SecureOpen:
                 return self.open_secure_channel(msg)
             if header.MessageType == ua.MessageType.SecureClose:
                 self._channel.close()
                 return False
-            if header.MessageType == ua.MessageType.SecureMessage:
-                return await self.process_message(msg.sequence_header(), msg.body())
-        elif isinstance(msg, AbortedMessage):
-            _logger.warning("Request %s was aborted by the client", msg.request_id)
-        elif isinstance(msg, ua.ErrorMessage):
-            _logger.warning("Received an error message type")
-        elif msg is None:
-            pass  # msg is a ChunkType.Intermediate of an ua.MessageType.SecureMessage
-        else:
-            _logger.warning("Unsupported message type: %s", header.MessageType)
-            raise ServiceError(ua.StatusCodes.BadTcpMessageTypeInvalid)
+            return await self.process_message(msg.sequence_header(), msg.body())
         return True
 
     async def process_message(self, seqhdr: ua.SequenceHeader, body: Buffer) -> bool:
+        """Hand a request to the dispatcher in a task of its own, so that requests of a channel run concurrently."""
         task = asyncio.create_task(self.iserver.dispatcher.dispatch(self, seqhdr, body))
         self._request_tasks.add(task)
         task.add_done_callback(self._request_tasks.discard)
         return True
 
-    async def close(self):
+    async def close(self) -> None:
+        """Cancel the running requests and unbind the sessions of the channel."""
         _logger.info("Cleanup client connection: %s", self.name)
         for task in list(self._request_tasks):
             task.cancel()

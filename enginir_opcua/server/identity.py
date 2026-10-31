@@ -55,11 +55,14 @@ LENGTH_FIELD_BYTES = 4
 
 @dataclass(frozen=True)
 class MatchedPolicy:
+    """The UserTokenPolicy a token matched and the SecurityPolicyUri that applies to it (the endpoint's if empty)."""
+
     policy: ua.UserTokenPolicy
     policy_uri: str
 
 
 def token_type_of(token: Any) -> ua.UserTokenType:
+    """The UserTokenType of a decoded identity token; Bad_IdentityTokenRejected for an unknown kind."""
     for token_class, token_type in TOKEN_TYPES.items():
         if isinstance(token, token_class):
             return token_type
@@ -69,6 +72,11 @@ def token_type_of(token: Any) -> ua.UserTokenType:
 def match_token_policy(
     endpoints: Iterable[ua.EndpointDescription], security: ChannelSecurity, token: Any, empty: bool
 ) -> MatchedPolicy:
+    """
+    The UserTokenPolicy of the channel's endpoint that the token names by PolicyId (any of its type for an empty
+    token, which 1.04 clients send for Anonymous). Bad_IdentityTokenRejected if the endpoint offers no policy of the
+    token's type, Bad_IdentityTokenInvalid for an unknown PolicyId (OPC 10000-4 v1.05, 5.7.3).
+    """
     token_type = token_type_of(token)
     offered = [
         (policy, endpoint)
@@ -91,6 +99,7 @@ def match_token_policy(
 
 
 def token_encryption_algorithm(policy_uri: str) -> str:
+    """The asymmetric encryption URI of a SecurityPolicy (empty for None); Bad_SecurityPolicyRejected if unknown."""
     for policy_class in USER_TOKEN_SECURITY_POLICIES:
         if policy_class.URI == policy_uri:
             return policy_class.AsymmetricEncryptionURI
@@ -108,7 +117,11 @@ def _decrypt(private_key: Any, algorithm: str, secret: bytes) -> bytes:
 
 
 def decode_password_secret(private_key: Any, algorithm: str, secret: bytes, nonce: bytes) -> str | None:
-    """Return the password, or None for any defect; every check runs whichever one fails."""
+    """
+    Decrypt a legacy encrypted secret (OPC 10000-4 v1.05, 7.40.2.2) and return the password, or None for any defect:
+    a wrong length, a server nonce that does not match, non-zero padding or invalid UTF-8. Every check runs
+    whichever one fails, so that the time taken does not tell which.
+    """
     try:
         raw = _decrypt(private_key, algorithm, secret)
         intact = True
@@ -153,6 +166,11 @@ def user_name_credentials(
     private_key: Any,
     nonce: bytes,
 ) -> tuple[str, str]:
+    """
+    The user name and password of a UserName token. The password must be encrypted with the algorithm of the
+    matched policy; a Sign channel needs an encrypted one. Bad_IdentityTokenInvalid for anything that does not
+    decode, Bad_IdentityTokenRejected for a plain password on a Sign channel.
+    """
     user_name = _check_user_name(token.UserName)
     expected = token_encryption_algorithm(matched.policy_uri)
     if security.mode == ua.MessageSecurityMode.Sign and not expected:
@@ -182,6 +200,7 @@ def user_name_credentials(
 
 
 def token_signature_algorithm(policy_uri: str) -> str:
+    """The asymmetric signature URI an X509 token must be signed with; None cannot prove possession."""
     if not policy_uri or policy_uri == security_policies.SecurityPolicyNone.URI:
         _logger.warning("Rejected an X509 token: its SecurityPolicy is None and cannot carry a proof of possession")
         raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
@@ -249,6 +268,7 @@ def x509_user_certificate(
 def offers_token_type(
     endpoints: Iterable[ua.EndpointDescription], security: ChannelSecurity, token_type: ua.UserTokenType
 ) -> bool:
+    """Whether the endpoint of the channel offers a UserTokenPolicy of this type."""
     return any(
         policy.TokenType == token_type
         for endpoint in endpoints
@@ -258,6 +278,7 @@ def offers_token_type(
 
 
 def certificate_application_uri(der: bytes) -> str | None:
+    """The first URI of the SubjectAltName of a certificate, its ApplicationUri; None if it has none or does not parse."""
     try:
         san = x509.load_der_x509_certificate(der).extensions.get_extension_for_class(x509.SubjectAlternativeName)
     except (ValueError, x509.ExtensionNotFound):
@@ -267,6 +288,7 @@ def certificate_application_uri(der: bytes) -> str | None:
 
 
 def peer_key(security: ChannelSecurity, peer_address: str | None) -> str:
+    """The key the IdentityGuard counts failures by: the client's ApplicationUri on a secure channel, else its IP."""
     if security.mode != ua.MessageSecurityMode.None_ and security.certificate:
         uri = certificate_application_uri(security.certificate)
         if uri:
@@ -276,6 +298,8 @@ def peer_key(security: ChannelSecurity, peer_address: str | None) -> str:
 
 @dataclass
 class FailureRecord:
+    """The failed identity checks of one peer and its checks still running."""
+
     failures: int = 0
     last_failure: float = 0.0
     in_flight: int = 0
@@ -304,6 +328,7 @@ class IdentityGuard:
         self.records: dict[str, FailureRecord] = {}
 
     def begin(self, key: str) -> float:
+        """Start a check of the peer; the delay in seconds to wait first, growing with the failures."""
         record = self._record(key)
         count = record.failures + record.in_flight
         record.in_flight += 1
@@ -312,6 +337,7 @@ class IdentityGuard:
         return min(self.first_delay * 2.0 ** (count - self.failures_before_delay), self.max_delay)
 
     def end(self, key: str) -> None:
+        """A check of the peer ended."""
         record = self.records.get(key)
         if record is None:
             return
@@ -319,11 +345,13 @@ class IdentityGuard:
         self._drop_if_clean(key, record)
 
     def record_failure(self, key: str) -> None:
+        """Count a failed check of the peer."""
         record = self._record(key)
         record.failures += 1
         record.last_failure = self.clock()
 
     def record_success(self, key: str) -> None:
+        """A successful check forgives the peer's failures."""
         record = self.records.get(key)
         if record is not None:
             record.failures = 0
@@ -352,6 +380,10 @@ class IdentityGuard:
 
 
 def authorize_register_server(security: ChannelSecurity, server: ua.RegisteredServer) -> None:
+    """
+    Check a RegisterServer request (OPC 10000-4 v1.05, 5.5.5): a secure channel whose certificate carries the
+    ServerUri, at least one ServerName and, for an online server, a DiscoveryUrl.
+    """
     if security.mode == ua.MessageSecurityMode.None_:
         _logger.warning("Rejected RegisterServer on a channel without security")
         raise ServiceError(ua.StatusCodes.BadSecurityModeInsufficient)
