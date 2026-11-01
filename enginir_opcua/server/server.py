@@ -835,6 +835,7 @@ class Server:
             "max_monitored_items": iserver.max_monitored_items,
             "max_monitored_items_per_subscription": iserver.max_monitored_items_per_subscription,
             "hello_timeout_seconds": iserver.hello_timeout_seconds,
+            "max_message_size_before_activation": iserver.max_message_size_before_activation,
             "max_string_length": iserver.max_string_length,
             "max_byte_string_length": iserver.max_byte_string_length,
             "max_array_length": iserver.max_array_length,

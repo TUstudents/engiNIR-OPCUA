@@ -110,7 +110,9 @@ class InternalServer:
     max_pending_messages_per_connection, the parsed messages queued behind one connection before it is closed;
     max_connections, the accepted TCP connections, refused at connection_made; hello_timeout_seconds and
     max_pending_activation_seconds (0 disables), after which a connection without Hello or without an activated
-    session is closed; max_lifetime_count, max_keep_alive_count and max_subscription_lifetime_ms, which bound how long
+    session is closed; max_message_size_before_activation (128 KiB), the largest message a channel without an activated
+    session may send, so that an anonymous discovery channel cannot make the server hold max_message_size of an
+    unfinished message; max_lifetime_count, max_keep_alive_count and max_subscription_lifetime_ms, which bound how long
     an orphaned subscription lives; max_subscriptions, the subscriptions of the whole server.
     """
 
@@ -149,6 +151,7 @@ class InternalServer:
         self.channel_settings: ChannelSettings = ChannelSettings()
         self.hello_timeout_seconds: float = 30.0
         self.max_pending_activation_seconds: float = 30.0
+        self.max_message_size_before_activation: int = 131_072
         self.max_lifetime_count: int = 15_000
         self.max_keep_alive_count: int = 5_000
         self.min_publishing_interval_ms: float = 50.0

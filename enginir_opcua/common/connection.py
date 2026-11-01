@@ -41,6 +41,10 @@ REVERSE_HELLO_TYPES = frozenset({ua.MessageType.ReverseHello, ua.MessageType.Err
 MAX_REVERSE_HELLO_SIZE = 8 + 2 * (4 + MAX_ENDPOINT_URL_BYTES)
 
 
+def _always_activated() -> bool:
+    return True
+
+
 def _refuse_unchecked_certificate(_chain: bytes) -> None:
     raise TransportError(
         ua.StatusCodes.BadSecurityChecksFailed,
@@ -463,6 +467,8 @@ class SecureChannel:
         self.security_policy = security_policy
         self._policies: list[SecurityPolicyFactory] = []
         self.peer_certificate_check: Callable[[bytes], None] = _refuse_unchecked_certificate
+        self.max_message_size_before_activation: int | None = None
+        self.is_activated: Callable[[], bool] = _always_activated
         self._open = False
         self.security_token = ua.ChannelSecurityToken()
         self._current: TokenSlot | None = None
@@ -848,9 +854,14 @@ class SecureChannel:
             _logger.warning("Message %s aborted: %s", msg, aborted.error)
             self._drop_incoming_parts()
             return aborted
-        if not self._limits.is_msg_size_within_limit(self._incoming_size + len(msg.Body)):
+        size = self._incoming_size + len(msg.Body)
+        if not self._limits.is_msg_size_within_limit(size):
             self._drop_incoming_parts()
             raise MessageSizeExceeded("Message size exceeds the limit")
+        cap = self.max_message_size_before_activation
+        if cap is not None and size > cap and not self.is_activated():
+            self._drop_incoming_parts()
+            raise MessageSizeExceeded(f"Message above {cap} bytes before a session is activated")
         self._incoming_parts.append(msg)
         self._incoming_size += len(msg.Body)
         if not self._limits.is_chunk_count_within_limit(len(self._incoming_parts)):

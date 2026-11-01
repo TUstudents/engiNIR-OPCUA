@@ -576,3 +576,33 @@ def test_com122_frame_reader_takes_rhe_only_when_asked() -> None:
     lenient = FrameReader(lambda: 8208, REVERSE_HELLO_TYPES)
     lenient.feed(data)
     assert [header.MessageType for header, _ in lenient.frames()] == [b"RHE"]
+
+
+async def test_an_unfinished_discovery_request_above_128_kib_before_activation_closes_the_connection(
+    raw_peer: RawPeer,
+) -> None:
+    """
+    Upstream report: a GetEndpointsRequest with a huge EndpointUrl in intermediate chunks, the final chunk never
+    sent, on an anonymous None channel. Before a session is activated a message may have at most 128 KiB.
+    """
+    channel = await open_channel_as_client(raw_peer)
+    channel.limits.max_send_buffer = 8192
+    request = ua.GetEndpointsRequest(Parameters=ua.GetEndpointsParameters(EndpointUrl="x" * (1024 * 1024)))
+    data = channel.message_to_binary(struct_to_binary(request), request_id=2)
+    intermediate = [data[i : i + 8192] for i in range(0, len(data), 8192)][:-1]
+    for chunk in intermediate[:20]:
+        await raw_peer.send(chunk)
+    error = await raw_peer.receive_error()
+    assert error.Error.value == ua.StatusCodes.BadTcpMessageTooLarge
+    assert await raw_peer.is_closed_by_peer()
+
+
+async def test_an_activated_session_may_send_messages_above_128_kib(server: Server) -> None:
+    """The cap before activation does not limit an activated session; max_message_size does."""
+    ns = await server.register_namespace("http://test.example/pre-activation")
+    holder = await server.nodes.objects.add_variable(ns, "Large", b"", ua.VariantType.ByteString)
+    await holder.set_writable()
+    async with Client(f"opc.tcp://admin@127.0.0.1:{server.endpoint.port}", allow_no_security=True) as client:
+        payload = bytes(512 * 1024)
+        await client.get_node(holder.nodeid).write_value(payload, ua.VariantType.ByteString)
+        assert await client.get_node(holder.nodeid).read_value() == payload

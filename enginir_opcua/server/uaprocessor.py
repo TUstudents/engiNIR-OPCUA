@@ -54,10 +54,15 @@ class UaProcessor:
         self._limits = copy.deepcopy(limits)
         self._channel = SecureChannel(SecurityPolicyNone(), self._limits)
         self._channel.peer_certificate_check = self._check_client_certificate
+        self._channel.max_message_size_before_activation = internal_server.max_message_size_before_activation
+        self._channel.is_activated = self._has_activated_session
         self._channel.types = internal_server.types
         self._hello_received: bool = False
         self._hello_protocol_version = 0
         self.on_token_window: Callable[[float], None] | None = None
+
+    def _has_activated_session(self) -> bool:
+        return self.iserver.session_manager.has_activated_session(self._channel.channel_id)
 
     def _check_client_certificate(self, chain: bytes) -> None:
         validator = self.iserver.certificate_validator

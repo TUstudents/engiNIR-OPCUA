@@ -25,6 +25,13 @@ Security:
   carries the ServerUri; empty ServerNames give `Bad_ServerNameMissing`, `IsOnline = false` removes the entry, the
   registry holds at most 100 servers and entries expire after 10 minutes.
 
+- A channel without an activated session may send messages of at most 128 KiB
+  (`iserver.max_message_size_before_activation`, default 131 072); a larger one closes the connection with
+  `Bad_TcpMessageTooLarge` (OPC 10000-6, 7.1.3). Discovery has to work on an anonymous SecurityPolicy None channel, and
+  an unfinished GetEndpoints or FindServers request in intermediate chunks could make the server hold the full
+  `max_message_size` (about 100 MB) per connection until the activation watchdog closed it after 30 s, as reported
+  upstream for opcua-asyncio. An activated session keeps the full `max_message_size`.
+
 Secure defaults and certificate trust (OPC 10000-4, 6.1.3):
 - One `CertificateValidator(trust_store, suppress=..., check_revocation=..., accept_ca_application_certificates=...)`
   runs the validation steps in the spec's order (chain, signature, security policy, trust, validity, host name, URI,
