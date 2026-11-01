@@ -102,6 +102,15 @@ def test_quickstart_without_users_accepts_anonymous_only(tmp_path: Path) -> None
     assert isinstance(server.iserver.user_manager, AnonymousReadOnlyUserManager)
 
 
+async def test_push_management_in_the_config_is_enabled_by_init(tmp_path: Path) -> None:
+    server = Server.quickstart(URL, pki=tmp_path / "pki", push_management=True)
+    await server.init()
+    assert server._certificate_manager is not None
+    plain = Server.quickstart(URL, pki=tmp_path / "pki")
+    await plain.init()
+    assert plain._certificate_manager is None
+
+
 def test_quickstart_applies_limits_and_overrides(tmp_path: Path) -> None:
     limits = ServerLimits(max_sessions=7, max_connections=70, max_message_size=1_000_000, max_buffer_size=16_384)
     server = Server.quickstart(URL, pki=tmp_path / "pki", limits=limits, security=["Aes256Sha256RsaPss,SignAndEncrypt"])

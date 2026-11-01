@@ -121,6 +121,18 @@ def test_a_setting_given_explicitly_replaces_the_profile_default() -> None:
         pytest.param({"identity_tokens": []}, "server.identity_tokens", id="token_empty"),
         pytest.param({"allow_plaintext_password": "yes"}, "server.allow_plaintext_password", id="plaintext_type"),
         pytest.param({"accept_server_registrations": 1}, "server.accept_server_registrations", id="registrations_type"),
+        pytest.param({"push_management": "yes"}, "server.push_management", id="push_type"),
+        pytest.param(
+            {
+                "profile": "development",
+                "endpoint": "opc.tcp://127.0.0.1:4840/",
+                "security": ["None"],
+                "pki": None,
+                "push_management": True,
+            },
+            "server.push_management",
+            id="push_needs_pki",
+        ),
         pytest.param({"anonymous": False}, "server.anonymous", id="no_identity"),
         pytest.param({"users_file": "/does/not/exist.toml"}, "server.users_file", id="users_missing"),
         pytest.param({"limits": ServerLimits(max_sessions=0)}, "server.limits.max_sessions", id="sessions_zero"),
@@ -447,3 +459,11 @@ def test_url_errors_do_not_show_the_password(url: str) -> None:
         parse_opc_tcp_url(url)
     assert "s3cret" not in str(refused.value)
     assert "alice@" in str(refused.value)
+
+
+def test_push_management_is_off_by_default_and_reads_back(tmp_path: Path) -> None:
+    assert ServerConfig().push_management is False
+    path = tmp_path / "server.toml"
+    ServerConfig(pki="pki", push_management=True).dump(path)
+    (tmp_path / "pki").mkdir()
+    assert ServerConfig.from_toml(path).push_management is True

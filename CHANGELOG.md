@@ -13,6 +13,12 @@ Each release has its own section; the newest is at the top.
   sets `users_file = "users.toml"`. Before, it told you to run `enginir-opcua user add DIR/users.toml`, but the
   generated configuration never read that file, so the users you added could not log in.
 
+### Additions
+
+- `ServerConfig.push_management` (TOML `push_management = true`, default false): `Server.init()` calls
+  `enable_push_management()`, so Part 12 certificate management can be switched on in a configuration file and with
+  `enginir-opcua server --config`. It needs `pki`.
+
 ## 3.0.0 (2026-11-01)
 
 The first release of `enginir-opcua`, a fork of [opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0.

@@ -553,6 +553,13 @@ class ServerConfig:
     accept_server_registrations: bool | None = field(
         default=None, metadata={"doc": "Let other servers register with this one (discovery server)"}
     )
+    push_management: bool = field(
+        default=False,
+        metadata={
+            "doc": "Let a SecurityAdmin replace the certificate and the trust lists over OPC UA (OPC 10000-12 push "
+            "management); needs pki"
+        },
+    )
     anonymous: bool = field(default=True, metadata={"doc": "Accept anonymous (read-only) sessions"})
     users_file: str | Path | None = field(
         default=None, metadata={"doc": "Users file, see enginir-opcua user add; relative to this file"}
@@ -600,6 +607,9 @@ class ServerConfig:
         problems.text("manufacturer_name", self.manufacturer_name)
         problems.boolean("create_pki", self.create_pki)
         problems.boolean("anonymous", self.anonymous)
+        problems.boolean("push_management", self.push_management)
+        if self.push_management is True and self.pki is None:
+            problems.add("push_management", "needs a PKI directory to write the changes to: give pki")
         if self.private_key_password_env is not None:
             problems.variable("private_key_password_env", self.private_key_password_env)
         secure_policy = self._check_security(problems)

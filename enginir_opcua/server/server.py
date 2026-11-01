@@ -272,8 +272,9 @@ class Server:
 
     async def init(self, shelf_file: Path | None = None) -> None:
         """
-        Build the address space, set the application URI, load the PKI directory of the configuration and write
-        ServerArray, ServiceLevel (255) and BuildInfo (the version of enginir-opcua; set_build_info replaces it).
+        Build the address space, set the application URI, load the PKI directory of the configuration, enable push
+        management if the configuration asks for it, and write ServerArray, ServiceLevel (255) and BuildInfo (the
+        version of enginir-opcua; set_build_info replaces it).
 
         :param shelf_file: Cache of the standard address space; created if it does not exist (see the class).
         """
@@ -281,6 +282,8 @@ class Server:
         await self.set_application_uri(self._application_uri)
         if self._config is not None:
             await self._apply_pki(self._config)
+            if self._config.push_management:
+                await self.enable_push_management()
         sa_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServerArray))
         await sa_node.write_value([self._application_uri])
         sl_node = self.get_node(ua.NodeId(ua.ObjectIds.Server_ServiceLevel))

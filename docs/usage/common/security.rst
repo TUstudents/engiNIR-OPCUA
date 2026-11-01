@@ -150,7 +150,9 @@ is not given takes the value of the profile. A setting that is given replaces it
 
 The server above is still the ``secure`` profile, but two of its settings are weaker than the profile's and each is
 logged. The server settings are ``security``, ``suppress``, ``identity_tokens``, ``allow_plaintext_password``,
-``accept_server_registrations``, ``anonymous`` and ``user_manager``. The client settings are ``security`` (a
+``accept_server_registrations``, ``push_management``, ``anonymous`` and ``user_manager``. ``push_management = true``
+makes ``init()`` call ``Server.enable_push_management()``, so a SecurityAdmin can manage the certificate and the trust
+lists over OPC UA (OPC 10000-12). The client settings are ``security`` (a
 ``Policy,Mode`` text, ``None`` or ``auto``), ``suppress`` and ``allow_plaintext_password``. ``suppress`` names the
 certificate errors that are accepted instead of rejected, such as ``revocation_unknown``.
 
