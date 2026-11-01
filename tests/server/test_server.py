@@ -852,33 +852,6 @@ async def test_message_limits_works(restore_transport_limits_server: Server):
         await n.read_value()
 
 
-@pytest.mark.skip(reason="broken with older python version in CI")
-async def test_loading_shelf(tmp_path: Path):
-    demo_shelf_file: Path = tmp_path / "some_shelf"
-
-    # create cache file
-    server = Server(allow_no_security=True)
-    await server.init(shelf_file=demo_shelf_file)
-    del server
-
-    # modify cache content
-    id = ua.NodeId(ua.ObjectIds.Server_ServerStatus_SecondsTillShutdown)
-    sh = shelve.open(str(demo_shelf_file), "w", writeback=True)
-    obj = sh[id.to_string()]
-    obj.attributes[ua.AttributeIds.Value].value = ua.DataValue(123)
-    sh[id.to_string()] = obj  # reassign to ensure re-pickling
-    nod = obj.attributes[ua.AttributeIds.Value]
-    sh.close()
-
-    # ensure that we are actually loading from the cache
-    server = Server(allow_no_security=True)
-    await server.init(shelf_file=demo_shelf_file)
-    sh2 = shelve.open(str(demo_shelf_file), "w", writeback=False)
-    nod2 = sh2[id.to_string()].attributes[ua.AttributeIds.Value]
-    assert nod.value == nod2.value
-    assert await server.get_node(id).read_value() == 123
-
-
 async def test_null_auth(server):
     """
     OPC-UA Specification Part 4, 5.6.3 specifies that a:
@@ -1071,13 +1044,20 @@ def test_srv104_set_security_policy_and_identity_tokens_refuse_an_empty_list() -
         srv.set_identity_tokens([])
 
 
-async def test_srv70_a_new_shelf_is_written_without_the_sqlite3_backend(tmp_path: Path) -> None:
-    """dbm.sqlite3, the default of dbm since Python 3.13, commits every node on its own (seconds per shelf)."""
+async def test_srv70_a_new_shelf_is_fast_to_write_and_is_what_a_later_server_loads(tmp_path: Path) -> None:
+    """
+    dbm.sqlite3, the default of dbm since Python 3.13, commits every node on its own (seconds per shelf); a shelf
+    that exists is read, not built again.
+    """
     shelf = tmp_path / "standard"
     server = Server(allow_no_security=True)
     await server.init(shelf_file=shelf)
     assert dbm.whichdb(str(shelf)) in ("dbm.ndbm", "dbm.dumb")
+    nodeid = ua.NodeId(ua.ObjectIds.Server_ServerStatus_SecondsTillShutdown)
+    with shelve.open(str(shelf), "w") as stored:
+        node = stored[nodeid.to_string()]
+        node.attributes[ua.AttributeIds.Value].value = ua.DataValue(ua.Variant(123, ua.VariantType.UInt32))
+        stored[nodeid.to_string()] = node
     reloaded = Server(allow_no_security=True)
     await reloaded.init(shelf_file=shelf)
-    name = await reloaded.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus)).read_browse_name()
-    assert name == ua.QualifiedName("ServerStatus", 0)
+    assert await reloaded.get_node(nodeid).read_value() == 123
