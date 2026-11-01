@@ -1,7 +1,7 @@
 """
 THE DEVELOPMENT PROFILE: NO SECURITY, LOOPBACK ONLY. FOR LOCAL EXPERIMENTS, NEVER FOR A PLANT.
 
-This is the only example that uses the security policy None. Messages are neither signed nor encrypted, the
+Together with 17_legacy_profile.py this is the only example that uses the security policy None. Messages are neither signed nor encrypted, the
 certificates are not checked and a user name travels in clear text, so the profile refuses any address that is not
 loopback: Server.quickstart(profile="development") raises ConfigurationError for a host such as 0.0.0.0, and the
 server logs a warning when it starts. Everything else about the API is the same as in 01_secure_pair.py, which

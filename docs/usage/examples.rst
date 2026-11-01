@@ -34,7 +34,12 @@ Getting started
 
 `15_development_profile.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/15_development_profile.py>`_
     The ``development`` profile: no security and loopback addresses only, for experiments on your own machine. It is
-    the only example without encryption.
+    the only example without encryption besides the legacy one.
+
+`17_legacy_profile.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/17_legacy_profile.py>`_
+    The ``legacy`` profile for old devices: a server that offers every policy, a client with ``security = "auto"``
+    that takes the strongest one, a client that names a deprecated policy and a client without security. Every
+    weaker choice is logged as a warning.
 
 
 Reading, writing and calling

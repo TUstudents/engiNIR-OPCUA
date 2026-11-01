@@ -256,8 +256,10 @@ class Client:
         **overrides: Any,
     ) -> "Client":
         """
-        A client for one of the two profiles, not connected. "secure": Basic256Sha256 with SignAndEncrypt.
-        "development": the server has to be on this machine, and the default is no security. `pki` is the PKI
+        A client for one of the profiles, not connected. "secure": Basic256Sha256 with SignAndEncrypt.
+        "development": the server has to be on this machine, and the default is no security. "legacy": "auto", the
+        strongest policy the server offers, falling back to no security; weaker choices are logged at connect.
+        `pki` is the PKI
         directory (created at the first connect() with a self-signed certificate; the server certificate has to be
         in its trusted/certs, see `enginir-opcua trust`); `overrides` any other ClientConfig field.
         """

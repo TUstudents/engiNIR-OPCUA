@@ -66,7 +66,11 @@ The same with two programs, a users file and the command line is in
 ## Secure by default
 
 - **Encrypted endpoints.** The quick setup offers only SignAndEncrypt with Basic256Sha256, Aes128_Sha256_RsaOaep and
-  Aes256_Sha256_RsaPss. An endpoint without security exists only when you ask for it.
+  Aes256_Sha256_RsaPss. An endpoint without security exists only when you ask for it. `Client(url)` without a
+  security choice refuses to connect; `Client(url, allow_no_security=True)` is the explicit request.
+- **Profiles.** `secure` is the default; `development` (this machine only, no security) and `legacy` (old devices,
+  every policy) are your decision, and every weaker setting is logged at start. See
+  [Security Profiles](https://enginir-opcua.readthedocs.io/en/latest/usage/common/security.html).
 - **Explicit trust.** Both sides check the peer's certificate at every secure channel, in the order of OPC 10000-4,
   and trust nobody until a certificate is put into the PKI directory.
 - **Users and roles.** Anonymous sessions may read, browse and subscribe. Writing, calling methods and changing the
@@ -87,7 +91,9 @@ enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli
 ```
 
 `enginir-opcua` has the subcommands `read`, `write`, `call`, `ls`, `subscribe`, `history`, `discover`, `server`,
-`shell` and `generate-structs`, and `init`, `trust`, `pki`, `pair` and `user` to set up certificates and users. See
+`shell` and `generate-structs`, and `init`, `trust`, `pki`, `pair` and `user` to set up certificates and users. The
+client commands need `--pki-dir` or `--security`; `--security None` asks for a connection without security, and the demo
+server needs `--pki-dir` or `--no-security`. See
 [Installation & CLI Tools](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/installation.html).
 
 ## Documentation
@@ -99,7 +105,7 @@ The documentation is at <https://enginir-opcua.readthedocs.io/en/latest/>.
 - [OPC UA Basics](https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/opc-ua-basics.html): the terms the documentation uses
 - [Client](https://enginir-opcua.readthedocs.io/en/latest/usage/client/overview.html), [Server](https://enginir-opcua.readthedocs.io/en/latest/usage/server/overview.html),
   [Synchronous API](https://enginir-opcua.readthedocs.io/en/latest/usage/sync/overview.html) and [PubSub](https://enginir-opcua.readthedocs.io/en/latest/usage/pubsub/overview.html) (experimental)
-- [Examples](https://enginir-opcua.readthedocs.io/en/latest/usage/examples.html): 16 runnable programs in [`examples/`](https://github.com/TUstudents/engiNIR-OPCUA/tree/master/examples), from a secure pair to alarms,
+- [Examples](https://enginir-opcua.readthedocs.io/en/latest/usage/examples.html): 17 runnable programs in [`examples/`](https://github.com/TUstudents/engiNIR-OPCUA/tree/master/examples), from a secure pair to alarms,
   history, file transfer and reverse connect
 - [Migrating from asyncua](https://enginir-opcua.readthedocs.io/en/latest/migration.html), and every change in [CHANGELOG.md](https://github.com/TUstudents/engiNIR-OPCUA/blob/master/CHANGELOG.md)
 

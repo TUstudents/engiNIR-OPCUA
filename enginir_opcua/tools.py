@@ -26,6 +26,7 @@ from enginir_opcua.sync import Client as SyncClient
 from enginir_opcua.sync import SyncNode, ThreadLoop
 from enginir_opcua.ua.uaerrors import UaError, UaStatusCodeError
 
+DEFAULT_POLICY = "Basic256Sha256,SignAndEncrypt"
 PASSWORD_VARIABLE = "ENGINIR_OPCUA_PASSWORD"
 PROGRAM = "enginir-opcua"
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -246,12 +247,18 @@ def add_client_options(parser: argparse.ArgumentParser, security: bool = True) -
         metavar="STRING",
         help="Security settings: Policy,Mode,certificate,private_key[,server_certificate], for example"
         " Basic256Sha256,SignAndEncrypt,cert.der,pk.pem,server.der; with --pki-dir only Policy,Mode."
-        " Default: no security",
+        " None asks for a connection without security. Without --security and --pki-dir the command is refused."
+        f" With --pki-dir the default is {DEFAULT_POLICY}",
     )
     parser.add_argument(
         "--pki-dir",
         metavar="DIR",
         help="PKI directory with the certificate, key and trusted certificates of this client",
+    )
+    parser.add_argument(
+        "--allow-plaintext-password",
+        action="store_true",
+        help="INSECURE: send the password in clear text when the channel cannot encrypt it",
     )
     parser.add_argument("--user", help="User name for authentication. Overrides the user name in the URL.")
     parser.add_argument(
@@ -303,21 +310,36 @@ def _password_from(args: argparse.Namespace) -> str | None:
     return os.environ.get(PASSWORD_VARIABLE)
 
 
+def _pki_security(text: str) -> tuple[type[security_policies.SecurityPolicy], ua.MessageSecurityMode]:
+    policy_name, _, mode_name = text.partition(",")
+    policy = getattr(security_policies, f"SecurityPolicy{policy_name}", None)
+    modes = {"Sign": ua.MessageSecurityMode.Sign, "SignAndEncrypt": ua.MessageSecurityMode.SignAndEncrypt}
+    if policy is None or mode_name not in modes:
+        raise UsageError("with --pki-dir, --security takes Policy,Mode, for example Basic256Sha256,SignAndEncrypt")
+    return policy, modes[mode_name]
+
+
 async def configure_client(client: Client, args: argparse.Namespace) -> None:
+    if not args.security and not args.pki_dir:
+        raise UsageError(
+            "no security is chosen: give --pki-dir DIR (with --security Policy,Mode, default "
+            f"{DEFAULT_POLICY}), --security Policy,Mode,certificate,private_key, or --security None to connect "
+            "without security"
+        )
+    pki_security = _pki_security(args.security or DEFAULT_POLICY) if args.pki_dir and args.security != "None" else None
     if args.user:
         client.set_user(args.user)
     password = _password_from(args)
     if password:
         client.set_password(password)
+    if args.allow_plaintext_password:
+        client.allow_plaintext_password = True
     if args.pki_dir:
         await client.set_pki_directory(args.pki_dir, create=False)
-    if args.pki_dir and args.security:
-        policy_name, _, mode_name = args.security.partition(",")
-        policy = getattr(security_policies, f"SecurityPolicy{policy_name}", None)
-        modes = {"Sign": ua.MessageSecurityMode.Sign, "SignAndEncrypt": ua.MessageSecurityMode.SignAndEncrypt}
-        if policy is None or mode_name not in modes:
-            raise UsageError("with --pki-dir, --security takes Policy,Mode, for example Basic256Sha256,SignAndEncrypt")
-        await client.set_security(policy, mode=modes[mode_name])
+    if args.security == "None":
+        client.allow_no_security = True
+    elif pki_security is not None:
+        await client.set_security(pki_security[0], mode=pki_security[1])
     else:
         await client.set_security_string(args.security)
 
@@ -683,7 +705,9 @@ async def _tick(demo: _DemoServer) -> None:
 async def _start_demo_server(args: argparse.Namespace) -> _DemoServer:
     if args.config:
         return await _start_configured_server(args)
-    server = Server(user_manager=PermissiveUserManager() if args.accept_all_logins else None, allow_no_security=True)
+    server = Server(
+        user_manager=PermissiveUserManager() if args.accept_all_logins else None, allow_no_security=args.no_security
+    )
     server.allow_plaintext_password = args.accept_all_logins
     await server.init()
     server.set_endpoint(args.url)
@@ -736,6 +760,7 @@ def _check_config_options(args: argparse.Namespace) -> None:
             ("--private-key", bool(args.private_key)),
             ("--pki-dir", bool(args.pki_dir)),
             ("--accept-all-logins", args.accept_all_logins),
+            ("--no-security", args.no_security),
         )
         if given
     ]
@@ -743,11 +768,24 @@ def _check_config_options(args: argparse.Namespace) -> None:
         raise UsageError(f"--config replaces {', '.join(conflicting)}; put these settings in the file")
 
 
+def _check_demo_security(args: argparse.Namespace) -> None:
+    secure = bool(args.pki_dir) or bool(args.certificate and args.private_key)
+    if not secure and not args.no_security:
+        raise UsageError(
+            "the demo server is secure by default and needs a certificate: give --pki-dir DIR (it is created when "
+            "missing), or ask for a server without security with --no-security"
+        )
+    if args.accept_all_logins and not args.no_security:
+        raise UsageError("--accept-all-logins sends passwords in clear text and needs --no-security")
+
+
 def _server(args: argparse.Namespace) -> int:
     if args.config:
         _check_config_options(args)
         config = ServerConfig.from_toml(args.config)
         warn(f"Serving {config.endpoint} with the {config.profile} profile from {args.config}.")
+    else:
+        _check_demo_security(args)
     logins = (
         " INSECURE: --accept-all-logins accepts every user name and password and lets anonymous users write."
         if args.accept_all_logins
@@ -755,8 +793,9 @@ def _server(args: argparse.Namespace) -> int:
     )
     populate = " --populate adds a writable variable and a method." if args.populate else ""
     if not args.config:
+        offer = "an endpoint without security" if args.no_security else "secure endpoints"
         warn(
-            f"This is a demo server. It offers an endpoint without security at {shown_url(args.url)}"
+            f"This is a demo server. It offers {offer} at {shown_url(args.url)}"
             f" and, by default, accepts only anonymous read-only sessions.{logins}{populate}"
             " Do not use it to expose real data on a network you do not trust."
         )
@@ -934,19 +973,31 @@ def _server_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-s", "--shell", action="store_true", help="Open a Python shell instead of just serving; the server goes on"
     )
-    parser.add_argument("--certificate", help="Server certificate")
+    parser.add_argument("--certificate", help="Server certificate; with --private-key it makes the server secure")
     parser.add_argument("--private-key", "--private_key", dest="private_key", help="Server private key")
-    parser.add_argument("--pki-dir", metavar="DIR", help="PKI directory of the server")
+    parser.add_argument(
+        "--pki-dir",
+        metavar="DIR",
+        help="PKI directory of the server; it makes the server secure (Basic256Sha256, Aes128Sha256RsaOaep and"
+        " Aes256Sha256RsaPss with SignAndEncrypt). Without it, --no-security is required",
+    )
+    parser.add_argument(
+        "--no-security",
+        action="store_true",
+        help="INSECURE: also offer an endpoint without security; a warning is logged. Needed when there is no"
+        " --pki-dir and no --certificate with --private-key",
+    )
     parser.add_argument(
         "--config",
         metavar="FILE",
         help="Serve from a server configuration file (see enginir-opcua init server) instead of the demo settings;"
-        " it excludes --url, --certificate, --private-key, --pki-dir and --accept-all-logins",
+        " it excludes --url, --certificate, --private-key, --pki-dir, --no-security and --accept-all-logins",
     )
     parser.add_argument(
         "--accept-all-logins",
         action="store_true",
-        help="INSECURE: accept every user name and password, with Admin for admin, and let anonymous users write",
+        help="INSECURE: accept every user name and password, with Admin for admin, send passwords in clear text and"
+        " let anonymous users write; only together with --no-security",
     )
 
 
@@ -984,7 +1035,7 @@ for _command in (
     ),
     Command(
         "server",
-        "Run a DEMO server: no security by default, anonymous sessions read-only",
+        "Run a DEMO server: secure with --pki-dir, unsecured with --no-security, anonymous sessions read-only",
         _server_arguments,
         _server,
         until_stopped=True,

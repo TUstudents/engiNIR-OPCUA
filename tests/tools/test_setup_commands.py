@@ -86,6 +86,33 @@ def test_init_development_needs_a_loopback_endpoint(capsys: pytest.CaptureFixtur
     assert not (tmp_path / "d").exists()
 
 
+@pytest.mark.parametrize("profile", ["secure", "development", "legacy"])
+def test_init_writes_a_config_of_every_profile_that_reads_back(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, profile: str
+) -> None:
+    assert init_server(capsys, tmp_path / "s", "--profile", profile, "--endpoint", "opc.tcp://127.0.0.1:4850/")[0] == 0
+    assert (
+        run(capsys, "init", "client", str(tmp_path / "c"), "--profile", profile, "--url", "opc.tcp://127.0.0.1:4850")[0]
+        == 0
+    )
+    assert ServerConfig.from_toml(tmp_path / "s" / "server.toml").profile == profile
+    assert ClientConfig.from_toml(tmp_path / "c" / "client.toml").profile == profile
+
+
+def test_init_legacy_writes_the_legacy_postures(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    assert init_server(capsys, tmp_path / "s", "--profile", "legacy")[0] == 0
+    assert run(capsys, "init", "client", str(tmp_path / "c"), "--profile", "legacy")[0] == 0
+    server = ServerConfig.from_toml(tmp_path / "s" / "server.toml")
+    assert "None" in (server.security or []) and "Basic128Rsa15,Sign" in (server.security or [])
+    assert ClientConfig.from_toml(tmp_path / "c" / "client.toml").security == "auto"
+
+
+def test_init_rejects_an_unknown_profile(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as error:
+        init_server(capsys, tmp_path / "s", "--profile", "lax")
+    assert error.value.code == 2
+
+
 def seed(directory: Path, name: str = "peer") -> tuple[str, bytes]:
     pki.create_directories(directory)
     identity = make_identity(name)

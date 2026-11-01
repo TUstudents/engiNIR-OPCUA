@@ -41,6 +41,9 @@ ADMIN_URL = f"opc.tcp://admin@127.0.0.1:{PORT}/tools"
 UNUSED_URL = f"opc.tcp://127.0.0.1:{find_free_port()}"
 
 
+NO_SECURITY = ("--security", "None")
+
+
 @uamethod
 def echo(parent, text):
     return text
@@ -120,7 +123,7 @@ def test_tool1_every_command_is_registered():
 
 
 def test_tool1_browse_is_an_alias_of_ls(capsys, tool_server):
-    code, out, _ = run(capsys, "browse", "-u", URL, "-n", "i=85")
+    code, out, _ = run(capsys, "browse", "-u", URL, *NO_SECURITY, "-n", "i=85")
     assert code == 0 and "Holder" in out
 
 
@@ -227,26 +230,28 @@ def test_tool1_write_then_read_round_trip_for_each_type(capsys, tool_server):
         "XmlElement": "<b/>",
     }
     for name, text in cases.items():
-        code, _, err = run(capsys, "write", "-u", ADMIN_URL, "-n", variables[name], text)
+        code, _, err = run(capsys, "write", "-u", ADMIN_URL, *NO_SECURITY, "-n", variables[name], text)
         assert code == 0, (name, err)
-    code, out, _ = run(capsys, "read", "-u", URL, "-n", variables["Int32"])
+    code, out, _ = run(capsys, "read", "-u", URL, *NO_SECURITY, "-n", variables["Int32"])
     assert out.strip() == "42"
-    code, out, _ = run(capsys, "read", "-u", URL, "-n", variables["String"])
+    code, out, _ = run(capsys, "read", "-u", URL, *NO_SECURITY, "-n", variables["String"])
     assert out.strip() == "a,b,c"
 
 
 def test_tool1_write_an_array(capsys, tool_server):
     node = tool_server["variables"]["Array"]
-    code, _, err = run(capsys, "write", "-u", ADMIN_URL, "-n", node, "--array", "3,4.5,6")
+    code, _, err = run(capsys, "write", "-u", ADMIN_URL, *NO_SECURITY, "-n", node, "--array", "3,4.5,6")
     assert code == 0, err
-    code, out, _ = run(capsys, "read", "-u", URL, "-n", node)
+    code, out, _ = run(capsys, "read", "-u", URL, *NO_SECURITY, "-n", node)
     assert out.strip() == "[3.0, 4.5, 6.0]"
 
 
 def test_tool1_old_array_values_still_parse(capsys, tool_server, monkeypatch):
     array = tool_server["variables"]["Array"]
     for flag, value in (("true", "1,2"), ("false", "2.5")):
-        monkeypatch.setattr(sys, "argv", ["enginir-uawrite", "-u", ADMIN_URL, "-n", array, "-l", flag, value])
+        monkeypatch.setattr(
+            sys, "argv", ["enginir-uawrite", "-u", ADMIN_URL, *NO_SECURITY, "-n", array, "-l", flag, value]
+        )
         with pytest.raises(SystemExit) as exit_info:
             tools.uawrite()
         capsys.readouterr()
@@ -254,44 +259,44 @@ def test_tool1_old_array_values_still_parse(capsys, tool_server, monkeypatch):
 
 
 def test_tool2_an_explicit_root_node_is_accepted(capsys, tool_server):
-    code, out, _ = run(capsys, "ls", "-u", URL, "-n", "i=84")
+    code, out, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", "i=84")
     assert code == 0 and "Objects" in out
-    code, out, err = run(capsys, "read", "-u", URL, "-n", "i=84", "-a", "BrowseName")
+    code, out, err = run(capsys, "read", "-u", URL, *NO_SECURITY, "-n", "i=84", "-a", "BrowseName")
     assert code == 0, err
 
 
 def test_tool2_read_needs_a_node(capsys):
-    code, _, err = run(capsys, "read", "-u", URL)
+    code, _, err = run(capsys, "read", "-u", URL, *NO_SECURITY)
     assert code == 2 and "browse path" in err
 
 
 def test_tool5_path_with_only_root_selects_the_start_node(capsys, tool_server):
-    code, out, err = run(capsys, "ls", "-u", URL, "-p", "0:Root")
+    code, out, err = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-p", "0:Root")
     assert code == 0, err
     assert "Objects" in out
 
 
 def test_tool5_a_path_selects_a_node(capsys, tool_server):
-    code, out, _ = run(capsys, "read", "-u", URL, "-p", "0:Objects,2:Holder,2:Int32")
+    code, out, _ = run(capsys, "read", "-u", URL, *NO_SECURITY, "-p", "0:Objects,2:Holder,2:Int32")
     assert code == 0 and out.strip() == "42"
 
 
 def test_tool5_ls_depth_zero_is_a_usage_error(capsys, tool_server):
-    code, _, err = run(capsys, "ls", "-u", URL, "-n", "i=85", "-d", "0")
+    code, _, err = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", "i=85", "-d", "0")
     assert code == 2 and "depth" in err
 
 
 def test_tool5_ls_formats(capsys, tool_server):
     holder = tool_server["holder"]
-    _, names, _ = run(capsys, "ls", "-u", URL, "-n", holder, "--format", "name")
-    _, values, _ = run(capsys, "ls", "-u", URL, "-n", holder, "--format", "value")
-    _, long, _ = run(capsys, "ls", "-u", URL, "-n", holder, "-l")
+    _, names, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "--format", "name")
+    _, values, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "--format", "value")
+    _, long, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "-l")
     # The first line names the server URL, whose random port may contain "42"; only the listing counts.
     names, values, long = (_listing(out) for out in (names, values, long))
     assert "Int32" in names and "42" not in names
     assert "42" in values
     assert "DataType" in long and "Timestamp" in long
-    _, legacy, _ = run(capsys, "ls", "-u", URL, "-n", holder, "-l", "0")
+    _, legacy, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "-l", "0")
     assert "42" not in _listing(legacy)
 
 
@@ -308,14 +313,15 @@ def _listing(out: str) -> str:
     ],
 )
 def test_tool_header_line_ends_with_a_newline_not_an_escape(capsys, tool_server, argv, header):
-    _, out, _ = run(capsys, argv[0], "-u", URL, *argv[1:])
+    choice = [] if argv[0] == "discover" else NO_SECURITY
+    _, out, _ = run(capsys, argv[0], "-u", URL, *choice, *argv[1:])
     lines = out.splitlines()
     assert lines[0].startswith(header) and "\\x0a" not in lines[0]
     assert lines[1] == ""
 
 
 def test_tool5_ls_depth_two_indents_children(capsys, tool_server):
-    _, out, _ = run(capsys, "ls", "-u", URL, "-n", "i=85", "-d", "2", "--format", "name")
+    _, out, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", "i=85", "-d", "2", "--format", "name")
     assert any(line.startswith("  ") for line in out.splitlines())
 
 
@@ -333,7 +339,8 @@ def test_tool5_ls_depth_two_indents_children(capsys, tool_server):
     ],
 )
 def test_tool4_a_refused_connection_is_one_line_and_exit_1(capsys, argv):
-    code, _out, err = run(capsys, argv[0], "-u", UNUSED_URL, "--timeout", "1", *argv[1:])
+    choice = [] if argv[0] == "discover" else NO_SECURITY
+    code, _out, err = run(capsys, argv[0], "-u", UNUSED_URL, "--timeout", "1", *choice, *argv[1:])
     assert code == 1
     assert "Traceback" not in err
     lines = [line for line in err.splitlines() if "error:" in line]
@@ -341,12 +348,14 @@ def test_tool4_a_refused_connection_is_one_line_and_exit_1(capsys, argv):
 
 
 def test_tool4_a_bad_status_prints_its_name(capsys, tool_server):
-    code, _, err = run(capsys, "read", "-u", URL, "-n", "ns=2;i=999999")
+    code, _, err = run(capsys, "read", "-u", URL, *NO_SECURITY, "-n", "ns=2;i=999999")
     assert code == 1 and "BadNodeIdUnknown" in err
 
 
 def test_tool4_a_value_that_cannot_be_converted_is_an_error(capsys, tool_server):
-    code, _, err = run(capsys, "write", "-u", ADMIN_URL, "-n", tool_server["variables"]["Int32"], "-t", "int32", "x")
+    code, _, err = run(
+        capsys, "write", "-u", ADMIN_URL, *NO_SECURITY, "-n", tool_server["variables"]["Int32"], "-t", "int32", "x"
+    )
     assert code == 1 and "int32" in err
 
 
@@ -374,27 +383,31 @@ def test_tool2_discover_prints_each_network_record(capsys, monkeypatch):
 
 
 def test_tool6_call_with_one_method_needs_no_m(capsys, tool_server):
-    code, out, err = run(capsys, "call", "-u", URL, "-n", tool_server["single"], "a,b")
+    code, out, err = run(capsys, "call", "-u", URL, *NO_SECURITY, "-n", tool_server["single"], "a,b")
     assert code == 0, err
     assert out.strip() == "a,b"
 
 
 def test_tool6_call_with_several_methods_and_no_m_is_refused(capsys, tool_server):
-    code, _, err = run(capsys, "call", "-u", URL, "-n", tool_server["pair"], "1", "2")
+    code, _, err = run(capsys, "call", "-u", URL, *NO_SECURITY, "-n", tool_server["pair"], "1", "2")
     assert code == 2 and "Add" in err and "Echo" in err
 
 
 def test_tool1_call_passes_a_string_with_commas_and_several_arguments(capsys, tool_server):
-    code, out, err = run(capsys, "call", "-u", URL, "-n", tool_server["pair"], "-m", "2:Echo", "-t", "string", "x,y")
+    code, out, err = run(
+        capsys, "call", "-u", URL, *NO_SECURITY, "-n", tool_server["pair"], "-m", "2:Echo", "-t", "string", "x,y"
+    )
     assert code == 0, err
     assert out.strip() == "x,y"
-    code, out, err = run(capsys, "call", "-u", URL, "-n", tool_server["pair"], "-m", "2:Add", "2", "3")
+    code, out, err = run(capsys, "call", "-u", URL, *NO_SECURITY, "-n", tool_server["pair"], "-m", "2:Add", "2", "3")
     assert code == 0, err
     assert out.strip() == "5"
 
 
 def test_tool6_the_old_uacall_splits_its_value_at_commas(capsys, tool_server, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["enginir-uacall", "-u", URL, "-n", tool_server["pair"], "-m", "2:Add", "2,3"])
+    monkeypatch.setattr(
+        sys, "argv", ["enginir-uacall", "-u", URL, *NO_SECURITY, "-n", tool_server["pair"], "-m", "2:Add", "2,3"]
+    )
     with pytest.raises(SystemExit) as exit_info:
         tools.uacall()
     assert exit_info.value.code == 0
@@ -441,11 +454,11 @@ def test_tool2_server_shell_keeps_serving(capsys, monkeypatch):
 
     def shell(namespace, banner=""):
         seen["names"] = set(namespace)
-        seen["code"] = tools.main(["read", "-u", url, "-n", "i=2259"])
+        seen["code"] = tools.main(["read", "-u", url, *NO_SECURITY, "-n", "i=2259"])
         seen["root"] = namespace["root"].read_browse_name().Name
 
     monkeypatch.setattr(tools, "open_shell", shell)
-    assert tools.main(["server", "--shell", "-u", url]) == 0
+    assert tools.main(["server", "--shell", "-u", url, "--no-security"]) == 0
     _out, err = capsys.readouterr()
     assert seen["code"] == 0
     assert {"server", "run", "root", "objects", "ua"} <= seen["names"]
@@ -460,7 +473,7 @@ def test_tool2_shell_namespace_has_client_root_objects_and_mynode(capsys, tool_s
         seen.update(namespace)
 
     monkeypatch.setattr(tools, "open_shell", shell)
-    code, _, err = run(capsys, "shell", "-u", URL, "-n", tool_server["holder"])
+    code, _, err = run(capsys, "shell", "-u", URL, *NO_SECURITY, "-n", tool_server["holder"])
     assert code == 0, err
     assert {"client", "root", "objects", "ua", "mynode"} <= set(seen)
 
@@ -481,20 +494,24 @@ def test_tool6_ipython_is_not_imported_by_the_module():
 
 
 def test_tool2_subscribe_count_stops_after_n_notifications(capsys, tool_server):
-    code, out, err = run(capsys, "subscribe", "-u", URL, "-n", tool_server["variables"]["Int32"], "--count", "1")
+    code, out, err = run(
+        capsys, "subscribe", "-u", URL, *NO_SECURITY, "-n", tool_server["variables"]["Int32"], "--count", "1"
+    )
     assert code == 0, err
     assert len(out.strip().splitlines()) == 1
 
 
 def test_tool2_subscribe_duration_stops_the_run(capsys, tool_server):
     started = time.monotonic()
-    code, _, err = run(capsys, "subscribe", "-u", URL, "-n", tool_server["variables"]["Int32"], "--duration", "1")
+    code, _, err = run(
+        capsys, "subscribe", "-u", URL, *NO_SECURITY, "-n", tool_server["variables"]["Int32"], "--duration", "1"
+    )
     assert code == 0, err
     assert time.monotonic() - started < 10
 
 
 def test_tool2_events_subscription_defaults_to_the_server_object(capsys, tool_server):
-    code, _, err = run(capsys, "subscribe", "-u", URL, "-t", "event", "--duration", "1")
+    code, _, err = run(capsys, "subscribe", "-u", URL, *NO_SECURITY, "-t", "event", "--duration", "1")
     assert code == 0, err
 
 
@@ -518,7 +535,9 @@ def test_tool2_the_log_level_option_and_old_verbose_flag(capsys):
 
 
 def test_tool3_a_password_in_the_url_is_warned_about(capsys, tool_server):
-    _code, _, err = run(capsys, "read", "-u", f"opc.tcp://admin:secret@127.0.0.1:{PORT}/tools", "-n", "i=2258")
+    _code, _, err = run(
+        capsys, "read", "-u", f"opc.tcp://admin:secret@127.0.0.1:{PORT}/tools", *NO_SECURITY, "-n", "i=2258"
+    )
     assert "visible in the process list" in err
     assert "secret" not in err.replace("visible", "")
 
@@ -559,6 +578,8 @@ def test_tool2_ctrl_c_in_subscribe_exits_cleanly(tool_server):
         "subscribe",
         "-u",
         URL,
+        "--security",
+        "None",
         "-n",
         tool_server["variables"]["Int32"],
     ]
@@ -573,7 +594,7 @@ def _no_shell(monkeypatch):
     seen = {}
 
     def shell(namespace, banner=""):
-        seen["code"] = tools.main(["read", "-u", seen["url"], "-n", "i=2259"])
+        seen["code"] = tools.main(["read", "-u", seen["url"], *NO_SECURITY, "-n", "i=2259"])
 
     monkeypatch.setattr(tools, "open_shell", shell)
     return seen
@@ -595,7 +616,12 @@ def test_tool11_server_serves_from_a_config_file(capsys, monkeypatch, tmp_path):
 def test_tool11_a_config_and_other_server_options_exclude_each_other(capsys, tmp_path):
     config = tmp_path / "server.toml"
     config.write_text("[server]\n")
-    for extra in (["--url", "opc.tcp://127.0.0.1:4999"], ["--pki-dir", str(tmp_path)], ["--accept-all-logins"]):
+    for extra in (
+        ["--url", "opc.tcp://127.0.0.1:4999"],
+        ["--pki-dir", str(tmp_path)],
+        ["--accept-all-logins"],
+        ["--no-security"],
+    ):
         code = tools.main(["server", "--config", str(config), *extra])
         assert code == 2
         assert "--config" in capsys.readouterr().err
@@ -620,7 +646,7 @@ def test_tool11_the_demo_server_prints_the_certificate_it_generated(capsys, monk
 def test_tool2_ctrl_c_in_server_exits_cleanly():
     port = find_free_port()
     process = subprocess.Popen(
-        [sys.executable, "-c", INTERRUPTIBLE_CLI, "server", "-u", f"opc.tcp://127.0.0.1:{port}"],
+        [sys.executable, "-c", INTERRUPTIBLE_CLI, "server", "-u", f"opc.tcp://127.0.0.1:{port}", "--no-security"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -642,16 +668,16 @@ def test_tool2_the_version_option(capsys):
 def test_tool2_history_reads_values_and_events(capsys, running_server):
     node = "ns=2;s=ToolsReadWrite"
     admin = running_server.replace("//", "//admin@")
-    assert tools.main(["write", "-u", admin, "-n", node, "-t", "string", "hist"]) == 0
+    assert tools.main(["write", "-u", admin, *NO_SECURITY, "-n", node, "-t", "string", "hist"]) == 0
     capsys.readouterr()
-    code, out, err = run(capsys, "history", "-u", running_server, "-n", node, "--limit", "5")
+    code, out, err = run(capsys, "history", "-u", running_server, *NO_SECURITY, "-n", node, "--limit", "5")
     assert code == 0, err
     assert "Source timestamp" in out and "hist" in out
 
 
 def test_tool1_old_tools_still_read_and_list(capsys, running_server, monkeypatch):
     for script, argv in (("uals", ["-n", "i=85"]), ("uaread", ["-n", "ns=2;s=ToolsReadWrite"])):
-        monkeypatch.setattr(sys, "argv", [f"enginir-{script}", "-u", running_server, *argv])
+        monkeypatch.setattr(sys, "argv", [f"enginir-{script}", "-u", running_server, *NO_SECURITY, *argv])
         with pytest.raises(SystemExit) as exit_info:
             getattr(tools, script)()
         assert exit_info.value.code == 0
@@ -662,7 +688,7 @@ ROOT = Path(__file__).parent.parent.parent
 
 
 def _arguments(*command_line: str) -> argparse.Namespace:
-    return build_parser().parse_args(["read", "-n", "i=1", "--user", "operator", *command_line])
+    return build_parser().parse_args(["read", "-n", "i=1", "--user", "operator", *NO_SECURITY, *command_line])
 
 
 def test_tool3_password_option_is_gone() -> None:
@@ -703,7 +729,8 @@ def test_tool3_the_server_command_help_says_it_is_a_demo() -> None:
     )
     assert result.returncode == 0
     assert "DEMO" in result.stdout
-    assert "no security" in result.stdout
+    assert "--no-security" in result.stdout
+    assert "--pki-dir" in result.stdout
     assert "127.0.0.1" in result.stdout
 
 
@@ -724,3 +751,87 @@ def test_discover_does_not_print_the_password_of_the_url(capsys, tool_server):
     _, out, err = run(capsys, "discover", "-u", secret_url)
     assert "alice@" in out
     assert "secret" not in out + err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["read", "-n", "i=2258"], id="tool12_read"),
+        pytest.param(["write", "-n", "i=2258", "1"], id="tool12_write"),
+        pytest.param(["call", "-n", "i=85"], id="tool12_call"),
+        pytest.param(["ls"], id="tool12_ls"),
+        pytest.param(["subscribe", "-n", "i=2258", "--count", "1"], id="tool12_subscribe"),
+        pytest.param(["history", "-n", "i=2258"], id="tool12_history"),
+        pytest.param(["shell"], id="tool12_shell"),
+        pytest.param(["generate-structs", "-n", "i=93", "-o", "unused.py"], id="tool12_generate_structs"),
+    ],
+)
+def test_tool12_a_client_command_without_a_security_choice_is_refused(capsys, tool_server, argv):
+    code, out, err = run(capsys, argv[0], "-u", URL, *argv[1:])
+    assert code == 2
+    assert "--security None" in err and "--pki-dir" in err
+    assert out == ""
+
+
+def test_tool12_security_none_connects_and_the_library_warns(capsys, tool_server, caplog):
+    with caplog.at_level("WARNING"):
+        code, out, err = run(capsys, "read", "-u", URL, "--security", "None", "-n", "i=2259")
+    assert code == 0, err
+    assert out.strip() == "0"
+    assert "connects without security" in caplog.text
+
+
+def test_tool12_discover_needs_no_security_choice(capsys, tool_server):
+    code, out, err = run(capsys, "discover", "-u", URL)
+    assert code == 0, err
+    assert "Endpoint 1" in out
+
+
+def test_tool12_security_with_a_pki_dir_still_checks_the_policy(capsys, tmp_path):
+    code, _, err = run(
+        capsys, "read", "-u", UNUSED_URL, "-n", "i=1", "--pki-dir", str(tmp_path), "--security", "Nope,Sign"
+    )
+    assert code == 2 and "Policy,Mode" in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        pytest.param([], False, id="tool12_plaintext_off_by_default"),
+        pytest.param(["--allow-plaintext-password"], True, id="tool12_plaintext_on_request"),
+    ],
+)
+async def test_tool12_plaintext_passwords_need_the_flag(flags, expected):
+    client = Client("opc.tcp://127.0.0.1:4840")
+    await configure_client(client, _arguments(*flags))
+    assert client.allow_plaintext_password is expected
+
+
+def test_tool12_the_demo_server_is_refused_without_pki_dir_or_no_security(capsys):
+    code, _, err = run(capsys, "server", "-u", f"opc.tcp://127.0.0.1:{find_free_port()}")
+    assert code == 2
+    assert "--pki-dir" in err and "--no-security" in err
+
+
+def test_tool12_accept_all_logins_needs_no_security(capsys, tmp_path):
+    code, _, err = run(
+        capsys,
+        "server",
+        "-u",
+        f"opc.tcp://127.0.0.1:{find_free_port()}",
+        "--pki-dir",
+        str(tmp_path / "pki"),
+        "--accept-all-logins",
+    )
+    assert code == 2 and "--no-security" in err
+
+
+def test_tool12_the_demo_server_with_no_security_warns_and_offers_none(capsys, monkeypatch, caplog):
+    url = f"opc.tcp://127.0.0.1:{find_free_port()}"
+    seen = _no_shell(monkeypatch)
+    seen["url"] = url
+    with caplog.at_level("WARNING"):
+        assert tools.main(["server", "--shell", "-u", url, "--no-security"]) == 0
+    assert seen["code"] == 0
+    assert "without security" in capsys.readouterr().err
+    assert "no security" in caplog.text.lower() or "unsecured" in caplog.text.lower()

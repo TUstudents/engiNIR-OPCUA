@@ -21,6 +21,7 @@ Usage Guide
     common/overview
     common/node-nodeid
     common/pki-directory
+    common/security
     common/observer
 
 .. toctree::

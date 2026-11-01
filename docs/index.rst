@@ -83,7 +83,7 @@ Start here
         :link: usage/get-started/quick-setup
         :link-type: doc
 
-        A secure server and client, the two profiles, configuration files, users and the trust commands.
+        A secure server and client, the three profiles, configuration files, users and the trust commands.
 
     .. grid-item-card:: :octicon:`book` OPC UA basics
         :link: usage/get-started/opc-ua-basics

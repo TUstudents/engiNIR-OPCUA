@@ -65,8 +65,9 @@ The package installs one program, :code:`enginir-opcua`, with a subcommand for e
     Perform discovery and print the servers and endpoints.
 
 :code:`enginir-opcua server`:
-    Run a demo server. It offers an endpoint **without security**, listens on 127.0.0.1 unless told otherwise and accepts
-    only anonymous read-only sessions; it is for trying things out. By importing XML definitions and using
+    Run a demo server. It is secure by default and needs :code:`--pki-dir`; :code:`--no-security` is the explicit request
+    for an endpoint **without security**. It listens on 127.0.0.1 unless told otherwise and accepts only anonymous
+    read-only sessions; it is for trying things out. By importing XML definitions and using
     :code:`enginir-opcua write` it is possible to expose data with it.
 
 :code:`enginir-opcua shell`:
@@ -84,18 +85,20 @@ For the options of a command run:
     enginir-opcua read --help
 
 Common to the commands that connect: :code:`-u URL`, :code:`--timeout SECONDS`, :code:`--security`, :code:`--pki-dir`,
-:code:`--user` and :code:`--ask-password` (the password can also come from the environment variable
+:code:`--user`, :code:`--allow-plaintext-password` and :code:`--ask-password` (the password can also come from the environment variable
 :code:`ENGINIR_OPCUA_PASSWORD`; there is no option that takes it on the command line). The commands that work on a node take
 :code:`-n NODEID` and :code:`-p BROWSEPATH`. Errors are printed as one line on standard error, with exit status 1; a usage
-error gives 2.
+error gives 2. Without :code:`--security` and without :code:`--pki-dir` a command that opens a session is refused;
+:code:`--security None` asks for a connection without security, and :code:`--pki-dir DIR` alone connects with
+Basic256Sha256 and SignAndEncrypt (see :doc:`../common/security`). :code:`discover` needs neither.
 
 .. code-block:: console
 
-    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840 -n i=85
-    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 -p "0:Objects,2:MyObject,2:MyVariable"
-    $ enginir-opcua write -u opc.tcp://admin@127.0.0.1:4840 -n "ns=2;i=3" 6.5
-    $ enginir-opcua write --array -n "ns=2;i=4" "1.5,2.5"
-    $ enginir-opcua call -n "ns=2;i=1" -m 2:Multiply 3 4
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840 --security None -n i=85
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840 --pki-dir cli/pki -p "0:Objects,2:MyObject,2:MyVariable"
+    $ enginir-opcua write -u opc.tcp://admin@127.0.0.1:4840 --security None -n "ns=2;i=3" 6.5
+    $ enginir-opcua write --security None --array -n "ns=2;i=4" "1.5,2.5"
+    $ enginir-opcua call --security None -n "ns=2;i=1" -m 2:Multiply 3 4
 
 Values for :code:`write` and :code:`call`: :code:`--datatype` is one of guess, bool, sbyte, byte, int16, uint16, int32,
 uint32, int64, uint64, float, double, string, datetime, guid, bytestring, xmlelement, nodeid, expandednodeid, qualifiedname,
