@@ -5,6 +5,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from cryptography import x509
 
 from enginir_opcua import Client, Server, tools, ua
 from enginir_opcua.config import ClientConfig, ServerConfig
@@ -84,8 +85,6 @@ def test_init_client_and_the_certificate_carries_the_uri(capsys: pytest.CaptureF
     assert code == 0 and "next" not in out
     config = ClientConfig.from_toml(tmp_path / "c" / "client.toml")
     assert config.name == "Probe"
-    from cryptography import x509
-
     certificate = x509.load_der_x509_certificate(
         (tmp_path / "c" / "pki" / "own" / "certs" / pki.CERTIFICATE_NAME).read_bytes()
     )
@@ -388,3 +387,27 @@ async def test_cli81_data_commands_use_the_uri_of_the_certificate_that_init_clie
     out, err = capsys.readouterr()
     assert code == 0, err
     assert "BadCertificateUriInvalid" not in out + err
+
+
+def _san(directory: Path) -> x509.SubjectAlternativeName:
+    certificate = x509.load_der_x509_certificate((directory / "own" / "certs" / pki.CERTIFICATE_NAME).read_bytes())
+    return certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+
+
+def test_a_server_on_every_interface_gets_a_certificate_for_its_addresses(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pki, "interface_addresses", lambda: ["192.168.0.10", "fd00::10"])
+    assert init_server(capsys, tmp_path / "s", "--endpoint", "opc.tcp://0.0.0.0:4840/plant/")[0] == 0
+    addresses = {str(address) for address in _san(tmp_path / "s" / "pki").get_values_for_type(x509.IPAddress)}
+    assert addresses == {"127.0.0.1", "::1", "192.168.0.10", "fd00::10"}
+
+
+def test_a_server_on_one_host_name_gets_loopback_addresses_but_no_interface_lookup(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pki, "interface_addresses", lambda: pytest.fail("looked up the interfaces"))
+    assert init_server(capsys, tmp_path / "s", "--endpoint", "opc.tcp://plant.example:4840/")[0] == 0
+    san = _san(tmp_path / "s" / "pki")
+    assert "plant.example" in san.get_values_for_type(x509.DNSName)
+    assert {str(address) for address in san.get_values_for_type(x509.IPAddress)} == {"127.0.0.1", "::1"}

@@ -18,6 +18,11 @@ Each release has its own section; the newest is at the top.
   namespace 0 (`ServerState`, `NamingRuleType`, `AccessLevelType`, ... about 50). Before, each call returned and
   registered a second class next to the built-in one in `ua`, so `client.types.find()` gave the copy, and the log
   had an INFO line for each. Standard DataTypes without a class in `ua`, from a newer server, are still built.
+- A generated application certificate now names `127.0.0.1` and `::1`, and for a server on every interface
+  (`0.0.0.0` or `::`, the default endpoint) also the IP addresses of the host. Before, it named only the host name and
+  `localhost`, so a secure client that connected by IP address, such as `opc.tcp://192.168.0.10:4840`, was refused
+  with `BadCertificateHostNameInvalid`. Existing certificates are not replaced; delete `own/` of the PKI directory to
+  generate a new one, and trust the new certificate on the clients.
 
 ### Additions
 

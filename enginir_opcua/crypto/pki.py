@@ -83,9 +83,40 @@ def host_name_entries(host_names: Iterable[str | None]) -> list[x509.GeneralName
     return entries
 
 
+def interface_addresses() -> list[str]:
+    """The IP addresses of this host: those its name resolves to and those of its default routes, without loopback."""
+    found: list[str] = []
+    try:
+        found += [str(info[4][0]) for info in socket.getaddrinfo(socket.gethostname(), None)]
+    except OSError:
+        pass
+    for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as probe_socket:
+                probe_socket.connect((probe, 9))
+                found.append(str(probe_socket.getsockname()[0]))
+        except OSError:
+            pass
+    addresses: list[str] = []
+    for text in found:
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            continue
+        if not (address.is_loopback or address.is_link_local or address.is_unspecified) and text not in addresses:
+            addresses.append(text)
+    return addresses
+
+
 def default_host_names(*others: str | None) -> list[str | None]:
-    """The host names a generated certificate names by default: this host's name, ``localhost`` and ``others``."""
-    return [socket.gethostname(), "localhost", *others]
+    """
+    The host names a generated certificate names by default: this host's name, ``localhost``, the loopback addresses
+    and ``others``; for a wildcard address in ``others`` (a server on every interface) also the host's addresses.
+    """
+    names: list[str | None] = [socket.gethostname(), "localhost", "127.0.0.1", "::1", *others]
+    if any(other in WILDCARD_HOSTS for other in others if other is not None):
+        names += interface_addresses()
+    return names
 
 
 def _files(folder: Path, extensions: frozenset[str]) -> list[Path]:
