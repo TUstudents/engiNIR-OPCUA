@@ -110,7 +110,7 @@ async def test_client_anonymous(srv_crypto_one_cert):
 
 
 async def test_x509identity_user(srv_crypto_one_cert):
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_cert, allow_no_security=True)
     await clt.load_client_certificate(user_peer_creds["certificate"])
     await clt.load_private_key(user_peer_creds["private_key"])
     async with clt:
@@ -124,7 +124,7 @@ async def test_x509identity_user(srv_crypto_one_cert):
 
 
 async def test_x509identity_anonymous(srv_crypto_one_cert):
-    clt = Client(uri_crypto_cert)
+    clt = Client(uri_crypto_cert, allow_no_security=True)
     await clt.load_client_certificate(anonymous_peer_creds["certificate"])
     await clt.load_private_key(anonymous_peer_creds["private_key"])
     async with clt:

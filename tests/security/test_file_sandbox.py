@@ -46,7 +46,7 @@ async def rig(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Rig]:
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await server.start()
-    client = Client(f"opc.tcp://admin@127.0.0.1:{port}")
+    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", allow_no_security=True)
     await client.connect()
     yield Rig(server, client, tmp_path_factory.mktemp("sandbox"))
     await client.disconnect()

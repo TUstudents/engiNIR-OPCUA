@@ -248,7 +248,7 @@ def test_cli34_find_endpoint_filters_the_transport_profile_and_prefers_url_then_
 
 async def test_cli35_unoffered_token_type_is_a_configuration_error(two_endpoint_server: Server) -> None:
     """Part 4, 5.7.3.2: the client sends only a token type the endpoint offers."""
-    client = Client(two_endpoint_server.endpoint.geturl())
+    client = Client(two_endpoint_server.endpoint.geturl(), allow_no_security=True)
     with pytest.raises(ua.uaerrors.ConfigurationError):
         await client.connect()
     await client.disconnect()
@@ -257,7 +257,7 @@ async def test_cli35_unoffered_token_type_is_a_configuration_error(two_endpoint_
 
 async def test_cli35_session_names_are_unique_and_the_server_uri_is_null(server: Server) -> None:
     """Part 4, 5.7.2.2: SessionName is unique per client instance; ServerUri is no longer used."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client.server_uri = "urn:example:server"
     parameters: list[ua.CreateSessionParameters] = []
     real_create = client.uaclient.create_session
@@ -277,7 +277,7 @@ async def test_cli35_session_names_are_unique_and_the_server_uri_is_null(server:
 
 async def test_cli35_client_certificate_is_null_under_policy_none(server: Server) -> None:
     """Part 4, 5.7.2.2: the user certificate is never sent as ClientCertificate."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client.user_certificate = x509_from_der(PKI.peer1.certificate.read_bytes())
     parameters: list[ua.CreateSessionParameters] = []
     real_create = client.uaclient.create_session
@@ -303,7 +303,8 @@ async def test_cli35_unknown_policy_name_is_a_configuration_error() -> None:
 
 async def test_cli35_user_certificate_without_a_key_is_ignored() -> None:
     """Part 4, 5.7.3.2: a certificate without its key cannot sign the token; the user name is used."""
-    client = Client("opc.tcp://127.0.0.1:1")
+    client = Client("opc.tcp://127.0.0.1:1", allow_no_security=True)
+    client.allow_plaintext_password = True
     client.user_certificate = x509_from_der(PKI.peer1.certificate.read_bytes())
     client._policy_ids = [ua.UserTokenPolicy(PolicyId="name", TokenType=ua.UserTokenType.UserName)]
     sent: list[ua.ActivateSessionParameters] = []

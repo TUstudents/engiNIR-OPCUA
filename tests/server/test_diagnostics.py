@@ -65,7 +65,9 @@ async def reset_server(rig: Server) -> AsyncIterator[Server]:
 
 async def plain(server: Server, user: str | None = "alice", **settings: Any) -> Client:
     prefix = f"{user}:{PASSWORD}@" if user else ""
-    client = Client(f"opc.tcp://{prefix}127.0.0.1:{server.endpoint.port}", timeout=5, **settings)
+    client = Client(
+        f"opc.tcp://{prefix}127.0.0.1:{server.endpoint.port}", timeout=5, **settings, allow_no_security=True
+    )
     await client.connect()
     return client
 
@@ -313,7 +315,9 @@ async def test_srv93_idle_session_counts_as_timeout(server: Server) -> None:
     """Part 5, 12.9: a Session closed because its timeout elapsed."""
     server.iserver.min_session_timeout_ms = 100
     before = summary(server).SessionTimeoutCount
-    client = Client(f"opc.tcp://127.0.0.1:{server.endpoint.port}", timeout=5, watchdog_intervall=60)
+    client = Client(
+        f"opc.tcp://127.0.0.1:{server.endpoint.port}", timeout=5, watchdog_intervall=60, allow_no_security=True
+    )
     client.session_timeout = 300
     await client.connect()
     try:
@@ -347,7 +351,7 @@ async def test_srv93_close_session_counts_neither_timeout_nor_abort(server: Serv
 async def test_srv93_bad_identity_counts_security_rejected_session(server: Server) -> None:
     """Part 5, 12.9: a refused identity is a security-rejected Session establishment."""
     before = summary(server)
-    client = Client(f"opc.tcp://alice:wrong@127.0.0.1:{server.endpoint.port}", timeout=5)
+    client = Client(f"opc.tcp://alice:wrong@127.0.0.1:{server.endpoint.port}", timeout=5, allow_no_security=True)
     with pytest.raises(ua.UaStatusCodeError):
         await client.connect()
     after = summary(server)
@@ -446,7 +450,7 @@ async def test_srv93_transfer_to_another_application_counts_as_alt_client(server
     """Part 5, 12.15: a Subscription that moves to a Session of another client application."""
     server.diagnostics.enabled = True
     first = await plain(server, "alice")
-    second = Client(f"opc.tcp://alice:{PASSWORD}@127.0.0.1:{server.endpoint.port}", timeout=5)
+    second = Client(f"opc.tcp://alice:{PASSWORD}@127.0.0.1:{server.endpoint.port}", timeout=5, allow_no_security=True)
     second.application_uri = "urn:enginir:opcua:other-client"
     await second.connect()
     try:

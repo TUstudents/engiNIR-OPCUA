@@ -33,7 +33,10 @@ class Recorder:
 
 async def second_client(two: TwoSessions, user: str = "alice") -> Client:
     endpoint = two.server.endpoint
-    client = Client(f"opc.tcp://{user}:{TWO_SESSION_USERS[user]}@{endpoint.hostname}:{endpoint.port}")
+    client = Client(
+        f"opc.tcp://{user}:{TWO_SESSION_USERS[user]}@{endpoint.hostname}:{endpoint.port}", allow_no_security=True
+    )
+    client.allow_plaintext_password = True
     await client.connect()
     return client
 
@@ -83,7 +86,10 @@ async def test_srv4_anonymous_transfer_over_an_unsecured_channel_is_denied() -> 
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     try:
-        async with Client(server.endpoint.geturl()) as first, Client(server.endpoint.geturl()) as second:
+        async with (
+            Client(server.endpoint.geturl(), allow_no_security=True) as first,
+            Client(server.endpoint.geturl(), allow_no_security=True) as second,
+        ):
             sub = await first.create_subscription(100, None)
             assert sub.subscription_id is not None
             params = ua.TransferSubscriptionsParameters(SubscriptionIds=[sub.subscription_id])

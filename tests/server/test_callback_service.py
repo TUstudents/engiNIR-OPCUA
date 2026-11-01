@@ -70,7 +70,7 @@ async def test_write_callback(mocker):
     assert not mocked_create_monitored_items.called
     assert not mocked_write_items.called
 
-    client = Client(opc_url)
+    client = Client(opc_url, allow_no_security=True)
     async with client:
         var = await client.nodes.objects.get_child([f"{idx}:MyObject", f"{idx}:MyVariable"])
         handler = SubscriptionHandler()

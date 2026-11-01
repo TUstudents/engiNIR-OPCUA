@@ -78,7 +78,7 @@ async def test_auto_reconnect_recovers_from_transport_drop() -> None:
     """Closing the transport triggers the supervisor; client reaches CONNECTED again."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         assert client.state is UaClientState.CONNECTED
@@ -97,7 +97,7 @@ async def test_auto_reconnect_disabled_settles_in_disconnected() -> None:
     """With auto_reconnect=False, supervisor exits on loss and state goes to DISCONNECTED."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=False)
     try:
         await _force_transport_close_and_wait(client, expect_reconnect=False)
@@ -127,7 +127,7 @@ async def test_connection_lost_callback_fires_on_loss() -> None:
         call_count += 1
         last_exc = exc
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     client.connection_lost_callback = on_lost
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
@@ -151,7 +151,7 @@ async def test_session_reactivated_after_reconnect() -> None:
     variable = await objects.add_variable(2, "ReconnectVar", 0)
     await variable.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         sub = await client.create_subscription(50)
@@ -191,7 +191,7 @@ async def test_new_session_created_when_server_forgot() -> None:
     port = find_free_port()
     srv = await _start_server(port)
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         old_auth_token = client.uaclient.session.authentication_token
@@ -210,7 +210,7 @@ async def test_session_state_persistence_resumes_session_across_processes(tmp_pa
     srv = await _start_server(port)
     state_path = tmp_path / "session.json"
 
-    first = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
+    first = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, allow_no_security=True)
     first.session_state_path = state_path
     await first.connect(auto_reconnect=False)
     # Create a subscription so the server retains the session across transport loss
@@ -234,7 +234,7 @@ async def test_session_state_persistence_resumes_session_across_processes(tmp_pa
     # Give the server a moment to process the lost-connection cleanup
     await asyncio.sleep(0.2)
 
-    second = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
+    second = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, allow_no_security=True)
     second.session_state_path = state_path
     try:
         await second.connect(auto_reconnect=False)
@@ -255,7 +255,7 @@ async def test_session_state_persistence_falls_back_when_server_forgot(tmp_path:
     srv = await _start_server(port)
     state_path = tmp_path / "session.json"
 
-    first = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
+    first = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, allow_no_security=True)
     first.session_state_path = state_path
     await first.connect(auto_reconnect=False)
     first_auth_token = first.uaclient.session.authentication_token
@@ -264,7 +264,7 @@ async def test_session_state_persistence_falls_back_when_server_forgot(tmp_path:
     # Force the server to forget the session before the new client comes up.
     srv.iserver.session_manager.sessions.pop(first_auth_token, None)
 
-    second = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
+    second = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, allow_no_security=True)
     second.session_state_path = state_path
     try:
         await second.connect(auto_reconnect=False)
@@ -282,7 +282,7 @@ async def test_server_expires_session_after_timeout() -> None:
     srv = await _start_server(port)
     srv.iserver.min_session_timeout_ms = 100
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     client.session_timeout = 500
     await client.connect(auto_reconnect=False)
     try:
@@ -316,7 +316,7 @@ async def test_subscription_recreated_when_transfer_fails() -> None:
     variable = await objects.add_variable(2, "RecreateVar", 0)
     await variable.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         sub = await client.create_subscription(50)
@@ -362,7 +362,7 @@ async def test_republish_returns_buffered_notification() -> None:
     objects = srv.get_objects_node()
     variable = await objects.add_variable(2, "GapVar", 0)
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)
@@ -402,7 +402,7 @@ async def test_reconnect_replays_unacked_notifications_via_republish() -> None:
     variable = await objects.add_variable(2, "ReplayVar", 0)
     await variable.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         sub = await client.create_subscription(50)
@@ -454,7 +454,7 @@ async def test_deleted_subscription_not_recreated_after_reconnect() -> None:
     """A subscription the user deleted before the drop must not be re-created."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         sub = await client.create_subscription(50)
@@ -478,7 +478,7 @@ async def test_disconnect_promptly_after_reconnect() -> None:
     """A connect-disconnect cycle through one transport drop should complete promptly."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         await _force_transport_close_and_wait(client)
@@ -512,7 +512,7 @@ async def test_stale_watchdog_recreates_subscription() -> None:
     variable = await objects.add_variable(2, "StaleVar", 0)
     await variable.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     client._stale_check_interval = 0.1
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
@@ -557,7 +557,7 @@ async def test_stale_watchdog_escalates_to_reconnect_on_recreate_failure() -> No
     variable = await objects.add_variable(2, "StaleVar2", 0)
     await variable.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     client._stale_check_interval = 0.1
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
@@ -603,7 +603,7 @@ async def test_delete_subscriptions_keeps_local_state_on_server_failure() -> Non
     """SF4: a failed delete on the server side must not drop the local callback."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)
@@ -651,7 +651,7 @@ async def test_legacy_handler_api_still_works_through_reconnect() -> None:
             self._event.clear()
 
     handler = Collector()
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.5, reconnect_request_timeout=5.0)
     try:
         sub = await client.create_subscription(50, handler)

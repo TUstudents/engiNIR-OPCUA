@@ -540,7 +540,7 @@ async def test_cli10_create_subscription_uses_the_time_based_counts(
     session_timeout: int, period: int, keep_alive: int, lifetime: int
 ) -> None:
     """Part 4, 5.14.2.2: keep-alive about every 10 s (at most a quarter of the session timeout), lifetime 3x or more."""
-    client = Client("opc.tcp://fake")
+    client = Client("opc.tcp://fake", allow_no_security=True)
     client.session_timeout = session_timeout
     created: list[ua.CreateSubscriptionParameters] = []
 
@@ -1453,7 +1453,7 @@ async def test_iterator_yields_data_changes() -> None:
     var = await objects.add_variable(2, "IterVar", 0)
     await var.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)  # no handler -> iterator mode
@@ -1484,7 +1484,7 @@ async def test_iterator_async_for_loop_exits_on_delete() -> None:
     var = await objects.add_variable(2, "IterVar2", 0)
     await var.set_writable()
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)
@@ -1515,7 +1515,7 @@ async def test_iterator_context_manager_deletes_on_exit() -> None:
     """`async with sub:` exit deletes the server-side subscription."""
     port = find_free_port()
     srv = await _start_server(port)
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)
@@ -1537,7 +1537,7 @@ async def test_iterator_rejects_handler_mode() -> None:
         def datachange_notification(self, _n, _v, _d) -> None:
             pass
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=1.0, watchdog_intervall=0.3, allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50, _Noop())

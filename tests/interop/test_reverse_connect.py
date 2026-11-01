@@ -32,7 +32,7 @@ async def test_our_client_accepts_the_reverse_connection_of_the_reference_server
         if e.EndpointUrl.startswith("opc.tcp://")
     ]
     server_uri = endpoint.Server.ApplicationUri
-    client = Client(endpoint.EndpointUrl, timeout=10)
+    client = Client(endpoint.EndpointUrl, timeout=10, allow_no_security=True)
     client.listen_reverse(
         f"opc.tcp://127.0.0.1:{reverse_port}",
         server_uri=server_uri,

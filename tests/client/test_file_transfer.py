@@ -47,7 +47,7 @@ async def build_rig() -> AsyncIterator[Rig]:
     file_node = await file_rig.attach()
     directory_node = await directory_rig.attach()
     await server.start()
-    client = Client(f"opc.tcp://admin@127.0.0.1:{port}")
+    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", allow_no_security=True)
     await client.connect()
     yield Rig(
         server,

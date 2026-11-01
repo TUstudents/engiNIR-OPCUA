@@ -152,7 +152,7 @@ async def test_cert_warning():
 
 
 async def test_nocrypto(srv_no_crypto):
-    clt = Client(uri_no_crypto)
+    clt = Client(uri_no_crypto, allow_no_security=True)
     async with clt:
         await clt.nodes.objects.get_children()
 
@@ -174,7 +174,7 @@ async def test_basic256(srv_crypto_all_certs, mode):
 
 async def test_basic128rsa15(srv_crypto_all_cert_basic128rsa15):
     _, cert = srv_crypto_all_cert_basic128rsa15
-    clt = Client(uri_crypto_basic128rsa15, allow_deprecated_policies=True)
+    clt = Client(uri_crypto_basic128rsa15)
     print(await clt.connect_and_get_server_endpoints())
     await clt.set_security_string(f"Basic128Rsa15,Sign,{PKI.peer1.certificate},{PKI.peer1.key},{cert}")
     async with clt:
@@ -510,7 +510,7 @@ async def test_srv45_allow_no_security_offers_the_endpoint() -> None:
     server = await make_server(allow_no_security=True)
     async with server:
         assert "http://opcfoundation.org/UA/SecurityPolicy#None" in await offered_policies(server)
-        async with Client(server.endpoint.geturl()) as client:
+        async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
             assert await client.nodes.objects.get_children()
 
 
@@ -567,10 +567,12 @@ async def test_a_low_level_server_warns_for_each_endpoint_without_security(caplo
     assert len(warnings) == 1 and "neither signed nor encrypted" in warnings[0]
 
 
-async def test_cry8_client_refuses_a_deprecated_policy_unless_allowed() -> None:
-    """Part 7: the client selects a deprecated policy only when it is enabled explicitly."""
-    client = Client("opc.tcp://127.0.0.1:4840")
-    with pytest.raises(ConfigurationError, match="allow_deprecated_policies"):
+async def test_cry8_client_accepts_a_deprecated_policy_without_a_flag_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Part 7: naming a deprecated policy in set_security is the request; the client says so at connect."""
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
+    with caplog.at_level(logging.WARNING):
         await client.set_security(
             SecurityPolicyBasic128Rsa15,
             PKI.peer1.certificate,
@@ -579,12 +581,13 @@ async def test_cry8_client_refuses_a_deprecated_policy_unless_allowed() -> None:
             PKI.server.certificate,
             ua.MessageSecurityMode.Sign,
         )
-    allowed = Client("opc.tcp://127.0.0.1:4840", allow_deprecated_policies=True)
-    await allowed.set_security(
-        SecurityPolicyBasic128Rsa15,
-        PKI.peer1.certificate,
-        PKI.peer1.key,
-        None,
-        PKI.server.certificate,
-        ua.MessageSecurityMode.Sign,
-    )
+    assert "SecurityPolicyBasic128Rsa15 is deprecated" in caplog.text
+    assert isinstance(client.security_policy, SecurityPolicyBasic128Rsa15)
+    assert not hasattr(client, "allow_deprecated_policies")
+    with caplog.at_level(logging.WARNING):
+        client._log_security()
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "connects with" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "Basic128Rsa15" in warnings[0] and "deprecated" in warnings[0] and "not encrypted" in warnings[0]

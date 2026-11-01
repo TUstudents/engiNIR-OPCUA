@@ -35,7 +35,13 @@ from ..common.ua_utils import value_to_datavalue
 from ..common.utils import ServiceError, create_nonce
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
-from ..config import ClientConfig, check_certificate_uri, password_from_environment, quickstart_client_config
+from ..config import (
+    ClientConfig,
+    check_certificate_uri,
+    password_from_environment,
+    policy_name,
+    quickstart_client_config,
+)
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
 from ..crypto.validator import (
@@ -116,9 +122,10 @@ class Client:
         auto_reconnect: bool = False,
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
-        allow_deprecated_policies: bool = False,
         observer: Observer | None = None,
         config: ClientConfig | None = None,
+        *,
+        allow_no_security: bool = False,
     ) -> None:
         """
         :param url: url of the server.
@@ -135,18 +142,22 @@ class Client:
         :param reconnect_max_delay: exponential backoff cap for reconnect attempts (seconds).
         :param reconnect_request_timeout: how long requests block waiting for the
             connection to become ready while the supervisor is reconnecting.
-        :param allow_deprecated_policies: allow set_security with the deprecated Basic128Rsa15 or Basic256 policy.
         :param observer: an :class:`enginir_opcua.observer.Observer` that is told about requests, state changes and
             subscription events; also available as the ``observer`` property.
         :param config: a :class:`enginir_opcua.config.ClientConfig` (see Client.quickstart); give it instead of
             `url`. Its timeout and auto_reconnect replace the parameters; the PKI directory and the security are
             applied at the first connect().
+        :param allow_no_security: the explicit request for a channel without security, for a client that has no
+            config and calls no set_security; without any of the three connect() raises ConfigurationError.
+            Discovery without a session (connect_and_get_server_endpoints and its siblings) needs none of them.
 
         Attributes to set before connect(): name, description, application_uri and product_uri describe this
         client; secure_channel_timeout and session_timeout (ms) are requested and replaced by the revised values;
-        application_hook is an extra check of the server certificate after validation, which rejects it by raising
-        a ServiceError; session_state_path, a file in which the session is kept, lets a new client process resume
-        the session of the previous one with ActivateSession (OPC 10000-4 v1.05, 6.7) instead of creating one.
+        allow_plaintext_password lets the user password cross a channel that cannot encrypt it (a config sets it
+        from its profile); application_hook is an extra check of the server certificate after validation, which
+        rejects it by raising a ServiceError; session_state_path, a file in which the session is kept, lets a new
+        client process resume the session of the previous one with ActivateSession (OPC 10000-4 v1.05, 6.7)
+        instead of creating one.
         """
         self._config: ClientConfig | None = config
         self._config_applied = False
@@ -215,9 +226,12 @@ class Client:
         self._stale_check_interval: float = 0.5
         self.trust_store: TrustStore | None = None
         self.certificate_validator: CertificateValidator | None = None
-        self.allow_deprecated_policies: bool = allow_deprecated_policies
+        self.allow_no_security: bool = allow_no_security
+        self.allow_plaintext_password: bool = False
+        self._security_chosen = False
         self.application_hook: ApplicationHook | None = None
         self._default_validator: CertificateValidator | None = None
+        self._suppress: tuple[str, ...] = tuple(config.suppress or ()) if config is not None else ()
         self._pinned_server_certificate: x509.Certificate | None = None
         self._own_credentials: pki.OwnCredentials | None = None
         self.session_state_path: Path | None = None
@@ -226,6 +240,7 @@ class Client:
             self.name = self.description = config.name
             self.application_uri = config.application_uri
             self.session_timeout = config.session_timeout_ms
+            self.allow_plaintext_password = bool(config.allow_plaintext_password)
             if config.username is not None:
                 self._username = config.username
                 self._password = config.effective_password()
@@ -277,17 +292,43 @@ class Client:
         config = self._config
         if config is None or self._config_applied:
             return
-        policy_type = config.policy_type()
+        if config.automatic_security():
+            policy_type = await self._automatic_policy_type(config)
+            _logger.info(
+                "client.security auto: the strongest channel the server offers is %s",
+                "no security" if policy_type is ua.SecurityPolicyType.NoSecurity else policy_name(policy_type),
+            )
+        else:
+            policy_type = config.policy_type()
         if policy_type is not ua.SecurityPolicyType.NoSecurity:
             await self._load_config_pki(config)
-            policy_name, _, mode_name = (config.security or "").partition(",")
-            policy = getattr(security_policies, f"SecurityPolicy{policy_name.replace('_', '')}")
+            policy, mode, _ = security_policies.SECURITY_POLICY_TYPE_MAP[policy_type]
             await self.set_security(
                 policy,
-                mode=ua.MessageSecurityMode[mode_name],
+                mode=mode,
                 server_certificate=str(config.server_certificate) if config.server_certificate else None,
             )
         self._config_applied = True
+
+    async def _automatic_policy_type(self, config: ClientConfig) -> ua.SecurityPolicyType:
+        endpoints = await self.connect_and_get_server_endpoints()
+        by_channel = {
+            (policy.URI, mode): (policy_type, level)
+            for policy_type, (policy, mode, level) in security_policies.SECURITY_POLICY_TYPE_MAP.items()
+        }
+        best = ua.SecurityPolicyType.NoSecurity
+        best_rank = (-1, -1)
+        for endpoint in endpoints:
+            known = by_channel.get((endpoint.SecurityPolicyUri, endpoint.SecurityMode))
+            if known is None or not endpoint.EndpointUrl.startswith(ua.OPC_TCP_SCHEME):
+                continue
+            policy_type = known[0]
+            if policy_type is not ua.SecurityPolicyType.NoSecurity and config.pki is None:
+                continue
+            rank = (endpoint.SecurityLevel or 0, endpoint.SecurityMode.value)
+            if rank > best_rank:
+                best, best_rank = policy_type, rank
+        return best
 
     def listen_reverse(
         self,
@@ -529,9 +570,10 @@ class Client:
             private_key = uacrypto.CertProperties(uacrypto.pem_from_key(self._own_credentials.private_key), "pem")
             private_key_password = None
             certificate_chain = [uacrypto.der_from_x509(c) for c in self._own_credentials.chain]
-        if getattr(policy, "deprecated", False) and not self.allow_deprecated_policies:
-            raise ConfigurationError(
-                f"{policy.__name__} is deprecated and is only available with Client(allow_deprecated_policies=True)"
+        if getattr(policy, "deprecated", False):
+            _logger.warning(
+                "%s is deprecated and weak against modern attacks; it is used because set_security names it",
+                policy.__name__,
             )
         pin_server_certificate = server_certificate is not None
         server: uacrypto.CertProperties | x509.Certificate
@@ -602,6 +644,7 @@ class Client:
         else:
             server_x509 = server_cert
         self._pinned_server_certificate = server_x509 if pin_server_certificate else None
+        self._security_chosen = True
         self._default_validator = None
         cert = await uacrypto.load_certificate(certificate.path_or_content, certificate.extension)
         certificate_chain = certificate_chain or []
@@ -747,7 +790,9 @@ class Client:
         _logger.info("connect (auto_reconnect=%s)", auto_reconnect)
         if self.uaclient.state is not UaClientState.DISCONNECTED:
             raise ConnectionError("already connected")
+        self._require_security_choice()
         await self._apply_config()
+        self._log_security()
         if auto_reconnect is not None:
             self._auto_reconnect = auto_reconnect
         if reconnect_max_delay is not None:
@@ -760,6 +805,49 @@ class Client:
         await self.get_namespace_array()
         self._supervisor_task = asyncio.create_task(self._connection_supervisor())
         self._stale_watchdog_task = asyncio.create_task(self._stale_watchdog_loop())
+
+    def _require_security_choice(self) -> None:
+        chosen = (
+            self._config is not None
+            or self.allow_no_security
+            or self._security_chosen
+            or not isinstance(self.security_policy, security_policies.SecurityPolicyNone)
+        )
+        if not chosen:
+            raise ConfigurationError(
+                "no security is configured: use Client.quickstart(url, pki=...) with a PKI directory, call "
+                "set_security(...), or ask for no security with Client(url, allow_no_security=True)"
+            )
+
+    def _channel_risks(self) -> list[str]:
+        policy = self.security_policy
+        if isinstance(policy, security_policies.SecurityPolicyNone):
+            return []
+        risks = []
+        if getattr(policy, "deprecated", False):
+            risks.append("the policy is deprecated, weak against modern attacks")
+        if policy.Mode == ua.MessageSecurityMode.Sign:
+            risks.append("the channel is signed but not encrypted, the content can be read")
+        return risks
+
+    def _log_security(self) -> None:
+        url = self.server_url.geturl()
+        if self._config is not None:
+            for line in self._config.weaknesses():
+                _logger.warning("%s", line)
+            if not self._config.automatic_security():
+                return
+        if isinstance(self.security_policy, security_policies.SecurityPolicyNone):
+            _logger.warning("%s connects without security: the channel is neither signed nor encrypted", url)
+            return
+        if risks := self._channel_risks():
+            _logger.warning(
+                "%s connects with %s %s: %s",
+                url,
+                type(self.security_policy).__name__,
+                self.security_policy.Mode.name,
+                "; ".join(risks),
+            )
 
     async def _connect_sequence(self) -> None:
         """Run the full connect sequence: socket, hello, channel, session, activate.
@@ -985,7 +1073,7 @@ class Client:
             if self._pinned_server_certificate is not None:
                 store.pin(self._pinned_server_certificate)
             await store.load()
-            self._default_validator = CertificateValidator(store)
+            self._default_validator = CertificateValidator(store, suppress=self._suppress)
         else:
             await self._default_validator.trust_store.load()
         self.uaclient.certificate_validator = self._default_validator
@@ -1604,7 +1692,13 @@ class Client:
         if not policy.SecurityPolicyUri or policy.SecurityPolicyUri == security_policies.SecurityPolicyNone.URI:
             if password:
                 if self.security_policy.Mode != ua.MessageSecurityMode.SignAndEncrypt:
-                    _logger.warning("Sending plain-text password")
+                    if not self.allow_plaintext_password:
+                        raise ConfigurationError(
+                            "the password would cross the network in clear text: the endpoint offers no encrypted "
+                            "user token and the channel is not SignAndEncrypt; connect with SignAndEncrypt, or "
+                            "set allow_plaintext_password = True on the client"
+                        )
+                    _logger.warning("Sending the password in clear text: the channel does not encrypt it")
                 params.UserIdentityToken.Password = password.encode("utf8")
             params.UserIdentityToken.EncryptionAlgorithm = None
         elif password:

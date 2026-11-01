@@ -359,7 +359,7 @@ async def test_cli3_publish_requests_do_not_use_request_permits() -> None:
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     async with server:
-        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2)
+        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2, allow_no_security=True)
         await client.connect()
         try:
             client.set_max_concurrent_requests(1)
@@ -387,7 +387,7 @@ async def test_com74_delete_of_an_unknown_subscription_unregisters_its_sink() ->
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     async with server:
-        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2)
+        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2, allow_no_security=True)
         await client.connect()
         try:
             session = client.uaclient.session
@@ -408,7 +408,7 @@ async def test_cli4_delete_last_then_create_keeps_publishing() -> None:
     async with server:
         var = await server.get_objects_node().add_variable(2, "RaceVar", 0)
         await var.set_writable()
-        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2)
+        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2, allow_no_security=True)
         await client.connect()
         try:
             node = client.get_node(var.nodeid)
@@ -437,7 +437,7 @@ async def test_cli29_lost_transport_without_reconnect_stops_the_pump() -> None:
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     async with server:
-        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2, watchdog_intervall=0.2)
+        client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=2, watchdog_intervall=0.2, allow_no_security=True)
         await client.connect()
         try:
             await client.create_subscription(100, MultiHandler())

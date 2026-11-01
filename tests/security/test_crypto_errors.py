@@ -288,7 +288,7 @@ async def _read_server_state(client: Client) -> bool:
 
 async def test_authentication_tokens_are_random_bytestrings(open_server: tuple[Server, str]) -> None:
     _srv, url = open_server
-    async with Client(url) as first, Client(url) as second:
+    async with Client(url, allow_no_security=True) as first, Client(url, allow_no_security=True) as second:
         tokens = [first.uaclient.session.authentication_token, second.uaclient.session.authentication_token]
     assert all(token.NodeIdType == ua.NodeIdType.ByteString for token in tokens)
     assert all(len(token.Identifier) == 32 for token in tokens)
@@ -297,11 +297,12 @@ async def test_authentication_tokens_are_random_bytestrings(open_server: tuple[S
 
 async def test_failed_activation_on_new_channel_does_not_bind_session(open_server: tuple[Server, str]) -> None:
     srv, url = open_server
-    victim = Client(url)
+    victim = Client(url, allow_no_security=True)
     victim.set_user("operator")
     victim.set_password("secret")
+    victim.allow_plaintext_password = True
     async with victim:
-        attacker = Client(url)
+        attacker = Client(url, allow_no_security=True)
         await _open_channel(attacker)
         try:
             with pytest.raises(ua.uaerrors.BadIdentityTokenRejected):
@@ -336,9 +337,9 @@ async def test_session_cannot_move_to_channel_with_other_certificate(secure_serv
 
 async def test_moved_session_rejects_requests_on_old_channel(open_server: tuple[Server, str]) -> None:
     _srv, url = open_server
-    async with Client(url) as original:
+    async with Client(url, allow_no_security=True) as original:
         token = original.uaclient.session.authentication_token
-        replacement = Client(url)
+        replacement = Client(url, allow_no_security=True)
         await _open_channel(replacement)
         try:
             await _activate_with_token(replacement, token)

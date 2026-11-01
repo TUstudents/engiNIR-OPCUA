@@ -7,6 +7,7 @@ from enginir_opcua.client.ua_client import UaClientState
 from enginir_opcua.observer import Observer
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Client, Server, SyncNode, ThreadLoop, _to_async, _to_sync
+from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.conftest import find_free_port
 from tests.tools.sync_waiting import wait_until_sync
 
@@ -35,7 +36,7 @@ def variable(server):
 
 @pytest.fixture
 def client(server):
-    c = Client(URL, sync_wrapper_timeout=10)
+    c = Client(URL, sync_wrapper_timeout=10, allow_no_security=True)
     with c:
         yield c
 
@@ -118,7 +119,7 @@ def test_syn1_a_full_handler_queue_drops_the_oldest_and_reports_it(server, varia
             release.wait(10)
             seen.append(val)
 
-    with Client(URL, sync_wrapper_timeout=10, handler_queue_maxsize=2, observer=observer) as c:
+    with Client(URL, sync_wrapper_timeout=10, handler_queue_maxsize=2, observer=observer, allow_no_security=True) as c:
         sub = c.create_subscription(20, Blocked())
         sub.subscribe_data_change(c.get_node(variable.nodeid))
         time.sleep(0.3)
@@ -133,7 +134,7 @@ def test_syn1_a_full_handler_queue_drops_the_oldest_and_reports_it(server, varia
 
 
 def test_syn3_connect_after_disconnect_works_and_old_nodes_stay_valid(server, variable):
-    c = Client(URL, sync_wrapper_timeout=10)
+    c = Client(URL, sync_wrapper_timeout=10, allow_no_security=True)
     c.connect()
     node = c.get_node(variable.nodeid)
     root = c.nodes.root
@@ -145,7 +146,7 @@ def test_syn3_connect_after_disconnect_works_and_old_nodes_stay_valid(server, va
 
 
 def test_syn3_auto_reconnect_is_exposed_and_the_state_is_visible(server):
-    c = Client(URL, sync_wrapper_timeout=10, auto_reconnect=True, reconnect_max_delay=2.0)
+    c = Client(URL, sync_wrapper_timeout=10, auto_reconnect=True, reconnect_max_delay=2.0, allow_no_security=True)
     assert c.aio_obj._auto_reconnect is True
     assert c.aio_obj._reconnect_max_delay == 2.0
     states: list[UaClientState] = []
@@ -157,7 +158,7 @@ def test_syn3_auto_reconnect_is_exposed_and_the_state_is_visible(server):
 
 
 def test_syn6_disconnect_twice_is_a_no_op(server):
-    c = Client(URL, sync_wrapper_timeout=10)
+    c = Client(URL, sync_wrapper_timeout=10, allow_no_security=True)
     c.connect()
     c.disconnect()
     c.disconnect()
@@ -239,7 +240,7 @@ def test_syn11_client_nodes_use_the_session_of_get_node(client):
 
 def test_syn11_the_sync_client_has_no_user_manager_parameter():
     with pytest.raises(TypeError):
-        Client(URL, user_manager=PermissiveUserManager())  # type: ignore[call-arg]
+        Client(URL, user_manager=PermissiveUserManager(), allow_no_security=True)  # type: ignore[call-arg]
 
 
 def test_syn11_a_handler_without_a_method_gets_the_async_layers_error(client, variable, caplog):
@@ -264,7 +265,7 @@ def test_obs2_the_client_takes_an_observer(client):
 
 
 def test_syn5_exit_hooks_disconnect_a_forgotten_client(server):
-    code = f"from enginir_opcua.sync import Client\nc = Client({URL!r})\nc.connect()\nprint('connected')\n"
+    code = f"from enginir_opcua.sync import Client\nc = Client({URL!r}, allow_no_security=True)\nc.connect()\nprint('connected')\n"
     import subprocess
     import sys
 
@@ -275,7 +276,32 @@ def test_syn5_exit_hooks_disconnect_a_forgotten_client(server):
 
 def test_syn3_a_shared_loop_is_never_stopped_by_a_client(server):
     with ThreadLoop() as tloop:
-        c = Client(URL, tloop=tloop)
+        c = Client(URL, tloop=tloop, allow_no_security=True)
         c.connect()
         c.disconnect()
         assert tloop.is_running()
+
+
+def test_a_sync_client_without_a_security_choice_is_refused(server):
+    client = Client(URL, sync_wrapper_timeout=10)
+    assert client.allow_no_security is False
+    with pytest.raises(ConfigurationError, match="allow_no_security=True"):
+        client.connect()
+    client.disconnect()
+
+
+def test_a_sync_client_forwards_the_security_requests(server):
+    client = Client(URL, sync_wrapper_timeout=10, allow_no_security=True)
+    assert client.allow_no_security is True
+    assert client.allow_plaintext_password is False
+    client.allow_plaintext_password = True
+    assert client.aio_obj.allow_plaintext_password is True
+    with client:
+        assert client.get_namespace_array()
+
+
+def test_a_sync_client_refuses_a_clear_text_password_by_default(server):
+    client = Client(URL.replace("admin@", "admin:secret@"), sync_wrapper_timeout=10, allow_no_security=True)
+    with pytest.raises(ConfigurationError, match="allow_plaintext_password"):
+        client.connect()
+    client.disconnect()

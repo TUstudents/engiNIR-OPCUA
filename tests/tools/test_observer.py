@@ -191,7 +191,7 @@ async def test_the_session_shares_the_observer_of_its_client():
 
 async def test_the_subscription_lifecycle_is_reported(server):
     observer = RecordingObserver()
-    async with Client(f"opc.tcp://127.0.0.1:{port_num}") as client:
+    async with Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True) as client:
         client.uaclient.observer = observer
         subscription = await client.create_subscription(100, mock.MagicMock())
         created = [e for e in observer.subscriptions if e[0] is SubscriptionEvent.CREATED]
@@ -203,7 +203,7 @@ async def test_the_subscription_lifecycle_is_reported(server):
 
 async def test_a_deleted_subscription_is_marked_deleted_before_the_observer_runs(server):
     seen = []
-    async with Client(f"opc.tcp://127.0.0.1:{port_num}") as client:
+    async with Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True) as client:
         subscription = await client.create_subscription(100, mock.MagicMock())
 
         class Late(Observer):
@@ -218,7 +218,7 @@ async def test_a_deleted_subscription_is_marked_deleted_before_the_observer_runs
 
 async def test_notifications_are_reported_with_their_item_count(server):
     observer = RecordingObserver()
-    async with Client(f"opc.tcp://127.0.0.1:{port_num}") as client:
+    async with Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True) as client:
         client.uaclient.observer = observer
         node = client.get_node(ua.ObjectIds.Server_ServerStatus_CurrentTime)
         subscription = await client.create_subscription(50, mock.MagicMock())
@@ -232,7 +232,7 @@ async def test_notifications_are_reported_with_their_item_count(server):
 
 async def test_a_recreated_subscription_is_reported_once(server):
     observer = RecordingObserver()
-    async with Client(f"opc.tcp://127.0.0.1:{port_num}") as client:
+    async with Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True) as client:
         client.uaclient.observer = observer
         subscription = await client.create_subscription(100, mock.MagicMock())
         observer.subscriptions.clear()
@@ -245,7 +245,7 @@ async def test_a_recreated_subscription_is_reported_once(server):
 
 
 async def test_a_broken_observer_does_not_break_a_subscription(server):
-    async with Client(f"opc.tcp://127.0.0.1:{port_num}") as client:
+    async with Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True) as client:
         client.uaclient.observer = BrokenObserver()
         subscription = await client.create_subscription(100, mock.MagicMock())
         await subscription.delete()
@@ -294,13 +294,13 @@ def test_obs2_a_client_takes_an_observer_as_argument_and_property():
     from enginir_opcua import Client
 
     observer = Observer()
-    client = Client("opc.tcp://localhost:4840", observer=observer)
+    client = Client("opc.tcp://localhost:4840", observer=observer, allow_no_security=True)
     assert client.observer is observer
     assert client.uaclient.observer is observer
     other = Observer()
     client.observer = other
     assert client.uaclient.observer is other
-    assert Client("opc.tcp://localhost:4840").observer is NULL_OBSERVER
+    assert Client("opc.tcp://localhost:4840", allow_no_security=True).observer is NULL_OBSERVER
 
 
 def test_obs1_every_hook_is_documented():

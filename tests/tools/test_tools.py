@@ -674,7 +674,7 @@ def test_tool3_password_option_is_gone() -> None:
 async def test_tool3_password_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """The password is taken from ENGINIR_OPCUA_PASSWORD when it is set."""
     monkeypatch.setenv(PASSWORD_VARIABLE, "from-environment")
-    client = Client("opc.tcp://127.0.0.1:4840")
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     await configure_client(client, _arguments())
     assert client._password == "from-environment"
 
@@ -683,7 +683,7 @@ async def test_tool3_password_is_asked_on_the_terminal(monkeypatch: pytest.Monke
     """--ask-password prompts for the password, and the prompt wins over the environment."""
     monkeypatch.setenv(PASSWORD_VARIABLE, "from-environment")
     monkeypatch.setattr(getpass, "getpass", lambda prompt="": "typed")
-    client = Client("opc.tcp://127.0.0.1:4840")
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     await configure_client(client, _arguments("--ask-password"))
     assert client._password == "typed"
 
@@ -691,7 +691,7 @@ async def test_tool3_password_is_asked_on_the_terminal(monkeypatch: pytest.Monke
 async def test_tool3_no_password_is_needed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without a prompt and without the variable the tool does not set a password."""
     monkeypatch.delenv(PASSWORD_VARIABLE, raising=False)
-    client = Client("opc.tcp://127.0.0.1:4840")
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     await configure_client(client, _arguments())
     assert not client._password
 

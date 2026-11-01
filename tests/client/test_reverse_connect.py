@@ -29,7 +29,7 @@ async def test_cli61_listen_reverse_connects_after_the_server_dials(server: Serv
     """Part 6, 7.1.3: the server connects out, the client runs Hello, OpenSecureChannel and the session on it."""
     port = find_free_port()
     server.add_reverse_connect(f"opc.tcp://127.0.0.1:{port}", retry_interval=0.2)
-    client = Client(server.endpoint.geturl(), timeout=3)
+    client = Client(server.endpoint.geturl(), timeout=3, allow_no_security=True)
     client.listen_reverse(f"opc.tcp://127.0.0.1:{port}", server_uri="urn:enginir:opcua:server")
     async with client:
         assert await client.nodes.server.get_child("0:ServerStatus/0:State") is not None
@@ -41,7 +41,7 @@ async def test_cli61_wrong_server_uri_is_refused_and_the_wait_times_out(server: 
     """Part 6, 7.1.2.6: a ReverseHello of another server is refused; connect gives up after accept_timeout."""
     port = find_free_port()
     server.add_reverse_connect(f"opc.tcp://127.0.0.1:{port}", retry_interval=0.2)
-    client = Client(server.endpoint.geturl(), timeout=3)
+    client = Client(server.endpoint.geturl(), timeout=3, allow_no_security=True)
     client.listen_reverse(f"opc.tcp://127.0.0.1:{port}", server_uri="urn:someone:else", accept_timeout=1.0)
     with pytest.raises(TimeoutError):
         await client.connect()
@@ -52,7 +52,7 @@ async def test_cli61_parked_socket_is_used_by_a_later_connect(server: Server) ->
     """Part 6, 7.1.3, Table 78: the client may save the socket for later."""
     async with ReverseConnectListener("opc.tcp://127.0.0.1:0") as listener:
         server.add_reverse_connect(f"opc.tcp://127.0.0.1:{listener.port}", retry_interval=0.2)
-        client = Client(server.endpoint.geturl(), timeout=3)
+        client = Client(server.endpoint.geturl(), timeout=3, allow_no_security=True)
         client.use_reverse_listener(listener, "urn:enginir:opcua:server")
         await wait_until(lambda: listener.parked_count() == 1)
         await client.connect()
@@ -70,7 +70,7 @@ async def test_cli61_two_clients_share_one_listener(server: Server) -> None:
             clients = []
             for srv in (server, other):
                 srv.add_reverse_connect(f"opc.tcp://127.0.0.1:{listener.port}", retry_interval=0.2)
-                client = Client(srv.endpoint.geturl(), timeout=3)
+                client = Client(srv.endpoint.geturl(), timeout=3, allow_no_security=True)
                 client.use_reverse_listener(listener, srv.get_application_uri())
                 clients.append(client)
             try:
@@ -87,7 +87,7 @@ async def test_cli61_two_clients_share_one_listener(server: Server) -> None:
 
 async def test_cli61_connect_waits_at_most_accept_timeout() -> None:
     """Part 6, 7.1.3: with no server connecting, connect fails after the configured time."""
-    client = Client("opc.tcp://127.0.0.1:4840/none", timeout=1)
+    client = Client("opc.tcp://127.0.0.1:4840/none", timeout=1, allow_no_security=True)
     client.listen_reverse("opc.tcp://127.0.0.1:0", server_uri="urn:none", accept_timeout=0.3)
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -102,7 +102,7 @@ async def test_cli61_certificate_host_is_the_name_of_the_url_not_the_peer_addres
     port = find_free_port()
     url = "opc.tcp://some.server.example:4840/reverse"
     server.add_reverse_connect(f"opc.tcp://127.0.0.1:{port}", endpoint_url=url, retry_interval=0.2)
-    client = Client(url, timeout=3)
+    client = Client(url, timeout=3, allow_no_security=True)
     client.listen_reverse(f"opc.tcp://127.0.0.1:{port}", server_uri="urn:enginir:opcua:server")
     await client.connect_socket()
     try:
@@ -116,7 +116,7 @@ async def test_cli62_reconnect_waits_for_the_next_reverse_hello_and_keeps_the_se
     """Part 4, 6.7: a reverse-connect client does not dial; it reconnects on the next socket of the server."""
     port = find_free_port()
     server.add_reverse_connect(f"opc.tcp://127.0.0.1:{port}", retry_interval=0.2)
-    client = Client(server.endpoint.geturl(), timeout=2, watchdog_intervall=0.2)
+    client = Client(server.endpoint.geturl(), timeout=2, watchdog_intervall=0.2, allow_no_security=True)
     client.listen_reverse(f"opc.tcp://127.0.0.1:{port}", server_uri="urn:enginir:opcua:server")
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.3, reconnect_request_timeout=10.0)
     try:

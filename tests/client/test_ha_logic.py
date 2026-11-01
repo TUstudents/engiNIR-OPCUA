@@ -539,3 +539,22 @@ async def test_cli83_a_quickstart_ha_client_connects_to_two_secure_servers(tmp_p
         await ha.stop()
         for server in servers:
             await server.stop()
+
+
+async def test_ha_clients_refuse_to_connect_without_a_security_choice() -> None:
+    ha = HaClient(make_config())
+    for client in ha.clients:
+        with pytest.raises(ConfigurationError, match="allow_no_security=True"):
+            await client.connect()
+
+
+def test_ha_clients_take_the_request_for_no_security() -> None:
+    ha = HaClient(make_config(), HaSecurityConfig(allow_no_security=True))
+    assert all(client.allow_no_security for client in ha.clients)
+
+
+@pytest.mark.parametrize("profile", ["development", "legacy"])
+def test_ha_quickstart_accepts_every_profile(profile: str) -> None:
+    ha = HaClient.quickstart(["opc.tcp://127.0.0.1:1/", "opc.tcp://127.0.0.1:2/"], profile=profile, pki=None)
+    assert all(client._config is not None and client._config.profile == profile for client in ha.clients)
+    assert all(client.allow_plaintext_password is (profile == "development") for client in ha.clients)

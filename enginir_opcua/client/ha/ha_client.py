@@ -86,9 +86,11 @@ class HaSecurityConfig:
     """
     The security and identity of every client of an HaClient (see HaClient.set_security), or the quick setup
     (HaClient.quickstart): `pki` is the PKI directory that every client uses for its certificate, key and trust,
-    `profile` the quick-setup profile, `application_uri` the ApplicationUri of every client (default: the host-derived
-    URI of Client.quickstart) and `client_settings` more ClientConfig fields. With the quick setup the clients are
-    created by the HaClient constructor, so a later set_security() does not reach them and the policy fields stay unused.
+    `profile` the quick-setup profile ("secure", "development" or "legacy"), `allow_no_security` the explicit request
+    for clients without any security (Client(url, allow_no_security=True)), `application_uri` the ApplicationUri of
+    every client (default: the host-derived URI of Client.quickstart) and `client_settings` more ClientConfig fields.
+    With the quick setup the clients are created by the HaClient constructor, so a later set_security() does not
+    reach them and the policy fields stay unused.
     """
 
     policy: type[SecurityPolicy] | None = None
@@ -105,6 +107,7 @@ class HaSecurityConfig:
     profile: str = "secure"
     application_uri: str | None = None
     client_settings: Mapping[str, Any] = field(default_factory=dict)
+    allow_no_security: bool = False
 
     def __post_init__(self) -> None:
         if self.policy is not None and self.server_certificate is None and self.trust_store is None:
@@ -233,8 +236,8 @@ class HaClient:
         return self._config
 
     def _new_client(self, url: str, security: HaSecurityConfig) -> Client:
-        if security.pki is None:
-            return Client(url, timeout=self._config.request_timeout)
+        if security.pki is None and security.profile == "secure":
+            return Client(url, timeout=self._config.request_timeout, allow_no_security=security.allow_no_security)
         settings = dict(security.client_settings)
         settings.setdefault("timeout", self._config.request_timeout)
         settings.setdefault("application_uri", security.application_uri or default_application_uri("client"))

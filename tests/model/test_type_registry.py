@@ -130,7 +130,7 @@ async def test_com40_two_servers_two_clients_same_node_ids(restore_ua_registry: 
     try:
         clients = []
         for server, field_name in ((server_a, "alpha"), (server_b, "beta")):
-            client = Client(server.endpoint.geturl())
+            client = Client(server.endpoint.geturl(), allow_no_security=True)
             await client.connect()
             clients.append(client)
             await client.load_data_type_definitions()
@@ -150,7 +150,7 @@ async def test_com40_two_servers_two_clients_same_node_ids(restore_ua_registry: 
 async def test_com40_client_must_load_definitions_itself(restore_ua_registry: None) -> None:
     server, _ = await start_server(find_free_port(), "alpha")
     try:
-        async with Client(server.endpoint.geturl()) as client:
+        async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
             holder = await client.nodes.objects.get_child("2:holder")
             assert isinstance(await holder.read_value(), ua.ExtensionObject)
             await client.load_data_type_definitions()

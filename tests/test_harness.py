@@ -27,7 +27,7 @@ async def test_tampered_responses_rewrite_get_endpoints(server: Server, tampered
             endpoint.EndpointUrl = "opc.tcp://tampered.invalid:4840"
 
     tampered_responses.on(ua.GetEndpointsResponse, redirect_endpoints)
-    async with Client(server.endpoint.geturl()) as client:
+    async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
         endpoints = await client.get_endpoints()
     assert endpoints
     assert {endpoint.EndpointUrl for endpoint in endpoints} == {"opc.tcp://tampered.invalid:4840"}
@@ -41,6 +41,7 @@ async def test_two_sessions_are_both_activated(two_sessions: TwoSessions) -> Non
 
 async def test_two_sessions_server_rejects_unknown_user(two_sessions: TwoSessions) -> None:
     endpoint = two_sessions.server.endpoint
+    client = Client(f"opc.tcp://mallory:wrong@{endpoint.hostname}:{endpoint.port}", allow_no_security=True)
+    client.allow_plaintext_password = True
     with pytest.raises(ua.UaStatusCodeError):
-        async with Client(f"opc.tcp://mallory:wrong@{endpoint.hostname}:{endpoint.port}"):
-            pass
+        await client.connect()
