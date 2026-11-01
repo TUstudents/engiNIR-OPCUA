@@ -317,6 +317,26 @@ def test_discover_shows_the_text_of_the_application_name(capsys, tool_server):
     assert any(line.strip().startswith("Application Name") for line in out.splitlines())
 
 
+def test_endpoint_fields_name_the_enumerations() -> None:
+    endpoint = ua.EndpointDescription(
+        EndpointUrl="opc.tcp://host:4840",
+        Server=ua.ApplicationDescription(ApplicationType=ua.ApplicationType.Server),
+        SecurityMode=ua.MessageSecurityMode.None_,
+        UserIdentityTokens=[ua.UserTokenPolicy(PolicyId="username", TokenType=ua.UserTokenType.UserName)],
+    )
+    fields = dict(tools.endpoint_to_strings(endpoint))
+    assert fields["Application Type"] == "Server"
+    assert fields["Security Mode"] == "None"
+    assert fields["  Token type"] == "UserName"
+
+
+def test_discover_names_the_enumerations(capsys, tool_server):
+    _, out, _ = run(capsys, "discover", "-u", URL)
+    assert "Application Type: ClientAndServer" in out
+    assert "Security Mode: None" in out
+    assert "Token type: Anonymous" in out
+
+
 def _listing(out: str) -> str:
     return "\n".join(line for line in out.splitlines() if not line.startswith("Browsing node "))
 

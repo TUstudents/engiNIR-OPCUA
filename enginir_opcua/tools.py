@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import IntEnum
 from logging.handlers import RotatingFileHandler
 from typing import Any
 from urllib.parse import urlparse
@@ -585,13 +586,20 @@ async def _generate_structs(client: Client, args: argparse.Namespace) -> int:
     return 0
 
 
+def _enum_name(enum: type[IntEnum], value: int) -> str:
+    try:
+        return enum(value).name.rstrip("_")
+    except ValueError:
+        return str(value)
+
+
 def application_to_strings(app: ua.ApplicationDescription) -> list[tuple[str, Any]]:
     """Return the printed fields of an ApplicationDescription; empty optional fields are left out."""
     result = [("Application URI", app.ApplicationUri)]
     optionals = [
         ("Product URI", app.ProductUri),
         ("Application Name", _shown(app.ApplicationName)),
-        ("Application Type", str(app.ApplicationType)),
+        ("Application Type", _enum_name(ua.ApplicationType, app.ApplicationType)),
         ("Gateway Server URI", app.GatewayServerUri),
         ("Discovery Profile URI", app.DiscoveryProfileUri),
     ]
@@ -617,11 +625,11 @@ def endpoint_to_strings(ep: ua.EndpointDescription) -> list[tuple[str, Any]]:
     result += application_to_strings(ep.Server)
     result += [
         ("Server Certificate", cert_to_string(ep.ServerCertificate)),
-        ("Security Mode", str(ep.SecurityMode)),
+        ("Security Mode", _enum_name(ua.MessageSecurityMode, ep.SecurityMode)),
         ("Security Policy URI", ep.SecurityPolicyUri),
     ]
     for token in ep.UserIdentityTokens:
-        result += [("User policy", token.PolicyId), ("  Token type", str(token.TokenType))]
+        result += [("User policy", token.PolicyId), ("  Token type", _enum_name(ua.UserTokenType, token.TokenType))]
         if token.IssuedTokenType or token.IssuerEndpointUrl:
             result += [
                 ("  Issued Token type", token.IssuedTokenType),
