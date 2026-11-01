@@ -2,7 +2,7 @@
 
 Each release has its own section; the newest is at the top.
 
-## 3.0.1 (unreleased)
+## 3.0.1 (2026-11-02)
 
 ### Fixes
 
