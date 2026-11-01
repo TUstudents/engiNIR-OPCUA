@@ -76,9 +76,8 @@ The same with two programs, a users file and the command line is in [A Minimal S
   and trust nobody until a certificate is put into the PKI directory.
 - **Users and roles.** Anonymous sessions may read, browse and subscribe. Writing, calling methods and changing the
   address space need a user with the right role; passwords are stored as salted hashes.
-- **Bounded resources.** Message sizes, sessions, subscriptions, monitored items and queues all have limits, an
-  unauthenticated peer can make the server hold only a small message, and inconsistent limits stop the server at
-  start.
+- **Hardened.** The server is hardened against the attacks known for OPC UA servers, and certificates can be managed
+  from the command line or remotely over OPC UA.
 - **Clear errors.** A wrong setting raises a `ConfigurationError` that names it, and a refused certificate is
   reported with its thumbprint and the command that trusts it.
 
