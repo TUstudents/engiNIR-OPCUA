@@ -13,7 +13,7 @@ from enginir_opcua import ua
 from ..common.utils import Buffer, ServiceError
 from ..crypto.permission_rules import ROLE_RANK, UserRole
 from ..ua.ua_binary import DecodeLimits, decode_limits, nodeid_from_binary, struct_from_binary
-from .internal_session import Session, SessionChannel, current_call_session
+from .internal_session import Session, SessionChannel, current_call_session, user_label
 
 if TYPE_CHECKING:
     from .internal_server import InternalServer
@@ -233,7 +233,8 @@ class Dispatcher:
             if status == ua.StatusCodes.BadInternalError:
                 _logger.exception("Error while processing a request")
             else:
-                _logger.info("Request failed with %s", ua.StatusCode(status).name)
+                caller = f"{session.label} ({user_label(session.user)})" if session is not None else channel.peer
+                _logger.info("%s from %s failed: %s", service_name or "Request", caller, ua.StatusCode(status).name)
             self._answer_fault(channel, handle, seqhdr, status)
         finally:
             if reader_token is not None:

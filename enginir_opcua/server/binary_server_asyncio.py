@@ -26,7 +26,7 @@ from ..crypto.security_policies import SecurityPolicyFactory
 from ..ua.ua_binary import struct_from_binary
 from ..ua.uaprotocol_hand import SECURE_MESSAGE_TYPES
 from .internal_server import InternalServer
-from .uaprocessor import UaProcessor
+from .uaprocessor import UaProcessor, peer_label
 
 _logger = logging.getLogger(__name__)
 
@@ -51,6 +51,8 @@ class OPCUAProtocol(asyncio.Protocol):
         reverse: ReverseConnection | None = None,
     ) -> None:
         self.peer_name: Any = None
+        self.peer: str = "unknown peer"
+        self._close_warned = False
         self.transport: asyncio.Transport | None = None
         self.processor: UaProcessor | None = None
         self._reader = FrameReader(self._max_frame_size)
@@ -78,18 +80,15 @@ class OPCUAProtocol(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.peer_name = transport.get_extra_info("peername")
+        self.peer = peer_label(self.peer_name)
         if len(self.clients) >= self.iserver.max_connections and not self._close_oldest_channel_without_session():
-            _logger.warning(
-                "Refusing connection from %s: at max_connections=%s",
-                self.peer_name,
-                self.iserver.max_connections,
-            )
+            _logger.warning("%s refused: the server has max_connections=%s", self.peer, self.iserver.max_connections)
             self._closed = True
             refused = cast(asyncio.Transport, transport)
             refused.write(error_message_to_binary(ua.StatusCodes.BadTcpNotEnoughResources, "Too many connections"))
             refused.close()
             return
-        _logger.info("New connection from %s", self.peer_name)
+        _logger.info("%s connected", self.peer)
         self.transport = cast(asyncio.Transport, transport)
         self.processor = UaProcessor(self.iserver, self.transport, self.limits)
         self.processor.set_policies(self.policies)
@@ -120,7 +119,7 @@ class OPCUAProtocol(asyncio.Protocol):
         if not idle:
             return False
         oldest = min(idle, key=lambda c: c.processor.last_used if c.processor is not None else 0.0)
-        _logger.warning("Closing the oldest channel without a session (%s) to make room", oldest.peer_name)
+        oldest._warn_close("closed to make room: the oldest connection without a session")
         oldest._close()
         return True
 
@@ -133,20 +132,35 @@ class OPCUAProtocol(asyncio.Protocol):
         if self.processor is not None and self.processor.channel_expires_in() > 0:
             self._schedule_channel_expiry(self.processor.channel_expires_in())
             return
-        _logger.warning("Closing connection from %s: no valid security token", self.peer_name)
+        self._warn_close("closed: the security token of the channel expired")
         self._close()
 
     def _hello_deadline_expired(self) -> None:
         if self.processor is not None and not self.processor.hello_received:
-            _logger.warning("Closing connection from %s: no Hello received", self.peer_name)
+            self._warn_close(f"closed: no Hello within {self.iserver.hello_timeout_seconds:g} s")
             self._fail(ua.StatusCodes.BadTimeout, "No Hello received")
+
+    def _warn_close(self, message: str) -> None:
+        self._close_warned = True
+        _logger.warning("%s %s", self.peer, message)
+
+    def _log_closed(self, ex: BaseException | None) -> None:
+        processor_reason = self.processor.close_reason if self.processor is not None else None
+        if self._close_warned or (self.processor is not None and self.processor.close_warned):
+            _logger.debug("%s closed", self.peer)
+        elif processor_reason is not None:
+            _logger.info("%s closed (%s)", self.peer, processor_reason)
+        elif ex is not None:
+            _logger.info("%s closed (connection lost: %s)", self.peer, ex)
+        else:
+            _logger.info("%s closed (by the client)", self.peer)
 
     def connection_lost(self, ex: BaseException | None) -> None:
         if self._hello_timer is not None:
             self._hello_timer.cancel()
         if self._expiry_timer is not None:
             self._expiry_timer.cancel()
-        _logger.info("Lost connection from %s, %s", self.peer_name, ex)
+        self._log_closed(ex)
         if self.reverse_outcome is not None and not self.reverse_outcome.done():
             self.reverse_outcome.set_result(("closed", 0))
         if self.transport is not None:
@@ -173,10 +187,8 @@ class OPCUAProtocol(asyncio.Protocol):
             if self.processor is not None and not self.iserver.session_manager.has_activated_session(
                 self.processor.channel_id
             ):
-                _logger.warning(
-                    "Closing idle connection from %s: no ActivateSession within %.1fs",
-                    self.peer_name,
-                    self.iserver.max_pending_activation_seconds,
+                self._warn_close(
+                    f"closed: no session activated within {self.iserver.max_pending_activation_seconds:g} s"
                 )
                 if self.transport is not None:
                     self.transport.close()
@@ -194,7 +206,7 @@ class OPCUAProtocol(asyncio.Protocol):
                 if not self._dispatch(header, body):
                     return
         except TransportError as e:
-            _logger.warning("Closing connection from %s: %s (%s)", self.peer_name, e.reason, ua.StatusCode(e.status))
+            self._warn_close(f"closed: {e.reason} ({ua.StatusCode(e.status).name})")
             self._fail(e.status, e.reason)
         except Exception:
             _logger.exception("Exception raised while parsing message from client")
@@ -219,7 +231,7 @@ class OPCUAProtocol(asyncio.Protocol):
         if header.MessageType == ua.MessageType.Hello:
             raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, "Hello was already received")
         if header.MessageType == ua.MessageType.Error:
-            _logger.warning("Received an Error message from %s, closing", self.peer_name)
+            self._warn_close("closed: the client sent an Error message")
             self._close()
             return False
         if header.MessageType not in SECURE_MESSAGE_TYPES:
@@ -227,9 +239,7 @@ class OPCUAProtocol(asyncio.Protocol):
         try:
             self.messages.put_nowait((header, body))
         except asyncio.QueueFull:
-            _logger.warning(
-                "Inbound queue full for %s (max=%s); closing connection", self.peer_name, self.messages.maxsize
-            )
+            self._warn_close(f"closed: more than {self.messages.maxsize} requests waiting")
             self._close()
             return False
         return True
@@ -295,7 +305,7 @@ class OPCUAProtocol(asyncio.Protocol):
             return True
         ret = await self.processor.process(header, buf)
         if not ret:
-            _logger.info("processor returned False, we close connection from %s", self.peer_name)
+            _logger.debug("%s: the secure channel ended, closing the connection", self.peer)
             if self.transport is not None:
                 self.transport.close()
             return False

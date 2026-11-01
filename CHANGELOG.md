@@ -723,6 +723,13 @@ PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
   in the given registry.
 
 Server infrastructure (workstream J):
+- The server log says who did what in one line per event: `127.0.0.1:34340 connected` and `… closed (client closed
+  the secure channel)`; `Session ns=1;i=5 "name" activated for operator (role user) from 127.0.0.1:58010`, `…
+  re-activated`, `… closed`; `Write from Session … (anonymous) failed: BadUserAccessDenied`. A refused client
+  certificate gives one WARNING with the thumbprint, the reason and the `enginir-opcua trust` command (there were
+  three), and the startup warning names the `trusted/certs` folder of the PKI directory. The negotiated buffer sizes,
+  the connection cleanup and the session timeout revision moved to DEBUG; object dumps and the empty `None`
+  placeholders are gone.
 - `Server.init(shelf_file=...)` writes a new shelf with `dbm.ndbm` (or `dbm.dumb` where ndbm is missing) instead of
   the default of `dbm`, which is sqlite3 since Python 3.13 and commits every node on its own: creating the shelf of the
   standard address space takes about 2 s instead of 7 to 16 s. An existing shelf is found with `dbm.whichdb`, so a

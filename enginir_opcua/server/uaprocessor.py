@@ -28,15 +28,20 @@ from ..common.connection import (
 from ..common.utils import Buffer
 from ..crypto.permission_rules import PermissionRuleset
 from ..crypto.security_policies import SecurityPolicyFactory, SecurityPolicyNone
-from ..crypto.uacrypto import certificate_thumbprint
-from ..crypto.validator import CertificateValidator, Outcome, PeerRole, ValidationContext, untrusted_hint
+from ..crypto.validator import PeerRole, ValidationContext, untrusted_hint
 from ..ua.ua_binary import struct_from_binary, struct_to_binary, uatcp_to_binary
 from .internal_server import InternalServer
 from .internal_session import ChannelSecurity
 
 _logger = logging.getLogger(__name__)
 
-UNTRUSTED_HINT_INTERVAL_SECONDS = 600.0
+
+def peer_label(peer: Any) -> str:
+    """A peer address from get_extra_info("peername") as host:port, [host]:port for IPv6."""
+    if not isinstance(peer, tuple) or len(peer) < 2:
+        return "unknown peer"
+    host, port = peer[0], peer[1]
+    return f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}"
 
 
 class UaProcessor:
@@ -48,6 +53,9 @@ class UaProcessor:
     def __init__(self, internal_server: InternalServer, transport: asyncio.Transport, limits: TransportLimits) -> None:
         self.iserver: InternalServer = internal_server
         self.name: Any = transport.get_extra_info("peername")
+        self.peer = peer_label(self.name)
+        self.close_reason: str | None = None
+        self.close_warned = False
         self.sockname: tuple[str, int] | None = transport.get_extra_info("sockname")
         self._transport = transport
         self._request_tasks: set[asyncio.Task[None]] = set()
@@ -76,25 +84,14 @@ class UaProcessor:
         outcome = validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
             validator.keep_rejected(outcome, self.peer_address)
-            self._log_trust_hint(validator, outcome)
+            hint = untrusted_hint("client", outcome, validator.trust_store)
             status = ua.StatusCode(outcome.status).name
-            raise TransportError(
-                ua.StatusCodes.BadSecurityChecksFailed, f"Client certificate rejected: {status}: {outcome.detail}"
-            )
+            reason = hint or f"client certificate {outcome.subject} rejected: {status}: {outcome.detail}"
+            raise TransportError(ua.StatusCodes.BadSecurityChecksFailed, reason)
 
-    def _log_trust_hint(self, validator: CertificateValidator, outcome: Outcome) -> None:
-        hint = untrusted_hint("client", outcome, validator.trust_store)
-        if hint is None:
-            return
-        logged = self.iserver.untrusted_hints_logged
-        now = self.iserver.clock()
-        key = certificate_thumbprint(outcome.untrusted_chain[0]).hex()
-        if key in logged and now - logged[key] < UNTRUSTED_HINT_INTERVAL_SECONDS:
-            return
-        if len(logged) > 1000:
-            logged.clear()
-        logged[key] = now
-        _logger.warning("%s", hint)
+    def _warn_close(self, message: str) -> None:
+        self.close_warned = True
+        _logger.warning("%s %s", self.peer, message)
 
     @property
     def last_used(self) -> float:
@@ -227,11 +224,11 @@ class UaProcessor:
                 message.channel_id(), algohdr, request.Parameters, self._hello_protocol_version
             )
         except TransportError as e:
-            _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self._warn_close(f"refused: {e.reason}")
             self._send_error(e.status)
             return False
         except OpenRequestError as e:
-            _logger.warning("Rejecting OpenSecureChannel from %s: %s", self.name, e.reason)
+            self._warn_close(f"refused: OpenSecureChannel: {e.reason}")
             fault = ua.ServiceFault()
             fault.ResponseHeader.ServiceResult = ua.StatusCode(e.status)
             self.send_response(handle, seqhdr, fault, ua.MessageType.SecureOpen)
@@ -255,12 +252,13 @@ class UaProcessor:
         try:
             msg = self._channel.receive_from_header_and_body(header, body)
         except TransportError as e:
-            _logger.warning("Closing connection from %s: %s", self.name, e.reason)
+            self._warn_close(f"{'closed' if self._channel.is_open() else 'refused'}: {e.reason}")
             self.iserver.diagnostics.channel_rejected(e.status)
             self._send_error(e.status)
             return False
         except Exception as e:
-            _logger.warning("Closing connection from %s: channel failure", self.name, exc_info=True)
+            self.close_warned = True
+            _logger.warning("%s closed: secure channel failure", self.peer, exc_info=True)
             status = e.code if isinstance(e, ua.UaStatusCodeError) else ua.StatusCodes.BadSecurityChecksFailed
             self.iserver.diagnostics.channel_rejected(status)
             self._send_error(status)
@@ -271,6 +269,7 @@ class UaProcessor:
             if header.MessageType == ua.MessageType.SecureOpen:
                 return self.open_secure_channel(msg)
             if header.MessageType == ua.MessageType.SecureClose:
+                self.close_reason = "client closed the secure channel"
                 self._channel.close()
                 return False
             return await self.process_message(msg.sequence_header(), msg.body())
@@ -285,7 +284,7 @@ class UaProcessor:
 
     async def close(self) -> None:
         """Cancel the running requests and unbind the sessions of the channel."""
-        _logger.info("Cleanup client connection: %s", self.name)
+        _logger.debug("%s: releasing the requests and sessions of the connection", self.peer)
         for task in list(self._request_tasks):
             task.cancel()
         await self.iserver.session_manager.on_channel_closed(self)

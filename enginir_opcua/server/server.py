@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import shlex
 import socket
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
@@ -887,10 +888,19 @@ class Server:
         )
         snapshot = trust_store.snapshot
         if has_secure_policy and not (snapshot.trusted or snapshot.pinned):
-            _logger.warning(
-                "No client certificate is trusted, so no client can connect with security: "
-                "configure the trusted certificates with set_trust_store"
-            )
+            root = trust_store.pki_root
+            if root is not None:
+                _logger.warning(
+                    "No client certificate is trusted, so no client can connect with security yet: put client "
+                    "certificates into %s, or trust a refused one with: enginir-opcua trust <thumbprint> --pki %s",
+                    root / "trusted" / "certs",
+                    shlex.quote(str(root)),
+                )
+            else:
+                _logger.warning(
+                    "No client certificate is trusted, so no client can connect with security: "
+                    "configure the trusted certificates with set_trust_store or set_pki_directory"
+                )
 
     def _check_loopback_bind(self) -> None:
         config = self._config

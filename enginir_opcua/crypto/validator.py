@@ -598,7 +598,7 @@ def _check_uri(leaf: x509.Certificate, application_uri: str) -> None:
 
 
 def _rejected(rejection: _Rejected, suppressed: tuple[SuppressedError, ...]) -> Outcome:
-    _logger.warning(
+    _logger.debug(
         "Rejected certificate %s: %s at step %s: %s",
         rejection.subject or "(unparsed)",
         ua.StatusCode(rejection.status).name,
@@ -628,7 +628,7 @@ def untrusted_hint(peer: str, outcome: Outcome, trust_store: TrustStore | None) 
         owner = "server" if peer == "client" else "client"
         action = f"add it to the trusted certificates of the {owner}'s trust store"
     if peer == "client":
-        return f"client certificate {thumbprint} ({outcome.subject}) rejected: it is not trusted; {action}"
+        return f"client certificate {thumbprint} ({outcome.subject}) rejected: it is not trusted (BadCertificateUntrusted); {action}"
     return f"server certificate {thumbprint} ({outcome.subject}) is not trusted; {action}"
 
 

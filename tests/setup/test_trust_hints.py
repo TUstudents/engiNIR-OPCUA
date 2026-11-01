@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -39,9 +40,10 @@ async def test_r48_the_server_log_names_the_trust_command(
             with pytest.raises(ua.UaError):
                 await client.connect()
     hints = [r.getMessage() for r in caplog.records if "it is not trusted" in r.getMessage()]
-    assert len(hints) == 1
-    assert hints[0].startswith(f"client certificate {thumbprint} (")
-    assert f"enginir-opcua trust {thumbprint} --pki {tmp_path / 'spki'}" in hints[0]
+    assert len(hints) == 2
+    for hint in hints:
+        assert re.match(rf"127\.0\.0\.1:\d+ refused: client certificate {thumbprint} \(", hint)
+        assert f"enginir-opcua trust {thumbprint} --pki {tmp_path / 'spki'}" in hint
 
 
 async def test_r49_the_client_exception_names_the_trust_command(tmp_path: Path, port: int) -> None:

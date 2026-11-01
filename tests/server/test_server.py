@@ -950,6 +950,7 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
 async def test_process_reports_the_connection_should_close_on_a_limit_error():
     processor = UaProcessor.__new__(UaProcessor)
     processor.name = "peer"
+    processor.peer = "peer"
     processor.iserver = Mock()
     processor._transport = Mock()
     connection = Mock()

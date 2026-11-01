@@ -722,13 +722,17 @@ async def test_cry4_missing_location_is_a_configuration_error(tmp_path: Path) ->
 async def test_cry4_rejected_peer_is_logged_in_one_line_without_a_traceback(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Part 4, 6.1.3: rejecting a peer is routine and needs no stack trace."""
+    """
+    Part 4, 6.1.3: rejecting a peer is routine and needs no stack trace; the validator logs it at DEBUG, the server
+    or client that refuses the connection logs the one warning.
+    """
     peer = make_identity()
     validator = await make_validator(tmp_path)
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         validator.validate_application_certificate(peer.der, CLIENT)
-    records = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    records = [record for record in caplog.records if "Rejected certificate" in record.getMessage()]
     assert len(records) == 1
     assert records[0].exc_info is None
     assert "\n" not in records[0].getMessage()

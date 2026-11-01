@@ -236,7 +236,14 @@ class TransportLimits:
         self.max_send_buffer = ack.SendBufferSize
         self.send_max_message_size = msg.MaxMessageSize
         self.send_max_chunk_count = msg.MaxChunkCount
-        _logger.info("updated server limits to: %s", self)
+        _logger.debug(
+            "Hello: receive buffer %d, send buffer %d, max message %d bytes in %d chunks; the peer accepts %d bytes",
+            self.max_recv_buffer,
+            self.max_send_buffer,
+            self.max_message_size,
+            self.max_chunk_count,
+            self.send_max_message_size,
+        )
         return ack
 
     def create_hello_limits(self, msg: ua.Hello) -> ua.Hello:

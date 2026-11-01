@@ -9,6 +9,7 @@ import asyncio
 import contextvars
 import inspect
 import logging
+import re
 import secrets
 import time
 import weakref
@@ -75,6 +76,14 @@ class ChannelSecurity:
     mode: ua.MessageSecurityMode
 
 
+def user_label(user: User) -> str:
+    """A user for a log line: anonymous, or the name and the role (operator (role user))."""
+    if user.role is UserRole.Anonymous:
+        return "anonymous"
+    role = re.sub(r"(?<!^)(?=[A-Z])", "_", str(getattr(user.role, "name", user.role))).lower()
+    return f"{user.name or 'unnamed user'} (role {role})"
+
+
 class SessionChannel(Protocol):
     """What a Session needs from the SecureChannel it is bound to; UaProcessor implements it."""
 
@@ -86,6 +95,9 @@ class SessionChannel(Protocol):
 
     @property
     def peer_address(self) -> str | None: ...
+
+    @property
+    def peer(self) -> str: ...
 
     @property
     def max_request_message_size(self) -> int: ...
@@ -205,6 +217,11 @@ class Session:
 
     def __str__(self) -> str:
         return f"Session(name:{self.name}, id:{self.id}, user:{self.user}, state:{self.state.name})"
+
+    @property
+    def label(self) -> str:
+        """The session for a log line: Session, its SessionId and, if the client gave one, its name in quotes."""
+        return f'Session {self.id.to_string()} "{self.name}"' if self.name else f"Session {self.id.to_string()}"
 
     @property
     def bound_channel(self) -> SessionChannel | None:
@@ -396,7 +413,7 @@ class Session:
         """
         if self.state == SessionState.Closed:
             return
-        _logger.info("close session %s", self.name)
+        _logger.info("%s closed", self.label)
         self.state = SessionState.Closed
         self.continuation_points.clear()
         self.history_points.clear()
@@ -475,7 +492,7 @@ class SessionManager:
     def _revise_timeout(self, requested: float) -> float:
         revised = min(max(requested, self.iserver.min_session_timeout_ms), self.iserver.max_session_timeout_ms)
         if revised != requested:
-            _logger.info("Clamping RequestedSessionTimeout %.0fms to %.0fms", requested, revised)
+            _logger.debug("RequestedSessionTimeout %.0f ms revised to %.0f ms", requested, revised)
         return revised
 
     @staticmethod
@@ -627,6 +644,7 @@ class SessionManager:
         if moving and user != session.user:
             _logger.warning("Rejected moving session %s to a new channel with a different user", session.name)
             raise ServiceError(ua.StatusCodes.BadIdentityTokenRejected)
+        reactivated = session.state == SessionState.Activated
         result = ua.ActivateSessionResult()
         for _ in params.ClientSoftwareCertificates:
             result.Results.append(ua.StatusCode())
@@ -639,7 +657,13 @@ class SessionManager:
             session.move_to(channel)
         session.touch()
         self.iserver.diagnostics.session_activated(session, params)
-        _logger.info("Activated session %s for user %s", session.name, user)
+        _logger.info(
+            "%s %s for %s from %s",
+            session.label,
+            "re-activated" if reactivated else "activated",
+            user_label(user),
+            channel.peer,
+        )
         return result
 
     async def close_session(self, channel: SessionChannel, token: ua.NodeId, delete_subscriptions: bool) -> None:

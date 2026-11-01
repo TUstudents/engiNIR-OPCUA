@@ -136,7 +136,6 @@ class InternalServer:
         self.max_registered_servers: int = 100
         self.registration_timeout: float = 600.0
         self.clock: Callable[[], float] = time.monotonic
-        self.untrusted_hints_logged: dict[str, float] = {}
         self.max_session_timeout_ms: float = 600_000
         self.min_session_timeout_ms: float = 5_000
         self.max_unacked_messages_per_subscription: int = 5_000
