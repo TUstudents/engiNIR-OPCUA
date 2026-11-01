@@ -120,6 +120,7 @@ module = [
   "enginir_opcua.server.conditions.*",
   "enginir_opcua.server.file_transfer",
   "enginir_opcua.server.certificate_manager",
+  "enginir_opcua.config",
   "enginir_opcua.server.internal_subscription",
   "enginir_opcua.server.monitored_item_service",
   "enginir_opcua.server.subscription_service",

@@ -12,9 +12,12 @@ import re
 import socket
 import tomllib
 from dataclasses import dataclass, field, fields
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, urlparse
+
+from cryptography import x509
 
 from .crypto.cert_gen import write_atomic
 from .ua import SecurityPolicyType
@@ -68,6 +71,7 @@ def parse_opc_tcp_url(url: str, setting: str = "endpoint") -> ParseResult:
 
 
 def is_loopback(host: str) -> bool:
+    """Return True for localhost and loopback addresses, IPv6 in brackets included."""
     name = host.lower().strip("[]")
     if name == "localhost":
         return True
@@ -78,6 +82,7 @@ def is_loopback(host: str) -> bool:
 
 
 def default_application_uri(role: str) -> str:
+    """Return urn:<host name>:enginir-opcua:<role>, the ApplicationUri of a quick setup."""
     host = re.sub(r"[^A-Za-z0-9.\-]", "-", socket.gethostname()) or "localhost"
     return f"urn:{host}:enginir-opcua:{role}"
 
@@ -179,16 +184,17 @@ def parse_security(text: Any, profile: str) -> tuple[SecurityPolicyType | None, 
 
 
 def policy_name(policy: SecurityPolicyType) -> str:
+    """Return the configuration text of a policy type: None or Policy,Mode."""
     return "None" if policy is SecurityPolicyType.NoSecurity else policy.name.replace("_", ",")
 
 
-def _check_pki(problems: _Problems, config: Any) -> None:
-    if not problems.path("pki", config.pki):
+def _check_pki(problems: _Problems, pki: str | Path, create: bool) -> None:
+    if not problems.path("pki", pki):
         return
-    root = Path(config.pki)
+    root = Path(pki)
     if root.exists() and not root.is_dir():
         problems.add("pki", f"{root} exists and is not a directory")
-    elif not config.create_pki:
+    elif not create:
         if not (root / "own" / "certs").is_dir() or not (root / "own" / "private").is_dir():
             problems.add(
                 "pki",
@@ -204,6 +210,8 @@ def _check_pki(problems: _Problems, config: Any) -> None:
 
 @dataclass
 class ServerLimits:
+    """The [server.limits] table: the limits a quick-setup server applies; the field metadata documents each."""
+
     max_sessions: int = field(default=100, metadata={"doc": "Sessions at the same time"})
     max_connections: int = field(
         default=1_000, metadata={"doc": "Secure channels at the same time, above max_sessions"}
@@ -233,6 +241,7 @@ class ServerLimits:
     )
 
     def collect(self, problems: _Problems) -> None:
+        """Add a problem for every limit out of its range."""
         values = {f.name: getattr(self, f.name) for f in fields(self)}
 
         def check(name: str, low: int, high: int | str, shown: str | None = None) -> None:
@@ -341,6 +350,11 @@ def _unknown_overrides(cls: type, prefix: str, overrides: dict[str, Any]) -> Non
 
 @dataclass
 class ServerConfig:
+    """
+    The [server] table: endpoint, identity, PKI directory, security, users and limits of a server, as Server(config=)
+    and Server.quickstart take them. The profile decides the defaults of security and allow_no_security.
+    """
+
     profile: str = field(
         default="secure", metadata={"doc": 'Either "secure" (any network) or "development" (loopback only)'}
     )
@@ -384,9 +398,11 @@ class ServerConfig:
                 self.allow_no_security = self.profile == "development"
 
     def effective_users_file(self) -> str | Path | None:
+        """Return users_file, else the file named by ENGINIR_OPCUA_USERS_FILE, else None."""
         return self.users_file or os.environ.get(USERS_FILE_VARIABLE) or None
 
     def policy_types(self) -> list[SecurityPolicyType]:
+        """Return the policy types of security; ConfigurationError for one the profile does not allow."""
         types = []
         for text in self.security or []:
             policy, problem = parse_security(text, self.profile)
@@ -396,6 +412,7 @@ class ServerConfig:
         return types
 
     def validate(self) -> None:
+        """Raise ConfigurationProblems with every problem of the configuration, one per setting."""
         problems = _Problems("server")
         if self.profile not in PROFILES:
             problems.add("profile", f'unknown profile {self.profile!r}; use "secure" or "development"')
@@ -424,9 +441,9 @@ class ServerConfig:
                     "required for the policies of server.security other than None: give a PKI directory (for example ./pki)",
                 )
             else:
-                _check_pki(problems, self)
+                _check_pki(problems, self.pki, self.create_pki)
         elif self.pki is not None:
-            _check_pki(problems, self)
+            _check_pki(problems, self.pki, self.create_pki)
         self._check_users(problems, secure_policy)
         if not isinstance(self.limits, ServerLimits):
             problems.add("limits", "must be a ServerLimits")
@@ -486,6 +503,7 @@ class ServerConfig:
             problems.add("anonymous", "no identity is accepted: set anonymous = true or give users_file")
 
     def dump(self, path: str | Path | None = None) -> str:
+        """Return the configuration as TOML with a comment per setting, and write it to path (mode 0600) if given."""
         text = (
             "# enginir-opcua server configuration. The file holds no secrets.\n"
             "# Read it with ServerConfig.from_toml(path).\n\n"
@@ -499,6 +517,7 @@ class ServerConfig:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ServerConfig:
+        """Read and validate a configuration file; relative paths are relative to the file."""
         source, document = _load_document(path)
         if "server" not in document:
             raise ConfigurationError(f"{source}: no [server] table")
@@ -517,6 +536,11 @@ class ServerConfig:
 
 @dataclass
 class ClientConfig:
+    """
+    The [client] table: server URL, identity, PKI directory, security and user of a client, as Client(config=) and
+    Client.quickstart take them. The password is never stored in the file; it comes from password= or password_env.
+    """
+
     profile: str = field(
         default="secure", metadata={"doc": 'Either "secure" (any network) or "development" (loopback only)'}
     )
@@ -550,18 +574,22 @@ class ClientConfig:
             self.security = CLIENT_DEVELOPMENT_DEFAULT if self.profile == "development" else CLIENT_SECURE_DEFAULT
 
     def password_variable(self) -> str:
+        """Return the environment variable that holds the password: password_env or ENGINIR_OPCUA_PASSWORD."""
         return self.password_env or PASSWORD_VARIABLE
 
     def effective_password(self) -> str | None:
+        """Return password, else the value of the password variable, else None."""
         return self.password if self.password is not None else os.environ.get(self.password_variable())
 
     def policy_type(self) -> SecurityPolicyType:
+        """Return the policy type of security; ConfigurationError if it is not allowed."""
         policy, problem = parse_security(self.security, self.profile)
         if policy is None:
             raise ConfigurationError(f"client.security: {problem}")
         return policy
 
     def validate(self) -> None:
+        """Raise ConfigurationProblems with every problem of the configuration, one per setting."""
         problems = _Problems("client")
         if self.profile not in PROFILES:
             problems.add("profile", f'unknown profile {self.profile!r}; use "secure" or "development"')
@@ -585,20 +613,16 @@ class ClientConfig:
         if secure and self.pki is None:
             problems.add("pki", "required for security other than None: give a PKI directory (for example ./pki)")
         elif self.pki is not None:
-            _check_pki(problems, self)
-        if self.server_certificate is not None:
-            if not problems.path("server_certificate", self.server_certificate):
-                pass
-            elif not Path(self.server_certificate).is_file():
+            _check_pki(problems, self.pki, self.create_pki)
+        if self.server_certificate is not None and problems.path("server_certificate", self.server_certificate):
+            if not Path(self.server_certificate).is_file():
                 problems.add("server_certificate", f"{self.server_certificate} is not a file")
             elif not secure:
                 problems.add("server_certificate", "needs a security other than None")
         problems.number("timeout", self.timeout)
         problems.integer("session_timeout_ms", self.session_timeout_ms, 1_000, 4_294_967_295)
         if self.username is not None:
-            if not problems.text("username", self.username, 1, 255):
-                pass
-            elif self.effective_password() is None:
+            if problems.text("username", self.username, 1, 255) and self.effective_password() is None:
                 problems.add(
                     "password",
                     f"no password for user {self.username!r}; pass password= or set the environment variable "
@@ -610,6 +634,7 @@ class ClientConfig:
             raise ConfigurationProblems(problems.items)
 
     def dump(self, path: str | Path | None = None) -> str:
+        """Return the configuration as TOML with a comment per setting, and write it to path (mode 0600) if given."""
         text = (
             "# enginir-opcua client configuration. The file holds no secrets.\n"
             "# Read it with ClientConfig.from_toml(path).\n\n" + _dump_table("client", self)
@@ -620,6 +645,7 @@ class ClientConfig:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ClientConfig:
+        """Read and validate a configuration file; relative paths are relative to the file."""
         source, document = _load_document(path)
         if "client" not in document:
             raise ConfigurationError(f"{source}: no [client] table")
@@ -634,6 +660,7 @@ class ClientConfig:
 
 
 def with_default_port(parsed: ParseResult) -> ParseResult:
+    """Return the URL with port 4840 if it has none."""
     if parsed.port is not None:
         return parsed
     host = parsed.hostname or ""
@@ -653,6 +680,7 @@ def server_user_manager(config: ServerConfig) -> UserManager | None:
 
 
 def password_from_environment(setting: str, variable: str | None) -> str | None:
+    """Return the value of an environment variable, None without a variable; ConfigurationError if it is not set."""
     if variable is None:
         return None
     password = os.environ.get(variable)
@@ -661,12 +689,11 @@ def password_from_environment(setting: str, variable: str | None) -> str | None:
     return password
 
 
-def check_certificate_uri(certificate: Any, application_uri: str, role: str, directory: str | Path) -> None:
+def check_certificate_uri(
+    certificate: x509.Certificate, application_uri: str, role: str, directory: str | Path
+) -> None:
     """The application certificate has to carry the ApplicationUri and be valid now (OPC 10000-6, 6.2.2)."""
-    from datetime import UTC, datetime
-
-    from cryptography import x509
-
+    found: list[str]
     try:
         names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         found = names.get_values_for_type(x509.UniformResourceIdentifier)
@@ -687,8 +714,13 @@ def check_certificate_uri(certificate: Any, application_uri: str, role: str, dir
 
 
 def quickstart_server_config(
-    endpoint: str, profile: str, pki: str | Path | None, users: Any, overrides: dict[str, Any]
+    endpoint: str,
+    profile: str,
+    pki: str | Path | None,
+    users: str | Path | UserManager | None,
+    overrides: dict[str, Any],
 ) -> ServerConfig:
+    """Build and validate the ServerConfig of Server.quickstart; users is a users file or a user manager."""
     _unknown_overrides(ServerConfig, "server", overrides)
     values: dict[str, Any] = {"endpoint": endpoint, "profile": profile, "pki": pki}
     if isinstance(users, (str, os.PathLike)):
@@ -710,6 +742,7 @@ def quickstart_client_config(
     password: str | None,
     overrides: dict[str, Any],
 ) -> ClientConfig:
+    """Build and validate the ClientConfig of Client.quickstart."""
     _unknown_overrides(ClientConfig, "client", overrides)
     values: dict[str, Any] = {"url": url, "profile": profile, "pki": pki, "username": username, "password": password}
     values.update(overrides)
