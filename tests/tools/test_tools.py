@@ -1,5 +1,6 @@
 import argparse
 import getpass
+import logging
 import os
 import select
 import signal
@@ -10,6 +11,7 @@ import time
 import tomllib
 import uuid
 from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
@@ -851,3 +853,55 @@ def test_tool12_the_demo_server_with_no_security_warns_and_offers_none(capsys, m
     assert seen["code"] == 0
     assert "without security" in capsys.readouterr().err
     assert "no security" in caplog.text.lower() or "unsecured" in caplog.text.lower()
+
+
+@pytest.fixture
+def restore_root_logging():
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    for handler in root.handlers:
+        if handler not in handlers:
+            handler.close()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+
+
+def test_server_log_file_rotates_by_size(tmp_path, restore_root_logging):
+    log_file = tmp_path / "server.log"
+    args = build_parser().parse_args(
+        ["server", "--no-security", "--log-file", str(log_file), "--log-max-bytes", "1024", "--log-backups", "2"]
+    )
+    tools.configure_logging(args)
+    handler = next(h for h in logging.getLogger().handlers if isinstance(h, RotatingFileHandler))
+    assert (handler.maxBytes, handler.backupCount) == (1024, 2)
+    logger = logging.getLogger("enginir_opcua.server.test")
+    for number in range(200):
+        logger.warning("line %d with some text to fill the file", number)
+    handler.flush()
+    files = sorted(path.name for path in tmp_path.iterdir())
+    assert files == ["server.log", "server.log.1", "server.log.2"]
+    first = log_file.read_text().splitlines()[0]
+    assert "WARNING enginir_opcua.server.test: line" in first
+    datetime.strptime(first[:19], "%Y-%m-%d %H:%M:%S")
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (["--log-max-bytes", "100"], "--log-max-bytes"),
+        (["--log-backups", "0"], "--log-backups"),
+        (["--log-max-bytes", "4096"], "--log-file"),
+    ],
+)
+def test_server_log_options_are_checked(capsys, tmp_path, restore_root_logging, options, message):
+    log_file = ["--log-file", str(tmp_path / "server.log")] if message != "--log-file" else []
+    code, _, err = run(capsys, "server", "--no-security", *log_file, *options)
+    assert code == 2
+    assert message in err
+
+
+def test_server_log_file_in_a_missing_directory_is_an_error(capsys, tmp_path, restore_root_logging):
+    code, _, err = run(capsys, "server", "--no-security", "--log-file", str(tmp_path / "missing" / "server.log"))
+    assert code == 1
+    assert "server.log" in err

@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from typing import Any
 from urllib.parse import urlparse
 
@@ -35,6 +36,9 @@ DEFAULT_POLICY = "Basic256Sha256,SignAndEncrypt"
 PASSWORD_VARIABLE = "ENGINIR_OPCUA_PASSWORD"
 PROGRAM = "enginir-opcua"
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_LOG_BACKUPS = 5
+LOG_FILE_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 DEFAULT_URL = "opc.tcp://localhost:4840"
 DEMO_URL = "opc.tcp://127.0.0.1:4840"
 ROOT_NODE = "i=84"
@@ -1038,6 +1042,23 @@ def _server_arguments(parser: argparse.ArgumentParser) -> None:
         " it excludes --url, --certificate, --private-key, --pki-dir, --no-security and --accept-all-logins",
     )
     parser.add_argument(
+        "--log-file",
+        metavar="FILE",
+        help="Write the log to FILE instead of standard error, with timestamps; the file is rotated by size",
+    )
+    parser.add_argument(
+        "--log-max-bytes",
+        type=int,
+        metavar="N",
+        help=f"Size at which the log file is rotated; at least 1024. Default: {DEFAULT_LOG_MAX_BYTES}",
+    )
+    parser.add_argument(
+        "--log-backups",
+        type=int,
+        metavar="N",
+        help=f"Rotated log files to keep (FILE.1 is the newest); at least 1. Default: {DEFAULT_LOG_BACKUPS}",
+    )
+    parser.add_argument(
         "--accept-all-logins",
         action="store_true",
         help="INSECURE: accept every user name and password, with Admin for admin, send passwords in clear text and"
@@ -1132,6 +1153,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def configure_logging(args: argparse.Namespace) -> None:
+    """
+    Log at --log-level to standard error, or with --log-file (server command) to a file that is rotated when it
+    reaches --log-max-bytes, keeping --log-backups older files.
+    """
+    level = getattr(logging, args.log_level)
+    log_file: str | None = getattr(args, "log_file", None)
+    max_bytes: int | None = getattr(args, "log_max_bytes", None)
+    backups: int | None = getattr(args, "log_backups", None)
+    if log_file is None:
+        if max_bytes is not None or backups is not None:
+            raise UsageError("--log-max-bytes and --log-backups need --log-file")
+        logging.basicConfig(level=level, stream=sys.stderr, format="%(levelname)s: %(message)s")
+        return
+    max_bytes = DEFAULT_LOG_MAX_BYTES if max_bytes is None else max_bytes
+    backups = DEFAULT_LOG_BACKUPS if backups is None else backups
+    if max_bytes < 1024:
+        raise UsageError(f"--log-max-bytes must be at least 1024, got {max_bytes}")
+    if backups < 1:
+        raise UsageError(f"--log-backups must be at least 1, got {backups}")
+    try:
+        handler = RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+    except OSError as error:
+        raise ToolError(f"cannot write the log file {log_file}: {error.strerror}") from error
+    handler.setFormatter(logging.Formatter(LOG_FILE_FORMAT, "%Y-%m-%d %H:%M:%S"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
 def _command_of(args: argparse.Namespace) -> Command:
     for command in COMMANDS.values():
         if args.command == command.name or args.command in command.aliases:
@@ -1146,12 +1197,12 @@ def main(argv: Sequence[str] | None = None, legacy_comma_split: bool = False) ->
     """
     parser = build_parser()
     args = parser.parse_args(argv)
-    logging.basicConfig(level=getattr(logging, args.log_level), stream=sys.stderr, format="%(levelname)s: %(message)s")
     command = _command_of(args)
     args.legacy_comma_split = legacy_comma_split
     if hasattr(args, "url"):
         normalise_url(args)
     try:
+        configure_logging(args)
         return command.run(args)
     except KeyboardInterrupt:
         return 0 if command.until_stopped else 130

@@ -69,6 +69,10 @@ The package installs one program, :code:`enginir-opcua`, with a subcommand for e
     for an endpoint **without security**. It listens on 127.0.0.1 unless told otherwise and accepts only anonymous
     read-only sessions; it is for trying things out. By importing XML definitions and using
     :code:`enginir-opcua write` it is possible to expose data with it.
+    :code:`--config FILE` serves a configuration made with :code:`enginir-opcua init server` instead.
+    :code:`--log-file FILE` writes the log with timestamps to a file instead of the terminal and rotates it by size:
+    at :code:`--log-max-bytes` (default 10 MiB) the file becomes :code:`FILE.1`, and :code:`--log-backups` (default 5)
+    older files are kept.
 
 :code:`enginir-opcua shell`:
     Connect to a server and open a Python shell (IPython if installed) with :code:`client`, :code:`root`, :code:`objects` and,

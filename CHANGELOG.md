@@ -752,6 +752,9 @@ Server infrastructure (workstream J):
   encoding byte.
 
 Quick setup (workstream K):
+- `enginir-opcua server --log-file FILE [--log-max-bytes N] [--log-backups N]` writes the log with timestamps to a
+  file that is rotated by size (default 10 MiB, 5 older files kept) instead of standard error; it works with
+  `--config` too. `tools.configure_logging()` sets this up for the command line.
 - `Server.quickstart(endpoint, profile="secure", pki="./pki", users=None, **overrides)` and
   `Client.quickstart(url, profile="secure", pki="./pki", username=None, password=None, **overrides)` return a
   configured object that is not started. The profile `secure` offers Basic256Sha256, Aes128Sha256RsaOaep and
