@@ -1,6 +1,7 @@
 # mypy: disable-error-code="empty-body"
 """
-sync API of enginir_opcua
+The synchronous API: blocking twins of Client, Server, Node, Subscription and the helpers, which run the async
+objects on a ThreadLoop. The method stubs here carry the signatures; the bodies are the async methods.
 """
 
 from __future__ import annotations
@@ -8,28 +9,32 @@ from __future__ import annotations
 import asyncio
 import atexit
 import functools
+import inspect
 import itertools
 import logging
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Condition, RLock, Thread, current_thread
 from threading import Event as ThreadEvent
 from types import TracebackType
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Literal, TypeVar, cast, overload
 
 from cryptography import x509
 
 from enginir_opcua import client, common, server, ua
 from enginir_opcua.common import node, shortcuts, subscription, type_dictionary_builder, xmlexporter
+from enginir_opcua.common.callback import CallbackType
+from enginir_opcua.common.event_objects import BaseEvent
 from enginir_opcua.common.events import Event
 from enginir_opcua.config import ClientConfig, ServerConfig, quickstart_client_config, quickstart_server_config
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.permission_rules import UserRole
 from enginir_opcua.crypto.truststore import TrustStore
+from enginir_opcua.crypto.validator import ApplicationHook, CertificateValidator
 from enginir_opcua.observer import Observer
 from enginir_opcua.server.conditions import Condition as ServerCondition
 from enginir_opcua.server.file_transfer import FileProvider
@@ -43,7 +48,8 @@ _HANDLER_GRACE = 5.0
 _NEXT_EVENT_GRACE = 1.0
 
 
-class ThreadLoopNotRunning(RuntimeError): ...
+class ThreadLoopNotRunning(RuntimeError):
+    """A coroutine was posted to a ThreadLoop that is not running."""
 
 
 _UNSET: Any = object()
@@ -69,14 +75,17 @@ class ThreadLoop:
         self._hook_ids: Iterator[int] = itertools.count()
 
     def is_alive(self) -> bool:
+        """Return True while the thread of the loop runs."""
         thread = self._thread
         return thread is not None and thread.is_alive()
 
     def is_running(self) -> bool:
+        """Return True while the thread runs and its event loop runs."""
         loop = self.loop
         return self.is_alive() and loop is not None and loop.is_running()
 
     def start(self) -> None:
+        """Start the thread and its event loop; RuntimeError if it already runs."""
         with self._lock:
             if self.is_alive():
                 raise RuntimeError("the ThreadLoop is already running")
@@ -122,6 +131,7 @@ class ThreadLoop:
             loop.close()
 
     def stop(self) -> None:
+        """Stop the event loop, cancelling its tasks, and wait for the thread; not from the loop thread itself."""
         with self._lock:
             thread = self._thread
             if thread is None:
@@ -139,15 +149,21 @@ class ThreadLoop:
             _running_loops.discard(self)
 
     def add_exit_hook(self, factory: Callable[[], Coroutine[Any, Any, Any]]) -> int:
+        """Run the coroutine of factory on the loop when the interpreter exits; return a handle for removal."""
         hook_id = next(self._hook_ids)
         self._exit_hooks[hook_id] = factory
         return hook_id
 
     def remove_exit_hook(self, hook_id: int | None) -> None:
+        """Remove an exit hook; None and unknown handles are ignored."""
         if hook_id is not None:
             self._exit_hooks.pop(hook_id, None)
 
     def post(self, coro: Coroutine[Any, Any, _T], timeout: float | None = _UNSET) -> _T:
+        """
+        Run a coroutine on the loop and wait for its result, at most timeout seconds (the loop's timeout by default,
+        None for no limit); the coroutine is cancelled on a timeout. Not from the loop thread itself.
+        """
         loop = self.loop
         thread = self._thread
         if loop is None or thread is None or not thread.is_alive() or not loop.is_running():
@@ -311,37 +327,40 @@ def _to_sync(tloop: ThreadLoop, result: Any) -> Any:
 
 
 def syncmethod(func: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    decorator for sync methods
-    """
+    """Decorator that replaces a sync method stub by a blocking call of the async method of the same name."""
 
     @functools.wraps(func)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         ensure_loop = getattr(self, "_ensure_loop", None)
         if ensure_loop is not None:
             ensure_loop()
-        args, kwargs = _to_async(args, kwargs)
+        aio_args, aio_kwargs = _to_async(args, kwargs)
         aio_func = getattr(self.aio_obj, func.__name__)
-        result = self.tloop.post(aio_func(*args, **kwargs))
+        result = self.tloop.post(aio_func(*aio_args, **aio_kwargs))
         return _to_sync(self.tloop, result)
 
     return wrapper
 
 
 def sync_wrapper(aio_func: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Make a blocking function of aio_func. Its first argument is a ThreadLoop, which is not passed on, or a sync
+    object whose ThreadLoop is used.
+    """
+
     @functools.wraps(aio_func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         if not args:
-            raise RuntimeError("first argument of function must a ThreadLoop object")
+            raise RuntimeError("the first argument of the function must be a ThreadLoop or a sync object")
         if isinstance(args[0], ThreadLoop):
             tloop = args[0]
             args = tuple(args[1:])
         elif hasattr(args[0], "tloop"):
             tloop = args[0].tloop
         else:
-            raise RuntimeError("first argument of function must a ThreadLoop object")
-        args, kwargs = _to_async(args, kwargs)
-        result = tloop.post(aio_func(*args, **kwargs))
+            raise RuntimeError("the first argument of the function must be a ThreadLoop or a sync object")
+        aio_args, aio_kwargs = _to_async(args, kwargs)
+        result = tloop.post(aio_func(*aio_args, **aio_kwargs))
         return _to_sync(tloop, result)
 
     return wrapper
@@ -349,11 +368,13 @@ def sync_wrapper(aio_func: Callable[..., Any]) -> Callable[..., Any]:
 
 def syncfunc(aio_func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
     """
-    decorator for sync function
+    Decorator that replaces a sync stub by a blocking call of aio_func; the result keeps the signature of the stub.
     """
 
-    def decorator(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Callable[..., Any]:
-        return sync_wrapper(aio_func)
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        wrapper = sync_wrapper(aio_func)
+        setattr(wrapper, "__signature__", inspect.signature(func))
+        return wrapper
 
     return decorator
 
@@ -397,7 +418,7 @@ def sync_async_client_method(aio_func: Callable[..., Any]) -> Callable[[Client],
 
 @syncfunc(aio_func=common.methods.call_method_full)
 def call_method_full(
-    parent: SyncNode, methodid: ua.NodeId | ua.QualifiedName | str, *args: Any
+    parent: SyncNode, methodid: SyncNode | ua.NodeId | ua.QualifiedName | str, *args: Any, timeout: float | None = None
 ) -> ua.CallMethodResult: ...
 
 
@@ -407,7 +428,11 @@ def data_type_to_variant_type(dtype_node: SyncNode) -> ua.VariantType: ...
 
 @syncfunc(aio_func=common.copy_node_util.copy_node)
 def copy_node(
-    parent: SyncNode, node: SyncNode, nodeid: ua.NodeId | None = None, recursive: bool = True
+    parent: SyncNode,
+    node: SyncNode,
+    nodeid: ua.NodeId | None = None,
+    recursive: bool = True,
+    referenceType: ua.NodeId | None = None,
 ) -> list[SyncNode]: ...
 
 
@@ -416,10 +441,11 @@ def instantiate(
     parent: SyncNode,
     node_type: SyncNode,
     nodeid: ua.NodeId | None = None,
-    bname: ua.QualifiedName | None = None,
+    bname: ua.QualifiedName | str | None = None,
     dname: ua.LocalizedText | None = None,
     idx: int = 0,
     instantiate_optional: bool = True,
+    optional: Collection[str] | None = None,
 ) -> list[SyncNode]: ...
 
 
@@ -511,16 +537,14 @@ class Client(_Owner):
         *,
         allow_no_security: bool = False,
     ) -> None:
-        self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
-        self.close_tloop: bool = False
+        self.close_tloop: bool = tloop is None
+        self.tloop: ThreadLoop = tloop if tloop is not None else ThreadLoop(sync_wrapper_timeout)
         self._exit_hook: int | None = None
         self._handlers: _HandlerThread = _HandlerThread(
             "sync client handlers", handler_queue_maxsize, _HANDLER_GRACE, self._note_drop
         )
-        if not self.tloop:
-            self.tloop = ThreadLoop(sync_wrapper_timeout)
+        if self.close_tloop:
             self.tloop.start()
-            self.close_tloop = True
         try:
             self.aio_obj: client.Client = client.Client(
                 url,
@@ -777,14 +801,14 @@ class Client(_Owner):
     def register_server(
         self,
         server: Server,
-        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None: ...
 
     @syncmethod
     def unregister_server(
         self,
         server: Server,
-        discovery_configuration: ua.DiscoveryConfiguration | None = None,
+        discovery_configuration: Iterable[ua.DiscoveryConfiguration] | None = None,
     ) -> None: ...
 
     @syncmethod
@@ -858,8 +882,8 @@ class Client(_Owner):
         self, nodes: Iterable[SyncNode], values: Iterable[Any], raise_on_partial_error: bool = True
     ) -> list[ua.StatusCode]: ...
 
-    get_values = read_values  # legacy
-    set_values = write_values  # legacy
+    get_values = read_values
+    set_values = write_values
 
     @syncmethod
     def browse_nodes(self, nodes: Iterable[SyncNode]) -> list[tuple[SyncNode, ua.BrowseResult]]: ...
@@ -896,6 +920,8 @@ class Client(_Owner):
 
 
 class Shortcuts:
+    """The SyncNode twins of the common nodes of client.nodes and server.nodes."""
+
     root: SyncNode
     objects: SyncNode
     server: SyncNode
@@ -956,16 +982,14 @@ class Server(_Owner):
         handler_queue_maxsize: int = 1000,
         config: ServerConfig | None = None,
     ) -> None:
-        self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
-        self.close_tloop: bool = False
+        self.close_tloop: bool = tloop is None
+        self.tloop: ThreadLoop = tloop if tloop is not None else ThreadLoop(timeout=sync_wrapper_timeout)
         self._exit_hook: int | None = None
         self._handlers: _HandlerThread = _HandlerThread(
             "sync server handlers", handler_queue_maxsize, _HANDLER_GRACE, self._note_drop
         )
-        if not self.tloop:
-            self.tloop = ThreadLoop(timeout=sync_wrapper_timeout)
+        if self.close_tloop:
             self.tloop.start()
-            self.close_tloop = True
         try:
             self.aio_obj: server.Server = server.Server(
                 user_manager=user_manager,
@@ -1050,10 +1074,10 @@ class Server(_Owner):
     def set_user_trust_store(self, trust_store: TrustStore) -> None:
         self.aio_obj.set_user_trust_store(trust_store)
 
-    def set_certificate_validator(self, validator: Any) -> None:
+    def set_certificate_validator(self, validator: CertificateValidator) -> None:
         self.aio_obj.set_certificate_validator(validator)
 
-    def set_application_hook(self, hook: Any) -> None:
+    def set_application_hook(self, hook: ApplicationHook) -> None:
         self.aio_obj.set_application_hook(hook)
 
     def set_attribute_value_setter(
@@ -1064,10 +1088,10 @@ class Server(_Owner):
     def read_attribute_value(self, nodeid: ua.NodeId, attr: ua.AttributeIds = ua.AttributeIds.Value) -> ua.DataValue:
         return self.aio_obj.read_attribute_value(nodeid, attr)
 
-    def subscribe_server_callback(self, event: Any, handle: Callable[..., Any]) -> None:
+    def subscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
         self.aio_obj.subscribe_server_callback(event, handle)
 
-    def unsubscribe_server_callback(self, event: Any, handle: Callable[..., Any]) -> None:
+    def unsubscribe_server_callback(self, event: CallbackType, handle: Callable[..., Any]) -> None:
         self.aio_obj.unsubscribe_server_callback(event, handle)
 
     @syncmethod
@@ -1247,7 +1271,6 @@ class Server(_Owner):
     @syncmethod
     def reload_trust_store(self) -> None: ...
 
-    # --- File transfer and certificate management (Part 20, Part 12) ---
     @syncmethod
     def add_file(
         self,
@@ -1289,8 +1312,6 @@ class Server(_Owner):
         activity_timeout: float = 60.0,
     ) -> Any: ...
 
-    # --- end of File transfer and certificate management ---
-
     def set_identity_tokens(self, tokens: list[type]) -> None:
         return self.aio_obj.set_identity_tokens(tokens)
 
@@ -1317,11 +1338,13 @@ class Server(_Owner):
             self._stop_own_tloop()
 
     def link_method(self, node: SyncNode, callback: Callable[..., Any]) -> None:
-        return self.aio_obj.link_method(node, callback)
+        return self.aio_obj.link_method(node.aio_obj, callback)
 
     @syncmethod
     def get_event_generator(
-        self, etype: Any | None = None, emitting_node: ua.NodeId | int = ua.ObjectIds.Server
+        self,
+        etype: BaseEvent | SyncNode | ua.NodeId | int | None = None,
+        emitting_node: SyncNode | ua.NodeId | int = ua.ObjectIds.Server,
     ) -> EventGenerator: ...
 
     def get_node(self, nodeid: SyncNode | ua.NodeId | str | int) -> SyncNode:
@@ -1366,7 +1389,7 @@ class Server(_Owner):
 
     def create_subscription(
         self,
-        period: ua.CreateSubscriptionParameters | float,
+        period: float,
         handler: Any = None,
         *,
         queue_maxsize: int = 1000,
@@ -1378,6 +1401,8 @@ class Server(_Owner):
 
 
 class EventGenerator:
+    """Sync twin of the server's EventGenerator; Server.get_event_generator returns it."""
+
     def __init__(self, tloop: ThreadLoop, aio_evgen: server.event_generator.EventGenerator) -> None:
         self.aio_obj: server.event_generator.EventGenerator = aio_evgen
         self.tloop: ThreadLoop = tloop
@@ -1386,18 +1411,20 @@ class EventGenerator:
     def event(self) -> Event:
         return self.aio_obj.event
 
-    def trigger(self, time: datetime | None = None, message: str | None = None) -> None:
-        return self.tloop.post(self.aio_obj.trigger(time, message))
+    def trigger(
+        self, time_attr: datetime | None = None, message: str | None = None, subscription_id: int | None = None
+    ) -> None:
+        return self.tloop.post(self.aio_obj.trigger(time_attr, message, subscription_id))
 
 
 def new_node(sync_node: SyncNode, nodeid: ua.NodeId | str | int) -> SyncNode:
-    """
-    given a sync node, create a new SyncNode with the given nodeid
-    """
+    """Return a SyncNode for nodeid in the session and loop of sync_node."""
     return SyncNode(sync_node.tloop, node.Node(sync_node.aio_obj.session, nodeid))
 
 
 class SyncNode:
+    """Sync twin of Node."""
+
     def __init__(self, tloop: ThreadLoop, aio_node: node.Node) -> None:
         self.aio_obj: node.Node = aio_node
         self.tloop: ThreadLoop = tloop
@@ -1417,13 +1444,14 @@ class SyncNode:
     def __hash__(self) -> int:
         return self.aio_obj.__hash__()
 
-    def __get_nodeid(self) -> ua.NodeId:
+    @property
+    def nodeid(self) -> ua.NodeId:
+        """The NodeId of the node."""
         return self.aio_obj.nodeid
 
-    def __set_nodeid(self, value: ua.NodeId) -> None:
+    @nodeid.setter
+    def nodeid(self, value: ua.NodeId) -> None:
         self.aio_obj.nodeid = value
-
-    nodeid: ua.NodeId = property(__get_nodeid, __set_nodeid)
 
     @syncmethod
     def read_type_definition(self) -> ua.NodeId | None: ...
@@ -1631,8 +1659,8 @@ class SyncNode:
     @syncmethod
     def write_value(self, value: Any, varianttype: ua.VariantType | None = None) -> None: ...
 
-    set_value = write_value  # legacy
-    set_data_value = write_value  # legacy
+    set_value = write_value
+    set_data_value = write_value
 
     @syncmethod
     def write_params(self, params: ua.WriteParameters) -> list[ua.StatusCode]: ...
@@ -1643,17 +1671,17 @@ class SyncNode:
     @syncmethod
     def read_value(self) -> Any: ...
 
-    get_value = read_value  # legacy
+    get_value = read_value
 
     @syncmethod
     def read_data_value(self, raise_on_bad_status: bool = True) -> ua.DataValue: ...
 
-    get_data_value = read_data_value  # legacy
+    get_data_value = read_data_value
 
     @syncmethod
     def read_data_type_as_variant_type(self) -> ua.VariantType: ...
 
-    get_data_type_as_variant_type = read_data_type_as_variant_type  # legacy
+    get_data_type_as_variant_type = read_data_type_as_variant_type
 
     @syncmethod
     def call_method(
@@ -1855,7 +1883,7 @@ class SyncCondition:
 
     @syncmethod
     def add_comment(
-        self, comment: str | ua.LocalizedText, event_id: bytes | None = None, *, user: str | None = None
+        self, comment: str | ua.LocalizedText | None, event_id: bytes | None = None, *, user: str | None = None
     ) -> None: ...
 
     @syncmethod
@@ -1882,6 +1910,11 @@ class SyncCondition:
 
 
 class Subscription:
+    """
+    Sync twin of Subscription. Iterating it, or next_event(), blocks for the next event; the data change events carry
+    SyncNodes.
+    """
+
     def __init__(self, tloop: ThreadLoop, sub: subscription.Subscription) -> None:
         self.tloop: ThreadLoop = tloop
         self.aio_obj: subscription.Subscription = sub
@@ -1909,7 +1942,7 @@ class Subscription:
     def _wrap_event(self, event: subscription.SubEvent) -> subscription.SubEvent:
         if isinstance(event, subscription.DataChangeEvent):
             return subscription.DataChangeEvent(
-                node=SyncNode(self.tloop, event.node),  # type: ignore[arg-type]
+                node=cast("node.Node", SyncNode(self.tloop, event.node)),
                 value=event.value,
                 data=event.data,
             )
@@ -1948,7 +1981,9 @@ class Subscription:
         monitoring: ua.MonitoringMode,
         sampling_interval: ua.Duration,
     ) -> ua.MonitoredItemCreateRequest:
-        return self.aio_obj._make_monitored_item_request(node, attr, mfilter, queuesize, monitoring, sampling_interval)
+        return self.aio_obj._make_monitored_item_request(
+            node.aio_obj, attr, mfilter, queuesize, monitoring, sampling_interval
+        )
 
     @syncmethod
     def unsubscribe(self, handle: int | Iterable[int]) -> None: ...
@@ -2015,6 +2050,8 @@ class Subscription:
 
 
 class XmlExporter:
+    """Sync twin of XmlExporter for a sync server."""
+
     def __init__(self, sync_server: Server) -> None:
         self.tloop: ThreadLoop = sync_server.tloop
         self.aio_obj: xmlexporter.XmlExporter = xmlexporter.XmlExporter(sync_server.aio_obj)
@@ -2027,6 +2064,8 @@ class XmlExporter:
 
 
 class DataTypeDictionaryBuilder:
+    """Sync twin of DataTypeDictionaryBuilder (a pre-1.04 structure dictionary) for a sync server."""
+
     def __init__(
         self, server: Server, idx: int, ns_urn: str, dict_name: str, dict_node_id: ua.NodeId | None = None
     ) -> None:
@@ -2057,9 +2096,9 @@ def new_struct_field(
     optional: bool = False,
     description: str = "",
 ) -> ua.StructureField:
-    if isinstance(dtype, SyncNode):
-        dtype = dtype.aio_obj
-    return common.structures104.new_struct_field(name, dtype, array, optional, description)
+    """Sync twin of structures104.new_struct_field; a SyncNode names the DataType."""
+    aio_dtype = dtype.aio_obj if isinstance(dtype, SyncNode) else dtype
+    return common.structures104.new_struct_field(name, aio_dtype, array, optional, description)
 
 
 @syncfunc(aio_func=common.structures104.new_enum)
@@ -2067,8 +2106,8 @@ def new_enum(
     server: Server | Client,
     idx: int | ua.NodeId,
     name: str | ua.QualifiedName,
-    values: list[str],
-    optional: bool = False,
+    fields: list[str | ua.EnumField],
+    option_set: bool = False,
 ) -> SyncNode: ...
 
 
@@ -2076,6 +2115,7 @@ def new_enum(
 def new_struct(
     server: Server | Client,
     idx: int | ua.NodeId,
-    name: int | ua.QualifiedName,
+    name: str | ua.QualifiedName,
     fields: list[ua.StructureField],
+    is_union: bool = False,
 ) -> tuple[SyncNode, list[SyncNode]]: ...

@@ -124,6 +124,7 @@ module = [
   "enginir_opcua.cli_setup",
   "enginir_opcua.observer",
   "enginir_opcua.tools",
+  "enginir_opcua.sync",
   "enginir_opcua.server.internal_subscription",
   "enginir_opcua.server.monitored_item_service",
   "enginir_opcua.server.subscription_service",

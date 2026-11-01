@@ -196,6 +196,11 @@ Synchronous interface (`enginir_opcua.sync`):
   sync `Server.register_namespace` and `get_namespace_index` call their parameter `uri`. The signatures, the missing
   methods and the docstrings of the sync classes follow the async ones; tuples and dicts come back as such.
 - `disconnect()` and `stop()` can be called twice.
+- The sync helper functions show and keep the signature of the async ones: `new_enum(server, idx, name, fields,
+  option_set=False)` (it documented `values` and `optional`, which raised `TypeError` as keywords), `new_struct` has
+  `is_union`, `copy_node` has `referenceType`, `instantiate` has `optional`, `call_method_full` has `timeout`.
+  `EventGenerator.trigger(time_attr, message, subscription_id)` follows the async one (`time` is now `time_attr`), and
+  sync `Server.create_subscription` takes a publishing interval only, as the async server does.
 
 Observer:
 - `Client(observer=...)` and `client.observer` set an `Observer`. The module and its hooks are documented

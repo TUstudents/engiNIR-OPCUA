@@ -13,13 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from enginir_opcua import sync, ua, uamethod
+from enginir_opcua import common, sync, ua, uamethod
 from enginir_opcua.client import Client as AsyncClient
 from enginir_opcua.client.ua_client import UaClient
 from enginir_opcua.common.node import Node as AsyncNode
 from enginir_opcua.common.subscription import Subscription as AsyncSubscription
 from enginir_opcua.server import Server as AsyncServer
 from enginir_opcua.server.conditions import Condition as AsyncCondition
+from enginir_opcua.server.event_generator import EventGenerator as AsyncEventGenerator
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import (
     Client,
@@ -504,6 +505,7 @@ EXCLUDED = {
     "Condition": {"build_replay", "close"},
     "SyncNode": {"new_node"},
     "Subscription": {"init", "publish_callback", "enqueue", "session_event", "close", "restore"},
+    "EventGenerator": {"init"},
 }
 
 
@@ -513,6 +515,16 @@ PAIRS = [
     ("Condition", AsyncCondition, sync.SyncCondition),
     ("SyncNode", AsyncNode, sync.SyncNode),
     ("Subscription", AsyncSubscription, sync.Subscription),
+    ("EventGenerator", AsyncEventGenerator, sync.EventGenerator),
+]
+FUNCTIONS = [
+    pytest.param(common.methods.call_method_full, sync.call_method_full, id="call_method_full"),
+    pytest.param(common.ua_utils.data_type_to_variant_type, sync.data_type_to_variant_type, id="data_type"),
+    pytest.param(common.copy_node_util.copy_node, sync.copy_node, id="copy_node"),
+    pytest.param(common.instantiate_util.instantiate, sync.instantiate, id="instantiate"),
+    pytest.param(common.structures104.new_enum, sync.new_enum, id="new_enum"),
+    pytest.param(common.structures104.new_struct, sync.new_struct, id="new_struct"),
+    pytest.param(common.structures104.new_struct_field, sync.new_struct_field, id="new_struct_field"),
 ]
 
 
@@ -542,6 +554,11 @@ def test_syn8_sync_signatures_match_the_async_ones(name, aio_class, sync_class):
         if describe(member) != describe(twin):
             drift.append(member_name)
     assert not drift
+
+
+@pytest.mark.parametrize(("aio_function", "sync_function"), FUNCTIONS)
+def test_syn8_sync_functions_match_the_async_ones(aio_function, sync_function):
+    assert describe(aio_function) == describe(sync_function)
 
 
 def test_syn10_configuration_attributes_are_forwarded():
