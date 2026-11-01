@@ -267,7 +267,7 @@ def test_tool2_an_explicit_root_node_is_accepted(capsys, tool_server):
     assert code == 0, err
 
 
-def test_tool2_read_needs_a_node(capsys):
+def test_tool2_read_needs_a_node(capsys, tool_server):
     code, _, err = run(capsys, "read", "-u", URL, *NO_SECURITY)
     assert code == 2 and "browse path" in err
 
@@ -278,7 +278,13 @@ def test_tool5_path_with_only_root_selects_the_start_node(capsys, tool_server):
     assert "Objects" in out
 
 
+def _write_int32(capsys, tool_server, text: str) -> None:
+    code, _, err = run(capsys, "write", "-u", ADMIN_URL, *NO_SECURITY, "-n", tool_server["variables"]["Int32"], text)
+    assert code == 0, err
+
+
 def test_tool5_a_path_selects_a_node(capsys, tool_server):
+    _write_int32(capsys, tool_server, "42")
     code, out, _ = run(capsys, "read", "-u", URL, *NO_SECURITY, "-p", "0:Objects,2:Holder,2:Int32")
     assert code == 0 and out.strip() == "42"
 
@@ -289,6 +295,7 @@ def test_tool5_ls_depth_zero_is_a_usage_error(capsys, tool_server):
 
 
 def test_tool5_ls_formats(capsys, tool_server):
+    _write_int32(capsys, tool_server, "42")
     holder = tool_server["holder"]
     _, names, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "--format", "name")
     _, values, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", holder, "--format", "value")
