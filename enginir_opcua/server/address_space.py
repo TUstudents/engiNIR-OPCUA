@@ -886,10 +886,11 @@ class NodeManagementService:
                     if vtype is None
                     else ua.Variant(value, vtype, is_array=is_array)
                 )
+            now = datetime.now(UTC) if add_timestamps else None
             dv = ua.DataValue(
                 variant,
-                SourceTimestamp=datetime.now(UTC) if add_timestamps else None,
-                ServerTimestamp=datetime.now(UTC) if add_timestamps and self._aspace.force_server_timestamp else None,
+                SourceTimestamp=now,
+                ServerTimestamp=now if self._aspace.force_server_timestamp else None,
             )
             nodedata.attributes[getattr(ua.AttributeIds, name)] = AttributeValue(dv)
 

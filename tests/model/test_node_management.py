@@ -1,8 +1,11 @@
-from typing import Any
+import itertools
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import Any, Self
 
 import pytest
 
 from enginir_opcua import Client, ua
+from enginir_opcua.server import address_space
 from enginir_opcua.ua.uaerrors import UaStatusCodeError
 from tests.access_rig import AccessRig, make_access_rig  # noqa: F401
 
@@ -385,3 +388,26 @@ def test_a_generated_node_id_skips_any_number_of_taken_ids() -> None:
         nodeid = ua.NodeId(identifier, 1)
         aspace[nodeid] = NodeData(nodeid)
     assert aspace.generate_nodeid(1) == ua.NodeId(4001, 1)
+
+
+async def test_added_variable_gets_one_time_for_both_timestamps(
+    access_rig: AccessRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 4, 7.11: an added value is stamped once, so SourceTimestamp equals ServerTimestamp."""
+    ticks = itertools.count()
+
+    class TickingClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return cls(2026, 1, 1, tzinfo=UTC) + timedelta(microseconds=next(ticks))
+
+    monkeypatch.setattr(address_space, "datetime", TickingClock)
+    item = new_item(access_rig, "StampedOnce", ua.NodeClass.Variable)
+    result = await add_one(access_rig.admin, item)
+    assert result.StatusCode.is_good()
+    nodedata = access_rig.server.iserver.aspace.get(result.AddedNodeId)
+    assert nodedata is not None
+    stored = nodedata.attributes[ua.AttributeIds.Value].value
+    assert stored is not None
+    assert stored.SourceTimestamp is not None
+    assert stored.SourceTimestamp == stored.ServerTimestamp

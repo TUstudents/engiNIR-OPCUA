@@ -358,6 +358,8 @@ Server sessions (OPC 10000-4, 5.7):
   advertised 4840.
 - `load_private_key()` refuses a key that is not RSA with ConfigurationError; the security policies failed with it
   later.
+- A variable added through AddNodes gets one clock reading for its SourceTimestamp and ServerTimestamp; the two came
+  from separate readings and could differ.
 - FindServers with ServerUris returns only the servers whose ApplicationUri is in the list (OPC 10000-4, 5.5.2); a
   ServerUri used to match every ApplicationUri that started with its colon-separated parts.
 - BuildInfo.SoftwareVersion is the version of enginir-opcua instead of "1.0pre", and BuildDate is in UTC.
