@@ -195,6 +195,8 @@ A complete session on one machine:
     created  srv/pki
     created  srv/pki/own/certs/application.der  thumbprint 584532607f12...  expires 2027-10-29
     created  srv/server.toml
+    created  srv/users.toml
+    next     enginir-opcua user add srv/users.toml <name> --role user
     $ enginir-opcua init client cli --url opc.tcp://127.0.0.1:4840/enginir-opcua/server/
     $ enginir-opcua pair srv/pki cli/pki
     trusted  301d083dbf7e...  CN=urn:host:enginir-opcua:client  in srv/pki/trusted/certs

@@ -50,6 +50,33 @@ def test_init_server_writes_a_pki_directory_and_a_config(capsys: pytest.CaptureF
     assert stat.S_IMODE((tmp_path / "plant" / "server.toml").stat().st_mode) == 0o600
 
 
+def test_init_server_points_the_config_at_a_users_file_that_user_add_fills(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, out, _ = init_server(capsys, tmp_path / "plant", "--endpoint", "opc.tcp://127.0.0.1:4850/")
+    assert code == 0
+    users = tmp_path / "plant" / "users.toml"
+    assert f"created  {users}" in out
+    assert users_file.read_users(users) == []
+    assert stat.S_IMODE(users.stat().st_mode) == 0o600
+    assert 'users_file = "users.toml"' in (tmp_path / "plant" / "server.toml").read_text()
+    monkeypatch.setattr("sys.stdin", io.StringIO("correct horse battery\n"))
+    assert run(capsys, "user", "add", str(users), "alice", "--role", "user", "--password-stdin")[0] == 0
+    config = ServerConfig.from_toml(tmp_path / "plant" / "server.toml")
+    assert config.users_file == str(users)
+    assert [record.name for record in users_file.read_users(Path(config.users_file))] == ["alice"]
+
+
+def test_init_server_keeps_an_existing_users_file(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    users = tmp_path / "plant" / "users.toml"
+    users.parent.mkdir()
+    record = users_file.UserRecord("alice", "user", users_file.hash_password("correct horse battery"))
+    users_file.write_users(users, [record])
+    code, out, _ = init_server(capsys, tmp_path / "plant")
+    assert code == 0 and f"kept     {users}" in out
+    assert users_file.read_users(users) == [record]
+
+
 def test_init_client_and_the_certificate_carries_the_uri(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     code, out, _ = run(
         capsys, "init", "client", str(tmp_path / "c"), "--url", "opc.tcp://localhost:4850", "--name", "Probe"

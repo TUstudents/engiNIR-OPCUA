@@ -9,6 +9,9 @@ Each release has its own section; the newest is at the top.
 - Errors about a refused URL no longer show the password of its user info: `Client("http://alice:secret@host")`
   and the URL checks of the config files said `got 'http://alice:secret@host'`, and the command line printed that
   message. They now show `http://alice@host`. `enginir_opcua.config.shown_url()` does the cleaning.
+- `enginir-opcua init server` now creates an empty `users.toml` next to `server.toml`, or keeps an existing one, and
+  sets `users_file = "users.toml"`. Before, it told you to run `enginir-opcua user add DIR/users.toml`, but the
+  generated configuration never read that file, so the users you added could not log in.
 
 ## 3.0.0 (2026-11-01)
 

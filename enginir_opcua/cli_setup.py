@@ -29,6 +29,7 @@ from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.tools import Command, ToolError, UsageError, register, say, warn
 
 DEFAULT_PKI = "./pki"
+USERS_FILE_NAME = "users.toml"
 MIN_THUMBPRINT_DIGITS = 8
 SUBJECT_WIDTH = 60
 PAIR_WARNING = (
@@ -189,10 +190,18 @@ def _init(args: argparse.Namespace) -> int:
         f"{'kept' if certificate_existed else 'created':<8} {certificate_file}  "
         f"thumbprint {_thumbprint(credentials.certificate)}  expires {expires:%Y-%m-%d}"
     )
-    dataclasses.replace(config, pki="pki").dump(config_path)
+    if isinstance(config, ServerConfig):
+        dataclasses.replace(config, pki="pki", users_file=USERS_FILE_NAME).dump(config_path)
+    else:
+        dataclasses.replace(config, pki="pki").dump(config_path)
     say(f"{'created':<8} {config_path}")
-    if args.kind == "server":
-        say(f"{'next':<8} enginir-opcua user add {directory / 'users.toml'} <name> --role user")
+    if isinstance(config, ServerConfig):
+        users = directory / USERS_FILE_NAME
+        users_existed = users.exists()
+        if not users_existed:
+            users_file.write_users(users, [])
+        say(f"{'kept' if users_existed else 'created':<8} {users}")
+        say(f"{'next':<8} enginir-opcua user add {users} <name> --role user")
     return 0
 
 
