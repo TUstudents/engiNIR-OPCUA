@@ -6,11 +6,11 @@ engiNIR-OPCUA
 
 .. rst-class:: lead
 
-    An OPC UA client and server for Python, built on asyncio and secure from the first line.
+    OPC UA for Python: connect to machines and instruments, or make your own device an OPC UA server.
 
-engiNIR-OPCUA implements OPC UA (IEC 62541) for Python 3.12 and newer: clients, servers, subscriptions, events,
-alarms, history, methods, file transfer, redundancy and experimental PubSub. Encrypted connections, certificate
-trust and user roles are switched on by default, and every one of them can be set up in a few lines.
+engiNIR-OPCUA is a client and a server in one library, built on asyncio with a blocking API for scripts. It follows
+OPC UA 1.05 and is tested on every push against the OPC Foundation's reference implementation. See
+:doc:`usage/limits` for what it covers.
 
 .. code-block:: console
 

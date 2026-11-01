@@ -34,6 +34,12 @@ Each release has its own section; the newest is at the top.
   with `BadCertificateHostNameInvalid`. Existing certificates are not replaced; delete `own/` of the PKI directory to
   generate a new one, and trust the new certificate on the clients.
 
+### Documentation
+
+- The README is rewritten around what you do with the library: a client that reads, writes and subscribes, a server
+  with history and a method, what else each side offers, and the command line. A test runs its Python examples.
+- New page "Supported features and limits" (`docs/usage/limits.rst`).
+
 ### Additions
 
 - `ServerConfig.push_management` (TOML `push_management = true`, default false): `Server.init()` calls
