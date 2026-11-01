@@ -36,6 +36,7 @@ from ..common.ua_utils import get_nodes_of_namespace
 from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..config import (
+    POSTURES,
     ServerConfig,
     check_certificate_uri,
     is_loopback,
@@ -63,6 +64,12 @@ from .user_managers import UserManager
 
 if TYPE_CHECKING:
     from .internal_session import InternalSession
+
+IDENTITY_TOKEN_TYPES: dict[str, type] = {
+    "Anonymous": ua.AnonymousIdentityToken,
+    "UserName": ua.UserNameIdentityToken,
+    "Certificate": ua.X509IdentityToken,
+}
 
 _logger = logging.getLogger(__name__)
 
@@ -129,19 +136,17 @@ class Server:
         user_manager: UserManager | None = None,
         *,
         allow_no_security: bool = False,
-        allow_deprecated_policies: bool = False,
         config: ServerConfig | None = None,
     ) -> None:
         """
         :param config: a ServerConfig (see Server.quickstart). It replaces `iserver`, `user_manager`,
-            `allow_no_security` and `allow_deprecated_policies`; the PKI directory it names is read or created in
-            `init()`.
+            and `allow_no_security`; the PKI directory it names is read or created in `init()`.
         """
         self._config: ServerConfig | None = config
         if config is not None:
-            if iserver is not None or user_manager is not None or allow_no_security or allow_deprecated_policies:
+            if iserver is not None or user_manager is not None or allow_no_security:
                 raise ConfigurationError(
-                    "server: config replaces iserver, user_manager, allow_no_security and allow_deprecated_policies; "
+                    "server: config replaces iserver, user_manager and allow_no_security; "
                     "put the user manager in the config"
                 )
             config.validate()
@@ -164,14 +169,11 @@ class Server:
         self._default_validator: CertificateValidator | None = None
         self._certificate_manager: CertificateManager | None = None
         self.nodes: Shortcuts = Shortcuts(self.iserver.isession)
-        self.allow_deprecated_policies: bool = allow_deprecated_policies
+        self._suppress: tuple[str, ...] = ()
         self._security_policy: list[ua.SecurityPolicyType] = [
             *([ua.SecurityPolicyType.NoSecurity] if allow_no_security else []),
             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
-            ua.SecurityPolicyType.Basic256Sha256_Sign,
             ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
-            ua.SecurityPolicyType.Aes128Sha256RsaOaep_Sign,
-            ua.SecurityPolicyType.Aes256Sha256RsaPss_Sign,
             ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt,
         ]
         self._permission_ruleset: SimpleRoleRuleset = SimpleRoleRuleset()
@@ -195,10 +197,11 @@ class Server:
         **overrides: Any,
     ) -> Server:
         """
-        A server for one of the two profiles, not initialised and not started. "secure": Basic256Sha256,
+        A server for one of the profiles, not initialised and not started. "secure": Basic256Sha256,
         Aes128Sha256RsaOaep and Aes256Sha256RsaPss with SignAndEncrypt, any network. "development": loopback only,
-        also without security. `pki` is the PKI directory (created at `init()` with a self-signed certificate, and
-        nothing is trusted); `users` a users file or a user manager; `overrides` any other ServerConfig field.
+        also without security. "legacy": any network, also deprecated policies, Sign and no security; every weaker
+        setting is logged at start. `pki` is the PKI directory (created at `init()` with a self-signed certificate,
+        and nothing is trusted); `users` a users file or a user manager; `overrides` any other ServerConfig field.
         """
         return cls(config=quickstart_server_config(endpoint, profile, pki, users, overrides))
 
@@ -209,6 +212,11 @@ class Server:
         self.product_uri = config.product_uri
         self.manufacturer_name = config.manufacturer_name
         self._security_policy = config.policy_types()
+        self._suppress = tuple(config.suppress or ())
+        self.iserver.allow_plaintext_password = bool(config.allow_plaintext_password)
+        self.iserver.accept_server_registrations = bool(config.accept_server_registrations)
+        if config.identity_tokens is not None:
+            self.set_identity_tokens([IDENTITY_TOKEN_TYPES[name] for name in config.identity_tokens])
         limits = config.limits
         iserver = self.iserver
         iserver.session_manager.max_sessions = limits.max_sessions
@@ -231,7 +239,7 @@ class Server:
             max_chunk_count=math.ceil(limits.max_message_size / limits.max_buffer_size),
             max_message_size=limits.max_message_size,
         )
-        if config.profile == "development":
+        if POSTURES[config.profile].server.loopback_only:
             self.socket_address = (self.endpoint.hostname or "127.0.0.1", self.endpoint.port or 4840)
 
     async def _apply_pki(self, config: ServerConfig) -> None:
@@ -612,7 +620,8 @@ class Server:
         Set the security policies of the endpoints, and optionally the rules that map user roles to permissions.
         During server initialization, all secure endpoints are enabled. The None endpoint is only
         enabled with Server(allow_no_security=True) or by listing ua.SecurityPolicyType.NoSecurity here.
-        The deprecated Basic128Rsa15 and Basic256 policies need Server(allow_deprecated_policies=True).
+        Any policy may be named, the deprecated Basic128Rsa15 and Basic256 included; start() logs a warning
+        for each endpoint without security and for each deprecated policy.
 
         E.g. to limit the number of endpoints:
 
@@ -620,16 +629,6 @@ class Server:
                             ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt])
 
         """
-        deprecated = [
-            policy_type.name
-            for policy_type in security_policy
-            if getattr(security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0], "deprecated", False)
-        ]
-        if deprecated and not self.allow_deprecated_policies:
-            raise ConfigurationError(
-                f"The deprecated policies {', '.join(deprecated)} are only available with "
-                "Server(allow_deprecated_policies=True)"
-            )
         if not security_policy:
             raise ConfigurationError("security_policy: the list is empty; name at least one policy")
         self._security_policy = security_policy
@@ -675,8 +674,8 @@ class Server:
             ):
                 no_cert = True
                 continue
-            if getattr(policy, "deprecated", False):
-                _logger.warning("The deprecated policy %s is offered, do not use it anymore", policy_type.name)
+            if self._config is None:
+                self._warn_weak_endpoint(policy, policy_type)
             self._set_endpoints(policy, mode, level)
             self._policies.append(
                 security_policies.SecurityPolicyFactory(
@@ -695,6 +694,16 @@ class Server:
             raise ConfigurationError(
                 "The server has no endpoint: load a certificate and a private key for the secure policies, or "
                 "enable the None policy with Server(allow_no_security=True)"
+            )
+
+    def _warn_weak_endpoint(
+        self, policy: type[security_policies.SecurityPolicy], policy_type: ua.SecurityPolicyType
+    ) -> None:
+        if getattr(policy, "deprecated", False):
+            _logger.warning("The deprecated policy %s is offered, do not use it anymore", policy_type.name)
+        if policy_type is ua.SecurityPolicyType.NoSecurity:
+            _logger.warning(
+                "%s offers no security: the channel is neither signed nor encrypted", self.endpoint.geturl()
             )
 
     def _password_policy_uri(
@@ -784,7 +793,10 @@ class Server:
         """
         Start to listen on network
         """
-        self._check_development_bind()
+        self._check_loopback_bind()
+        if self._config is not None:
+            for line in self._config.weaknesses():
+                _logger.warning("%s", line)
         if self.iserver.certificate is not None:
             uacrypto.check_certificate(self.iserver.certificate, self._application_uri, socket.gethostname())
         await self._prepare_certificate_validation()
@@ -815,7 +827,7 @@ class Server:
             return
         trust_store = self.iserver.trust_store or TrustStore()
         await trust_store.load()
-        self._default_validator = CertificateValidator(trust_store)
+        self._default_validator = CertificateValidator(trust_store, suppress=self._suppress)
         self.iserver.certificate_validator = self._default_validator
         has_secure_policy = any(
             security_policies.SECURITY_POLICY_TYPE_MAP[policy_type][0] is not security_policies.SecurityPolicyNone
@@ -828,20 +840,16 @@ class Server:
                 "configure the trusted certificates with set_trust_store"
             )
 
-    def _check_development_bind(self) -> None:
+    def _check_loopback_bind(self) -> None:
         config = self._config
-        if config is None or config.profile != "development":
+        if config is None or not POSTURES[config.profile].server.loopback_only:
             return
         host = self._get_bind_socket_info()[0]
         if not is_loopback(host):
             raise ConfigurationError(
-                f"server.endpoint: the development profile only listens on loopback addresses, but socket_address "
-                f"is {self.socket_address}"
+                f"server.endpoint: the {config.profile} profile only listens on loopback addresses, but "
+                f"socket_address is {self.socket_address}"
             )
-        _logger.warning(
-            "development profile: %s offers a connection without security; it is meant for this machine only",
-            self.endpoint.geturl(),
-        )
 
     def _get_bind_socket_info(self) -> tuple[str, int]:
         if self.socket_address is not None:

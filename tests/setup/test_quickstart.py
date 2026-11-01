@@ -29,6 +29,73 @@ def test_quickstart_applies_the_secure_profile(tmp_path: Path, users: Path) -> N
     assert not server.allow_plaintext_password
 
 
+@pytest.mark.parametrize(
+    ("profile", "plaintext", "suppressed", "policy_count"),
+    [
+        pytest.param("secure", False, set(), 3, id="secure"),
+        pytest.param(
+            "development",
+            True,
+            {"revocation_unknown", "issuer_revocation_unknown", "host_name_invalid"},
+            2,
+            id="development",
+        ),
+        pytest.param(
+            "legacy", False, {"revocation_unknown", "issuer_revocation_unknown", "host_name_invalid"}, 11, id="legacy"
+        ),
+    ],
+)
+def test_a_configured_server_applies_the_posture_of_its_profile(
+    tmp_path: Path, profile: str, plaintext: bool, suppressed: set[str], policy_count: int
+) -> None:
+    server = Server.quickstart(URL, profile=profile, pki=tmp_path / "pki")
+    assert server.allow_plaintext_password is plaintext
+    assert set(server._suppress) == suppressed
+    assert len(server._security_policy) == policy_count
+    assert server.iserver.accept_server_registrations is False
+
+
+def test_a_configured_server_applies_its_overrides(tmp_path: Path) -> None:
+    server = Server.quickstart(
+        URL,
+        pki=tmp_path / "pki",
+        suppress=["certificate_expired"],
+        identity_tokens=["UserName", "Certificate"],
+        allow_plaintext_password=True,
+        accept_server_registrations=True,
+    )
+    assert server._suppress == ("certificate_expired",)
+    assert server.iserver.supported_tokens == (ua.UserNameIdentityToken, ua.X509IdentityToken)
+    assert server.allow_plaintext_password is True
+    assert server.iserver.accept_server_registrations is True
+
+
+async def test_a_configured_server_gives_its_suppressions_to_the_validator(tmp_path: Path, port: int) -> None:
+    server = Server.quickstart(
+        f"opc.tcp://127.0.0.1:{port}/s/", profile="development", pki=tmp_path / "pki", suppress=["usage"]
+    )
+    await server.init()
+    async with server:
+        validator = server.iserver.certificate_validator
+        assert validator is not None
+        assert {suppression.value for suppression in validator.suppressions} == {"usage"}
+
+
+async def test_a_configured_server_logs_its_weaknesses_once_at_start(
+    tmp_path: Path, port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    server = Server.quickstart(f"opc.tcp://127.0.0.1:{port}/w/", profile="legacy", pki=tmp_path / "pki")
+    await server.init()
+    with caplog.at_level(logging.WARNING):
+        async with server:
+            pass
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert server._config is not None
+    for line in server._config.weaknesses():
+        assert messages.count(line) == 1
+    assert not [m for m in messages if m.startswith("opc.tcp://") or "The deprecated policy" in m]
+
+
 def test_quickstart_without_users_accepts_anonymous_only(tmp_path: Path) -> None:
     server = Server.quickstart(URL, pki=tmp_path / "pki")
     assert isinstance(server.iserver.user_manager, AnonymousReadOnlyUserManager)
@@ -168,7 +235,7 @@ async def test_the_development_profile_offers_no_security_and_warns(
     with caplog.at_level(logging.WARNING):
         await server.start()
     try:
-        assert "development profile" in caplog.text and url in caplog.text
+        assert "profile development" in caplog.text
         modes = {e.SecurityMode for e in await server.get_endpoints()}
         assert ua.MessageSecurityMode.None_ in modes
         async with Client.quickstart(url, profile="development") as client:

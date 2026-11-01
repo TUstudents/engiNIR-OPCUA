@@ -9,7 +9,10 @@ from enginir_opcua import Client, Server, ua
 from enginir_opcua.crypto import security_policies, uacrypto
 from enginir_opcua.crypto.security_policies import (
     SECURITY_POLICY_TYPE_MAP,
+    SecurityPolicyAes128Sha256RsaOaep,
+    SecurityPolicyAes256Sha256RsaPss,
     SecurityPolicyBasic128Rsa15,
+    SecurityPolicyBasic256,
     SecurityPolicyBasic256Sha256,
 )
 from enginir_opcua.crypto.uacrypto import CertProperties
@@ -72,6 +75,17 @@ async def srv_crypto_all_certs(request):
     key, cert = request.param
     await srv.init()
     srv.set_endpoint(uri_crypto)
+    srv.set_security_policy(
+        [
+            ua.SecurityPolicyType.NoSecurity,
+            ua.SecurityPolicyType.Basic256Sha256_SignAndEncrypt,
+            ua.SecurityPolicyType.Basic256Sha256_Sign,
+            ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
+            ua.SecurityPolicyType.Aes128Sha256RsaOaep_Sign,
+            ua.SecurityPolicyType.Aes256Sha256RsaPss_Sign,
+            ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt,
+        ]
+    )
     await srv.load_certificate(cert)
     await srv.load_private_key(key)
     srv.set_trust_store(PKI.trust_store())
@@ -105,7 +119,7 @@ async def srv_crypto_one_cert(request):
 @pytest.fixture(scope="module", params=srv_crypto_params[:1])
 async def srv_crypto_all_cert_basic128rsa15(request):
     # start our own server
-    srv = Server(allow_deprecated_policies=True)
+    srv = Server()
     key, cert = request.param
     await srv.init()
     srv.set_endpoint(uri_crypto_basic128rsa15)
@@ -508,22 +522,49 @@ async def test_srv45_listing_no_security_in_the_policies_offers_it() -> None:
         assert await offered_policies(server) == {"http://opcfoundation.org/UA/SecurityPolicy#None"}
 
 
-async def test_cry8_deprecated_policy_needs_allow_deprecated_policies() -> None:
-    """Part 7: Basic128Rsa15 and Basic256 are deprecated and have to be enabled explicitly."""
+async def test_cry8_deprecated_policy_is_accepted_without_a_flag_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Part 7: naming a deprecated policy in set_security_policy is the request; the start says so."""
     server = await make_server()
-    with pytest.raises(ConfigurationError, match="allow_deprecated_policies"):
-        server.set_security_policy([ua.SecurityPolicyType.Basic128Rsa15_Sign])
+    server.set_security_policy([ua.SecurityPolicyType.Basic256_Sign, ua.SecurityPolicyType.Basic256Sha256_Sign])
+    with caplog.at_level(logging.WARNING):
+        async with server:
+            policies = await offered_policies(server)
+    assert SecurityPolicyBasic256.URI in policies
+    assert "Basic256_Sign" in caplog.text
 
 
 async def test_cry8_allowed_deprecated_policy_is_offered_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """Part 7: the deprecated policies are available when enabled, and the start says so."""
-    server = await make_server(allow_deprecated_policies=True)
+    """Part 7: the deprecated policies are available when named, and the start says so."""
+    server = await make_server()
     server.set_security_policy([ua.SecurityPolicyType.Basic128Rsa15_Sign, ua.SecurityPolicyType.Basic256Sha256_Sign])
     with caplog.at_level(logging.WARNING):
         async with server:
             policies = await offered_policies(server)
     assert SecurityPolicyBasic128Rsa15.URI in policies
     assert "Basic128Rsa15" in caplog.text
+
+
+async def test_a_default_server_offers_only_sign_and_encrypt_endpoints() -> None:
+    server = await make_server()
+    async with server:
+        endpoints = await server.get_endpoints()
+    assert {endpoint.SecurityMode for endpoint in endpoints} == {ua.MessageSecurityMode.SignAndEncrypt}
+    assert {endpoint.SecurityPolicyUri for endpoint in endpoints} == {
+        SecurityPolicyBasic256Sha256.URI,
+        SecurityPolicyAes128Sha256RsaOaep.URI,
+        SecurityPolicyAes256Sha256RsaPss.URI,
+    }
+
+
+async def test_a_low_level_server_warns_for_each_endpoint_without_security(caplog: pytest.LogCaptureFixture) -> None:
+    server = await make_server(allow_no_security=True)
+    with caplog.at_level(logging.WARNING):
+        async with server:
+            pass
+    warnings = [r.getMessage() for r in caplog.records if "offers no security" in r.getMessage()]
+    assert len(warnings) == 1 and "neither signed nor encrypted" in warnings[0]
 
 
 async def test_cry8_client_refuses_a_deprecated_policy_unless_allowed() -> None:

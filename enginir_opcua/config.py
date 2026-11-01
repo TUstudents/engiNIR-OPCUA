@@ -1,5 +1,5 @@
 """
-Configuration objects for the quick setup: ServerConfig, ClientConfig, the two profiles and the TOML format.
+Configuration objects for the quick setup: ServerConfig, ClientConfig, the three profiles and the TOML format.
 Every error names the setting, as it is written in the TOML file ("server.pki", "server.limits.max_sessions").
 """
 
@@ -20,6 +20,7 @@ from urllib.parse import ParseResult, urlparse
 from cryptography import x509
 
 from .crypto.cert_gen import write_atomic
+from .crypto.validator import Suppression
 from .ua import SecurityPolicyType
 from .ua.uaerrors import ConfigurationError
 
@@ -27,19 +28,148 @@ if TYPE_CHECKING:
     from .server.user_managers import UserManager
 
 MAX_PORT = 65_535
-PROFILES = ("secure", "development")
+PROFILES = ("secure", "development", "legacy")
 SECURE_POLICIES = ("Basic256Sha256", "Aes128Sha256RsaOaep", "Aes256Sha256RsaPss")
 DEPRECATED_POLICIES = ("Basic128Rsa15", "Basic256")
 MODES = ("Sign", "SignAndEncrypt")
-SERVER_SECURE_DEFAULT = [f"{policy},SignAndEncrypt" for policy in SECURE_POLICIES]
-SERVER_DEVELOPMENT_DEFAULT = ["None", "Basic256Sha256,SignAndEncrypt"]
+IDENTITY_TOKENS = ("Anonymous", "UserName", "Certificate")
+SUPPRESSIONS = tuple(suppression.value for suppression in Suppression)
+LEGACY_SUPPRESSIONS = ("revocation_unknown", "issuer_revocation_unknown", "host_name_invalid")
+SUPPRESSION_RISK = "a certificate with these errors is accepted instead of rejected"
+SERVER_SECURE_DEFAULT = tuple(f"{policy},SignAndEncrypt" for policy in SECURE_POLICIES)
+SERVER_DEVELOPMENT_DEFAULT = ("None", "Basic256Sha256,SignAndEncrypt")
+SERVER_LEGACY_DEFAULT = (
+    *(f"{policy},{mode}" for policy in (*SECURE_POLICIES, "Basic256", "Basic128Rsa15") for mode in MODES),
+    "None",
+)
 CLIENT_SECURE_DEFAULT = "Basic256Sha256,SignAndEncrypt"
 CLIENT_DEVELOPMENT_DEFAULT = "None"
+CLIENT_AUTOMATIC = "auto"
 USERS_FILE_VARIABLE = "ENGINIR_OPCUA_USERS_FILE"
 PASSWORD_VARIABLE = "ENGINIR_OPCUA_PASSWORD"
 ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 URI_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:\S+\Z")
 SECRET_KEYS = frozenset({"password", "private_key_password"})
+
+
+@dataclass(frozen=True)
+class ServerPosture:
+    """The security posture of a server in one profile: the default of every dimension."""
+
+    security: tuple[str, ...]
+    loopback_only: bool
+    suppress: tuple[str, ...]
+    allow_plaintext_password: bool
+    accept_server_registrations: bool
+    permissive_user_manager_is_weakness: bool
+    note: str | None
+
+
+@dataclass(frozen=True)
+class ClientPosture:
+    """The security posture of a client in one profile: the default of every dimension."""
+
+    security: str
+    loopback_only: bool
+    suppress: tuple[str, ...]
+    allow_plaintext_password: bool
+    note: str | None
+
+
+@dataclass(frozen=True)
+class ProfilePosture:
+    """One profile: the posture of its server and of its client."""
+
+    name: str
+    server: ServerPosture
+    client: ClientPosture
+
+
+POSTURES: dict[str, ProfilePosture] = {
+    posture.name: posture
+    for posture in (
+        ProfilePosture(
+            name="secure",
+            server=ServerPosture(
+                security=SERVER_SECURE_DEFAULT,
+                loopback_only=False,
+                suppress=(),
+                allow_plaintext_password=False,
+                accept_server_registrations=False,
+                permissive_user_manager_is_weakness=True,
+                note=None,
+            ),
+            client=ClientPosture(
+                security=CLIENT_SECURE_DEFAULT,
+                loopback_only=False,
+                suppress=(),
+                allow_plaintext_password=False,
+                note=None,
+            ),
+        ),
+        ProfilePosture(
+            name="development",
+            server=ServerPosture(
+                security=SERVER_DEVELOPMENT_DEFAULT,
+                loopback_only=True,
+                suppress=LEGACY_SUPPRESSIONS,
+                allow_plaintext_password=True,
+                accept_server_registrations=False,
+                permissive_user_manager_is_weakness=False,
+                note="offers a connection without security and relaxes certificate checks; "
+                "it is meant for this machine only",
+            ),
+            client=ClientPosture(
+                security=CLIENT_DEVELOPMENT_DEFAULT,
+                loopback_only=True,
+                suppress=LEGACY_SUPPRESSIONS,
+                allow_plaintext_password=True,
+                note="connects without security and relaxes certificate checks; it is meant for this machine only",
+            ),
+        ),
+        ProfilePosture(
+            name="legacy",
+            server=ServerPosture(
+                security=SERVER_LEGACY_DEFAULT,
+                loopback_only=False,
+                suppress=LEGACY_SUPPRESSIONS,
+                allow_plaintext_password=False,
+                accept_server_registrations=False,
+                permissive_user_manager_is_weakness=True,
+                note="offers deprecated, unencrypted and unsecured channels and relaxes certificate checks for old "
+                "devices",
+            ),
+            client=ClientPosture(
+                security=CLIENT_AUTOMATIC,
+                loopback_only=False,
+                suppress=LEGACY_SUPPRESSIONS,
+                allow_plaintext_password=False,
+                note="takes the strongest channel the server offers, falling back to none, and relaxes certificate "
+                "checks",
+            ),
+        ),
+    )
+}
+SECURE_POSTURE = POSTURES["secure"]
+
+
+def _unknown_profile(profile: Any) -> str:
+    return f"unknown profile {profile!r}; use " + ", ".join(f'"{name}"' for name in PROFILES)
+
+
+def _profile_weakness(profile: str, note: str | None) -> list[str]:
+    return [f"profile {profile}: {note}"] if note else []
+
+
+def _setting_weaknesses(
+    prefix: str, suppress: list[str] | None, secure_suppress: tuple[str, ...], plaintext: bool | None
+) -> list[str]:
+    lines = []
+    if suppress and (names := [name for name in suppress if name not in secure_suppress]):
+        lines.append(f"{prefix}.suppress: {', '.join(names)} suppressed: {SUPPRESSION_RISK}")
+    if plaintext:
+        lines.append(f"{prefix}.allow_plaintext_password: passwords may cross the network in clear text")
+    return lines
 
 
 class ConfigurationProblems(ConfigurationError):
@@ -131,16 +261,16 @@ class _Problems:
             return False
         return True
 
-    def url(self, name: str, value: Any, loopback_only: bool, what: str) -> ParseResult | None:
+    def url(self, name: str, value: Any, loopback_profile: str | None, what: str) -> ParseResult | None:
         try:
             parsed = parse_opc_tcp_url(value, f"{self.prefix}.{name}")
         except ConfigurationError as error:
             self.items.append(str(error))
             return None
-        if loopback_only and not is_loopback(parsed.hostname or ""):
+        if loopback_profile is not None and not is_loopback(parsed.hostname or ""):
             self.add(
                 name,
-                f"the development profile only {what} a loopback address, got {value!r}; "
+                f"the {loopback_profile} profile only {what} a loopback address, got {value!r}; "
                 'use 127.0.0.1 or localhost, or profile "secure"',
             )
         return parsed
@@ -149,6 +279,16 @@ class _Problems:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low < value <= high:
             self.add(name, f"must be a number above {low:g} and at most {high:g}, got {value!r}")
 
+    def names(self, name: str, value: Any, allowed: tuple[str, ...], what: str, empty: bool) -> bool:
+        if not isinstance(value, list) or (not empty and not value):
+            self.add(name, f"must be a list of {what} names from {', '.join(allowed)}, got {value!r}")
+            return False
+        unknown = [item for item in value if item not in allowed]
+        if unknown:
+            self.add(name, f"unknown {what} {', '.join(repr(item) for item in unknown)}; use {', '.join(allowed)}")
+            return False
+        return True
+
     def path(self, name: str, value: Any) -> bool:
         if not isinstance(value, (str, os.PathLike)) or not str(value):
             self.add(name, f"must be a file system path, got {value!r}")
@@ -156,31 +296,38 @@ class _Problems:
         return True
 
 
-def parse_security(text: Any, profile: str) -> tuple[SecurityPolicyType | None, str | None]:
+def parse_security(text: Any) -> tuple[SecurityPolicyType | None, str | None]:
     """The policy type of a `Policy,Mode` or `None` string, or a problem text."""
     if not isinstance(text, str):
         return None, f"must be a text such as Basic256Sha256,SignAndEncrypt, got {text!r}"
     if text == "None":
-        if profile == "development":
-            return SecurityPolicyType.NoSecurity, None
-        return None, (
-            'the policy None is not allowed in the secure profile; use profile "development" '
-            "for a local server without security"
-        )
+        return SecurityPolicyType.NoSecurity, None
     policy, _, mode = text.partition(",")
     policy = policy.replace("_", "")
-    if policy in DEPRECATED_POLICIES:
-        return None, (
-            f"the policy {policy} is deprecated and is not available in a profile; "
-            "use Server.set_security_policy with allow_deprecated_policies=True"
-        )
-    if policy not in SECURE_POLICIES:
-        return None, f"unknown policy {policy!r}; use one of {', '.join(SECURE_POLICIES)} (or None in development)"
+    if policy not in (*SECURE_POLICIES, *DEPRECATED_POLICIES):
+        known = ", ".join((*SECURE_POLICIES, *DEPRECATED_POLICIES))
+        return None, f"unknown policy {policy!r}; use one of {known}, or None"
     if mode not in MODES:
         return None, f"unknown mode {mode!r}; write Policy,Mode with Mode Sign or SignAndEncrypt"
-    if mode != "SignAndEncrypt":
-        return None, f"{text!r} is not allowed in a profile: only SignAndEncrypt is"
     return SecurityPolicyType[f"{policy}_{mode}"], None
+
+
+def _security_risks(text: Any) -> list[str]:
+    policy, problem = parse_security(text)
+    if policy is None or problem:
+        return []
+    if policy is SecurityPolicyType.NoSecurity:
+        return ["no security, the channel is neither signed nor encrypted"]
+    risks = []
+    if policy.name.partition("_")[0] in DEPRECATED_POLICIES:
+        risks.append("deprecated cipher, weak against modern attacks")
+    if policy.name.endswith("_Sign"):
+        risks.append("signed but not encrypted, the content can be read")
+    return risks
+
+
+def _security_weaknesses(setting: str, texts: list[str]) -> list[str]:
+    return [f"{setting}: {text}: {'; '.join(risks)}" for text in texts if (risks := _security_risks(text))]
 
 
 def policy_name(policy: SecurityPolicyType) -> str:
@@ -352,11 +499,13 @@ def _unknown_overrides(cls: type, prefix: str, overrides: dict[str, Any]) -> Non
 class ServerConfig:
     """
     The [server] table: endpoint, identity, PKI directory, security, users and limits of a server, as Server(config=)
-    and Server.quickstart take them. The profile decides the defaults of security and allow_no_security.
+    and Server.quickstart take them. The profile decides the defaults of security, suppress,
+    allow_plaintext_password and accept_server_registrations; a setting given explicitly replaces the default.
     """
 
     profile: str = field(
-        default="secure", metadata={"doc": 'Either "secure" (any network) or "development" (loopback only)'}
+        default="secure",
+        metadata={"doc": '"secure" (default), "development" (loopback only, no security) or "legacy" (old devices)'},
     )
     endpoint: str = field(
         default="opc.tcp://127.0.0.1:4840/enginir-opcua/server/",
@@ -378,8 +527,19 @@ class ServerConfig:
     security: list[str] | None = field(
         default=None, metadata={"doc": 'Policies as "Policy,Mode" or "None"; the profile decides the default'}
     )
-    allow_no_security: bool | None = field(
-        default=None, metadata={"doc": "Offer an endpoint without security (development only)"}
+    suppress: list[str] | None = field(
+        default=None,
+        metadata={"doc": "Client certificate errors to accept, by name (revocation_unknown, host_name_invalid, ...)"},
+    )
+    identity_tokens: list[str] | None = field(
+        default=None,
+        metadata={"doc": 'User token types to offer: "Anonymous", "UserName", "Certificate"; default from the users'},
+    )
+    allow_plaintext_password: bool | None = field(
+        default=None, metadata={"doc": "Offer the UserName token without encryption when no endpoint can encrypt"}
+    )
+    accept_server_registrations: bool | None = field(
+        default=None, metadata={"doc": "Let other servers register with this one (discovery server)"}
     )
     anonymous: bool = field(default=True, metadata={"doc": "Accept anonymous (read-only) sessions"})
     users_file: str | Path | None = field(
@@ -389,23 +549,26 @@ class ServerConfig:
     limits: ServerLimits = field(default_factory=ServerLimits, metadata={"toml": False})
 
     def __post_init__(self) -> None:
-        if self.profile in PROFILES:
+        posture = POSTURES.get(self.profile)
+        if posture is not None:
             if self.security is None:
-                self.security = list(
-                    SERVER_DEVELOPMENT_DEFAULT if self.profile == "development" else SERVER_SECURE_DEFAULT
-                )
-            if self.allow_no_security is None:
-                self.allow_no_security = self.profile == "development"
+                self.security = list(posture.server.security)
+            if self.suppress is None:
+                self.suppress = list(posture.server.suppress)
+            if self.allow_plaintext_password is None:
+                self.allow_plaintext_password = posture.server.allow_plaintext_password
+            if self.accept_server_registrations is None:
+                self.accept_server_registrations = posture.server.accept_server_registrations
 
     def effective_users_file(self) -> str | Path | None:
         """Return users_file, else the file named by ENGINIR_OPCUA_USERS_FILE, else None."""
         return self.users_file or os.environ.get(USERS_FILE_VARIABLE) or None
 
     def policy_types(self) -> list[SecurityPolicyType]:
-        """Return the policy types of security; ConfigurationError for one the profile does not allow."""
+        """Return the policy types of security; ConfigurationError for an unknown policy or mode."""
         types = []
         for text in self.security or []:
-            policy, problem = parse_security(text, self.profile)
+            policy, problem = parse_security(text)
             if policy is None:
                 raise ConfigurationError(f"server.security: {problem}")
             types.append(policy)
@@ -414,10 +577,11 @@ class ServerConfig:
     def validate(self) -> None:
         """Raise ConfigurationProblems with every problem of the configuration, one per setting."""
         problems = _Problems("server")
-        if self.profile not in PROFILES:
-            problems.add("profile", f'unknown profile {self.profile!r}; use "secure" or "development"')
-        development = self.profile == "development"
-        problems.url("endpoint", self.endpoint, development, "listens on")
+        posture = POSTURES.get(self.profile)
+        if posture is None:
+            problems.add("profile", _unknown_profile(self.profile))
+        loopback = self.profile if posture is not None and posture.server.loopback_only else None
+        problems.url("endpoint", self.endpoint, loopback, "listens on")
         problems.text("name", self.name)
         problems.uri("application_uri", self.application_uri)
         problems.uri("product_uri", self.product_uri)
@@ -427,13 +591,7 @@ class ServerConfig:
         if self.private_key_password_env is not None:
             problems.variable("private_key_password_env", self.private_key_password_env)
         secure_policy = self._check_security(problems)
-        if self.allow_no_security is not None and problems.boolean("allow_no_security", self.allow_no_security):
-            if self.allow_no_security and not development:
-                problems.add(
-                    "allow_no_security", 'only the profile "development" may offer an endpoint without security'
-                )
-            if "None" in (self.security or []) and not self.allow_no_security and development:
-                problems.add("allow_no_security", "the policy None is listed in server.security, so this must be true")
+        self._check_postures(problems)
         if secure_policy:
             if self.pki is None:
                 problems.add(
@@ -454,6 +612,15 @@ class ServerConfig:
         if problems.items:
             raise ConfigurationProblems(problems.items)
 
+    def _check_postures(self, problems: _Problems) -> None:
+        if self.suppress is not None:
+            problems.names("suppress", self.suppress, SUPPRESSIONS, "certificate error", True)
+        if self.identity_tokens is not None:
+            problems.names("identity_tokens", self.identity_tokens, IDENTITY_TOKENS, "identity token", False)
+        for name in ("allow_plaintext_password", "accept_server_registrations"):
+            if getattr(self, name) is not None:
+                problems.boolean(name, getattr(self, name))
+
     def _check_security(self, problems: _Problems) -> bool:
         security = self.security
         if not isinstance(security, list) or not security:
@@ -462,7 +629,7 @@ class ServerConfig:
         secure = False
         seen: set[str] = set()
         for text in security:
-            policy, problem = parse_security(text, self.profile if self.profile in PROFILES else "secure")
+            policy, problem = parse_security(text)
             if problem:
                 problems.add("security", problem)
             elif policy is not SecurityPolicyType.NoSecurity:
@@ -477,14 +644,8 @@ class ServerConfig:
         if users is not None and self.user_manager is not None:
             problems.add("user_manager", "cannot be combined with users_file; give one of them")
         if self.user_manager is not None:
-            from .server.user_managers import PermissiveUserManager
-
             if not (hasattr(self.user_manager, "get_user") or hasattr(self.user_manager, "authenticate")):
                 problems.add("user_manager", "must be a UserManager")
-            elif self.profile == "secure" and isinstance(self.user_manager, PermissiveUserManager):
-                problems.add(
-                    "user_manager", "PermissiveUserManager accepts every login and is not allowed in the secure profile"
-                )
         if users is not None:
             from .crypto import users_file
 
@@ -501,6 +662,33 @@ class ServerConfig:
                 )
         if not self.anonymous and users is None and self.user_manager is None:
             problems.add("anonymous", "no identity is accepted: set anonymous = true or give users_file")
+
+    def weaknesses(self) -> list[str]:
+        """
+        Return the log lines for the profile, when it is not "secure", and for every setting whose value is weaker
+        than the "secure" posture. Each line names the setting as written in the TOML file and the risk.
+        """
+        posture = POSTURES.get(self.profile)
+        if posture is None:
+            return []
+        lines = _profile_weakness(self.profile, posture.server.note)
+        lines += _security_weaknesses("server.security", list(self.security or []))
+        lines += _setting_weaknesses(
+            "server", self.suppress, SECURE_POSTURE.server.suppress, self.allow_plaintext_password
+        )
+        if self.accept_server_registrations:
+            lines.append(
+                "server.accept_server_registrations: any server may register with this one, "
+                "the registrations are not authenticated"
+            )
+        if posture.server.permissive_user_manager_is_weakness and self._permissive_user_manager():
+            lines.append("server.user_manager: PermissiveUserManager accepts every login")
+        return lines
+
+    def _permissive_user_manager(self) -> bool:
+        from .server.user_managers import PermissiveUserManager
+
+        return isinstance(self.user_manager, PermissiveUserManager)
 
     def dump(self, path: str | Path | None = None) -> str:
         """Return the configuration as TOML with a comment per setting, and write it to path (mode 0600) if given."""
@@ -539,10 +727,12 @@ class ClientConfig:
     """
     The [client] table: server URL, identity, PKI directory, security and user of a client, as Client(config=) and
     Client.quickstart take them. The password is never stored in the file; it comes from password= or password_env.
+    The profile decides the defaults of security, suppress and allow_plaintext_password.
     """
 
     profile: str = field(
-        default="secure", metadata={"doc": 'Either "secure" (any network) or "development" (loopback only)'}
+        default="secure",
+        metadata={"doc": '"secure" (default), "development" (loopback only, no security) or "legacy" (old devices)'},
     )
     url: str = field(default="opc.tcp://localhost:4840", metadata={"doc": "URL of the server"})
     name: str = field(default="engiNIR OPC UA Client", metadata={"doc": "Application name"})
@@ -556,7 +746,17 @@ class ClientConfig:
     private_key_password_env: str | None = field(
         default=None, metadata={"doc": "Name of the environment variable that holds the private key password"}
     )
-    security: str | None = field(default=None, metadata={"doc": 'Policy and mode as "Policy,Mode", or "None"'})
+    security: str | None = field(
+        default=None,
+        metadata={"doc": 'Policy and mode as "Policy,Mode", "None", or "auto" (the strongest the server offers)'},
+    )
+    suppress: list[str] | None = field(
+        default=None,
+        metadata={"doc": "Server certificate errors to accept, by name (revocation_unknown, host_name_invalid, ...)"},
+    )
+    allow_plaintext_password: bool | None = field(
+        default=None, metadata={"doc": "Send the user password without encryption when the channel cannot encrypt"}
+    )
     server_certificate: str | Path | None = field(
         default=None, metadata={"doc": "Server certificate to trust and pin; relative to this file"}
     )
@@ -570,8 +770,18 @@ class ClientConfig:
     auto_reconnect: bool = field(default=False, metadata={"doc": "Reconnect after a lost connection"})
 
     def __post_init__(self) -> None:
-        if self.profile in PROFILES and self.security is None:
-            self.security = CLIENT_DEVELOPMENT_DEFAULT if self.profile == "development" else CLIENT_SECURE_DEFAULT
+        posture = POSTURES.get(self.profile)
+        if posture is not None:
+            if self.security is None:
+                self.security = posture.client.security
+            if self.suppress is None:
+                self.suppress = list(posture.client.suppress)
+            if self.allow_plaintext_password is None:
+                self.allow_plaintext_password = posture.client.allow_plaintext_password
+
+    def automatic_security(self) -> bool:
+        """Return True when security is "auto": the client picks the strongest policy the server offers."""
+        return self.security == CLIENT_AUTOMATIC
 
     def password_variable(self) -> str:
         """Return the environment variable that holds the password: password_env or ENGINIR_OPCUA_PASSWORD."""
@@ -582,8 +792,10 @@ class ClientConfig:
         return self.password if self.password is not None else os.environ.get(self.password_variable())
 
     def policy_type(self) -> SecurityPolicyType:
-        """Return the policy type of security; ConfigurationError if it is not allowed."""
-        policy, problem = parse_security(self.security, self.profile)
+        """Return the policy type of security; ConfigurationError if it is unknown or "auto"."""
+        if self.automatic_security():
+            raise ConfigurationError('client.security: "auto" has no fixed policy; the client picks it at connect')
+        policy, problem = parse_security(self.security)
         if policy is None:
             raise ConfigurationError(f"client.security: {problem}")
         return policy
@@ -591,13 +803,14 @@ class ClientConfig:
     def validate(self) -> None:
         """Raise ConfigurationProblems with every problem of the configuration, one per setting."""
         problems = _Problems("client")
-        if self.profile not in PROFILES:
-            problems.add("profile", f'unknown profile {self.profile!r}; use "secure" or "development"')
-        development = self.profile == "development"
+        posture = POSTURES.get(self.profile)
+        if posture is None:
+            problems.add("profile", _unknown_profile(self.profile))
+        loopback = self.profile if posture is not None and posture.client.loopback_only else None
         if isinstance(self.url, str) and urlparse(self.url).username is not None:
             problems.add("url", "do not put a user name or password in the URL; use username and password")
         else:
-            problems.url("url", self.url, development, "connects to")
+            problems.url("url", self.url, loopback, "connects to")
         problems.text("name", self.name)
         problems.uri("application_uri", self.application_uri)
         problems.boolean("create_pki", self.create_pki)
@@ -606,9 +819,14 @@ class ClientConfig:
             problems.variable("private_key_password_env", self.private_key_password_env)
         if self.password_env is not None:
             problems.variable("password_env", self.password_env)
-        policy, problem = parse_security(self.security, self.profile if self.profile in PROFILES else "secure")
+        automatic = self.automatic_security()
+        policy, problem = (None, None) if automatic else parse_security(self.security)
         if problem:
             problems.add("security", problem)
+        if self.suppress is not None:
+            problems.names("suppress", self.suppress, SUPPRESSIONS, "certificate error", True)
+        if self.allow_plaintext_password is not None:
+            problems.boolean("allow_plaintext_password", self.allow_plaintext_password)
         secure = policy is not None and policy is not SecurityPolicyType.NoSecurity
         if secure and self.pki is None:
             problems.add("pki", "required for security other than None: give a PKI directory (for example ./pki)")
@@ -617,7 +835,7 @@ class ClientConfig:
         if self.server_certificate is not None and problems.path("server_certificate", self.server_certificate):
             if not Path(self.server_certificate).is_file():
                 problems.add("server_certificate", f"{self.server_certificate} is not a file")
-            elif not secure:
+            elif policy is SecurityPolicyType.NoSecurity:
                 problems.add("server_certificate", "needs a security other than None")
         problems.number("timeout", self.timeout)
         problems.integer("session_timeout_ms", self.session_timeout_ms, 1_000, 4_294_967_295)
@@ -632,6 +850,24 @@ class ClientConfig:
             problems.add("username", "a password needs a username")
         if problems.items:
             raise ConfigurationProblems(problems.items)
+
+    def weaknesses(self) -> list[str]:
+        """
+        Return the log lines for the profile, when it is not "secure", and for every setting whose value is weaker
+        than the "secure" posture. Each line names the setting as written in the TOML file and the risk.
+        """
+        posture = POSTURES.get(self.profile)
+        if posture is None:
+            return []
+        lines = _profile_weakness(self.profile, posture.client.note)
+        if self.automatic_security():
+            lines.append("client.security: auto falls back to no security when the server offers nothing better")
+        else:
+            lines += _security_weaknesses("client.security", [self.security] if self.security else [])
+        lines += _setting_weaknesses(
+            "client", self.suppress, SECURE_POSTURE.client.suppress, self.allow_plaintext_password
+        )
+        return lines
 
     def dump(self, path: str | Path | None = None) -> str:
         """Return the configuration as TOML with a comment per setting, and write it to path (mode 0600) if given."""

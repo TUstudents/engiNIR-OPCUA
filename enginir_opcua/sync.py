@@ -949,7 +949,6 @@ class Server(_Owner):
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
         allow_no_security: bool = False,
-        allow_deprecated_policies: bool = False,
         user_manager: UserManager | None = None,
         handler_queue_maxsize: int = 1000,
         config: ServerConfig | None = None,
@@ -968,7 +967,6 @@ class Server(_Owner):
             self.aio_obj: server.Server = server.Server(
                 user_manager=user_manager,
                 allow_no_security=allow_no_security,
-                allow_deprecated_policies=allow_deprecated_policies,
                 config=config,
             )
             self.tloop.post(self.aio_obj.init(shelf_file))
