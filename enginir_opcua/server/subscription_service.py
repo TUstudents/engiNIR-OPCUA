@@ -52,6 +52,7 @@ class SubscriptionService:
         self._pending_notices: dict[ua.NodeId, list[tuple[ua.PublishResult, Callable[..., Any]]]] = {}
         self._event_sinks: dict[int, tuple[ua.NodeId, Callable[[Any], None]]] = {}
         self._event_sink_counter = 0
+        self._orphaned: dict[int, None] = {}
 
     def add_event_sink(self, notifier: ua.NodeId, sink: Callable[[Any], None]) -> int:
         """Call sink with every event reported through notifier; return a handle for remove_event_sink."""
@@ -118,6 +119,35 @@ class SubscriptionService:
         if self.iserver:
             self.iserver.diagnostics.subscription_created()
         return result
+
+    async def keep_for_transfer(self, session_id: ua.NodeId) -> None:
+        """
+        Keep the subscriptions of a closed session for TransferSubscriptions (OPC 10000-4 v1.05, 5.6.4), at most
+        max_orphaned_subscriptions of them in the whole server: beyond that the subscriptions orphaned longest ago are
+        deleted, so that sessions closed without deleting their subscriptions cannot use up max_subscriptions.
+        """
+        for subscription_id, sub in self.subscriptions.items():
+            if sub.session_id == session_id:
+                self._orphaned[subscription_id] = None
+        self._orphaned = {
+            i: None
+            for i in self._orphaned
+            if i in self.subscriptions and self._session(self.subscriptions[i].session_id) is None
+        }
+        budget = int(self._setting("max_orphaned_subscriptions", 100))
+        excess = list(self._orphaned)[: max(len(self._orphaned) - budget, 0)]
+        if not excess:
+            return
+        self.logger.warning(
+            "Deleting %d orphaned subscriptions: more than max_orphaned_subscriptions=%d", len(excess), budget
+        )
+        evicted = [self.subscriptions.pop(i) for i in excess]
+        for i in excess:
+            del self._orphaned[i]
+        results = await asyncio.gather(*[sub.stop() for sub in evicted], return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.warning("Exception while stopping subscription", exc_info=result)
 
     def _owned_count(self, session_id: ua.NodeId) -> int:
         return sum(1 for sub in self.subscriptions.values() if sub.session_id == session_id)

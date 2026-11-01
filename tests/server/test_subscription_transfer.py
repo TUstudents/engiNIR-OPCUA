@@ -290,3 +290,32 @@ async def test_srv4_per_session_subscription_limit(two_sessions: TwoSessions) ->
     await first.delete()
     again = await two_sessions.alice.create_subscription(100, None)
     assert again.subscription_id is not None
+
+
+async def test_orphaned_subscriptions_cannot_lock_other_clients_out() -> None:
+    """
+    CVE-2022-24298 class: sessions closed with deleteSubscriptions=false leave their subscriptions for transfer
+    (Part 4, 5.6.4); only max_orphaned_subscriptions of them are kept, the oldest orphan goes first.
+    """
+    port = find_free_port()
+    server = Server(allow_no_security=True)
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    server.iserver.max_subscriptions = 10
+    server.iserver.max_subscriptions_per_session = 10
+    server.iserver.max_orphaned_subscriptions = 3
+    url = f"opc.tcp://127.0.0.1:{port}"
+    params = ua.CreateSubscriptionParameters(RequestedPublishingInterval=3_600_000.0, PublishingEnabled=True)
+    async with server:
+        created: list[int] = []
+        for _ in range(5):
+            attacker = Client(url, allow_no_security=True)
+            await attacker.connect()
+            for _ in range(2):
+                created.append((await attacker.uaclient.create_subscription(params, lambda *_: None)).SubscriptionId)
+            await attacker.uaclient.close_session(False)
+            attacker.disconnect_socket()
+        assert sorted(server.iserver.subscription_service.subscriptions) == created[-3:]
+        async with Client(url, allow_no_security=True) as victim:
+            subscriptions = [await victim.create_subscription(500, None) for _ in range(7)]
+            assert len(subscriptions) == 7

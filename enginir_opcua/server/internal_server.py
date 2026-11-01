@@ -113,7 +113,9 @@ class InternalServer:
     session is closed; max_message_size_before_activation (128 KiB), the largest message a channel without an activated
     session may send, so that an anonymous discovery channel cannot make the server hold max_message_size of an
     unfinished message; max_lifetime_count, max_keep_alive_count and max_subscription_lifetime_ms, which bound how long
-    an orphaned subscription lives; max_subscriptions, the subscriptions of the whole server.
+    an orphaned subscription lives; max_subscriptions, the subscriptions of the whole server;
+    max_orphaned_subscriptions, how many subscriptions of closed sessions are kept for transfer (the oldest beyond
+    it are deleted).
     """
 
     def _namespace_uris(self) -> list[str]:
@@ -160,6 +162,7 @@ class InternalServer:
         self.max_notifications_per_publish: int = 10_000
         self.max_subscriptions: int = 1_000
         self.max_subscriptions_per_session: int = 100
+        self.max_orphaned_subscriptions: int = 100
         self.max_browse_continuation_points: int = 10
         self.max_browse_references_per_node: int = 10_000
         self.max_translate_matches: int = 1_000

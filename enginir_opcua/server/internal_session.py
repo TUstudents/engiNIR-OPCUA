@@ -408,6 +408,8 @@ class Session:
         self.iserver.subscription_service.drop_pending_notices(self.id)
         if delete_subscriptions:
             await self.services.delete_subscriptions(self.subscription_ids())
+        else:
+            await self.iserver.subscription_service.keep_for_transfer(self.id)
 
 
 class SessionManager:

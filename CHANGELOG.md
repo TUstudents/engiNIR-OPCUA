@@ -32,6 +32,13 @@ Security:
   `max_message_size` (about 100 MB) per connection until the activation watchdog closed it after 30 s, as reported
   upstream for opcua-asyncio. An activated session keeps the full `max_message_size`.
 
+- At most `iserver.max_orphaned_subscriptions` (default 100) subscriptions of closed sessions are kept for
+  TransferSubscriptions (OPC 10000-4, 5.6.4); beyond that the ones orphaned longest ago are deleted. Sessions closed
+  with `deleteSubscriptions=false`, or timed out, could fill `max_subscriptions` (1000) in under a second with
+  subscriptions that live up to 24 h, so every other client got `Bad_TooManySubscriptions` (the class of
+  CVE-2022-24298, reported upstream for opcua-asyncio). `Server.start()` refuses a value below 0 or above
+  `max_subscriptions`.
+
 Secure defaults and certificate trust (OPC 10000-4, 6.1.3):
 - One `CertificateValidator(trust_store, suppress=..., check_revocation=..., accept_ca_application_certificates=...)`
   runs the validation steps in the spec's order (chain, signature, security policy, trust, validity, host name, URI,

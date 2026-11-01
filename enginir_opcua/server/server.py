@@ -853,6 +853,12 @@ class Server:
                 problems.append(
                     f"server.limits.{low}: must be at most {high} ({positive[high]!r}), got {positive[low]!r}"
                 )
+        orphans = iserver.max_orphaned_subscriptions
+        if not 0 <= orphans <= positive["max_subscriptions"]:
+            problems.append(
+                f"server.limits.max_orphaned_subscriptions: must be from 0 to max_subscriptions "
+                f"({positive['max_subscriptions']!r}), got {orphans!r}"
+            )
         if positive["max_connections"] <= positive["max_sessions"]:
             problems.append(
                 f"server.limits.max_connections: must be above max_sessions ({positive['max_sessions']!r}), "
