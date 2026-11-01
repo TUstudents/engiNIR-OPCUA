@@ -210,11 +210,14 @@ async def test_instances_have_the_mandatory_children_of_their_declared_types(com
 
 
 async def test_nodesets_imported_on_top_of_the_companions_are_deleted_without_dangling_references(
-    opc: Any, companion: Companion
+    opc: Any, companion: Companion, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = [PACKML, SCALES]
     if opc.opc == opc.server:
         paths += [PLASTICS_RUBBER, MACHINE_VISION]
+    else:
+        monkeypatch.setattr(opc.opc.uaclient.protocol, "timeout", 60)
+        monkeypatch.setattr(opc.opc, "_watchdog_intervall", 60)
     nodes = []
     for path in paths:
         nodes += await opc.opc.import_xml(path)

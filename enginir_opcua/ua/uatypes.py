@@ -1714,6 +1714,8 @@ def _set_ua_attribute(name: str, class_type: type, data_type: NodeId | None) -> 
     if existing is class_type:
         return
     existing_dt = getattr(existing, "data_type", None)
+    if existing_dt is None and isinstance(getattr(ObjectIds, name, None), int):
+        existing_dt = NodeId(getattr(ObjectIds, name), 0)
     if existing_dt is not None and data_type is not None and existing_dt == data_type:
         return
     _logger.warning(

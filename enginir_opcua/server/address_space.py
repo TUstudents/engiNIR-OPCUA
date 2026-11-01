@@ -1081,6 +1081,21 @@ class MethodService:
         return await asyncio.get_running_loop().run_in_executor(self._pool, p)
 
 
+def _new_dbm(path: Path) -> Any:
+    """
+    A new dbm file for a shelf: ndbm, or the pure Python dumb database where ndbm is missing. The default of dbm since
+    Python 3.13, sqlite3, commits every key on its own and takes seconds for the standard address space; shelve.open
+    reads every backend.
+    """
+    try:
+        from dbm import ndbm
+    except ImportError:
+        from dbm import dumb
+
+        return dumb.open(str(path), "n")
+    return ndbm.open(str(path), "n")
+
+
 class AddressSpace:
     """
     The nodes of the server (OPC 10000-3 v1.05) by NodeId, with an index of the nodes that reference each node, and
@@ -1232,9 +1247,10 @@ class AddressSpace:
 
         Note: Intended for slow devices, such as Raspberry Pi, to greatly improve start up time
         """
-        with shelve.open(str(path), "n", protocol=pickle.HIGHEST_PROTOCOL) as s:
+        shelf: shelve.Shelf[NodeData] = shelve.Shelf(_new_dbm(path), protocol=pickle.HIGHEST_PROTOCOL)
+        with shelf:
             for nodeid, ndata in self._nodes.items():
-                s[nodeid.to_string()] = ndata
+                shelf[nodeid.to_string()] = ndata
 
     def load_aspace_shelf(self, path: Path) -> None:
         """

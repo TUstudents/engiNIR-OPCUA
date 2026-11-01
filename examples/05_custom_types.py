@@ -15,7 +15,6 @@ OPC 10000-6 v1.05, 5.2.4 (enumerations), 5.2.6 (structures) and 5.2.7 (structure
 """
 
 import asyncio
-import logging
 
 from _common import free_port, pair, workdir
 
@@ -24,7 +23,6 @@ from enginir_opcua.common.structures104 import new_enum, new_struct, new_struct_
 
 
 async def main() -> None:
-    logging.getLogger("enginir_opcua.ua.uatypes").setLevel(logging.ERROR)
     with workdir() as directory:
         url = f"opc.tcp://127.0.0.1:{free_port()}/enginir-opcua/example/"
         server = Server.quickstart(url, pki=directory / "server-pki")

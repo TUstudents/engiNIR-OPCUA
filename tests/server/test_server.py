@@ -4,6 +4,7 @@ Tests that can only be run on server side must be defined here
 """
 
 import asyncio
+import dbm
 import logging
 import shelve
 import subprocess
@@ -1068,3 +1069,15 @@ def test_srv104_set_security_policy_and_identity_tokens_refuse_an_empty_list() -
         srv.set_security_policy([])
     with pytest.raises(ConfigurationError, match="identity_tokens"):
         srv.set_identity_tokens([])
+
+
+async def test_srv70_a_new_shelf_is_written_without_the_sqlite3_backend(tmp_path: Path) -> None:
+    """dbm.sqlite3, the default of dbm since Python 3.13, commits every node on its own (seconds per shelf)."""
+    shelf = tmp_path / "standard"
+    server = Server(allow_no_security=True)
+    await server.init(shelf_file=shelf)
+    assert dbm.whichdb(str(shelf)) in ("dbm.ndbm", "dbm.dumb")
+    reloaded = Server(allow_no_security=True)
+    await reloaded.init(shelf_file=shelf)
+    name = await reloaded.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus)).read_browse_name()
+    assert name == ua.QualifiedName("ServerStatus", 0)

@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 
 import pytest
@@ -198,3 +199,16 @@ def test_com40_data_type_of_class_uses_the_owner_registry() -> None:
         pass
 
     assert ua.data_type_of_class(Unknown) is None
+
+
+async def test_com131_loading_definitions_does_not_report_the_standard_enumerations_as_collisions(
+    restore_ua_registry: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    server = Server(allow_no_security=True)
+    await server.init()
+    idx = await server.register_namespace("http://test.example/com131")
+    await new_enum(server, idx, "NodeClass", ["Mine"])
+    with caplog.at_level(logging.WARNING, logger="enginir_opcua.ua.uatypes"):
+        await server.load_data_type_definitions()
+    collisions = [record.getMessage() for record in caplog.records if "collision" in record.getMessage()]
+    assert collisions == [next(message for message in collisions if "ua.NodeClass" in message)]
