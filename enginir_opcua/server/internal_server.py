@@ -5,6 +5,7 @@ The internal server: the address space, the services and the limits behind the n
 from __future__ import annotations
 
 import asyncio
+import dbm
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -285,13 +286,15 @@ class InternalServer:
 
     async def load_standard_address_space(self, shelf_file: Path | None = None) -> None:
         """
-        Fill namespace 0 from the shelf file if it exists, else from the generated code, and then write the shelf
-        file if one was named.
+        Fill namespace 0 from the shelf file if it exists, whichever dbm backend wrote it, else from the generated
+        code, and then write the shelf file if one was named.
         """
-        if shelf_file:
-            if shelf_file.is_file() or shelf_file.with_suffix(".db").is_file():  # noqa: ASYNC240
-                self.aspace.load_aspace_shelf(shelf_file)
-                return
+        backend: str | None = None
+        if shelf_file is not None:
+            backend = await asyncio.to_thread(dbm.whichdb, str(shelf_file))
+        if shelf_file is not None and backend:
+            self.aspace.load_aspace_shelf(shelf_file)
+            return
         from .standard_address_space import standard_address_space
 
         await asyncio.to_thread(standard_address_space.fill_address_space, self.node_mgt_service)

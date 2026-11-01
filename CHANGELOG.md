@@ -725,7 +725,8 @@ PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
 Server infrastructure (workstream J):
 - `Server.init(shelf_file=...)` writes a new shelf with `dbm.ndbm` (or `dbm.dumb` where ndbm is missing) instead of
   the default of `dbm`, which is sqlite3 since Python 3.13 and commits every node on its own: creating the shelf of the
-  standard address space takes about 2 s instead of 7 to 16 s. Existing shelves of any backend still load (SRV-70).
+  standard address space takes about 2 s instead of 7 to 16 s. An existing shelf is found with `dbm.whichdb`, so a
+  shelf of any backend is loaded instead of built again (SRV-70).
 - Reverse connect (OPC 10000-6, 7.1.2.6 and 7.1.3). `Server.add_reverse_connect(client_url, endpoint_url=None,
   retry_interval=5.0)` connects out to a listening client, sends a ReverseHello, keeps one such socket open per client
   and reconnects with a back-off; `remove_reverse_connect()` ends it. `Client.listen_reverse(listen_url, server_uri,

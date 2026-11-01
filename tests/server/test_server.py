@@ -1044,15 +1044,21 @@ def test_srv104_set_security_policy_and_identity_tokens_refuse_an_empty_list() -
         srv.set_identity_tokens([])
 
 
-async def test_srv70_a_new_shelf_is_fast_to_write_and_is_what_a_later_server_loads(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", ["dbm.ndbm", "dbm.dumb"])
+async def test_srv70_a_new_shelf_is_fast_to_write_and_is_what_a_later_server_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
     """
     dbm.sqlite3, the default of dbm since Python 3.13, commits every node on its own (seconds per shelf); a shelf
-    that exists is read, not built again.
+    that exists is read, not built again, whichever backend wrote it (dbm.dumb where dbm.ndbm is missing).
     """
+    if backend == "dbm.dumb":
+        monkeypatch.setitem(sys.modules, "dbm.ndbm", None)
+        monkeypatch.delattr(dbm, "ndbm", raising=False)
     shelf = tmp_path / "standard"
     server = Server(allow_no_security=True)
     await server.init(shelf_file=shelf)
-    assert dbm.whichdb(str(shelf)) in ("dbm.ndbm", "dbm.dumb")
+    assert dbm.whichdb(str(shelf)) == backend
     nodeid = ua.NodeId(ua.ObjectIds.Server_ServerStatus_SecondsTillShutdown)
     with shelve.open(str(shelf), "w") as stored:
         node = stored[nodeid.to_string()]
