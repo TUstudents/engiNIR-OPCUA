@@ -485,8 +485,8 @@ class NodeManagementService:
             raise ua.uaerrors.BadParentNodeIdInvalid()
         parentdata = aspace.get(item.ParentNodeId)
         if parentdata is None and not item.ParentNodeId.is_null():
-            self.logger.info(
-                "add_node: while adding node %s, requested parent node %s does not exists",
+            self.logger.debug(
+                "add_node: while adding node %s, requested parent node %s does not exist",
                 item.RequestedNewNodeId,
                 item.ParentNodeId,
             )
@@ -724,7 +724,7 @@ class NodeManagementService:
         if item.NodeId is None or item.NodeId.is_null():
             return ua.StatusCode(ua.StatusCodes.BadNodeIdInvalid)
         if item.NodeId not in self._aspace:
-            self.logger.warning("DeleteNodesItem: NodeId %s does not exists", item.NodeId)
+            self.logger.warning("DeleteNodesItem: NodeId %s does not exist", item.NodeId)
             return ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)
         if not trusted and item.NodeId.NamespaceIndex == 0:
             return ua.StatusCode(ua.StatusCodes.BadNoDeleteRights)

@@ -1067,3 +1067,13 @@ async def test_srv70_a_new_shelf_is_fast_to_write_and_is_what_a_later_server_loa
     reloaded = Server(allow_no_security=True)
     await reloaded.init(shelf_file=shelf)
     assert await reloaded.get_node(nodeid).read_value() == 123
+
+
+async def test_loading_the_standard_address_space_logs_no_missing_parents_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Nodes generated before their parent are added again at the end of the load; that is not worth an INFO line."""
+    with caplog.at_level(logging.INFO, logger="enginir_opcua.server.address_space"):
+        server = Server(allow_no_security=True)
+        await server.init()
+    assert [r.getMessage() for r in caplog.records if "requested parent node" in r.getMessage()] == []
