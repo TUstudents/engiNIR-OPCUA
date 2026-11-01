@@ -100,14 +100,14 @@ Looking at it from the command line
 ===================================
 
 The command line tools (see :ref:`usage/get-started/installation:command line tools`) can connect with a secure
-channel by pointing them at the client's PKI directory. They take the ApplicationUri from the certificate in it.
+channel by pointing them at the client's PKI directory: ``--pki-dir`` alone means Basic256Sha256 with SignAndEncrypt.
+They take the ApplicationUri from the certificate in it.
 
 .. code-block:: console
 
-    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki \
-          --security Basic256Sha256,SignAndEncrypt -n i=85
-    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki \
-          --security Basic256Sha256,SignAndEncrypt --user alice -p "0:Objects,2:MyObject,2:MyVariable"
+    $ enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki -n i=85
+    $ enginir-opcua read -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki --user alice \
+          -p "0:Objects,2:MyObject,2:MyVariable"
 
 The second command reads the password from the environment variable :code:`ENGINIR_OPCUA_PASSWORD` or asks for it
 with :code:`--ask-password`.

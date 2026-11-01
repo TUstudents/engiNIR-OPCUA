@@ -59,3 +59,13 @@ todo_include_todos = False
 # -- Warnings ----------------------------------------------------------------
 # Type hints name Client and Server unqualified, which matches both the async classes and their sync wrappers.
 suppress_warnings = ["ref.python"]
+
+# -- Options for the linkcheck builder ---------------------------------------
+# Algorithm and namespace URIs in docstrings are identifiers, not links.
+linkcheck_ignore = [
+    r"^urn:",
+    r"^tag:",
+    r"^https?://www\.w3\.org/20\d\d/\d\d/(xmlenc|xmldsig)",
+    r"^https?://docs\.oasis-open\.org/ws-sx/",
+    r"^https?://opcfoundation\.org/UA/security/",
+]

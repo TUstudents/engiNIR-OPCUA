@@ -184,7 +184,7 @@ Further reading
 https://reference.opcfoundation.org
     The complete specification, free to read online. Links and citations in this documentation point there.
 
-https://www.open62541.org
+https://open62541.org/
     An open source OPC UA stack in C. Its documentation explains the architecture and data modelling of OPC UA in
     depth.
 

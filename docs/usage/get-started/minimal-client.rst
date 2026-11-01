@@ -16,13 +16,7 @@ terminal and run :code:`python server.py` to start it. The certificates and the 
 
 
     async def main() -> None:
-        client = Client.quickstart(
-            "opc.tcp://127.0.0.1:4840/enginir-opcua/server/",
-            pki="cli/pki",
-            username="alice",
-            password="alices-password",
-            application_uri="urn:enginir:opcua:client",
-        )
+        client = Client.quickstart("opc.tcp://127.0.0.1:4840/enginir-opcua/server/", pki="cli/pki", username="alice")
         async with client:
             idx = await client.get_namespace_index("urn:example:minimal")
             my_variable = await client.nodes.objects.get_child([f"{idx}:MyObject", f"{idx}:MyVariable"])
@@ -35,9 +29,10 @@ terminal and run :code:`python server.py` to start it. The certificates and the 
 
     asyncio.run(main())
 
-Put the real password in an environment variable instead of the source: leave out ``password`` and set
-``ENGINIR_OPCUA_PASSWORD``, which :meth:`Client.quickstart() <enginir_opcua.client.client.Client.quickstart>` reads when
-no password is given.
+Set the password of ``alice`` in the environment variable ``ENGINIR_OPCUA_PASSWORD`` before you run it;
+:meth:`Client.quickstart() <enginir_opcua.client.client.Client.quickstart>` reads it when no ``password`` is given, so
+it never appears in the source. The ApplicationUri comes from the certificate that ``enginir-opcua init client``
+created.
 
 Connecting to the server
 ========================
@@ -45,7 +40,7 @@ Connecting to the server
 :meth:`Client.quickstart() <enginir_opcua.client.client.Client.quickstart>` creates a
 :class:`~enginir_opcua.client.client.Client` with the ``secure`` profile: Basic256Sha256 with SignAndEncrypt. The
 client's PKI directory has to hold the server's certificate in ``trusted/certs`` (``enginir-opcua pair`` did that), or
-the connection fails with an error that names the thumbprint and the command to trust it. The client supports the same
+the connection fails with an error that names the thumbprint and the ``enginir-opcua trust`` command for each side. The client supports the same
 async context manager as the server, which opens and closes the connection for us. Without ``username`` the session is
 anonymous and read-only.
 
@@ -96,5 +91,5 @@ Where to go next
 ================
 
 Subscriptions and reconnecting are in `03_read_write_subscribe.py
-<https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/03_read_write_subscribe.py>`_, and the whole list of
-examples is on the :doc:`quick-setup` page.
+<https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/03_read_write_subscribe.py>`_; all examples are on
+the :doc:`../examples` page, and :doc:`../client/overview` covers the client in depth.

@@ -123,12 +123,12 @@ Accessing Nodes
 As mentioned above, the Node class provides access to a lot of functionality, on the server
 and client side. Therefore, both, the server and client, provide a :code:`get_node` method:
 :meth:`enginir_opcua.client.client.Client.get_node` & :meth:`enginir_opcua.server.server.Server.get_node`.
-These functions can be used to get a node by it's NodeId, for example:
+These functions can be used to get a node by its NodeId, for example:
 
 .. code-block::
 
     >>> client.get_node("ns=2;i=2")
-    Node(NodeId(Identifier=2, NamespaceIndex=2, NodeIdType=<NodeIdType.Numeric: 2>))
+    Node(NodeId(Identifier=2, NamespaceIndex=2, NodeIdType=<NodeIdType.FourByte: 1>))
 
 Note that using :code:`get_node` does not check if the node actually exists! The method
 just creates a new node which later can be used to query data.
@@ -153,10 +153,9 @@ The node now can be used to read / write / ... data from the server:
 Writing values using :meth:`~enginir_opcua.common.node.Node.write_value` can be tricky in some cases
 as the method converts the python type to a OPC-UA datatype. In the example above we explicitly
 need to pass in a :code:`float` to enforce a conversion to a :attr:`~enginir_opcua.ua.uatypes.VariantType.Double`.
-If :code:`5` is passed in, the value will be sent as a :attr:`VariantType.Int64`, which would
-result in a error as the sent datatype does not match the expected type on the server side.
-
-.. todo:: If there is ever a section which goes into more detail, add a link!
+If :code:`5` is passed in, the value is sent as a :attr:`VariantType.Int64`, and the server refuses it with
+``BadTypeMismatch`` because it does not match the DataType of the variable. To choose the type yourself, write a
+:class:`~enginir_opcua.ua.uatypes.Variant` with an explicit ``VariantType``.
 
 The node object can also be used to browse to other nodes. There are several methods available
 as shown in the following short example:
@@ -182,10 +181,10 @@ to access a child several levels deeper than the current node:
 
 .. code-block::
 
-    >>> await c.nodes.objects.get_child(['2:MyObject', '2:MyVariable'])
+    >>> await client.nodes.objects.get_child(['2:MyObject', '2:MyVariable'])
     Node(NodeId(Identifier=2, NamespaceIndex=2, NodeIdType=<NodeIdType.FourByte: 1>))
 
-Here we start at the objects node an traverse via MyObject to MyVariable. Always keep in
+Here we start at the Objects node and traverse via MyObject to MyVariable. Always keep in
 mind that browsing through the nodes will create network traffic and server load. If
 you already know the NodeId using :meth:`~enginir_opcua.client.client.Client.get_node` should
 be preferred. You might also consider caching NodeIds which you found through browsing

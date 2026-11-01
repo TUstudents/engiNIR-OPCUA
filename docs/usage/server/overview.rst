@@ -13,16 +13,18 @@ Creating and starting a server
 
     from enginir_opcua import Server
 
-    server = Server()
+    server = Server.quickstart("opc.tcp://0.0.0.0:4840/enginir-opcua/server/", pki="pki", users="users.toml")
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:4840/enginir-opcua/server/")
     idx = await server.register_namespace("urn:example:my-namespace")
 
     async with server:
         ...
 
-``init()`` builds the standard address space, which takes a moment; pass a cache file (``init(shelf_file)``) to make later
-starts faster. ``async with server`` calls ``start()`` and ``stop()``. Add your own nodes with
+``Server.quickstart`` takes a profile and any setting of :class:`~enginir_opcua.config.ServerConfig`;
+``Server(config=ServerConfig.from_toml("server.toml"))`` reads the same settings from a file that
+``enginir-opcua init server`` writes (see :doc:`../get-started/quick-setup`). ``init()`` builds the standard address
+space, which takes a moment; pass a cache file (``init(shelf_file)``) to make later starts faster. ``async with
+server`` calls ``start()`` and ``stop()``. Add your own nodes with
 ``server.nodes.objects.add_object(...)`` and the other ``add_*`` methods before or after the start; give them a namespace
 that you registered.
 
@@ -67,7 +69,8 @@ gives them the read-only role. For other users pass a manager to the constructor
 
 ``CertificateUserManager`` knows users by their X509 certificate. ``PermissiveUserManager`` accepts every user name and
 password and is for tests only. To use your own database, subclass ``UserManager`` and implement ``get_user``; it returns a
-``User`` with a role (``Anonymous``, ``User`` or ``Admin``) or ``None`` to refuse. A password sent without encryption is
+``User`` with a role (``Anonymous``, ``User``, ``Admin`` or ``SecurityAdmin``) or ``None`` to refuse. The users file
+of the quick setup (``FileUserManager``) is the usual choice. A password sent without encryption is
 refused unless ``server.allow_plaintext_password = True``.
 
 What a user may do with a node is decided by the roles and the node's AccessLevel and UserAccessLevel; a variable is
@@ -86,12 +89,62 @@ Method callbacks are called as follows: a callback defined with ``async def`` ru
 space or other server objects directly. Callbacks for attribute values (``set_attribute_value_callback``) run on the loop and
 must not block.
 
-Methods and events
-==================
+What a server can offer
+=======================
 
-Add a method with ``await node.add_method(idx, "Name", callback, [input types], [output types])`` and decorate the callback with
-``@uamethod``; a method imported from an XML file needs ``server.link_method(node, callback)``. To send events create an
-event generator with ``await server.get_event_generator(event_type)`` and call ``await generator.trigger(message=...)``.
+Methods
+    ``await node.add_method(idx, "Name", callback, [input types], [output types])`` with a callback decorated with
+    ``@uamethod``; a method imported from an XML file needs ``server.link_method(node, callback)``. Named, documented
+    arguments are in `04_methods.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/04_methods.py>`_.
+
+Values from the device
+    ``server.set_attribute_value_callback(node.nodeid, callback)`` makes a read call ``callback(nodeid, attribute)``,
+    which returns a ``DataValue``, instead of returning the stored value: the device is asked only when a client
+    reads. The callback runs on the event loop and must not block.
+
+Events
+    ``await server.get_event_generator(event_type, emitting_node)`` and ``await generator.trigger(message=...)``;
+    ``create_custom_event_type`` adds your own event types.
+
+History
+    ``await server.historize_node_data_change(node, period=timedelta(days=7))`` stores every change of a variable,
+    ``historize_node_event`` the events of an object. The storage is in memory unless you set a file:
+    ``server.iserver.history_manager.set_storage(HistorySQLite("history.db"))`` before ``init()``, with
+    ``HistorySQLite`` from :mod:`enginir_opcua.server.history_sql`. See
+    `06_events_and_history.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/06_events_and_history.py>`_.
+
+Alarms and conditions
+    ``await server.create_condition(...)`` creates a Condition or an Alarm of OPC 10000-9 (limit alarms included) that
+    clients acknowledge, confirm and refresh; ``update_value`` drives a limit alarm. See `12_alarms.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/12_alarms.py>`_.
+
+Files
+    ``await server.add_file(parent, "Name", path_or_memory_file, writable=...)`` and ``add_directory`` offer files and
+    directory trees with the FileType and FileDirectoryType of OPC 10000-20. See `08_file_transfer.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/08_file_transfer.py>`_.
+
+Certificate management
+    ``await server.enable_push_management()``, or ``push_management = true`` in the configuration, lets a
+    SecurityAdmin replace the certificate and the trust lists over OPC UA (OPC 10000-12). See
+    `14_certificate_management.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/14_certificate_management.py>`_.
+
+Reverse connect
+    ``server.add_reverse_connect(client_url)`` makes a server behind a firewall connect out to a client that listens
+    (OPC 10000-6, 7.1.2.6). See `16_reverse_connect.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/16_reverse_connect.py>`_.
+
+Diagnostics
+    The standard diagnostics below ``Server/ServerDiagnostics``: summary counters, sessions and subscriptions, and
+    the security diagnostics for a SecurityAdmin. See `13_diagnostics.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/13_diagnostics.py>`_.
+
+Companion models
+    ``await server.import_xml("Opc.Ua.Di.NodeSet2.xml")`` loads a NodeSet2 file; instances of its types are created
+    with all mandatory children by ``add_object(idx, "Name", objecttype=...)``. See `07_instrument_server.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/07_instrument_server.py>`_.
 
 Logging and observing
 =====================

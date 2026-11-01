@@ -6,11 +6,10 @@ engiNIR-OPCUA
 
 .. rst-class:: lead
 
-    OPC UA for Python: connect to machines and instruments, or make your own device an OPC UA server.
+    OPC UA for Python, from the lab bench to the plant floor: connect, serve and secure your devices in minutes.
 
 engiNIR-OPCUA is a client and a server in one library, built on asyncio with a blocking API for scripts. It follows
-OPC UA 1.05 and is tested on every push against the OPC Foundation's reference implementation. See
-:doc:`usage/limits` for what it covers.
+OPC UA 1.05; :doc:`usage/limits` lists what it covers.
 
 .. code-block:: console
 
@@ -113,7 +112,7 @@ Start here
         :link: usage/examples
         :link-type: doc
 
-        Sixteen runnable programs, from a secure pair to alarms, history, file transfer and reverse connect.
+        Seventeen runnable programs, from a secure pair to alarms, history, file transfer and reverse connect.
 
     .. grid-item-card:: :octicon:`sync` Synchronous API
         :link: usage/sync/overview
@@ -134,31 +133,27 @@ Start here
         Every public module, class and function, generated from the source.
 
 
-Secure by default
+Why engiNIR-OPCUA
 =================
 
-.. grid:: 1 1 2 2
+.. grid:: 1 1 3 3
     :gutter: 3
 
     .. grid-item::
 
-        **Encrypted endpoints.** The quick setup offers SignAndEncrypt with Basic256Sha256, Aes128_Sha256_RsaOaep
-        and Aes256_Sha256_RsaPss. An endpoint without security exists only when you ask for it.
+        **Complete.** Subscriptions, methods, alarms and conditions, history, file transfer, certificate management
+        and the companion models of whole industries, as a client and as a server.
 
     .. grid-item::
 
-        **Explicit trust.** Certificates are checked in the order of OPC 10000-4 on both sides of every secure
-        channel. Server and client trust nobody until you put a certificate into the PKI directory.
+        **Extended and hardened.** Built on opcua-asyncio, brought up to OPC UA 1.05, extended with server-side
+        alarms, file transfer, certificate management and reverse connect, and hardened against the attacks known for
+        OPC UA servers.
 
     .. grid-item::
 
-        **Users and roles.** Anonymous sessions may read, browse and subscribe. Writing, calling methods and changing
-        the address space need a user with the right role; passwords are stored as salted hashes.
-
-    .. grid-item::
-
-        **Clear errors.** A wrong setting raises a ``ConfigurationError`` that names it, and a refused certificate
-        tells you its thumbprint and the command that trusts it.
+        **Effortless.** Encrypted from the first connection, set up with four commands, written in a few lines of
+        async or plain blocking Python.
 
 
 About the project
@@ -168,7 +163,7 @@ engiNIR-OPCUA is a fork of `opcua-asyncio <https://github.com/FreeOpcUa/opcua-as
 The original library was written by Olivier Roulet-Dubonnet and the opcua-asyncio contributors. The import package
 is ``enginir_opcua`` and the commands start with ``enginir-opcua``, so it can be installed next to ``asyncua``.
 
-- Source code and issues: https://github.com/TUstudents/engiNIR-OPCUA
+- Source code: https://github.com/TUstudents/engiNIR-OPCUA
 - Package: https://pypi.org/project/enginir-opcua/
 - Changes: `CHANGELOG.md <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/CHANGELOG.md>`_
 - License: LGPL-3.0-or-later

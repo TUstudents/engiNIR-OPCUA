@@ -121,8 +121,10 @@ NodeId or by a browse path from another node:
 
 Each call of ``get_child`` and ``get_children`` is a request to the server. When you read many nodes, use the methods of
 the client that take lists (``read_values``, ``write_values``, ``read_attributes``, ``browse_nodes``); they send one request
-for all nodes. Writing needs a user the server allows to write. ``write_value`` converts a Python value to the data type
-of the node; pass a :class:`enginir_opcua.ua.Variant` or a DataValue when you need to control the type.
+for all nodes. Writing needs a user the server allows to write. ``write_value`` picks the OPC UA type from the Python
+value: a ``float`` is a Double, an ``int`` an Int64. The server refuses a value whose type doesn't match the node with
+``BadTypeMismatch``, so write ``5.0`` to a Double, or pass a :class:`enginir_opcua.ua.Variant` with the exact
+``VariantType``.
 
 Calling methods
 ---------------
@@ -201,6 +203,38 @@ before ``start()``, so you can put it into the servers' ``trusted/certs``. The o
 (timers, ``session_name``) and any other ``ClientConfig`` field. ``HaClient(HaConfig(...), HaSecurityConfig(...))`` with
 explicit certificates keeps working. See `09_ha_client.py
 <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/09_ha_client.py>`_.
+
+More of what a client does
+==========================
+
+History
+    ``await node.read_raw_history(starttime, endtime)`` returns the stored values of a variable, and
+    ``await node.read_event_history(starttime, endtime)`` the stored events of an object. Continuation points are
+    followed for you. See `06_events_and_history.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/06_events_and_history.py>`_.
+
+Events and alarms
+    ``subscribe_events`` delivers events through the same handler or iterator as data changes.
+    ``subscribe_alarms_and_conditions`` asks for a ConditionRefresh as well, and
+    :class:`~enginir_opcua.common.conditions.ConditionTracker` keeps the list of active alarms;
+    ``conditions.acknowledge(client, condition_id, event_id, comment)`` acknowledges one. See `12_alarms.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/12_alarms.py>`_.
+
+Custom data types
+    After ``await client.load_data_type_definitions()`` the server's structures and enumerations are Python classes:
+    values arrive as objects with named fields, and you write them the same way. See `05_custom_types.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/05_custom_types.py>`_.
+
+Files
+    :class:`~enginir_opcua.client.ua_file_transfer.UaFile` and
+    :class:`~enginir_opcua.client.ua_file_transfer.UaDirectory` read, write, create and delete the files a server
+    offers (OPC 10000-20). See `08_file_transfer.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/08_file_transfer.py>`_.
+
+Reverse connect
+    ``client.listen_reverse(listen_url, server_uri)`` waits for a server behind a firewall to connect out to the
+    client (OPC 10000-6, 7.1.2.6). See `16_reverse_connect.py
+    <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/16_reverse_connect.py>`_.
 
 Errors
 ======

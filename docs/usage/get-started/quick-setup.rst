@@ -105,7 +105,8 @@ Configuration files
 ``tomllib``. Unknown keys are errors, relative paths in the file are relative to the file, and secrets never live in
 it: a password comes from the environment variable named by ``password_env`` (default ``ENGINIR_OPCUA_PASSWORD``),
 and a users file is found through ``users_file`` or ``ENGINIR_OPCUA_USERS_FILE``. ``config.dump(path)`` writes the file
-with a comment for every setting; ``enginir-opcua init`` does it for you (``--profile secure|development|legacy``):
+with a comment for every setting; ``enginir-opcua init`` does it for you (``--profile secure|development|legacy``), and for a server it also creates an
+empty ``users.toml`` that ``users_file`` names:
 
 .. code-block:: toml
 
@@ -126,6 +127,10 @@ with a comment for every setting; ``enginir-opcua init`` does it for you (``--pr
 
     server = Server(config=ServerConfig.from_toml("server.toml"))
     await server.init()
+
+``enginir-opcua server --config server.toml`` serves the same file without code. ``push_management = true`` makes
+``init()`` switch on certificate management over OPC UA (OPC 10000-12), so a SecurityAdmin can replace the certificate
+and the trust lists remotely.
 
 Redundant servers and the synchronous API
 =========================================
@@ -153,7 +158,7 @@ salted ``scrypt`` hash for each user. Plain-text passwords are never stored.
     alice user
 
 The roles are ``user``, ``admin`` and ``security_admin``. Anonymous sessions have the read-only role and can read,
-browse, subscribe and read history. A ``user`` may also write, call methods and update history, an ``admin`` may also
+browse, subscribe and read history. A ``user`` may also write and call methods, an ``admin`` may also
 change the address space, and a ``security_admin`` may also manage certificates and read the security diagnostics. The
 file is read again when it changes. In code, ``write_users``, ``hash_password`` and ``UserRecord`` in
 :mod:`enginir_opcua.crypto.users_file` write the same file, and ``FileUserManager(path, anonymous=True)`` is the user
@@ -168,8 +173,10 @@ directories (see :doc:`../common/pki-directory`).
 
 ``enginir-opcua init server|client DIR``
     Create ``DIR/pki`` with a self-signed application certificate, and a commented ``DIR/server.toml`` or
-    ``DIR/client.toml``. Options: ``--endpoint`` (``--url`` for a client), ``--profile``, ``--name``,
-    ``--application-uri``, ``--force``. An existing certificate is never replaced.
+    ``DIR/client.toml``; for a server also an empty ``DIR/users.toml``, which the configuration names. Options:
+    ``--endpoint`` (``--url`` for a client), ``--profile``, ``--name``, ``--application-uri``, ``--force``. An existing
+    certificate or users file is never replaced. A server on every interface (``0.0.0.0``) gets a certificate that
+    names the host's IP addresses, so clients can connect by address.
 
 ``enginir-opcua pki list [--pki DIR]``
     Show the folders of a PKI directory with the subject, thumbprint and expiry of every certificate.
@@ -203,12 +210,21 @@ A complete session on one machine:
     trusted  584532607f12...  CN=urn:host:enginir-opcua:server  in cli/pki/trusted/certs
     $ enginir-opcua user add srv/users.toml alice --role user
 
-If a peer's certificate has not been trusted, the log of the server says which, and how:
+If a peer's certificate has not been trusted, both sides say which, and how. The server logs:
 
 .. code-block:: text
 
-    client certificate 8b66...a1e (CN=urn:enginir:example:guest) rejected: it is not trusted; trust it with:
-    enginir-opcua trust 8b66...a1e --pki srv/pki
+    192.168.0.20:51234 refused: client certificate 8b66...a1e (CN=urn:host:enginir-opcua:client) rejected: it is not
+    trusted (BadCertificateUntrusted); trust it with: enginir-opcua trust 8b66...a1e --pki srv/pki
+
+and the client's error names both commands when neither side trusts the other yet:
+
+.. code-block:: text
+
+    the server refused the secure channel, probably because it does not trust this client's certificate 8b66...a1e;
+    trust it on the server: enginir-opcua trust 8b66...a1e --pki <server pki>. This client does not trust the server
+    either: server certificate 5845...12f (CN=urn:host:enginir-opcua:server) is not trusted; trust it with:
+    enginir-opcua trust 5845...12f --pki cli/pki
 
 A SecurityAdmin can do the same over OPC UA with the push model of OPC 10000-12; see
 `14_certificate_management.py
