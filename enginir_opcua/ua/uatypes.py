@@ -36,6 +36,7 @@ from .uaerrors import UaError, UaStatusCodeError, UaStringParsingError
 _logger = logging.getLogger(__name__)
 
 MAX_INT64 = 2**63 - 1
+ENCODING_MASK = {"encoding_mask": True}
 DATETIME_MIN_VALUE = datetime.min.replace(tzinfo=UTC)
 DATETIME_MAX_VALUE = datetime.max.replace(tzinfo=UTC)
 _TICKS_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
@@ -954,7 +955,7 @@ class LocalizedText:
     The string form is specific to this library and reads back exactly.
     """
 
-    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
+    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False, metadata=ENCODING_MASK)
     Locale: "ua.String | None" = None
     Text: "ua.String | None" = None
 
@@ -1015,7 +1016,7 @@ class ExtensionObject:
     """
 
     TypeId: "ua.NodeId" = field(default_factory=NodeId)
-    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
+    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False, metadata=ENCODING_MASK)
     Body: "ua.ByteString | None" = None
 
     def __bool__(self) -> bool:
@@ -1310,7 +1311,7 @@ class DataValue:
 
     data_type = NodeId(Int32(ObjectIds.DataValue))
 
-    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
+    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False, metadata=ENCODING_MASK)
     Value: "ua.Variant | None" = None
     StatusCode: "ua.StatusCode | None" = field(default_factory=StatusCode)
     SourceTimestamp: "ua.DateTime | None" = None
@@ -1350,7 +1351,7 @@ class DiagnosticInfo:
 
     data_type = NodeId(25)
 
-    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False)
+    Encoding: "ua.Byte" = field(default=0, repr=False, init=False, compare=False, metadata=ENCODING_MASK)
     SymbolicId: "ua.Int32 | None" = None
     NamespaceUri: "ua.Int32 | None" = None
     Locale: "ua.Int32 | None" = None

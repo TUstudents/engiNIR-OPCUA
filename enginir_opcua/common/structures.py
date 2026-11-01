@@ -103,7 +103,9 @@ class {self.name}:
 """
         for sfield in self._fields_with_encoding():
             uatype = sfield.annotation()
-            if sfield.is_optional:
+            if sfield.is_mask:
+                code += f"    {sfield.name}: '{uatype}' = field(default=0, compare=False, metadata={{'encoding_mask': True}})\n"
+            elif sfield.is_optional:
                 code += f"    {sfield.name}: Optional[{uatype}] = None\n"
             else:
                 uavalue = sfield.value
@@ -121,6 +123,7 @@ class {self.name}:
         if self.option_counter > 0:
             encoding = Field("Encoding")
             encoding.uatype = "UInt32"
+            encoding.is_mask = True
             fields = [encoding, *fields]
         return fields
 
@@ -129,8 +132,8 @@ class {self.name}:
         spec: dict[str, tuple[Any, Any]] = {}
         for sfield in self._fields_with_encoding():
             annotation = sfield.resolved_annotation(env)
-            if sfield.name == "Encoding":
-                spec[sfield.name] = (annotation, None)
+            if sfield.is_mask:
+                spec[sfield.name] = (annotation, field(default=0, compare=False, metadata=ua.uatypes.ENCODING_MASK))
             elif sfield.is_optional:
                 optional = f"typing.Optional[{annotation}]" if isinstance(annotation, str) else annotation | None
                 spec[sfield.name] = (optional, None)
@@ -158,6 +161,7 @@ class Field:
         self.value: str | None = None
         self.array = False
         self.is_optional = False
+        self.is_mask = False
 
     def __str__(self) -> str:
         return f"Field(name={self.name}, uatype={self.uatype})"

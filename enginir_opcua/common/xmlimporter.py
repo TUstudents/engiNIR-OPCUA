@@ -22,7 +22,7 @@ from enginir_opcua.common.structures104 import (
     option_set_base_name,
 )
 from enginir_opcua.common.utils import Buffer
-from enginir_opcua.ua.ua_binary import get_safe_type_hints, struct_from_binary
+from enginir_opcua.ua.ua_binary import get_safe_type_hints, has_encoding_mask, struct_from_binary
 from enginir_opcua.ua.uatypes import (
     type_from_list,
     type_from_optional,
@@ -745,7 +745,8 @@ class XmlImporter:
             for attname2, v2 in val:
                 if attname2 != "EncodingMask":
                     self._set_attr(resolved_sub_type[attname2], subargs, attname2, v2)
-            subargs.pop("Encoding", None)
+            if has_encoding_mask(atttype):
+                subargs.pop("Encoding", None)
             if atttype is ua.LocalizedText:
                 subargs = {key: value or None for key, value in subargs.items()}
             fargs[attname] = atttype(**subargs)  # type: ignore[operator]

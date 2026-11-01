@@ -226,3 +226,20 @@ async def test_datetime_values_are_exported_as_utc_xs_datetime(tmp_path: Path) -
         2026, 11, 1, 12, 30, 15, tzinfo=UTC
     )
     assert await fresh.get_node(ua.NodeId(null.nodeid.Identifier, new_ns)).read_value() == ua.DATETIME_MIN_VALUE
+
+
+async def test_an_ordinary_field_named_encoding_survives_an_xml_round_trip(tmp_path: Path) -> None:
+    """SessionSecurityDiagnosticsDataType has a String field Encoding; it is data, not an EncodingMask."""
+    server = await new_server()
+    ns = await server.register_namespace(URI)
+    value = ua.SessionSecurityDiagnosticsDataType(ClientUserIdOfSession="alice", Encoding="UA Binary")
+    holder = await server.nodes.objects.add_variable(
+        ns, "Diagnostics", value, datatype=ua.NodeId(ua.ObjectIds.SessionSecurityDiagnosticsDataType)
+    )
+    path = await exported(server, [holder], tmp_path, export_values=True)
+    assert "UA Binary" in path.read_text()
+    fresh = await new_server()
+    await fresh.import_xml(str(path))
+    new_ns = await fresh.get_namespace_index(URI)
+    imported = await fresh.get_node(ua.NodeId(holder.nodeid.Identifier, new_ns)).read_value()
+    assert imported.Encoding == "UA Binary"

@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import enginir_opcua
 from enginir_opcua import ua
+from enginir_opcua.ua.ua_binary import has_encoding_mask
 from enginir_opcua.ua.uaerrors import UaError, UaInvalidParameterError
 from enginir_opcua.ua.uatypes import type_string_from_type
 
@@ -628,8 +629,9 @@ class XmlExporter:
     async def _all_fields_to_etree(self, struct_el: Et.Element, val: Any) -> None:
         globalns: dict[str, Any] = {"ua": ua, **vars(ua)}
         resolved_fields = fields_with_resolved_types(val, globalns=globalns)
+        masked = has_encoding_mask(type(val))
         for field in resolved_fields:
-            if field.name == "Encoding":
+            if masked and field.name == "Encoding":
                 continue
             type_name = type_string_from_type(field.type)
             try:

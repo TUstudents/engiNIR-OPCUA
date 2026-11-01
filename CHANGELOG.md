@@ -294,6 +294,12 @@ Encoding and decoding:
 - `Buffer.copy(n)` beyond the remaining bytes raises, `Buffer.rewind()` stays inside its window, and
   `Buffer(data, start, size)` checks the window.
 - `ua_binary.test_bit` is `is_bit_set` and returns a `bool`.
+- A structure field named `Encoding` is data unless it is the EncodingMask of a structure with optional fields or the
+  switch of a union (OPC 10000-6, 5.2.7 and 5.2.8). A Byte or UInt32 field of that name was taken for the mask: encoding
+  wrote 0 instead of its value and decoding dropped the value or raised "unassigned encoding bits". XML export left out
+  every field named `Encoding`, and XML import dropped it, so `SessionSecurityDiagnosticsDataType.Encoding` was lost.
+  The mask fields that the library declares carry the metadata `ua.uatypes.ENCODING_MASK`, also in code from
+  `generate-structs`; `ua_binary.has_encoding_mask(cls)` tells the two apart, and code generated before keeps working.
 
 Dates and times (OPC 10000-6, 5.1.4, 5.2.2.5 and 5.3.1.6):
 - DateTime.MinValue and MaxValue are the limits of Python's `datetime`, `ua.DATETIME_MIN_VALUE` (0001-01-01 UTC) and

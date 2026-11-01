@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from enginir_opcua import Node, ua
 from enginir_opcua.common.manage_nodes import create_data_type, create_encoding
 from enginir_opcua.ua.uaerrors import UaInvalidParameterError
-from enginir_opcua.ua.uatypes import _set_ua_attribute
+from enginir_opcua.ua.uatypes import ENCODING_MASK, _set_ua_attribute
 
 if TYPE_CHECKING:
     from enginir_opcua import Client, Server
@@ -246,7 +246,9 @@ def make_structure(
     union_resolved_types: list[Any] = []
     deps: dict[str, type] = {}
     if sdef.StructureType == ua.StructureType.StructureWithOptionalFields:
-        fields.append(("Encoding", ua.UInt32, field(default=0, repr=False, init=True, compare=False)))
+        fields.append(
+            ("Encoding", ua.UInt32, field(default=0, repr=False, init=True, compare=False, metadata=ENCODING_MASK))
+        )
 
     def _alias(cls: type) -> str:
         alias = f"_dep_{len(deps)}"
@@ -338,7 +340,7 @@ def make_structure(
     }
 
     if is_union:
-        fields.append(("Encoding", "ua.UInt32", field(default=0, init=True)))
+        fields.append(("Encoding", "ua.UInt32", field(default=0, init=True, metadata=ENCODING_MASK)))
         value_type = f"typing.Optional[typing.Union[{', '.join(union_type_hints)}]]"
         fields.append(("Value", value_type, field(default=None, init=True)))
         for fname, idx in union_fields:

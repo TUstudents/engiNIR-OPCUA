@@ -5,7 +5,7 @@ import typing
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, ClassVar, Optional
 
 import pytest
@@ -695,3 +695,44 @@ def test_com123_structure_field_named_encoding_is_a_normal_field() -> None:
     data = struct_to_binary(original)
     assert b"UA Binary" in data
     assert struct_from_binary(ua.SessionSecurityDiagnosticsDataType, Buffer(data)) == original
+
+
+class _Mode(IntEnum):
+    Unset = -1
+    Seven = 7
+
+
+@dataclass
+class _Int32Encoding:
+    Encoding: ua.Int32 = -1
+
+
+@dataclass
+class _ByteEncoding:
+    Encoding: ua.Byte = 9
+    Value: ua.Int32 = -1
+
+
+@dataclass
+class _UInt32Encoding:
+    Encoding: ua.UInt32 = 9
+
+
+@dataclass
+class _EnumEncoding:
+    Encoding: _Mode = _Mode.Unset
+
+
+@pytest.mark.parametrize(
+    ("cls", "value", "wire"),
+    [
+        (_Int32Encoding, 7, struct.pack("<i", 7)),
+        (_ByteEncoding, 7, struct.pack("<Bi", 7, -1)),
+        (_UInt32Encoding, 7, struct.pack("<I", 7)),
+        (_EnumEncoding, _Mode.Seven, struct.pack("<i", 7)),
+    ],
+)
+def test_an_ordinary_field_named_encoding_is_data_not_the_mask(cls: type, value: Any, wire: bytes) -> None:
+    """Part 6, 5.2.7: only a structure with optional fields has an EncodingMask; any other field is data."""
+    assert struct_to_binary(cls(Encoding=value)) == wire
+    assert struct_from_binary(cls, Buffer(wire)).Encoding == value
