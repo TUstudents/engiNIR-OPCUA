@@ -65,7 +65,7 @@ async def test_client_admin(srv_crypto_one_cert):
         assert await clt.get_objects_node().get_children()
         objects = clt.nodes.objects
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
-        await child.set_value(42.0)
+        await child.write_value(42.0)
         assert await child.read_value() == 42.0
         await child.add_property(2, "MyProperty1", 3)
 
@@ -84,7 +84,7 @@ async def test_client_user(srv_crypto_one_cert):
         assert await clt.get_objects_node().get_children()
         objects = clt.nodes.objects
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
-        await child.set_value(44.0)
+        await child.write_value(44.0)
         assert await child.read_value() == 44.0
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
             await child.add_property(0, "MyProperty2", 3)
@@ -106,7 +106,7 @@ async def test_client_anonymous(srv_crypto_one_cert):
         child = await clt.nodes.objects.get_child(["0:MyObject", "0:MyVariable"])
         assert await child.read_value() is not None
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
-            await child.set_value(1.0)
+            await child.write_value(1.0)
 
 
 async def test_x509identity_user(srv_crypto_one_cert):
@@ -117,7 +117,7 @@ async def test_x509identity_user(srv_crypto_one_cert):
         assert await clt.get_objects_node().get_children()
         objects = clt.nodes.objects
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
-        await child.set_value(46.0)
+        await child.write_value(46.0)
         assert await child.read_value() == 46.0
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
             await child.add_property(0, "MyProperty3", 3)
@@ -133,7 +133,7 @@ async def test_x509identity_anonymous(srv_crypto_one_cert):
         child = await clt.nodes.objects.get_child(["0:MyObject", "0:MyVariable"])
         assert await child.read_value() is not None
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
-            await child.set_value(1.0)
+            await child.write_value(1.0)
 
 
 async def test_client_user_x509identity_admin(srv_crypto_one_cert):
@@ -152,7 +152,7 @@ async def test_client_user_x509identity_admin(srv_crypto_one_cert):
         assert await clt.get_objects_node().get_children()
         objects = clt.nodes.objects
         child = await objects.get_child(["0:MyObject", "0:MyVariable"])
-        await child.set_value(48.0)
+        await child.write_value(48.0)
         assert await child.read_value() == 48.0
         await child.add_property(2, "MyProperty4", 3)
 

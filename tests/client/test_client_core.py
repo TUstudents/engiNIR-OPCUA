@@ -396,7 +396,7 @@ async def test_read_and_write_status_check(server, client):
     # set value StatusCode to Bad
     variant = ua.Variant(testValue, ua.VariantType.Int64)
     dataValue = ua.DataValue(variant, StatusCode=testStatusCode)
-    await v1.set_value(dataValue)
+    await v1.write_value(dataValue)
 
     # check that reading the value generates an error
     # with raise_on_bad_status set to True as default

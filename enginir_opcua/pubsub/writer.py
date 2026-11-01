@@ -295,15 +295,15 @@ class DataSetWriter(PubSubInformationModel):
             )
             msg_settings = nodes[0]
             n = await msg_settings.get_child("0:ConfiguredSize")
-            await n.set_data_value(DataValue(Variant(msg_cfg.ConfiguredSize, VariantType.UInt16)))
+            await n.write_value(DataValue(Variant(msg_cfg.ConfiguredSize, VariantType.UInt16)))
             n = await msg_settings.get_child("0:DataSetMessageContentMask")
-            await n.set_data_value(
+            await n.write_value(
                 DataValue(Variant(msg_cfg.DataSetMessageContentMask, VariantType.UInt32))
             )  # FIXME: subtype
             n = await msg_settings.get_child("0:DataSetOffset")
-            await n.set_data_value(DataValue(Variant(msg_cfg.DataSetOffset, VariantType.UInt16)))
+            await n.write_value(DataValue(Variant(msg_cfg.DataSetOffset, VariantType.UInt16)))
             n = await msg_settings.get_child("0:NetworkMessageNumber")
-            await n.set_data_value(DataValue(Variant(msg_cfg.NetworkMessageNumber, VariantType.UInt16)))
+            await n.write_value(DataValue(Variant(msg_cfg.NetworkMessageNumber, VariantType.UInt16)))
 
 
 class WriterGroup(PubSubInformationModel):
@@ -671,7 +671,7 @@ class WriterGroup(PubSubInformationModel):
         sampling_offset = await msg_settings.get_child("0:SamplingOffset")
         await write_typed(sampling_offset, msg_cfg.SamplingOffset)
         publishing_offset = await msg_settings.get_child("0:PublishingOffset")
-        await publishing_offset.set_data_value(
+        await publishing_offset.write_value(
             DataValue(Variant(msg_cfg.PublishingOffset, VariantType.Double, is_array=True))
         )
 

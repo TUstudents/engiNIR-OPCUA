@@ -883,9 +883,6 @@ class Client(_Owner):
         self, nodes: Iterable[SyncNode], values: Iterable[Any], raise_on_partial_error: bool = True
     ) -> list[ua.StatusCode]: ...
 
-    get_values = read_values
-    set_values = write_values
-
     @syncmethod
     def browse_nodes(self, nodes: Iterable[SyncNode]) -> list[tuple[SyncNode, ua.BrowseResult]]: ...
 
@@ -1660,9 +1657,6 @@ class SyncNode:
     @syncmethod
     def write_value(self, value: Any, varianttype: ua.VariantType | None = None) -> None: ...
 
-    set_value = write_value
-    set_data_value = write_value
-
     @syncmethod
     def write_params(self, params: ua.WriteParameters) -> list[ua.StatusCode]: ...
 
@@ -1672,17 +1666,11 @@ class SyncNode:
     @syncmethod
     def read_value(self) -> Any: ...
 
-    get_value = read_value
-
     @syncmethod
     def read_data_value(self, raise_on_bad_status: bool = True) -> ua.DataValue: ...
 
-    get_data_value = read_data_value
-
     @syncmethod
     def read_data_type_as_variant_type(self) -> ua.VariantType: ...
-
-    get_data_type_as_variant_type = read_data_type_as_variant_type
 
     @syncmethod
     def call_method(

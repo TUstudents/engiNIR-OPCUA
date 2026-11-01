@@ -583,6 +583,11 @@ Code generation:
   `schemas/regenerate.py` replaces `schemas/update_ua_nodeset.py`.
 
 Node helpers:
+- Breaking: the legacy aliases are removed; each operation has one name. `Node.get_value` is `read_value`,
+  `Node.set_value` and `Node.set_data_value` are `write_value` (it takes a Python value, a Variant or a DataValue),
+  `Client.get_values` and `Client.set_values` are `read_values` and `write_values`, and the sync `SyncNode` also loses
+  `get_data_value` (`read_data_value`) and `get_data_type_as_variant_type` (`read_data_type_as_variant_type`). Old
+  code fails with `AttributeError` when the line runs, so search for the old names when migrating.
 - `CallbackService` keeps every listener, ordered by priority and then insertion order (a second listener with the
   same priority used to replace the first); any awaitable result is awaited and dispatch works on a snapshot.
 - `string_to_val` is the inverse of `val_to_string`: lists quote elements that contain commas, quotes or brackets,

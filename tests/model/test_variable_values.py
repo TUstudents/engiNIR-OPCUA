@@ -2,7 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from enginir_opcua import ua
+from enginir_opcua import Client, sync, ua
+from enginir_opcua.common.node import Node
 from tests.access_rig import declare_writable
 
 pytestmark = pytest.mark.asyncio
@@ -303,3 +304,24 @@ async def test_sub_class(opc):
     val = await var.read_value()
     assert val == struct_with_sub
     assert val.DataSetSource == struct_with_sub.DataSetSource
+
+
+@pytest.mark.parametrize(
+    ("owner", "alias"),
+    [
+        pytest.param(owner, alias, id=f"{owner.__module__.rsplit('.', 1)[-1]}.{owner.__name__}.{alias}")
+        for owner, aliases in (
+            (Node, ("get_value", "set_value", "set_data_value")),
+            (Client, ("get_values", "set_values")),
+            (
+                sync.SyncNode,
+                ("get_value", "set_value", "set_data_value", "get_data_value", "get_data_type_as_variant_type"),
+            ),
+            (sync.Client, ("get_values", "set_values")),
+        )
+        for alias in aliases
+    ],
+)
+async def test_legacy_aliases_are_removed(owner: type, alias: str) -> None:
+    """3.0.0 keeps one name per operation: read_value, write_value, read_values, write_values, read_data_value."""
+    assert not hasattr(owner, alias)

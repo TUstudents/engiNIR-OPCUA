@@ -1970,9 +1970,6 @@ class Client:
                 result.check()
         return results
 
-    get_values = read_values
-    set_values = write_values
-
     async def browse_nodes(self, nodes: Iterable[Node]) -> list[tuple[Node, ua.BrowseResult]]:
         """
         Browse the forward and inverse references of several nodes in one Browse request and return (Node,

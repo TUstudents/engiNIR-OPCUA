@@ -150,6 +150,12 @@ which is true for every time at or before 1601-01-01 UTC, and check it before ar
 ``win_epoch_to_datetime()``; ``get_win_epoch()`` is gone. The Picoseconds of a DataValue count 10 ps below the
 microsecond (0 to 99 999), so the 100 ns digit survives a round trip.
 
+**One name per operation.** The legacy aliases are gone. Rename ``get_value`` to ``read_value``, ``set_value`` and
+``set_data_value`` to ``write_value``, and ``Client.get_values`` and ``set_values`` to ``read_values`` and
+``write_values``; on the sync ``SyncNode`` also ``get_data_value`` to ``read_data_value`` and
+``get_data_type_as_variant_type`` to ``read_data_type_as_variant_type``. The old names raise ``AttributeError`` only
+when the line runs, so search your code for them.
+
 **Strings.** ``NodeId.to_string()`` writes ``svr=`` in front, and ``from_string()`` refuses anything malformed.
 ``QualifiedName.to_string()`` writes names in namespace 0 without a prefix (``Root``, not ``0:Root``), which also
 changes ``Node.get_path(as_string=True)``.

@@ -183,8 +183,6 @@ class Node:
         """
         return await self._read_attribute_value(ua.AttributeIds.Value)
 
-    get_value = read_value
-
     async def read_data_value(self, raise_on_bad_status: bool = True) -> ua.DataValue:
         """
         The Value attribute of a Variable as a DataValue, with the value as a Variant, the StatusCode and the
@@ -229,9 +227,6 @@ class Node:
         """
         dv = value_to_datavalue(value, varianttype)
         await self.write_attribute(ua.AttributeIds.Value, dv)
-
-    set_data_value = write_value
-    set_value = write_value
 
     async def set_writable(self, writable: bool = True) -> None:
         """
