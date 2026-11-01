@@ -1,6 +1,8 @@
 # Changelog
 
-## 3.0.0 (unreleased)
+Each release has its own section; the newest is at the top.
+
+## 3.0.0 (2026-11-01)
 
 The first release of `enginir-opcua`, a fork of [opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0.
 All breaking changes are collected here and released together.
