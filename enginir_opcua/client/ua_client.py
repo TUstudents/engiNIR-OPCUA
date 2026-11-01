@@ -145,9 +145,11 @@ class UASocketProtocol(asyncio.Protocol):
         outcome = self.certificate_validator.validate_application_certificate(chain, context)
         if not outcome.accepted:
             self.certificate_validator.keep_rejected(outcome, self.validation_host_name)
-            hint = untrusted_hint("server", outcome, self.certificate_validator.trust_store)
+            store = self.certificate_validator.trust_store
+            hint = untrusted_hint("server", outcome, store)
             if hint is not None:
-                raise ua.UaStatusCodeError(outcome.status, f"{hint} ({outcome.detail})")
+                with_pki = store is not None and store.pki_root is not None
+                raise ua.UaStatusCodeError(outcome.status, hint if with_pki else f"{hint} ({outcome.detail})")
         outcome.raise_for_status()
         if self.expected_application_uri is not None and outcome.leaf is not None:
             check_application_uri(outcome.leaf, self.expected_application_uri).raise_for_status()
@@ -178,7 +180,10 @@ class UASocketProtocol(asyncio.Protocol):
             self._fail_all_pending(ua.UaStatusCodeError(status))
             self.disconnect_socket()
         except ua.UaStatusCodeError as e:
-            self.logger.error("Got error status from server: %s", e)
+            if self._callbackmap:
+                self.logger.info("Closing the connection: %s", e)
+            else:
+                self.logger.error("Closing the connection: %s", e)
             self._fail_all_pending(e)
             self.disconnect_socket()
         except Exception:
@@ -215,7 +220,7 @@ class UASocketProtocol(asyncio.Protocol):
         elif isinstance(msg, ua.Acknowledge):
             self._call_callback(0, msg)
         elif isinstance(msg, ua.ErrorMessage):
-            self.logger.fatal("Received an error: %r", msg)
+            self.logger.info("The server sent an Error message: %s %r", msg.Error, msg.Reason)
             self.disconnect_socket()
             if msg.Error is not None:
                 msg.Error.check()
@@ -921,7 +926,7 @@ class UaClient:
     async def close_secure_channel(self) -> None:
         """Send CloseSecureChannel if the socket is open."""
         if not self.protocol or self.protocol.state is UASocketState.CLOSED:
-            self.logger.warning("close_secure_channel was called but connection is closed")
+            self.logger.debug("close_secure_channel was called but connection is closed")
             return
         await self.protocol.close_secure_channel()
         if self._state is UaClientState.CHANNEL_OPEN:

@@ -19,6 +19,11 @@ Each release has its own section; the newest is at the top.
 - When neither side trusts the other yet, the first connect now names both certificates and both `enginir-opcua
   trust` commands. Before, the error named only the client certificate the server refused, although the client had
   already found the server certificate untrusted, so the user needed a second failed attempt to learn the second step.
+- A refused connection no longer logs `CRITICAL: Received an error: ErrorMessage(...)`, `ERROR: Got error status from
+  server` (also for errors the client found itself) and `WARNING: close_secure_channel was called but connection is
+  closed` next to the exception that already says what happened. The Error message of the server is logged at INFO;
+  a failure that no request receives is still logged at ERROR. The error for an untrusted server certificate of a
+  client with a PKI directory no longer ends with the detail about `set_trust_store`; the trust command is enough.
 - `load_data_type_definitions()` and `load_enums()` no longer rebuild the standard enumerations and OptionSets of
   namespace 0 (`ServerState`, `NamingRuleType`, `AccessLevelType`, ... about 50). Before, each call returned and
   registered a second class next to the built-in one in `ua`, so `client.types.find()` gave the copy, and the log

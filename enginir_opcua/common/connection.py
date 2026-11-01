@@ -834,7 +834,7 @@ class SecureChannel:
             error = struct_from_binary(ua.ErrorMessage, body)
             if len((error.Reason or "").encode()) > MAX_ERROR_REASON_BYTES:
                 error.Reason = ""
-            _logger.warning("Received an error: %s", error)
+            _logger.debug("Received an error: %s", error)
             return error
         raise TransportError(ua.StatusCodes.BadTcpMessageTypeInvalid, f"Unexpected message type {header.MessageType!r}")
 

@@ -1,6 +1,7 @@
 import asyncio
 import getpass
 import io
+import logging
 import stat
 from pathlib import Path
 
@@ -411,3 +412,41 @@ def test_a_server_on_one_host_name_gets_loopback_addresses_but_no_interface_look
     san = _san(tmp_path / "s" / "pki")
     assert "plant.example" in san.get_values_for_type(x509.DNSName)
     assert {str(address) for address in san.get_values_for_type(x509.IPAddress)} == {"127.0.0.1", "::1"}
+
+
+def _client_warnings(caplog: pytest.LogCaptureFixture) -> str:
+    return "".join(
+        f"\n{record.levelname}: {record.getMessage()}"
+        for record in caplog.records
+        if record.levelno >= logging.WARNING and not record.name.startswith("enginir_opcua.server")
+    )
+
+
+NOISE = ("CRITICAL", "ErrorMessage(", "Got error status from server", "close_secure_channel", "set_trust_store")
+
+
+async def test_a_refused_first_connect_prints_one_clear_error(
+    capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    port = find_free_port()
+    url = f"opc.tcp://127.0.0.1:{port}/plant/"
+    assert await asyncio.to_thread(tools.main, ["init", "server", str(tmp_path / "s"), "--endpoint", url]) == 0
+    assert await asyncio.to_thread(tools.main, ["init", "client", str(tmp_path / "c"), "--url", url]) == 0
+    server = Server(config=ServerConfig.from_toml(tmp_path / "s" / "server.toml"))
+    await server.init()
+    read = ["read", "-u", url, "--pki-dir", str(tmp_path / "c" / "pki"), "-n", "i=2259"]
+    async with server:
+        capsys.readouterr()
+        caplog.clear()
+        assert await asyncio.to_thread(tools.main, read) == 1
+        refused = capsys.readouterr().err + _client_warnings(caplog)
+        assert tools.main(["trust", own_thumbprint(tmp_path / "c" / "pki"), "--pki", str(tmp_path / "s" / "pki")]) == 0
+        capsys.readouterr()
+        caplog.clear()
+        assert await asyncio.to_thread(tools.main, read) == 1
+        untrusted = capsys.readouterr().err + _client_warnings(caplog)
+    for err in (refused, untrusted):
+        assert [line for line in err.splitlines() if line.startswith("enginir-opcua read: error:")], err
+        assert not [word for word in NOISE if word in err], err
+    assert "the server refused the secure channel" in refused
+    assert f"enginir-opcua trust {own_thumbprint(tmp_path / 's' / 'pki')}" in untrusted
