@@ -644,6 +644,9 @@ Node helpers:
   `UaError` for an unknown URI; `get_node_children` and `get_node_subtypes` list each node once.
 
 PubSub (OPC 10000-14, experimental; see `docs/usage/pubsub/overview.rst`):
+- PubSub stays experimental in 3.x: the API can change in any release, and the gaps listed in the overview (message
+  security, JSON, MQTT, chunking, publisher delta frames, discovery, the configuration methods) are not going to be
+  closed. The package is not held to the strict typing of the rest of the library.
 - A PublisherId is encoded with the type of its Variant (UInt64 uses type bits 011), so ids that were read from a file
   or built as `Variant(5, VariantType.UInt16)` keep their type. `UadpHeader` refuses a PublisherId that is a plain `int`:
   wrap it in `Byte`, `UInt16`, `UInt32`, `UInt64` or `String`. `OpcUdp.get_publisher_id()` returns a typed value.
@@ -722,6 +725,15 @@ Quick setup (workstream K):
   from or written to the file) and `dump(path)` writes a commented file. `Server(config=...)` and `Client(config=...)`
   apply a configuration; the setters stay the low-level API. `Client(url)` now accepts `url=None` when a config is
   given.
+- `Server.start()` checks the limits set directly on `iserver` and `limits` too, and raises `ConfigurationProblems`
+  naming each wrong one before anything starts: a limit that is zero or negative, a minimum above its maximum, a
+  per-session or per-subscription limit above the server's, `max_connections` not above `max_sessions`, and a buffer
+  below 8192 bytes (OPC 10000-6, 7.1.2.3; SRV-104). A configuration file keeps its stricter ranges.
+- The data commands (`read`, `ls`, `write`, `call`, `subscribe`, ...) with `--pki-dir` send the ApplicationUri of the
+  certificate in the directory, so a PKI directory made by `enginir-opcua init client` works without
+  `--application-uri` (CLI-81; they sent `urn:enginir:opcua:client` and the server answered
+  `BadCertificateUriInvalid`). `Client.application_certificate` (and its sync twin) is the certificate that
+  `set_pki_directory` loaded, and `pki.application_uris()` reads the URIs of a certificate.
 - `FileUserManager` reads a TOML or JSON users file (name, role, scrypt hash) and checks passwords on a worker thread.
   An unknown user and a wrong password cost the same. The file is read again when it changes.
   `UserManager.authenticate` is the awaitable form of `get_user`, which stays for existing managers; a manager without

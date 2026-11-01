@@ -340,3 +340,24 @@ async def test_init_pair_and_serve_from_the_generated_config(
     async with server:
         async with Client(config=ClientConfig.from_toml(tmp_path / "c" / "client.toml")) as client:
             assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+
+
+async def test_cli81_data_commands_use_the_uri_of_the_certificate_that_init_client_wrote(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Part 4, 5.6.2: the ApplicationUri sent in CreateSession matches the URI in the client certificate."""
+    port = find_free_port()
+    url = f"opc.tcp://127.0.0.1:{port}/plant/"
+    assert await asyncio.to_thread(tools.main, ["init", "server", str(tmp_path / "s"), "--endpoint", url]) == 0
+    assert await asyncio.to_thread(tools.main, ["init", "client", str(tmp_path / "c"), "--url", url]) == 0
+    assert tools.main(["pair", str(tmp_path / "s" / "pki"), str(tmp_path / "c" / "pki")]) == 0
+    capsys.readouterr()
+    server = Server(config=ServerConfig.from_toml(tmp_path / "s" / "server.toml"))
+    await server.init()
+    async with server:
+        code = await asyncio.to_thread(
+            tools.main, ["read", "-u", url, "--pki-dir", str(tmp_path / "c" / "pki"), "-n", "i=2259"]
+        )
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    assert "BadCertificateUriInvalid" not in out + err

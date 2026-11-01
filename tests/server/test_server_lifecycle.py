@@ -305,3 +305,34 @@ async def test_monitored_item_queue_size_is_revised(server_maximum: int, request
     finally:
         await client.disconnect()
         await srv.stop()
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "setting"),
+    [
+        pytest.param("min_session_timeout_ms", 700_000, "min_session_timeout_ms", id="srv104_inverted_session_timeout"),
+        pytest.param("max_connections", 50, "max_connections", id="srv104_fewer_connections_than_sessions"),
+        pytest.param("hello_timeout_seconds", -1, "hello_timeout_seconds", id="srv104_negative_hello_timeout"),
+        pytest.param("max_subscriptions", 0, "max_subscriptions", id="srv104_no_subscriptions"),
+    ],
+)
+async def test_srv104_start_refuses_limits_out_of_range(attribute: str, value: int, setting: str) -> None:
+    """The limits set directly on the server are checked at start like those of a configuration (Part 4, 5.7.2.1)."""
+    server = Server(allow_no_security=True)
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    setattr(server.iserver, attribute, value)
+    with pytest.raises(ua.uaerrors.ConfigurationError) as error:
+        await server.start()
+    assert f"server.limits.{setting}" in str(error.value)
+    assert server.bserver is None
+
+
+async def test_srv104_start_refuses_a_buffer_below_8192_bytes() -> None:
+    """Part 6, 7.1.2.3: the buffer sizes are at least 8192 bytes."""
+    server = Server(allow_no_security=True)
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
+    server.limits.max_recv_buffer = 1024
+    with pytest.raises(ua.uaerrors.ConfigurationError, match=r"server\.limits\.max_buffer_size"):
+        await server.start()

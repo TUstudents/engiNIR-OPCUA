@@ -394,6 +394,11 @@ class Client:
         self.uaclient.observer = observer
 
     @property
+    def application_certificate(self) -> x509.Certificate | None:
+        """The application certificate that set_pki_directory loaded or generated; None before or without one."""
+        return None if self._own_credentials is None else self._own_credentials.certificate
+
+    @property
     def state(self) -> UaClientState:
         """Current connection state. Mirrors `self.uaclient.state`."""
         return self.uaclient.state

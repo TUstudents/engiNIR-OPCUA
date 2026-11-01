@@ -605,6 +605,7 @@ class Client(_Owner):
     observer = _aio_property("observer")
     server_url = _aio_property("server_url", writable=False)
     state = _aio_property("state", writable=False)
+    application_certificate = _aio_property("application_certificate", writable=False)
 
     @property
     def connection_lost_callback(self) -> Callable[[Exception], Any] | None:

@@ -9,8 +9,8 @@ engiNIR-OPCUA
     An OPC UA client and server for Python, built on asyncio and secure from the first line.
 
 engiNIR-OPCUA implements OPC UA (IEC 62541) for Python 3.12 and newer: clients, servers, subscriptions, events,
-alarms, history, methods, file transfer, redundancy and PubSub. Encrypted connections, certificate trust and user
-roles are switched on by default, and every one of them can be set up in a few lines.
+alarms, history, methods, file transfer, redundancy and experimental PubSub. Encrypted connections, certificate
+trust and user roles are switched on by default, and every one of them can be set up in a few lines.
 
 .. code-block:: console
 

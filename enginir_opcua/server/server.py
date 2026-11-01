@@ -24,7 +24,7 @@ from enginir_opcua import ua
 
 from ..client import Client
 from ..common.callback import CallbackType
-from ..common.connection import TransportLimits
+from ..common.connection import MIN_BUFFER_SIZE, TransportLimits
 from ..common.event_objects import BaseEvent
 from ..common.manage_nodes import delete_nodes
 from ..common.node import Node
@@ -37,6 +37,7 @@ from ..common.xmlexporter import XmlExporter
 from ..common.xmlimporter import XmlImporter
 from ..config import (
     POSTURES,
+    ConfigurationProblems,
     ServerConfig,
     check_certificate_uri,
     is_loopback,
@@ -791,8 +792,10 @@ class Server:
 
     async def start(self) -> None:
         """
-        Start to listen on network
+        Start to listen on network. Limits that are zero or negative, a minimum above its maximum, max_connections
+        not above max_sessions or a buffer below 8192 bytes raise ConfigurationProblems before anything starts.
         """
+        self._check_limits()
         self._check_loopback_bind()
         if self._config is not None:
             for line in self._config.weaknesses():
@@ -817,6 +820,48 @@ class Server:
             raise
         else:
             _logger.debug("%s server started", self)
+
+    def _check_limits(self) -> None:
+        iserver = self.iserver
+        positive: dict[str, float] = {
+            "max_sessions": iserver.session_manager.max_sessions,
+            "max_connections": iserver.max_connections,
+            "min_session_timeout_ms": iserver.min_session_timeout_ms,
+            "max_session_timeout_ms": iserver.max_session_timeout_ms,
+            "max_subscriptions": iserver.max_subscriptions,
+            "max_subscriptions_per_session": iserver.max_subscriptions_per_session,
+            "min_publishing_interval_ms": iserver.min_publishing_interval_ms,
+            "max_publishing_interval_ms": iserver.max_publishing_interval_ms,
+            "max_monitored_items": iserver.max_monitored_items,
+            "max_monitored_items_per_subscription": iserver.max_monitored_items_per_subscription,
+            "hello_timeout_seconds": iserver.hello_timeout_seconds,
+            "max_string_length": iserver.max_string_length,
+            "max_byte_string_length": iserver.max_byte_string_length,
+            "max_array_length": iserver.max_array_length,
+        }
+        problems = [
+            f"server.limits.{name}: must be above 0, got {value!r}" for name, value in positive.items() if value <= 0
+        ]
+        for low, high in (
+            ("min_session_timeout_ms", "max_session_timeout_ms"),
+            ("min_publishing_interval_ms", "max_publishing_interval_ms"),
+            ("max_subscriptions_per_session", "max_subscriptions"),
+            ("max_monitored_items_per_subscription", "max_monitored_items"),
+        ):
+            if positive[low] > positive[high]:
+                problems.append(
+                    f"server.limits.{low}: must be at most {high} ({positive[high]!r}), got {positive[low]!r}"
+                )
+        if positive["max_connections"] <= positive["max_sessions"]:
+            problems.append(
+                f"server.limits.max_connections: must be above max_sessions ({positive['max_sessions']!r}), "
+                f"got {positive['max_connections']!r}"
+            )
+        buffer = min(self.limits.max_recv_buffer, self.limits.max_send_buffer)
+        if buffer < MIN_BUFFER_SIZE:
+            problems.append(f"server.limits.max_buffer_size: must be at least {MIN_BUFFER_SIZE} bytes, got {buffer}")
+        if problems:
+            raise ConfigurationProblems(problems)
 
     async def _prepare_certificate_validation(self) -> None:
         current = self.iserver.certificate_validator

@@ -9,9 +9,9 @@
 **An OPC UA client and server for Python, built on asyncio and secure from the first line.**
 
 engiNIR-OPCUA implements OPC UA (IEC 62541) for Python 3.12 and newer: clients, servers, subscriptions, events,
-alarms and conditions, history, methods, file transfer, redundancy, certificate management and PubSub, with a
-synchronous API and a command line program on top. Encrypted connections, certificate trust and user roles are
-switched on by default, and every one of them can be set up in a few lines.
+alarms and conditions, history, methods, file transfer, redundancy, certificate management and experimental
+PubSub, with a synchronous API and a command line program on top. Encrypted connections, certificate trust and user
+roles are switched on by default, and every one of them can be set up in a few lines.
 
 It is a fork of [opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0. The import package is
 `enginir_opcua` and the commands start with `enginir-opcua`, so it can be installed next to `asyncua`.
@@ -84,7 +84,7 @@ Set up the certificates of a server and a client, make them trust each other, an
 
 ```bash
 enginir-opcua init server srv --endpoint opc.tcp://127.0.0.1:4840/enginir-opcua/server/
-enginir-opcua init client cli --application-uri urn:enginir:opcua:client
+enginir-opcua init client cli
 enginir-opcua pair srv/pki cli/pki
 enginir-opcua ls -u opc.tcp://127.0.0.1:4840/enginir-opcua/server/ --pki-dir cli/pki \
     --security Basic256Sha256,SignAndEncrypt -n i=85

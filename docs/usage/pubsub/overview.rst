@@ -4,7 +4,9 @@ PubSub (experimental)
 ``enginir_opcua.pubsub`` implements a part of OPC UA PubSub (OPC 10000-14): a publisher sends the values of a
 DataSet as UADP messages over UDP, and a subscriber receives them and writes them to variables of a server or
 hands them to your code. The package is **experimental**: the classes and their defaults can still change, and
-the feature list below is the boundary of what has been tested.
+the feature list below is the boundary of what has been tested. It is not developed further in the 3.x
+releases: the gaps listed under "What is not implemented" stay open, and PubSub is not held to the typing and
+review standard of the rest of the library. Use it for trials on a trusted network, not in production.
 
 What is implemented
 -------------------

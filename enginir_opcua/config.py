@@ -19,6 +19,7 @@ from urllib.parse import ParseResult, urlparse
 
 from cryptography import x509
 
+from .crypto import pki
 from .crypto.cert_gen import write_atomic
 from .crypto.validator import Suppression
 from .ua import SecurityPolicyType
@@ -929,12 +930,7 @@ def check_certificate_uri(
     certificate: x509.Certificate, application_uri: str, role: str, directory: str | Path
 ) -> None:
     """The application certificate has to carry the ApplicationUri and be valid now (OPC 10000-6, 6.2.2)."""
-    found: list[str]
-    try:
-        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        found = names.get_values_for_type(x509.UniformResourceIdentifier)
-    except x509.ExtensionNotFound:
-        found = []
+    found = pki.application_uris(certificate)
     if application_uri not in found:
         shown = ", ".join(found) if found else "none"
         raise ConfigurationError(

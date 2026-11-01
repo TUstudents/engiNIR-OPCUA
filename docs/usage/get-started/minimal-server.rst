@@ -17,7 +17,7 @@ command line sets both up for development on one machine:
 .. code-block:: console
 
     $ enginir-opcua init server srv --endpoint opc.tcp://127.0.0.1:4840/enginir-opcua/server/
-    $ enginir-opcua init client cli --application-uri urn:enginir:opcua:client
+    $ enginir-opcua init client cli
     $ enginir-opcua pair srv/pki cli/pki
     $ enginir-opcua user add srv/users.toml alice --role user
 
@@ -100,8 +100,7 @@ Looking at it from the command line
 ===================================
 
 The command line tools (see :ref:`usage/get-started/installation:command line tools`) can connect with a secure
-channel by pointing them at the client's PKI directory. They use the ApplicationUri
-:code:`urn:enginir:opcua:client`, which is why the client was initialised with it above.
+channel by pointing them at the client's PKI directory. They take the ApplicationUri from the certificate in it.
 
 .. code-block:: console
 

@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from enginir_opcua import Client, Node, Server, ua, uamethod
 from enginir_opcua.config import ServerConfig
-from enginir_opcua.crypto import security_policies, uacrypto
+from enginir_opcua.crypto import pki, security_policies, uacrypto
 from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.server.user_managers import PermissiveUserManager
 from enginir_opcua.sync import Client as SyncClient
@@ -361,6 +361,9 @@ async def configure_client(client: Client, args: argparse.Namespace) -> None:
         client.allow_plaintext_password = True
     if args.pki_dir:
         await client.set_pki_directory(args.pki_dir, create=False)
+        uris = pki.application_uris(client.application_certificate) if client.application_certificate else []
+        if uris:
+            client.application_uri = uris[0]
     if args.security == "None":
         client.allow_no_security = True
     elif pki_security is not None:

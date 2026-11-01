@@ -44,6 +44,15 @@ class OwnCredentials:
     private_key: RSAPrivateKey
 
 
+def application_uris(certificate: x509.Certificate) -> list[str]:
+    """The application URIs in the subject alternative name of a certificate (OPC 10000-6, 6.2.2); empty without one."""
+    try:
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return []
+    return names.get_values_for_type(x509.UniformResourceIdentifier)
+
+
 def create_directories(root: Path, *, own: bool = True) -> None:
     """Create the folders of the layout. The private folder is created readable by its owner only."""
     folders = ["trusted/certs", "trusted/crl", "issuer/certs", "issuer/crl", "rejected/certs"]
