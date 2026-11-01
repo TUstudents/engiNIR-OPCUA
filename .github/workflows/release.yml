@@ -40,7 +40,7 @@ jobs:
       - name: mypy
         run: uv run mypy enginir_opcua tests
       - name: Fast tests
-        run: uv run pytest -q -m "not slow"
+        run: uv run pytest -q -m "not slow" -n 4 --dist loadfile
 
   build:
     runs-on: ubuntu-latest
