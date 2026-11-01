@@ -232,6 +232,7 @@ class Client:
         self._security_chosen = False
         self.application_hook: ApplicationHook | None = None
         self._default_validator: CertificateValidator | None = None
+        self._endpoint_trust_hint: str | None = None
         self._suppress: tuple[str, ...] = tuple(config.suppress or ()) if config is not None else ()
         self._pinned_server_certificate: x509.Certificate | None = None
         self._own_credentials: pki.OwnCredentials | None = None
@@ -618,6 +619,7 @@ class Client:
         rejected store, so that an administrator can trust it (`enginir-opcua trust`) before the first secure
         connect. The server has not proven yet that it holds the key; only the secure connect does.
         """
+        self._endpoint_trust_hint = None
         if self.certificate_validator is not None or self.trust_store is None or not endpoint.ServerCertificate:
             return
         await self._prepare_certificate_validation()
@@ -631,10 +633,11 @@ class Client:
         if outcome.accepted or not outcome.untrusted_chain:
             return
         validator.keep_rejected(outcome, host)
+        self._endpoint_trust_hint = untrusted_hint("server", outcome, validator.trust_store)
         _logger.info(
             "The server certificate came from the endpoint list and the server has not proven yet that it holds the "
             "key; it is kept in the rejected certificates so that it can be trusted. %s",
-            untrusted_hint("server", outcome, validator.trust_store),
+            self._endpoint_trust_hint,
         )
 
     async def _set_security(
@@ -1129,10 +1132,13 @@ class Client:
         if not certificate:
             return error
         thumbprint = uacrypto.certificate_thumbprint(certificate).hex()
-        return BadSecurityChecksFailed(
+        message = (
             f"the server refused the secure channel, probably because it does not trust this client's certificate "
             f"{thumbprint}; trust it on the server: enginir-opcua trust {thumbprint} --pki <server pki>"
         )
+        if self._endpoint_trust_hint is not None:
+            message += f". This client does not trust the server either: {self._endpoint_trust_hint}"
+        return BadSecurityChecksFailed(message)
 
     async def close_secure_channel(self) -> None:
         """Send CloseSecureChannel; the socket stays open."""

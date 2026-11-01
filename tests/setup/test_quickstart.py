@@ -3,11 +3,13 @@ import socket
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.config import ClientConfig, ServerConfig, ServerLimits
 from enginir_opcua.crypto import pki
 from enginir_opcua.crypto.security_policies import SecurityPolicyAes256Sha256RsaPss, SecurityPolicyNone
+from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.server.user_managers import AnonymousReadOnlyUserManager, FileUserManager, PermissiveUserManager
 from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.conftest import find_free_port
@@ -504,3 +506,20 @@ async def test_a_legacy_client_refuses_a_clear_text_password(port: int) -> None:
         )
         with pytest.raises(ConfigurationError, match="allow_plaintext_password"):
             await client.connect()
+
+
+async def test_the_first_connect_names_both_certificates_that_need_trust(tmp_path: Path, port: int) -> None:
+    url = f"opc.tcp://127.0.0.1:{port}/first/"
+    server = Server.quickstart(url, pki=tmp_path / "server-pki")
+    client = Client.quickstart(url, pki=tmp_path / "client-pki", timeout=5)
+    await server.init()
+    client_certificate = await client.init_pki()
+    assert server.iserver.certificate is not None
+    server_thumbprint = certificate_thumbprint(server.iserver.certificate.public_bytes(Encoding.DER)).hex()
+    client_thumbprint = certificate_thumbprint(client_certificate.public_bytes(Encoding.DER)).hex()
+    async with server:
+        with pytest.raises(ua.uaerrors.BadSecurityChecksFailed) as refused:
+            await client.connect()
+    message = str(refused.value)
+    assert f"enginir-opcua trust {client_thumbprint} --pki <server pki>" in message
+    assert f"enginir-opcua trust {server_thumbprint} --pki {tmp_path / 'client-pki'}" in message

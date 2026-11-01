@@ -16,6 +16,9 @@ Each release has its own section; the newest is at the top.
   and `enginir-opcua discover` printed the Application Name the same way; both now print the text.
 - `enginir-opcua discover` printed Application Type, Security Mode and Token type as numbers (`2`, `3`, `0`); it now
   prints their names (`ClientAndServer`, `SignAndEncrypt`, `Anonymous`).
+- When neither side trusts the other yet, the first connect now names both certificates and both `enginir-opcua
+  trust` commands. Before, the error named only the client certificate the server refused, although the client had
+  already found the server certificate untrusted, so the user needed a second failed attempt to learn the second step.
 - `load_data_type_definitions()` and `load_enums()` no longer rebuild the standard enumerations and OptionSets of
   namespace 0 (`ServerState`, `NamingRuleType`, `AccessLevelType`, ... about 50). Before, each call returned and
   registered a second class next to the built-in one in `ua`, so `client.types.find()` gave the copy, and the log
