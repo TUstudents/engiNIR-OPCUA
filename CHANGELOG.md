@@ -36,8 +36,9 @@ Each release has its own section; the newest is at the top.
 
 ### Documentation
 
-- The README is rewritten around what you do with the library: a client that reads, writes and subscribes, a server
-  with history and a method, what else each side offers, and the command line. A test runs its Python examples.
+- The README is rewritten around what you build with the library: a secure client and server in one minute, use
+  cases (machine data in Python, instruments with companion models, machine simulators, device bridges, production
+  servers), the supported parts of the standard and the command line. A test runs its Python examples.
 - New page "Supported features and limits" (`docs/usage/limits.rst`).
 
 ### Additions

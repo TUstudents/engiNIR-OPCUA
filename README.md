@@ -7,17 +7,58 @@
 [![Documentation][docs-badge]][docs]
 [![License: LGPL-3.0-or-later][license-badge]][copying]
 
-**OPC UA for Python: connect to machines and instruments, or make your own device an OPC UA server.**
+**OPC UA for Python, from the lab bench to the plant floor: connect, serve and secure your devices in minutes.**
 
-engiNIR-OPCUA is a client and a server in one library, built on asyncio with a blocking API for scripts. It follows
-OPC UA 1.05 and is tested on every push against the OPC Foundation's reference implementation.
+OPC UA is how machines, instruments and control systems share data. engiNIR-OPCUA lets you speak it from Python,
+as a client that reads your PLC or as a server that puts your own device on the network, with the parts a real
+project needs already built in.
+
+- **Complete.** Subscriptions, methods, alarms and conditions, history, file transfer, certificate management and
+  the companion models of whole industries, in one library, as a client and as a server.
+- **Extended and hardened.** Built on opcua-asyncio, brought up to OPC UA 1.05, extended with the server features
+  listed below and hardened against the attacks known for OPC UA servers.
+- **Effortless.** Encrypted from the first connection, set up with four commands, written in a few lines of async or
+  plain blocking Python.
 
 ```bash
 uv add enginir-opcua          # or: pip install enginir-opcua
-uv tool install enginir-opcua # only the enginir-opcua command line
 ```
 
-## Client: read, write and subscribe
+## A secure connection in one minute
+
+Create a server and a client, make them trust each other, add a user:
+
+```bash
+enginir-opcua init server srv --endpoint opc.tcp://0.0.0.0:4840/demo/
+enginir-opcua init client cli
+enginir-opcua pair srv/pki cli/pki
+enginir-opcua user add srv/users.toml alice --role user
+```
+
+Serve a value:
+
+```python
+import asyncio
+
+from enginir_opcua import Server
+from enginir_opcua.config import ServerConfig
+
+
+async def main() -> None:
+    server = Server(config=ServerConfig.from_toml("srv/server.toml"))
+    await server.init()
+    idx = await server.register_namespace("urn:example:demo")
+    temperature = await server.nodes.objects.add_variable(idx, "Temperature", 21.5)
+    async with server:
+        while True:
+            await asyncio.sleep(1)
+            await temperature.write_value(await temperature.read_value() + 0.1)
+
+
+asyncio.run(main())
+```
+
+Read it from another program, as `alice` (password in `ENGINIR_OPCUA_PASSWORD`):
 
 ```python
 import asyncio
@@ -25,104 +66,115 @@ import asyncio
 from enginir_opcua import Client
 
 
-class Print:
-    def datachange_notification(self, node, value, data):
-        print(node, value)
-
-
 async def main() -> None:
-    client = Client.quickstart("opc.tcp://192.168.0.10:4840", pki="pki", username="operator")
-    async with client:
-        temperature = client.get_node("ns=3;s=Line1.Temperature")
+    async with Client.quickstart("opc.tcp://localhost:4840/demo/", pki="cli/pki", username="alice") as client:
+        idx = await client.get_namespace_index("urn:example:demo")
+        temperature = await client.nodes.objects.get_child(f"{idx}:Temperature")
         print(await temperature.read_value())
-        await client.get_node("ns=3;s=Line1.Setpoint").write_value(185.0)
-
-        subscription = await client.create_subscription(500, Print())
-        await subscription.subscribe_data_change(temperature)
-        await asyncio.sleep(60)
 
 
 asyncio.run(main())
 ```
 
-The client keeps its certificate in `pki/` and reads the password from `ENGINIR_OPCUA_PASSWORD`. The first connect
-fails until the server and the client trust each other's certificate; the error prints the `enginir-opcua trust`
-command for each side.
+That is a signed and encrypted channel, two certificates that trust each other and nobody else, and a user whose
+role decides what `alice` may change. Connecting to a server you didn't set up works the same way: the first attempt
+prints the `enginir-opcua trust` command for each side.
 
-The same without async, for scripts and notebooks:
+## What you can build
+
+### Get machine data into Python
+
+Read a production line into a script, a notebook or a database, with the blocking API if you don't want async:
 
 ```python
 from enginir_opcua.sync import Client
 
 with Client.quickstart("opc.tcp://192.168.0.10:4840", pki="pki") as client:
-    print(client.get_node("ns=3;s=Line1.Temperature").read_value())
+    line = [client.get_node(f"ns=3;s=Line1.{name}") for name in ("Temperature", "Pressure", "Speed")]
+    print(client.read_values(line))
 ```
 
-The client also browses the address space, calls methods, reads history and events, acknowledges alarms, decodes the
-server's custom structures (`load_data_type_definitions`), transfers files, reconnects with its subscriptions after an
-outage, and follows redundant servers (`HaClient`).
+Subscriptions deliver every change as it happens, history reads fetch the past, and the server's own data types
+arrive as Python objects (`load_data_type_definitions`).
 
-## Server: put your device on the network
+### Turn an instrument into an OPC UA device
 
-```bash
-enginir-opcua init server oven --endpoint opc.tcp://0.0.0.0:4840/oven/
-enginir-opcua user add oven/users.toml alice --role user
-```
+Companion specifications define how a kind of device looks on OPC UA, so every client already knows where to find
+its serial number, its state and its data. Import them and create your device as an instance, with all mandatory
+parts filled in. A spectrometer by the Analyser Devices (ADI) model:
 
 ```python
-import asyncio
-from datetime import timedelta
-
-from enginir_opcua import Server, ua, uamethod
-from enginir_opcua.config import ServerConfig
-
-
-async def main() -> None:
-    server = Server(config=ServerConfig.from_toml("oven/server.toml"))
-    await server.init()
-    idx = await server.register_namespace("urn:example:oven")
-    oven = await server.nodes.objects.add_object(idx, "Oven")
-    temperature = await oven.add_variable(idx, "Temperature", 20.0)
-    setpoint = await oven.add_variable(idx, "Setpoint", 180.0)
-    await setpoint.set_writable()
-
-    @uamethod
-    async def heat_to(parent, target: float) -> None:
-        await setpoint.write_value(target)
-
-    await oven.add_method(idx, "HeatTo", heat_to, [ua.VariantType.Double], [])
-    await server.historize_node_data_change(temperature, period=timedelta(days=1))
-
-    async with server:
-        while True:
-            await asyncio.sleep(1)
-            current, target = await temperature.read_value(), await setpoint.read_value()
-            await temperature.write_value(current + (target - current) * 0.1)
-
-
-asyncio.run(main())
+await server.import_xml("Opc.Ua.Di.NodeSet2.xml")
+await server.import_xml("Opc.Ua.Adi.NodeSet2.xml")
+di = await server.get_namespace_index("http://opcfoundation.org/UA/DI/")
+adi = await server.get_namespace_index("http://opcfoundation.org/UA/ADI/")
+spectrometer = await server.nodes.objects.add_object(idx, "Spectrometer", objecttype=ua.NodeId(1011, adi))
+serial = await spectrometer.get_child([f"{di}:Identification", f"{di}:SerialNumber"])
+await serial.write_value("SN-0001")
+spectrum = await spectrometer.add_variable(idx, "Absorbance", [0.0] * 256)
 ```
 
-Anyone may read and subscribe; `alice` may also write the setpoint and call `HeatTo`. Clients can read the last day of
-temperatures as history.
+The same works for lab devices (LADS), machines (Machinery) and every other model published as a NodeSet2 file.
+[Example 07][ex-instrument] builds the complete spectrometer.
 
-What else a server can offer, each with a runnable example:
+### Simulate a machine for testing
 
-- values read from the device only when a client asks (`set_attribute_value_callback`)
-- methods with named, typed and documented arguments ([04][ex-methods])
-- custom structures and enumerations that clients decode by themselves ([05][ex-types])
-- events, and history of values and events in memory or SQLite ([06][ex-history])
-- alarms and conditions that clients acknowledge and confirm ([12][ex-alarms])
-- files and directories that clients read and write ([08][ex-files])
-- the standard diagnostics of sessions and subscriptions ([13][ex-diagnostics])
-- reverse connect, for a server behind a firewall that dials out to its clients ([16][ex-reverse])
-- a TOML configuration file, and `enginir-opcua server --config` to serve it without code
+Your SCADA, MES or analytics code needs a machine to talk to, and the machine is in another country. Import the
+NodeSet2 file its vendor ships and serve it; your tests and your CI get the same address space:
 
-**Companion models.** Import the NodeSets of the OPC UA companion specifications and create instances of their types
-with all mandatory parts: Devices (DI), Analyser Devices (ADI) with `SpectrometerDeviceType`, LADS for lab devices,
-Machinery and others. [Example 07][ex-instrument] builds a spectrometer with its spectrum and wavelength axis.
+```python
+server = Server.quickstart("opc.tcp://127.0.0.1:4840/machine/", pki="pki")
+await server.init()
+await server.import_xml("Machine.NodeSet2.xml")
+async with server:
+    ...  # write test values, run the tests
+```
+
+### Bridge a device that doesn't speak OPC UA
+
+A scale on a serial port, a Modbus controller, a sensor with its own SDK: give each value a callback, and the device
+is asked only when a client reads:
+
+```python
+weight = await device.add_variable(idx, "Weight", 0.0)
+server.set_attribute_value_callback(weight.nodeid, lambda nodeid, attribute: ua.DataValue(scale.read_kg()))
+```
+
+### Run it in production
+
+- history of values and events, in memory or SQLite ([example 06][ex-history])
+- alarms and conditions that operators acknowledge and confirm ([example 12][ex-alarms])
+- files and directories that clients read and write ([example 08][ex-files])
+- certificates and trust lists managed remotely by a security administrator ([example 14][ex-certificates])
+- reverse connect, so a server inside a protected network dials out to its clients ([example 16][ex-reverse])
+- diagnostics of sessions and subscriptions ([example 13][ex-diagnostics])
+- one TOML file for the whole configuration, served with `enginir-opcua server --config server.toml`
+
+## What it supports from the standard
+
+engiNIR-OPCUA follows OPC UA 1.05 (OPC 10000) and accepts peers that speak 1.04.
+
+| Part | Supported |
+|---|---|
+| 3, 5 Address space and information model | custom object, variable, event and data types; structures, unions, enumerations and OptionSets with their DataTypeDefinition; NodeSet2 import and export; diagnostics and model change events |
+| 4 Services | discovery and discovery server, sessions, browse, read and write, methods, node management, subscriptions for data changes and events, subscription transfer |
+| 6 Mappings | `opc.tcp` with the binary encoding; Basic256Sha256, Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss; anonymous, user name and X.509 users; reverse connect |
+| 9 Alarms and conditions | conditions, acknowledgeable and limit alarms, refresh |
+| 10 Programs | program state machines |
+| 11 Historical access | raw values and events, stored in memory or SQLite |
+| 12 Certificate management | push management of certificates and trust lists |
+| 14 PubSub | UADP over UDP (experimental) |
+| 20 File transfer | files and directories |
+| Companion specifications | DI, ADI, LADS, Machinery and the other models published as NodeSet2 |
+
+What is not supported yet, such as the ECC policies and WebSockets, is listed under
+[Supported features and limits][limits].
+
+Coming from asyncua? Most code moves over by changing the import; the [migration guide][migration] lists the rest.
 
 ## Command line
+
+The same tool sets up certificates and users, serves a configuration and inspects any server:
 
 ```bash
 enginir-opcua discover  -u opc.tcp://192.168.0.10:4840                         # endpoints and policies
@@ -133,25 +185,6 @@ enginir-opcua write     -u opc.tcp://192.168.0.10:4840 --pki-dir pki -n "ns=3;s=
 ```
 
 No server at hand? `enginir-opcua server --pki-dir demo-pki --populate` starts one with sample nodes.
-
-## Why engiNIR-OPCUA
-
-- **Tested against the reference.** On every push, CI builds the OPC Foundation's UA-.NETStandard stack and runs this
-  client against its server and its client against this server: browse, read, write, methods, subscriptions,
-  events, alarms, history, reconnect, subscription transfer and reverse connect.
-- **Checked against the standard.** It started from opcua-asyncio 2.1.0; a review of the whole code against OPC UA
-  1.05 found 422 problems, nearly 300 of them bugs. All are fixed or decided, each with a test, and the
-  [CHANGELOG][changelog] cites the part of the specification behind every change.
-- **Secure by default.** Endpoints are encrypted, nothing is trusted until you say so, and the server is hardened
-  against the known attacks on OPC UA servers. The `legacy` and `development` profiles relax this for old devices
-  and local tests, and log every relaxed setting.
-- **Modern Python.** Python 3.12 and newer, asyncio with a blocking API on top, fully type-annotated and checked with
-  strict mypy.
-
-## Coming from asyncua
-
-Most code moves over by changing the import to `enginir_opcua`, and both packages install side by side. The
-[migration guide][migration] lists the changes you will meet.
 
 ## Documentation
 
@@ -193,13 +226,12 @@ was written by Olivier Roulet-Dubonnet and the opcua-asyncio contributors; this 
 [changelog]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/CHANGELOG.md
 [agents]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/AGENTS.md
 [tests-readme]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/tests/README.md
-[ex-methods]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/04_methods.py
-[ex-types]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/05_custom_types.py
 [ex-history]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/06_events_and_history.py
 [ex-instrument]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/07_instrument_server.py
 [ex-files]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/08_file_transfer.py
 [ex-alarms]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/12_alarms.py
 [ex-diagnostics]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/13_diagnostics.py
+[ex-certificates]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/14_certificate_management.py
 [ex-reverse]: https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/16_reverse_connect.py
 [migration]: https://enginir-opcua.readthedocs.io/en/latest/migration.html
 [quick-setup]: https://enginir-opcua.readthedocs.io/en/latest/usage/get-started/quick-setup.html
