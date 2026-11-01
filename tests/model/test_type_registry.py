@@ -214,6 +214,20 @@ async def test_com131_loading_definitions_does_not_report_the_standard_enumerati
     assert collisions == [next(message for message in collisions if "ua.NodeClass" in message)]
 
 
+async def test_loading_definitions_keeps_the_built_in_classes_of_the_standard_enumerations(
+    restore_ua_registry: None,
+) -> None:
+    server = Server(allow_no_security=True)
+    await server.init()
+    idx = await server.register_namespace("http://test.example/standard-enums")
+    await new_enum(server, idx, "Mode", ["A", "B"])
+    loaded = await server.load_data_type_definitions()
+    assert "Mode" in loaded
+    assert not {"ServerState", "NamingRuleType", "AccessLevelType", "PubSubState"} & set(loaded)
+    for name in ("ServerState", "NamingRuleType", "AccessLevelType"):
+        assert server.types.find_own(ua.NodeId(getattr(ua.ObjectIds, name))) is None
+
+
 async def test_a_repeated_load_returns_the_same_types_after_a_reconnect(restore_ua_registry: None) -> None:
     """
     Part 3, 5.8.3: a DataTypeDefinition never changes once given to Clients, so the classes a client built stay valid;

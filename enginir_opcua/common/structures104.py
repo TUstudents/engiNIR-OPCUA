@@ -779,6 +779,12 @@ async def _enum_definition_from_properties(server: Server | Client, nodeid: ua.N
     return None
 
 
+def _is_built_in(data_type: ua.NodeId) -> bool:
+    if data_type.NamespaceIndex != 0 or not isinstance(data_type.Identifier, int):
+        return False
+    return isinstance(getattr(ua, ua.ObjectIdNames.get(data_type.Identifier, ""), None), type)
+
+
 async def load_enums(
     server: Server | Client,
     base_node: Node | None = None,
@@ -790,8 +796,9 @@ async def load_enums(
     """
     Build and register an IntEnum, or an IntFlag with option_set, for the subtypes of base_node (default:
     Enumeration; all levels with recursive) from their EnumDefinition, or for enumerations without one from their
-    EnumValues or EnumStrings Property. Returns {name: class} of every one of them, built now or already in the
-    registry (overwrite_existing builds them all again).
+    EnumValues or EnumStrings Property. Standard DataTypes that have a class in ``ua`` are skipped. Returns
+    {name: class} of every one of them, built now or already in the registry (overwrite_existing builds them all
+    again).
     """
     typename = "OptionSet" if option_set else "Enum"
     if base_node is None:
@@ -799,6 +806,8 @@ async def load_enums(
     descs, sdefs = await get_children_descriptions_type_definitions(server, base_node, overwrite_existing, recursive)
     new_enums = {}
     for idx, desc in enumerate(descs):
+        if _is_built_in(desc.NodeId):
+            continue
         name = clean_name(desc.BrowseName.Name)
         known = None if overwrite_existing else server.types.find_own(desc.NodeId)
         if known is not None:

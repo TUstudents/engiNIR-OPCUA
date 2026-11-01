@@ -14,6 +14,10 @@ Each release has its own section; the newest is at the top.
   generated configuration never read that file, so the users you added could not log in.
 - `enginir-opcua ls` printed DisplayNames and LocalizedText values as `LocalizedText(Locale=None, Text='Objects')`,
   and `enginir-opcua discover` printed the Application Name the same way; both now print the text.
+- `load_data_type_definitions()` and `load_enums()` no longer rebuild the standard enumerations and OptionSets of
+  namespace 0 (`ServerState`, `NamingRuleType`, `AccessLevelType`, ... about 50). Before, each call returned and
+  registered a second class next to the built-in one in `ua`, so `client.types.find()` gave the copy, and the log
+  had an INFO line for each. Standard DataTypes without a class in `ua`, from a newer server, are still built.
 
 ### Additions
 
