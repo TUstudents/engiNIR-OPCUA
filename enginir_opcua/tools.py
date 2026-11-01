@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from enginir_opcua import Client, Node, Server, ua, uamethod
-from enginir_opcua.config import ServerConfig
+from enginir_opcua.config import ServerConfig, shown_url
 from enginir_opcua.crypto import pki, security_policies, uacrypto
 from enginir_opcua.crypto.uacrypto import certificate_thumbprint
 from enginir_opcua.server.user_managers import PermissiveUserManager
@@ -72,18 +72,6 @@ def say(text: object = "") -> None:
 def warn(text: object) -> None:
     """Print to standard error, cleaned."""
     print(clean(text), file=sys.stderr)
-
-
-def shown_url(url: str) -> str:
-    """The URL without the password of its user info, for messages."""
-    parsed = urlparse(url)
-    if parsed.password is None:
-        return url
-    host = parsed.hostname or ""
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    user = f"{parsed.username}@" if parsed.username else ""
-    return parsed._replace(netloc=f"{user}{host}").geturl()
 
 
 def _status_name(status: ua.StatusCode | None) -> str:

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from enginir_opcua.config import ClientConfig, ServerConfig, ServerLimits
+from enginir_opcua.config import ClientConfig, ServerConfig, ServerLimits, parse_opc_tcp_url
 from enginir_opcua.crypto import users_file
 from enginir_opcua.ua.uaerrors import ConfigurationError
 
@@ -431,3 +431,19 @@ def test_dataclass_fields_are_all_documented_in_the_dump() -> None:
     for field in dataclasses.fields(ServerConfig):
         if field.metadata.get("toml", True) and field.name != "limits":
             assert field.name in text
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "opc.tcp://alice:s3cret@host:4840",
+        "http://alice:s3cret@host:4840",
+        "opc.tcp://alice:s3cret@host:99999",
+        "opc.tcp://alice:s3cret@:4840",
+    ],
+)
+def test_url_errors_do_not_show_the_password(url: str) -> None:
+    with pytest.raises(ConfigurationError) as refused:
+        parse_opc_tcp_url(url)
+    assert "s3cret" not in str(refused.value)
+    assert "alice@" in str(refused.value)

@@ -173,6 +173,13 @@ def test_cli36_other_schemes_are_a_configuration_error(url: str) -> None:
         Client(url, allow_no_security=True)
 
 
+def test_the_scheme_error_does_not_show_the_password_of_the_url() -> None:
+    with pytest.raises(ConfigurationError) as refused:
+        Client("http://alice:s3cret@example.invalid:4840", allow_no_security=True)
+    assert "s3cret" not in str(refused.value)
+    assert "http://alice@example.invalid:4840" in str(refused.value)
+
+
 async def test_cli24_revised_session_timeout_is_logged_at_info_with_both_values(
     server: Server, caplog: pytest.LogCaptureFixture
 ) -> None:

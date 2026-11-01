@@ -181,23 +181,34 @@ class ConfigurationProblems(ConfigurationError):
         self.problems = problems
 
 
+def shown_url(url: str) -> str:
+    """The URL without the password of its user info, for messages."""
+    parsed = urlparse(url)
+    userinfo, have_info, host = parsed.netloc.rpartition("@")
+    if not have_info or ":" not in userinfo:
+        return url
+    user = userinfo.partition(":")[0]
+    return parsed._replace(netloc=f"{user}@{host}" if user else host).geturl()
+
+
 def parse_opc_tcp_url(url: str, setting: str = "endpoint") -> ParseResult:
     """Parse an opc.tcp URL and check scheme, host and port; errors name the setting."""
     if not isinstance(url, str):
         raise ConfigurationError(f"{setting}: expected a URL string, got {url!r}")
     parsed = urlparse(url)
+    shown = shown_url(url)
     if parsed.scheme != "opc.tcp":
-        raise ConfigurationError(f"{setting}: expected a URL that starts with opc.tcp://, got {url!r}")
+        raise ConfigurationError(f"{setting}: expected a URL that starts with opc.tcp://, got {shown!r}")
     if not parsed.hostname:
-        raise ConfigurationError(f"{setting}: the URL {url!r} has no host; write opc.tcp://host:port/path")
+        raise ConfigurationError(f"{setting}: the URL {shown!r} has no host; write opc.tcp://host:port/path")
     if parsed.username is not None or parsed.password is not None:
-        raise ConfigurationError(f"{setting}: the URL {url!r} must not carry a user name or password")
+        raise ConfigurationError(f"{setting}: the URL {shown!r} must not carry a user name or password")
     try:
         port = parsed.port
     except ValueError:
         port = 0
     if port is not None and not 1 <= port <= MAX_PORT:
-        raise ConfigurationError(f"{setting}: the port of {url!r} must be from 1 to {MAX_PORT}")
+        raise ConfigurationError(f"{setting}: the port of {shown!r} must be from 1 to {MAX_PORT}")
     return parsed
 
 

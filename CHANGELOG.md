@@ -2,6 +2,14 @@
 
 Each release has its own section; the newest is at the top.
 
+## 3.0.1 (unreleased)
+
+### Fixes
+
+- Errors about a refused URL no longer show the password of its user info: `Client("http://alice:secret@host")`
+  and the URL checks of the config files said `got 'http://alice:secret@host'`, and the command line printed that
+  message. They now show `http://alice@host`. `enginir_opcua.config.shown_url()` does the cleaning.
+
 ## 3.0.0 (2026-11-01)
 
 The first release of `enginir-opcua`, a fork of [opcua-asyncio](https://github.com/FreeOpcUa/opcua-asyncio) 2.1.0.

@@ -41,6 +41,7 @@ from ..config import (
     password_from_environment,
     policy_name,
     quickstart_client_config,
+    shown_url,
 )
 from ..crypto import cert_gen, pki, security_policies, uacrypto
 from ..crypto.truststore import TrustStore
@@ -175,7 +176,7 @@ class Client:
         self.strip_url_credentials: bool = True
         self._server_url = urlparse(url)
         if self._server_url.scheme != "opc.tcp":
-            raise ConfigurationError(f"Only opc.tcp URLs are supported, got {url!r}")
+            raise ConfigurationError(f"Only opc.tcp URLs are supported, got {shown_url(url)!r}")
         userinfo, have_info, _ = self._server_url.netloc.rpartition("@")
         if have_info:
             username, have_password, password = userinfo.partition(":")
