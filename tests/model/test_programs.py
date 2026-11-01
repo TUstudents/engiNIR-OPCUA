@@ -28,7 +28,7 @@ async def make_rig() -> AsyncIterator[tuple[Server, Client]]:
     port = find_free_port()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await server.start()
-    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=5)
+    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=5, allow_no_security=True)
     await client.connect()
     yield server, client
     await client.disconnect()

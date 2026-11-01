@@ -7,10 +7,11 @@ import pytest
 from enginir_opcua import Client, Server, ua
 from enginir_opcua.config import ClientConfig, ServerConfig, ServerLimits
 from enginir_opcua.crypto import pki
-from enginir_opcua.server.user_managers import AnonymousReadOnlyUserManager, FileUserManager
+from enginir_opcua.crypto.security_policies import SecurityPolicyAes256Sha256RsaPss, SecurityPolicyNone
+from enginir_opcua.server.user_managers import AnonymousReadOnlyUserManager, FileUserManager, PermissiveUserManager
 from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.conftest import find_free_port
-from tests.setup.conftest import make_credentials, trust
+from tests.setup.conftest import PASSWORD, make_credentials, trust
 
 URL = "opc.tcp://127.0.0.1:4840/quick/"
 
@@ -27,6 +28,73 @@ def test_quickstart_applies_the_secure_profile(tmp_path: Path, users: Path) -> N
     ]
     assert isinstance(server.iserver.user_manager, FileUserManager)
     assert not server.allow_plaintext_password
+
+
+@pytest.mark.parametrize(
+    ("profile", "plaintext", "suppressed", "policy_count"),
+    [
+        pytest.param("secure", False, set(), 3, id="secure"),
+        pytest.param(
+            "development",
+            True,
+            {"revocation_unknown", "issuer_revocation_unknown", "host_name_invalid"},
+            2,
+            id="development",
+        ),
+        pytest.param(
+            "legacy", False, {"revocation_unknown", "issuer_revocation_unknown", "host_name_invalid"}, 11, id="legacy"
+        ),
+    ],
+)
+def test_a_configured_server_applies_the_posture_of_its_profile(
+    tmp_path: Path, profile: str, plaintext: bool, suppressed: set[str], policy_count: int
+) -> None:
+    server = Server.quickstart(URL, profile=profile, pki=tmp_path / "pki")
+    assert server.allow_plaintext_password is plaintext
+    assert set(server._suppress) == suppressed
+    assert len(server._security_policy) == policy_count
+    assert server.iserver.accept_server_registrations is False
+
+
+def test_a_configured_server_applies_its_overrides(tmp_path: Path) -> None:
+    server = Server.quickstart(
+        URL,
+        pki=tmp_path / "pki",
+        suppress=["certificate_expired"],
+        identity_tokens=["UserName", "Certificate"],
+        allow_plaintext_password=True,
+        accept_server_registrations=True,
+    )
+    assert server._suppress == ("certificate_expired",)
+    assert server.iserver.supported_tokens == (ua.UserNameIdentityToken, ua.X509IdentityToken)
+    assert server.allow_plaintext_password is True
+    assert server.iserver.accept_server_registrations is True
+
+
+async def test_a_configured_server_gives_its_suppressions_to_the_validator(tmp_path: Path, port: int) -> None:
+    server = Server.quickstart(
+        f"opc.tcp://127.0.0.1:{port}/s/", profile="development", pki=tmp_path / "pki", suppress=["usage"]
+    )
+    await server.init()
+    async with server:
+        validator = server.iserver.certificate_validator
+        assert validator is not None
+        assert {suppression.value for suppression in validator.suppressions} == {"usage"}
+
+
+async def test_a_configured_server_logs_its_weaknesses_once_at_start(
+    tmp_path: Path, port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    server = Server.quickstart(f"opc.tcp://127.0.0.1:{port}/w/", profile="legacy", pki=tmp_path / "pki")
+    await server.init()
+    with caplog.at_level(logging.WARNING):
+        async with server:
+            pass
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert server._config is not None
+    for line in server._config.weaknesses():
+        assert messages.count(line) == 1
+    assert not [m for m in messages if m.startswith("opc.tcp://") or "The deprecated policy" in m]
 
 
 def test_quickstart_without_users_accepts_anonymous_only(tmp_path: Path) -> None:
@@ -168,7 +236,7 @@ async def test_the_development_profile_offers_no_security_and_warns(
     with caplog.at_level(logging.WARNING):
         await server.start()
     try:
-        assert "development profile" in caplog.text and url in caplog.text
+        assert "profile development" in caplog.text
         modes = {e.SecurityMode for e in await server.get_endpoints()}
         assert ua.MessageSecurityMode.None_ in modes
         async with Client.quickstart(url, profile="development") as client:
@@ -285,3 +353,145 @@ def test_cli85_the_sync_quickstarts_share_one_thread_loop(tmp_path: Path) -> Non
         finally:
             server.stop()
         assert tloop.is_alive()
+
+
+async def _legacy_pair(tmp_path: Path, port: int, client_pki: Path | None) -> tuple[Server, Client]:
+    url = f"opc.tcp://127.0.0.1:{port}/auto/"
+    server = Server.quickstart(url, profile="legacy", pki=tmp_path / "server-pki")
+    client = Client.quickstart(url, profile="legacy", pki=client_pki)
+    await server.init()
+    if client_pki is not None:
+        await make_credentials(client_pki, client.application_uri, pki.CLIENT_USAGE)
+        trust(tmp_path / "server-pki", client_pki)
+        trust(client_pki, tmp_path / "server-pki")
+    return server, client
+
+
+async def test_an_automatic_client_picks_the_strongest_offered_policy(
+    tmp_path: Path, port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    server, client = await _legacy_pair(tmp_path, port, tmp_path / "client-pki")
+    with caplog.at_level(logging.INFO):
+        async with server, client:
+            assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    assert isinstance(client.security_policy, SecurityPolicyAes256Sha256RsaPss)
+    assert client.security_policy.Mode == ua.MessageSecurityMode.SignAndEncrypt
+    chosen = [r for r in caplog.records if r.levelno == logging.INFO and "Aes256Sha256RsaPss" in r.getMessage()]
+    assert len(chosen) == 1 and "SignAndEncrypt" in chosen[0].getMessage()
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING and "without security" in r.getMessage()]
+
+
+async def test_an_automatic_client_without_a_pki_falls_back_to_no_security(
+    tmp_path: Path, port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    server, client = await _legacy_pair(tmp_path, port, None)
+    with caplog.at_level(logging.INFO):
+        async with server, client:
+            assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    assert isinstance(client.security_policy, SecurityPolicyNone)
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("without security" in m and "neither signed nor encrypted" in m for m in messages)
+    assert any("no security" in r.getMessage() and r.levelno == logging.INFO for r in caplog.records)
+
+
+async def test_an_automatic_client_falls_back_when_the_server_offers_only_no_security(
+    tmp_path: Path, port: int
+) -> None:
+    url = f"opc.tcp://127.0.0.1:{port}/auto/"
+    server = Server(allow_no_security=True)
+    await server.init()
+    server.set_endpoint(url)
+    server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+    await make_credentials(tmp_path / "client-pki", "urn:auto:client", pki.CLIENT_USAGE)
+    client = Client.quickstart(url, profile="legacy", pki=tmp_path / "client-pki", application_uri="urn:auto:client")
+    async with server, client:
+        assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    assert isinstance(client.security_policy, SecurityPolicyNone)
+
+
+async def test_an_automatic_client_applies_its_choice_once(tmp_path: Path, port: int) -> None:
+    server, client = await _legacy_pair(tmp_path, port, tmp_path / "client-pki")
+    async with server:
+        await client.connect()
+        first = client.security_policy
+        await client.disconnect()
+        await client.connect()
+        assert client.security_policy is first
+        await client.disconnect()
+
+
+async def test_a_configured_client_logs_its_weaknesses_once_per_connect(
+    tmp_path: Path, port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    url = f"opc.tcp://127.0.0.1:{port}/w/"
+    server = Server.quickstart(url, profile="development", pki=tmp_path / "pki")
+    await server.init()
+    client = Client.quickstart(url, profile="development")
+    async with server:
+        with caplog.at_level(logging.WARNING):
+            await client.connect()
+            await client.get_namespace_array()
+            await client.disconnect()
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert client._config is not None
+    lines = client._config.weaknesses()
+    assert lines
+    for line in lines:
+        assert messages.count(line) == 1
+
+
+async def test_a_secure_client_logs_no_weakness(paired: tuple[Server, Client]) -> None:
+    _, client = paired
+    assert client._config is not None and client._config.weaknesses() == []
+
+
+async def test_a_configured_client_gives_its_suppressions_to_the_validator(tmp_path: Path) -> None:
+    client = Client.quickstart(URL, profile="development", suppress=["usage"])
+    await client._prepare_certificate_validation()
+    validator = client._default_validator
+    assert validator is not None
+    assert {suppression.value for suppression in validator.suppressions} == {"usage"}
+
+
+@pytest.mark.parametrize(
+    ("profile", "plaintext"),
+    [pytest.param("development", True, id="development"), pytest.param("legacy", False, id="legacy")],
+)
+def test_a_configured_client_takes_the_plaintext_posture_of_its_profile(
+    tmp_path: Path, profile: str, plaintext: bool
+) -> None:
+    assert Client.quickstart(URL, profile=profile, pki=tmp_path).allow_plaintext_password is plaintext
+    assert Client.quickstart(URL, profile=profile, pki=tmp_path, allow_plaintext_password=True).allow_plaintext_password
+
+
+async def _clear_text_server(port: int) -> Server:
+    server = Server(allow_no_security=True, user_manager=PermissiveUserManager())
+    server.allow_plaintext_password = True
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{port}/dev/")
+    server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+    return server
+
+
+async def test_a_development_client_sends_its_password_in_clear_text(
+    port: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    server = await _clear_text_server(port)
+    async with server:
+        client = Client.quickstart(
+            f"opc.tcp://127.0.0.1:{port}/dev/", profile="development", username="alice", password=PASSWORD
+        )
+        with caplog.at_level(logging.WARNING):
+            async with client:
+                assert await client.nodes.server_state.read_value() == ua.ServerState.Running
+    assert any("Sending the password in clear text" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_legacy_client_refuses_a_clear_text_password(port: int) -> None:
+    server = await _clear_text_server(port)
+    async with server:
+        client = Client.quickstart(
+            f"opc.tcp://127.0.0.1:{port}/dev/", profile="legacy", pki=None, username="alice", password=PASSWORD
+        )
+        with pytest.raises(ConfigurationError, match="allow_plaintext_password"):
+            await client.connect()

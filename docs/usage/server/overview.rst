@@ -34,16 +34,17 @@ all of them, and the URL is what clients are told to connect to. Behind NAT or i
 server under another address than the one it binds, set ``server.socket_address`` to the address to bind.
 
 Every combination of SecurityPolicy and MessageSecurityMode that the server allows is offered as an endpoint, with the user
-token types that the user manager accepts.
+token types that the user manager accepts. The profiles ``secure``, ``development`` and ``legacy`` set the defaults of all
+security settings; see :doc:`../common/security`.
 
 Security defaults
 =================
 
 - The endpoint without security (policy *None*) is **off**. Turn it on for tests and closed networks with
-  ``Server(allow_no_security=True)``.
-- The policies Basic256Sha256, Aes128Sha256RsaOaep and Aes256Sha256RsaPss are on, each in Sign and SignAndEncrypt.
-  The deprecated Basic128Rsa15 and Basic256 need ``Server(allow_deprecated_policies=True)``.
-  ``server.set_security_policy([...])`` chooses the set.
+  ``Server(allow_no_security=True)``; the server then warns at start.
+- The policies Basic256Sha256, Aes128Sha256RsaOaep and Aes256Sha256RsaPss are on, each with SignAndEncrypt only.
+  ``server.set_security_policy([...])`` chooses the set and accepts every policy and mode, the deprecated Basic128Rsa15
+  and Basic256 and the Sign modes included; naming one is the request, and the server warns for each weak endpoint.
 - The server trusts no client certificate until it is told which ones to trust. Give it a PKI directory with
   ``await server.set_pki_directory("pki")`` (see :doc:`../common/pki-directory`) or a trust store with
   ``server.set_trust_store(...)``. A rejected client certificate is saved in ``rejected/certs`` for you to look at; the client

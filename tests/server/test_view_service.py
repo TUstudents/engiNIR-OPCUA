@@ -236,7 +236,7 @@ async def test_srv17_continuation_points_are_freed_with_the_session(access_rig: 
         return sum(1 for session in manager.sessions.values() if len(session.continuation_points))
 
     before = holders()
-    guest = Client(access_rig.user.server_url.geturl().replace("someone", "guest"), timeout=10)
+    guest = Client(access_rig.user.server_url.geturl().replace("someone", "guest"), timeout=10, allow_no_security=True)
     await guest.connect()
     result = (await browse(guest, children_of(folder.nodeid), maximum=2))[0]
     assert result.ContinuationPoint

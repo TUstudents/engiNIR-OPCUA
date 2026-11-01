@@ -44,10 +44,12 @@ environment variable ``ENGINIR_OPCUA_PASSWORD``.
 This is the change every application meets. In ``asyncua`` a new server offered an endpoint without security and
 accepted any certificate; in engiNIR-OPCUA neither side trusts anything until you configure it.
 
-**Endpoints.** A server offers only signed and encrypted endpoints. An endpoint without security exists only with
-``Server(allow_no_security=True)`` or ``NoSecurity`` in ``set_security_policy()``, and ``Basic128Rsa15`` and
-``Basic256`` need ``allow_deprecated_policies=True`` on both sides. A server without any endpoint refuses to start
-with a ``ConfigurationError``.
+**Endpoints.** A server offers only SignAndEncrypt endpoints. An endpoint without security exists only with
+``Server(allow_no_security=True)`` or ``NoSecurity`` in ``set_security_policy()``, and ``set_security_policy()`` takes
+the deprecated ``Basic128Rsa15`` and ``Basic256`` and the Sign modes when you name them. A server without any endpoint
+refuses to start with a ``ConfigurationError``. See `Security profiles`_ below.
+
+**Clients.** ``Client(url)`` no longer connects without security by default; see `Security profiles`_ below.
 
 **Certificates and trust.** Both sides check the peer's certificate at every secure channel: chain, signature,
 validity, key usage, host name and ApplicationUri. The trusted certificates live in a PKI directory. The easiest way
@@ -73,6 +75,42 @@ old behaviour as an explicit, insecure choice for tests.
 ``CertificateValidator``.
 
 :doc:`usage/get-started/quick-setup` walks through all of this with a server and client that work together.
+
+
+Security profiles
+-----------------
+
+The library has three security profiles, ``secure`` (the default), ``development`` and ``legacy``; see
+:doc:`usage/common/security`. They change the following.
+
+**Clients without a choice.** ``Client(url).connect()`` used to open a channel without security when nothing was
+configured. It now raises a ``ConfigurationError``. Write ``Client(url, allow_no_security=True)`` for a test setup, call
+``set_security()``, or use ``Client.quickstart(url, pki=...)``. The same holds for the sync ``Client``. Discovery
+without a session (``connect_and_get_server_endpoints``, ``connect_and_find_servers``) needs no choice. The commands
+``enginir-opcua read``, ``ls`` and the other client commands refuse without ``--security`` or ``--pki-dir``; add
+``--security None`` for a server without security.
+
+**``allow_deprecated_policies`` is removed** on ``Server`` and ``Client`` (and the sync classes). Name the policy:
+``server.set_security_policy([...])`` and ``client.set_security(SecurityPolicyBasic128Rsa15, ...)`` accept it and log a
+warning.
+
+**``ServerConfig.allow_no_security`` is removed.** List ``"None"`` in ``security``. A TOML file that still has the key
+fails with "unknown setting".
+
+**The ``legacy`` profile** is for old devices: the server offers every policy and mode and no security, the client
+takes ``security = "auto"``, the strongest endpoint the server offers. ``enginir-opcua init --profile legacy`` writes
+its configuration.
+
+**Clear-text passwords.** A client refuses to send a password over a channel that is not SignAndEncrypt when the server
+offers no encrypted user token. Set ``client.allow_plaintext_password = True`` (the ``development`` profile does, and
+``--allow-plaintext-password`` on the command line) if you must. A server that sends passwords in clear text still
+needs ``allow_plaintext_password`` as before.
+
+**``Server()`` offers SignAndEncrypt only.** The Sign-only endpoints of the secure policies are no longer in the
+default list. ``Server.quickstart(..., profile="legacy")`` or ``set_security_policy()`` brings them back.
+
+**The demo server.** ``enginir-opcua server`` is secure by default and needs ``--pki-dir``; ``--no-security`` is the
+explicit request for the old behaviour, and ``--accept-all-logins`` works only together with it.
 
 
 3. New default identity
@@ -127,7 +165,8 @@ internal names are gone; the changelog lists them.
 ==============
 
 #. Replace the dependency and the imports.
-#. Create PKI directories and exchange the certificates, or configure ``allow_no_security=True`` for a test setup.
+#. Create PKI directories and exchange the certificates, or write ``Client(url, allow_no_security=True)`` and
+   ``Server(allow_no_security=True)`` for a test setup.
 #. Add a users file with roles, or decide which clients stay anonymous and read-only.
 #. Call ``set_writable()`` on the variables that clients write.
 #. Update hard-coded endpoint URLs and ApplicationUris.

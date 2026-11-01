@@ -19,8 +19,8 @@ def example(script: Path) -> object:
     )
 
 
-def test_the_set_has_sixteen_examples() -> None:
-    assert [script.name[:2] for script in SCRIPTS] == [f"{number:02d}" for number in range(1, 17)]
+def test_the_set_has_seventeen_examples() -> None:
+    assert [script.name[:2] for script in SCRIPTS] == [f"{number:02d}" for number in range(1, 18)]
 
 
 @pytest.mark.parametrize("script", [example(script) for script in SCRIPTS])

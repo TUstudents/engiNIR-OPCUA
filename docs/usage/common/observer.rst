@@ -24,7 +24,7 @@ Subclass ``Observer``, override the hooks you need and hand an instance to the c
         def on_messages_lost(self, subscription_id, count):
             lost_counter.inc(count)
 
-    client = Client(url, observer=Metrics())
+    client = Client(url, allow_no_security=True, observer=Metrics())
 
 ``client.observer`` is also a property, so ``client.observer = Metrics()`` works; set it before ``connect()``. The sync
 ``Client`` takes the same ``observer`` argument. Hooks you do not override do nothing.

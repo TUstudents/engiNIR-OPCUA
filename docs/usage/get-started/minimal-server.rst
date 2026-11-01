@@ -25,6 +25,9 @@ command line sets both up for development on one machine:
 move the certificates yourself with ``enginir-opcua trust``. ``user add`` asks for a password and stores only a salted
 hash. A user with the role ``user`` may read, write and call methods; anonymous clients may only read.
 
+``Server()`` and ``Server.quickstart`` offer only SignAndEncrypt endpoints. To try the server without certificates,
+use the ``development`` profile or ``Server(allow_no_security=True)`` and read :doc:`../common/security` first.
+
 The server
 ==========
 

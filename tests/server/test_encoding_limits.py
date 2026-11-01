@@ -35,7 +35,7 @@ async def make_limit_rig() -> AsyncIterator[LimitRig]:
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     ns = await server.register_namespace("http://test.example/limits")
     await server.start()
-    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10)
+    client = Client(f"opc.tcp://admin@127.0.0.1:{port}", timeout=10, allow_no_security=True)
     await client.connect()
     yield LimitRig(server, client, ns)
     await client.disconnect()

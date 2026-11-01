@@ -110,7 +110,7 @@ def short_hello_deadline(server: Server, monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.fixture
 async def no_free_connection(server: Server, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    async with Client(server.endpoint.geturl()):
+    async with Client(server.endpoint.geturl(), allow_no_security=True):
         assert server.bserver is not None
         monkeypatch.setattr(server.iserver, "max_connections", len(server.bserver.clients))
         yield

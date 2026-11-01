@@ -502,13 +502,14 @@ class Client(_Owner):
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
         watchdog_intervall: float = 1.0,
-        allow_deprecated_policies: bool = False,
         auto_reconnect: bool = False,
         reconnect_max_delay: float = 30.0,
         reconnect_request_timeout: float = 60.0,
         handler_queue_maxsize: int = 1000,
         observer: Observer | None = None,
         config: ClientConfig | None = None,
+        *,
+        allow_no_security: bool = False,
     ) -> None:
         self.tloop: ThreadLoop = tloop  # type: ignore[assignment]
         self.close_tloop: bool = False
@@ -528,9 +529,9 @@ class Client(_Owner):
                 auto_reconnect=auto_reconnect,
                 reconnect_max_delay=reconnect_max_delay,
                 reconnect_request_timeout=reconnect_request_timeout,
-                allow_deprecated_policies=allow_deprecated_policies,
                 observer=observer,
                 config=config,
+                allow_no_security=allow_no_security,
             )
             self.nodes: Shortcuts = Shortcuts(self.tloop, self.aio_obj.uaclient.session)
         except Exception:
@@ -573,6 +574,8 @@ class Client(_Owner):
     max_messagesize = _aio_property("max_messagesize")
     max_chunkcount = _aio_property("max_chunkcount")
     strip_url_credentials = _aio_property("strip_url_credentials")
+    allow_no_security = _aio_property("allow_no_security")
+    allow_plaintext_password = _aio_property("allow_plaintext_password")
     session_state_path = _aio_property("session_state_path")
     application_hook = _aio_property("application_hook")
     observer = _aio_property("observer")
@@ -949,7 +952,6 @@ class Server(_Owner):
         tloop: ThreadLoop | None = None,
         sync_wrapper_timeout: float | None = 120,
         allow_no_security: bool = False,
-        allow_deprecated_policies: bool = False,
         user_manager: UserManager | None = None,
         handler_queue_maxsize: int = 1000,
         config: ServerConfig | None = None,
@@ -968,7 +970,6 @@ class Server(_Owner):
             self.aio_obj: server.Server = server.Server(
                 user_manager=user_manager,
                 allow_no_security=allow_no_security,
-                allow_deprecated_policies=allow_deprecated_policies,
                 config=config,
             )
             self.tloop.post(self.aio_obj.init(shelf_file))

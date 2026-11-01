@@ -92,7 +92,7 @@ async def connect(
     channel_lifetime_ms: int | None = None,
     **client_options: Any,
 ) -> Client:
-    client = Client(url, **client_options)
+    client = Client(url, allow_no_security=case.policy is None, **client_options)
     await client.set_pki_directory(identity.pki, create=False)
     if channel_lifetime_ms is not None:
         client.secure_channel_timeout = channel_lifetime_ms
@@ -101,6 +101,7 @@ async def connect(
     if user == "username":
         client.set_user(USER_NAME)
         client.set_password(USER_PASSWORD)
+        client.allow_plaintext_password = case.policy is None
     elif user == "certificate":
         await client.load_client_certificate(str(identity.certificate))
         await client.load_private_key(identity.private_key)

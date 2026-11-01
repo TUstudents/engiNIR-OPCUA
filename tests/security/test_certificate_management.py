@@ -554,7 +554,7 @@ async def test_srv111_get_rejected_list_right_after_a_refused_connect_has_the_ce
     rig: Rig, tmp_path: Path
 ) -> None:
     client = await rig.connect("secadmin")
-    stranger = Client(rig.url, timeout=3)
+    stranger = Client(rig.url, timeout=3, allow_no_security=True)
     await stranger.set_pki_directory(tmp_path / "stranger")
     shutil.copy(rig.root / "own" / "certs" / "application.der", tmp_path / "stranger" / "trusted" / "certs")
     await stranger.set_security(SecurityPolicyBasic256Sha256)

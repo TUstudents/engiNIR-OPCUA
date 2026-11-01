@@ -356,7 +356,7 @@ def test_com63_client_rejects_an_invalid_open_response(mutation: str) -> None:
 
 async def test_cli8_renewal_interval_follows_every_revised_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
     """Part 4, 5.6.2.1: the client renews at 75 % of the lifetime of the token it holds now, never below 1 s."""
-    client = Client("opc.tcp://127.0.0.1:1")
+    client = Client("opc.tcp://127.0.0.1:1", allow_no_security=True)
     client.secure_channel_timeout = 40_000
     sleeps: list[float] = []
     lifetimes = iter([8_000, 0, 20_000])

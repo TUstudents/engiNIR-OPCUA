@@ -165,7 +165,7 @@ async def running_server(
 async def secure_client(
     server: Server, peer: Peer = PKI.peer1, server_peer: Peer | None = None, trust_store: TrustStore | None = None
 ) -> Client:
-    client = Client(server.endpoint.geturl(), timeout=3)
+    client = Client(server.endpoint.geturl(), timeout=3, allow_no_security=True)
     await client.set_security(
         SecurityPolicyBasic256Sha256,
         peer.certificate,
@@ -243,7 +243,7 @@ async def test_policy_none_channel_does_not_call_the_validator(tmp_path: Path) -
     async with running_server(store, policies=(ua.SecurityPolicyType.NoSecurity, SECURE)) as server:
         counting = CountingValidator(store)
         server.set_certificate_validator(counting)
-        async with Client(server.endpoint.geturl()) as client:
+        async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
             assert await client.nodes.objects.get_children()
         assert counting.contexts == []
 
@@ -416,7 +416,7 @@ async def test_pki_client_keeps_the_crl_folders_of_the_store(tmp_path: Path) -> 
     leaf = make_identity(issuer=ca)
     crl = make_crl(ca, revoked=(leaf.certificate.serial_number,))
     root = write_pki_layout(tmp_path, trusted=(ca.certificate,), trusted_crls=(crl,))
-    client = Client("opc.tcp://127.0.0.1:1")
+    client = Client("opc.tcp://127.0.0.1:1", allow_no_security=True)
     client.set_trust_store(TrustStore.from_pki_directory(root))
     await client._prepare_certificate_validation()
     assert client._default_validator is not None

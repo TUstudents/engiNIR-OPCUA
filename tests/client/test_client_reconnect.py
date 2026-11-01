@@ -45,7 +45,7 @@ async def reconnect_cycle(client: Client, timeout: float = 10.0) -> None:
 
 
 async def reconnecting_client(server: Server, **settings: Any) -> Client:
-    client = Client(server.endpoint.geturl(), timeout=1.0, watchdog_intervall=0.2)
+    client = Client(server.endpoint.geturl(), timeout=1.0, watchdog_intervall=0.2, allow_no_security=True)
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.3, reconnect_request_timeout=5.0)
     for name, value in settings.items():
         setattr(client, name, value)
@@ -145,7 +145,7 @@ async def test_cli31_repeated_activation_failures_create_a_new_session(local_ser
 async def test_cli30_record_is_rewritten_after_reconnect(local_server: Server, tmp_path: Path) -> None:
     """Part 4, 6.7: the persisted session record follows the nonce of every ActivateSession."""
     path = tmp_path / "session.json"
-    client = Client(local_server.endpoint.geturl(), timeout=1.0, watchdog_intervall=0.2)
+    client = Client(local_server.endpoint.geturl(), timeout=1.0, watchdog_intervall=0.2, allow_no_security=True)
     client.session_state_path = path
     await client.connect(auto_reconnect=True, reconnect_max_delay=0.3, reconnect_request_timeout=5.0)
     try:

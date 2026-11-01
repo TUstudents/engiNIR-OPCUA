@@ -49,6 +49,10 @@ the connection fails with an error that names the thumbprint and the command to 
 async context manager as the server, which opens and closes the connection for us. Without ``username`` the session is
 anonymous and read-only.
 
+A plain ``Client(url)`` has no security choice and refuses to connect. Use ``Client.quickstart``, call
+``set_security()``, or write ``Client(url, allow_no_security=True)`` for a server on a closed test network; the client
+then warns that the channel is neither signed nor encrypted. See :doc:`../common/security`.
+
 Getting the namespace
 =====================
 

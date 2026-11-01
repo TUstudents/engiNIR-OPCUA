@@ -44,8 +44,8 @@ Secure defaults and certificate trust (OPC 10000-4, 6.1.3):
 - `Server.set_certificate_validator(hook)` and `Client.certificate_validator` are now `set_application_hook()` /
   `application_hook`; `set_certificate_validator()` takes a whole validator.
 - The NoSecurity endpoint is offered only with `Server(allow_no_security=True)` or `NoSecurity` in
-  `set_security_policy()`. `Basic128Rsa15` and `Basic256` need `allow_deprecated_policies=True` on both sides. A server
-  without any endpoint refuses to start with `ConfigurationError`.
+  `set_security_policy()`. `Basic128Rsa15` and `Basic256` are accepted by name, with a warning (see Security profiles).
+  A server without any endpoint refuses to start with `ConfigurationError`.
 - Generated application certificates have `cA = FALSE` (self-signed ones keep keyCertSign); keys are written atomically
   with mode 0600. `setup_self_signed_certificate()` only replaces certificates it generated itself.
 - New: `Server.load_certificate_chain()` to send an intermediate chain, `UaStatusCodeError(code, detail)`.
@@ -703,16 +703,45 @@ Quick setup (workstream K):
 - A private key that the PKI directory generates is encrypted when a password is given (CRY-32). The default client
   name is `engiNIR OPC UA Client` (CLI-71).
 
+Security profiles:
+- Breaking: `Client(url).connect()` without a security choice raises `ConfigurationError`; it no longer opens a channel
+  without security. The choices are `Client.quickstart(...)`, `set_security(...)` and the new
+  `Client(url, allow_no_security=True)`, which logs a warning at connect. Discovery without a session
+  (`connect_and_get_server_endpoints`, `connect_and_find_servers`, `connect_sessionless`) needs no choice. The sync
+  `Client` and `HaSecurityConfig(allow_no_security=...)` follow.
+- Breaking: `allow_deprecated_policies` is removed from `Server`, `Client` and the sync classes; `set_security_policy`
+  and `set_security` take any policy by name and warn for a deprecated one. `ServerConfig.allow_no_security` is removed;
+  list `"None"` in `security`. `Server()` offers SignAndEncrypt only, no Sign-only endpoints.
+- Breaking: a client refuses to send a password in clear text (no encrypted user token and a channel that is not
+  SignAndEncrypt) unless `client.allow_plaintext_password` is set.
+- Three profiles as data in `enginir_opcua.config.POSTURES`: `secure` (default), `development` (loopback, no security,
+  relaxed certificate checks, clear-text passwords) and `legacy` (every policy and mode, no security, relaxed
+  certificate checks, client `security = "auto"`). Each sets every dimension, and every policy is accepted in every
+  profile. New settings: `server.suppress`, `server.identity_tokens`, `server.allow_plaintext_password`,
+  `server.accept_server_registrations`, `client.suppress`, `client.allow_plaintext_password`; a setting that is given
+  replaces the profile's value.
+- A weaker choice is logged, never blocked: `ServerConfig.weaknesses()` and `ClientConfig.weaknesses()` list one
+  warning per setting weaker than `secure`, naming the setting and the risk; a configured server logs them at
+  `start()`, a client at `connect()`, and a low-level server or client warns per unsecured, Sign-only or deprecated
+  endpoint or channel. `client.security = "auto"` takes the strongest endpoint the server offers and falls back to None.
+- Commands: the client commands (`read`, `ls`, `write`, `call`, `subscribe`, `history`, `shell`, `generate-structs`)
+  refuse without `--security` or `--pki-dir`; `--security None` asks for no security, `--pki-dir` alone uses
+  Basic256Sha256 with SignAndEncrypt, and `--allow-plaintext-password` is new. `enginir-opcua server` needs `--pki-dir`
+  (or `--certificate` with `--private-key`) or `--no-security`, which `--accept-all-logins` requires.
+  `enginir-opcua init --profile` accepts `legacy`. The demo `Dockerfile` passes `--no-security`.
+- `examples/17_legacy_profile.py` and the page `docs/usage/common/security.rst` (profile tables, settings, log lines,
+  the low-level API); `docs/migration.rst` lists the changes.
+
 Examples (workstream K):
 - The inherited `examples/` directory is removed with everything in it, including the keys and certificates that were
-  committed there (they remain in the history). The new set is 16 files, `01_secure_pair.py` to
-  `16_reverse_connect.py`, one per task: the quick-setup pair, users and roles, subscriptions with reconnect, methods,
-  custom types, events and history, an instrument server from the DI and ADI models, file transfer, an HA client,
-  PubSub, the sync API, a limit alarm, diagnostics, certificate management over OPC UA, the development profile and
-  reverse connect.
+  committed there (they remain in the history). The new set was 16 files, `01_secure_pair.py` to
+  `16_reverse_connect.py` (`17_legacy_profile.py` came with the security profiles), one per task: the quick-setup
+  pair, users and roles, subscriptions with reconnect, methods, custom types, events and history, an instrument server
+  from the DI and ADI models, file transfer, an HA client, PubSub, the sync API, a limit alarm, diagnostics,
+  certificate management over OPC UA, the development profile and reverse connect.
 - Each example uses a temporary PKI directory and generates its certificates, pairs the two sides in code, ends by
-  itself and prints `OK <name>`. Only `15_development_profile.py` uses NoSecurity, on 127.0.0.1. `tests/examples/`
-  runs every example as a subprocess (marked `slow`).
+  itself and prints `OK <name>`. Only `15_development_profile.py` and `17_legacy_profile.py` use NoSecurity, on
+  127.0.0.1. `tests/examples/` runs every example as a subprocess (marked `slow`).
 - The Quick Setup page (`docs/usage/get-started/quick-setup.rst`) describes the profiles, configuration files, the users
   file and the `init`, `trust`, `pki`, `pair` and `user` commands, and lists the examples. The minimal server and client
   pages and the README quick start use `Server.quickstart` and `Client.quickstart`.

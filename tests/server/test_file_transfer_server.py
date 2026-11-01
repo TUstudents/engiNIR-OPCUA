@@ -43,8 +43,8 @@ async def rig(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Rig]:
     await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await server.start()
-    admin = Client(f"opc.tcp://admin@127.0.0.1:{port}")
-    user = Client(f"opc.tcp://someone@127.0.0.1:{port}")
+    admin = Client(f"opc.tcp://admin@127.0.0.1:{port}", allow_no_security=True)
+    user = Client(f"opc.tcp://someone@127.0.0.1:{port}", allow_no_security=True)
     await admin.connect()
     await user.connect()
     yield Rig(server, port, admin, user, tmp_path_factory.mktemp("files"))
@@ -215,7 +215,7 @@ async def test_user_without_the_role_cannot_open_for_writing_and_user_writable_f
 
 async def test_srv82_handles_are_released_when_the_session_closes(rig: Rig) -> None:
     node, _ = await make_file(rig, writable=True)
-    other = Client(rig.url("someone"))
+    other = Client(rig.url("someone"), allow_no_security=True)
     await other.connect()
     await open_file(other, node, WRITE)
     assert await UaFile(rig.admin.get_node(node.nodeid)).get_open_count() == 1

@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from cryptography import x509
 
 from enginir_opcua.config import (
+    PROFILES,
     ClientConfig,
     ServerConfig,
     default_application_uri,
@@ -125,7 +126,13 @@ def _kind_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--endpoint", "--url", dest="address", metavar="URL", help="Endpoint URL of the server, or URL of the server"
     )
-    parser.add_argument("--profile", choices=["secure", "development"], default="secure", help="Default: secure")
+    parser.add_argument(
+        "--profile",
+        choices=PROFILES,
+        default="secure",
+        help="secure: strong policies only; development: this machine only, no security; legacy: old devices, "
+        "every policy. Default: secure",
+    )
     parser.add_argument("--name", help="Application name")
     parser.add_argument("--application-uri", metavar="URI", help="ApplicationUri; default is derived from the host")
     parser.add_argument("--force", action="store_true", help="Replace an existing configuration file")

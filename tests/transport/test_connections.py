@@ -19,12 +19,12 @@ async def test_max_connections_1(opc):
     if port == port_num:
         # if client we already have one connection
         with pytest.raises(BadTooManySessions):
-            async with Client(f"opc.tcp://127.0.0.1:{port}"):
+            async with Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True):
                 pass
     else:
-        async with Client(f"opc.tcp://127.0.0.1:{port}"):
+        async with Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True):
             with pytest.raises(BadTooManySessions):
-                async with Client(f"opc.tcp://127.0.0.1:{port}"):
+                async with Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True):
                     pass
     opc.server.iserver.session_manager.max_sessions = 100
 
@@ -32,7 +32,7 @@ async def test_max_connections_1(opc):
 async def test_dos_server(opc):
     # See issue 1013 a crafted packet triggered dos
     port = opc.server.endpoint.port
-    async with Client(f"opc.tcp://127.0.0.1:{port}") as c:
+    async with Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True) as c:
         # craft invalid packet that trigger dos
         message_type, chunk_type, packet_size = [ua.MessageType.SecureOpen, b"E", 0]
         c.uaclient.protocol.transport.write(struct.pack("<3scI", message_type, chunk_type, packet_size))
@@ -45,7 +45,7 @@ async def test_dos_server(opc):
 
 
 async def test_safe_disconnect():
-    c = Client(url="opc.tcp://example:4840")
+    c = Client(url="opc.tcp://example:4840", allow_no_security=True)
     await c.disconnect()
     # second disconnect should be noop
     await c.disconnect()
@@ -65,7 +65,7 @@ async def test_client_connection_lost():
     await srv.init()
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
-    async with Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1) as cl:
+    async with Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1, allow_no_security=True) as cl:
         myhandler = LostSubHandler()
         _ = await cl.create_subscription(1, myhandler)
         await srv.stop()
@@ -101,7 +101,7 @@ async def test_client_connection_lost_callback():
 
     clb = Clb()
 
-    async with Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1) as cl:
+    async with Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1, allow_no_security=True) as cl:
         cl.connection_lost_callback = clb.clb
         await srv.stop()
         await wait_until(lambda: clb.called)
@@ -116,7 +116,7 @@ async def test_session_watchdog():
     srv.iserver.min_session_timeout_ms = 100
     srv.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
     await srv.start()
-    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1)
+    client = Client(f"opc.tcp://127.0.0.1:{port}", timeout=0.5, watchdog_intervall=1, allow_no_security=True)
     client.session_timeout = 1000  # 1 second
     await client.connect()
     # Kill the keepalive tasks so the server-side session times out from inactivity.
@@ -137,7 +137,7 @@ def test_request_limit_has_a_high_default() -> None:
 
 @pytest.mark.asyncio
 async def test_request_limit_caps_in_flight_requests() -> None:
-    client = Client("opc.tcp://localhost:4840")
+    client = Client("opc.tcp://localhost:4840", allow_no_security=True)
     client.set_max_concurrent_requests(2)
     release = asyncio.Event()
     limit_reached = asyncio.Event()

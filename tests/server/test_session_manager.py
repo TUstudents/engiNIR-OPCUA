@@ -495,7 +495,9 @@ async def test_current_call_session_is_set_during_a_method_call() -> None:
 
     method = await srv.nodes.objects.add_method(2, "WhoCalls", callback, [], [])
     try:
-        async with Client(srv.endpoint.geturl().replace("opc.tcp://", "opc.tcp://admin@")) as client:
+        async with Client(
+            srv.endpoint.geturl().replace("opc.tcp://", "opc.tcp://admin@"), allow_no_security=True
+        ) as client:
             await client.nodes.objects.call_method(method.nodeid)
     finally:
         await srv.stop()

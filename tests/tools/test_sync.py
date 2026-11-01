@@ -73,14 +73,14 @@ def server(tloop):
 
 @pytest.fixture
 def client(tloop, server):
-    c = Client(f"opc.tcp://admin@localhost:{port_num}/freeopcua/server", tloop=tloop)
+    c = Client(f"opc.tcp://admin@localhost:{port_num}/freeopcua/server", tloop=tloop, allow_no_security=True)
     with c:
         yield c
 
 
 @pytest.fixture
 def client_no_tloop(server):
-    with Client(f"opc.tcp://admin@localhost:{port_num}/freeopcua/server") as c:
+    with Client(f"opc.tcp://admin@localhost:{port_num}/freeopcua/server", allow_no_security=True) as c:
         yield c
 
 
@@ -356,7 +356,7 @@ def test_sync_client_init_failure_stops_own_tloop(monkeypatch):
     monkeypatch.setattr(AsyncClient, "__init__", failing_init)
     before = alive_thread_loops()
     with pytest.raises(ValueError, match="bad url"):
-        Client("opc.tcp://localhost:4840")
+        Client("opc.tcp://localhost:4840", allow_no_security=True)
     assert alive_thread_loops() == before
 
 

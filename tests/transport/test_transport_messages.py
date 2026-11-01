@@ -73,7 +73,7 @@ async def test_com61_response_over_limit_becomes_service_fault(server: Server) -
     """Part 4, 5.3: a response above the client's MaxMessageSize is replaced by Bad_ResponseTooLarge."""
     big = await server.nodes.objects.add_variable(1, "ComSixtyOneBig", b"a" * 100_000)
     small = await server.nodes.objects.add_variable(1, "ComSixtyOneSmall", "small")
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client.max_messagesize = 60_000
     async with client:
         with pytest.raises(ua.uaerrors.BadResponseTooLarge):

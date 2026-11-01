@@ -52,7 +52,7 @@ async def _registered_count(client: Client, expected: int) -> bool:
 
 
 async def test_discovery(registrant, discovery_server):
-    client = Client(discovery_server.endpoint.geturl())
+    client = Client(discovery_server.endpoint.geturl(), allow_no_security=True)
     async with client:
         servers = await client.find_servers()
         new_app_uri = "urn:enginir:opcua:server:test_discovery"
@@ -66,7 +66,7 @@ async def test_discovery(registrant, discovery_server):
 
 
 async def test_unregister_discovery(registrant, discovery_server):
-    client = Client(discovery_server.endpoint.geturl())
+    client = Client(discovery_server.endpoint.geturl(), allow_no_security=True)
     async with client:
         new_app_uri = "urn:enginir:opcua:server:test_discovery2"
         await give_identity(registrant, new_app_uri, discovery_server)
@@ -92,7 +92,7 @@ async def test_register_to_discovery_sends_the_discovery_configurations(registra
 
 
 async def test_find_servers2(registrant, discovery_server):
-    client = Client(discovery_server.endpoint.geturl())
+    client = Client(discovery_server.endpoint.geturl(), allow_no_security=True)
     async with client:
         servers = await client.find_servers()
         new_app_uri1 = "urn:enginir:opcua:server:test_discovery1"
@@ -170,8 +170,8 @@ async def test_multiple_clients_with_subscriptions(server):
             pass
 
     sub_handler = SubscriptionHandler()
-    client1 = Client(server.endpoint.geturl())
-    client2 = Client(server.endpoint.geturl())
+    client1 = Client(server.endpoint.geturl(), allow_no_security=True)
+    client2 = Client(server.endpoint.geturl(), allow_no_security=True)
 
     o = server.nodes.objects
     var = await o.add_variable(3, "some_variable", 1.0)
@@ -807,7 +807,7 @@ async def test_message_limits_fail_write(restore_transport_limits_server: Server
     test_string = b"a" * 100 * 1024
     n = await server.nodes.objects.add_variable(1, "MyLimitVariable", test_string)
     await n.set_writable(True)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     # This should trigger a UA error because the message is too large
     async with client:
         n = client.get_node(n.nodeid)
@@ -824,7 +824,7 @@ async def test_message_limits_fail_read(restore_transport_limits_server: Server)
     test_string = b"a" * 100 * 1024
     n = await server.nodes.objects.add_variable(1, "MyLimitReadVariable", test_string)
     await n.set_writable(True)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client.max_chunkcount = 10
     # This should trigger a UA error because the message is too large
     async with client:
@@ -842,7 +842,7 @@ async def test_message_limits_works(restore_transport_limits_server: Server):
     server.bserver.limits.max_chunk_count = 10
     n = await server.nodes.objects.add_variable(1, "MyLimitVariable2", "t")
     await n.set_writable(True)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     # Test that chunks are working correct
     async with client:
         n = client.get_node(n.nodeid)
@@ -885,7 +885,7 @@ async def test_null_auth(server):
 
     Ensure a Null token is accepted as an anonymous connection token.
     """
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
 
     # Modify the authentication creation in the client request
     def _add_null_auth(self, params):
@@ -959,7 +959,7 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
     n = await server.nodes.objects.add_variable(1, "MyClosingLimitVariable", test_string)
     await n.set_writable(True)
 
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     with caplog.at_level(logging.ERROR, logger="enginir_opcua.server.binary_server_asyncio"):
         async with client:
             node = client.get_node(n.nodeid)
@@ -969,7 +969,7 @@ async def test_transport_limit_error_closes_the_connection(restore_transport_lim
 
     assert "Exception raised while processing message from client" not in caplog.text
 
-    async with Client(server.endpoint.geturl()) as fresh:
+    async with Client(server.endpoint.geturl(), allow_no_security=True) as fresh:
         assert await fresh.nodes.server_state.read_value() is not None
 
 
@@ -1010,7 +1010,7 @@ async def test_protocol_rejects_a_repeated_hello_and_closes_the_connection() -> 
 
 async def test_default_application_identity_is_enginir() -> None:
     srv = Server(allow_no_security=True)
-    clt = Client("opc.tcp://127.0.0.1:4840")
+    clt = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     assert srv.endpoint.geturl() == "opc.tcp://0.0.0.0:4840/enginir-opcua/server/"
     assert srv.get_application_uri() == "urn:enginir:opcua:server"
     assert srv.product_uri == "urn:enginir:opcua"

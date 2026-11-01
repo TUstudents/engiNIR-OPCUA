@@ -114,7 +114,7 @@ async def test_cli38_timed_out_renewal_does_not_block_the_next_one(raw_server: R
 async def test_cli38_renewal_retries_while_the_token_is_valid(server: Server, monkeypatch: pytest.MonkeyPatch) -> None:
     """Part 6, 6.7.4: a failed renewal is tried again while the security token is still valid."""
     monkeypatch.setattr(client_module, "RENEW_RETRY_DELAY", 0.05)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     client.secure_channel_timeout = 2000
     try:
@@ -143,7 +143,7 @@ async def test_cli38_renewal_failing_past_the_token_lifetime_is_a_loss(
 ) -> None:
     """Part 6, 6.7.4: when no renewal succeeded before the token expired, the channel is lost."""
     monkeypatch.setattr(client_module, "RENEW_RETRY_DELAY", 0.05)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     client.secure_channel_timeout = 2000
     try:
@@ -178,7 +178,7 @@ async def typed_node(server: Server) -> ua.NodeId:
 
 @pytest.fixture
 async def typed_method(server: Server, typed_node: ua.NodeId) -> AsyncIterator[tuple[Client, ua.NodeId]]:
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     yield client, typed_node
     await client.disconnect()
@@ -237,7 +237,7 @@ async def test_cli23_bytes_for_a_byte_array_are_sent_as_a_byte_string(server: Se
         [[ua.VariantType.Byte]],
         [ua.VariantType.String],
     )
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     async with client:
         assert await client.get_objects_node().call_method(node.nodeid, b"\x01\x02") == "ByteString"
 
@@ -253,7 +253,7 @@ async def test_cli33_call_method_accepts_a_timeout(server: Server) -> None:
     node = await server.nodes.objects.add_method(
         ua.NodeId("SlowMethod", 2), ua.QualifiedName("SlowMethod", 2), slow, [], [ua.VariantType.Int64]
     )
-    async with Client(server.endpoint.geturl(), timeout=0.3) as client:
+    async with Client(server.endpoint.geturl(), timeout=0.3, allow_no_security=True) as client:
         objects = client.get_objects_node()
         with pytest.raises(TimeoutError):
             await objects.call_method(node.nodeid)

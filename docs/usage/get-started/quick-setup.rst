@@ -5,7 +5,7 @@ Quick Setup
 The quick setup gives you a secure server and client with a few lines, and an error message that names the setting
 that is wrong. It adds no protocol behaviour: it collects the settings that are otherwise many
 :class:`~enginir_opcua.server.server.Server` setters and :class:`~enginir_opcua.client.client.Client` calls into
-configuration objects, and it names two ready-made combinations, the *profiles*. The setters stay available as the
+configuration objects, and it names three ready-made combinations, the *profiles*. The setters stay available as the
 low-level API.
 
 A secure pair
@@ -36,33 +36,50 @@ Profiles
 
 .. list-table::
     :header-rows: 1
-    :widths: 18 41 41
+    :widths: 16 28 28 28
 
     * -
       - ``secure`` (default)
       - ``development``
+      - ``legacy``
     * - Server security
       - Basic256Sha256, Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss, all with SignAndEncrypt only
       - No security, and Basic256Sha256 with SignAndEncrypt
+      - The secure policies in Sign and SignAndEncrypt, Basic256 and Basic128Rsa15, and no security
     * - Client security
       - Basic256Sha256, SignAndEncrypt
       - No security
+      - ``auto``: the strongest endpoint the server offers, falling back to no security
     * - Network
       - Any address
       - Loopback only (``127.0.0.1``, ``::1``, ``localhost``); another host is a ``ConfigurationError``
+      - Any address
+    * - Certificate checks
+      - Nothing relaxed
+      - Revocation and host name errors are accepted
+      - The same
+    * - Passwords in clear text
+      - Refused
+      - Allowed
+      - Refused
     * - Start
       - Quiet
-      - Logs a warning that the server offers a connection without security
+      - Logs a warning for every weaker setting
+      - The same
     * - Trust
       - Nothing trusted until you say so
       - Nothing trusted for the secured endpoint; the unsecured one needs no certificate
+      - Nothing trusted for the secured endpoints
     * - Users
       - A users file (below); anonymous sessions are read-only
       - The same
+      - The same
 
-Use ``development`` only on your own machine, to try things out. The only example that uses it is
-`15_development_profile.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/15_development_profile.py>`_,
-and it says so at the top.
+Use ``development`` only on your own machine, to try things out, and ``legacy`` only for devices that cannot do
+better. Both are your decision: nothing is blocked, and every weaker setting is logged when the server starts or the
+client connects. :doc:`../common/security` has the complete tables, the settings and the log lines. The examples are
+`15_development_profile.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/15_development_profile.py>`_
+and `17_legacy_profile.py <https://github.com/TUstudents/engiNIR-OPCUA/blob/master/examples/17_legacy_profile.py>`_.
 
 Settings and configuration objects
 ==================================
@@ -88,7 +105,7 @@ Configuration files
 ``tomllib``. Unknown keys are errors, relative paths in the file are relative to the file, and secrets never live in
 it: a password comes from the environment variable named by ``password_env`` (default ``ENGINIR_OPCUA_PASSWORD``),
 and a users file is found through ``users_file`` or ``ENGINIR_OPCUA_USERS_FILE``. ``config.dump(path)`` writes the file
-with a comment for every setting; ``enginir-opcua init`` does it for you:
+with a comment for every setting; ``enginir-opcua init`` does it for you (``--profile secure|development|legacy``):
 
 .. code-block:: toml
 

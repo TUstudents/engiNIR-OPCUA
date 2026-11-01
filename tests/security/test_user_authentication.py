@@ -235,7 +235,8 @@ async def srv_user():
 
 
 async def test_creds(srv_user):
-    clt = Client(uri)
+    clt = Client(uri, allow_no_security=True)
+    clt.allow_plaintext_password = True
     clt.set_user("foobar")
     clt.set_password("hR&yjjGhP$6@nQ4e")
     await clt.connect()
@@ -243,7 +244,8 @@ async def test_creds(srv_user):
 
 
 async def test_wrong_creds(srv_user):
-    clt = Client(uri)
+    clt = Client(uri, allow_no_security=True)
+    clt.allow_plaintext_password = True
     clt.set_user("foobar")
     clt.set_password("wrong")
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
@@ -252,7 +254,8 @@ async def test_wrong_creds(srv_user):
 
 
 async def test_creds_in_uri(srv_user):
-    clt = Client(uri_creds)
+    clt = Client(uri_creds, allow_no_security=True)
+    clt.allow_plaintext_password = True
     # check if credentials got removed
     assert clt.server_url.geturl() == uri
     await clt.connect()
@@ -260,7 +263,8 @@ async def test_creds_in_uri(srv_user):
 
 
 async def test_wrong_creds_in_uri(srv_user):
-    clt = Client(uri_wrong_creds)
+    clt = Client(uri_wrong_creds, allow_no_security=True)
+    clt.allow_plaintext_password = True
     with pytest.raises(ua.uaerrors.BadUserAccessDenied):
         await clt.connect()
     await clt.disconnect()
@@ -306,7 +310,7 @@ async def test_srv7_default_server_offers_only_anonymous(default_server: Server)
 @pytest.mark.parametrize("user", ["admin", "Admin", "alice"])
 async def test_srv7_default_server_rejects_username_tokens(default_server: Server, user: str) -> None:
     """Part 4, 5.7.3.2: without a user manager no UserName policy is offered, so the client does not try one."""
-    client = Client(default_server.endpoint.geturl())
+    client = Client(default_server.endpoint.geturl(), allow_no_security=True)
     client.set_user(user)
     client.set_password("anything")
     with pytest.raises(ua.uaerrors.ConfigurationError):
@@ -316,7 +320,7 @@ async def test_srv7_default_server_rejects_username_tokens(default_server: Serve
 
 async def test_srv7_default_server_anonymous_reads_but_does_not_write(default_server: Server) -> None:
     """Part 4, 5.7.3.1: the default user is Anonymous, which reads and cannot write."""
-    async with Client(default_server.endpoint.geturl()) as client:
+    async with Client(default_server.endpoint.geturl(), allow_no_security=True) as client:
         variable = client.get_node(await default_server.nodes.objects.get_child("2:Setpoint"))
         assert await variable.read_value() == 1.0
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
@@ -332,7 +336,7 @@ async def test_srv7_permissive_manager_is_an_explicit_opt_in() -> None:
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity])
     await srv.start()
     try:
-        async with Client(srv.endpoint.geturl().replace("//", "//admin@")) as client:
+        async with Client(srv.endpoint.geturl().replace("//", "//admin@"), allow_no_security=True) as client:
             assert await client.nodes.server_state.read_value() == ua.ServerState.Running
     finally:
         await srv.stop()
@@ -342,7 +346,7 @@ async def test_srv7_certificate_manager_refuses_anonymous_by_default() -> None:
     """Part 4, 5.7.3.2: with a CertificateUserManager an Anonymous login without a registered certificate is refused."""
     srv = await _started(user_manager=CertificateUserManager())
     try:
-        client = Client(srv.endpoint.geturl())
+        client = Client(srv.endpoint.geturl(), allow_no_security=True)
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
             await client.connect()
         await client.disconnect()
@@ -354,7 +358,7 @@ async def test_srv7_certificate_manager_accepts_anonymous_when_allowed() -> None
     """Part 4, 5.7.3.2: allow_anonymous lets Anonymous in, as the read-only role."""
     srv = await _started(user_manager=CertificateUserManager(allow_anonymous=True))
     try:
-        async with Client(srv.endpoint.geturl()) as client:
+        async with Client(srv.endpoint.geturl(), allow_no_security=True) as client:
             assert await client.nodes.server_state.read_value() == ua.ServerState.Running
             with pytest.raises(ua.uaerrors.BadUserAccessDenied):
                 await client.nodes.server_state.write_value(1)
@@ -548,7 +552,8 @@ async def test_srv39_key_is_the_ip_address_when_unsecured() -> None:
     srv.set_security_policy([ua.SecurityPolicyType.NoSecurity])
     await srv.start()
     try:
-        client = Client(srv.endpoint.geturl())
+        client = Client(srv.endpoint.geturl(), allow_no_security=True)
+        client.allow_plaintext_password = True
         client.set_user("alice")
         client.set_password("wrong")
         with pytest.raises(ua.uaerrors.BadUserAccessDenied):
@@ -695,7 +700,7 @@ async def test_srv101_the_default_authenticate_calls_get_user() -> None:
 
 def test_a_user_certificate_needs_an_rsa_private_key() -> None:
     """The RSA security policies sign the user token with RSA; another key is a configuration error, not a TypeError."""
-    client = Client("opc.tcp://127.0.0.1:4840")
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     client.user_private_key = ec.generate_private_key(ec.SECP256R1())
     client._policy_ids = [
         ua.UserTokenPolicy(

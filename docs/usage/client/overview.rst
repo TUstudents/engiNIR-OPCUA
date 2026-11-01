@@ -18,11 +18,11 @@ the shell history; use ``client.set_user()`` and ``client.set_password()`` inste
 
     from enginir_opcua import Client
 
-    client = Client("opc.tcp://localhost:4840/enginir-opcua/server/", timeout=4)
+    client = Client("opc.tcp://localhost:4840/enginir-opcua/server/", timeout=4, allow_no_security=True)
 
 ``timeout`` is the time in seconds that every request may take. The other constructor arguments are
 ``watchdog_intervall``, ``auto_reconnect`` and its two delays (see `Losing the connection`_),
-``allow_deprecated_policies`` and ``observer`` (see :doc:`../common/observer`).
+``allow_no_security`` (see `Security`_) and ``observer`` (see :doc:`../common/observer`).
 
 Connecting to a server
 ======================
@@ -32,7 +32,7 @@ context manager, which does both:
 
 .. code-block:: python
 
-    async with Client(url) as client:
+    async with Client(url, allow_no_security=True) as client:
         value = await client.nodes.root.read_browse_name()
 
 Without ``async with``, call ``await client.connect()`` and make sure ``await client.disconnect()`` runs, for example in a
@@ -41,8 +41,11 @@ Without ``async with``, call ``await client.connect()`` and make sure ``await cl
 Security
 --------
 
-A client without any security setting uses the SecurityPolicy *None*: nothing is signed or encrypted, and the server must
-offer that endpoint. For a secure channel, set the policy before you connect:
+A client without any security setting refuses to connect: ``connect()`` raises a ``ConfigurationError`` that names the
+three ways out. ``Client(url, allow_no_security=True)`` is the explicit request for the SecurityPolicy *None*: nothing is
+signed or encrypted, the server must offer that endpoint and the client logs a warning. ``Client.quickstart`` takes a
+profile (see :doc:`../common/security`). Discovery without a session (``connect_and_get_server_endpoints``,
+``connect_and_find_servers``) needs no choice. For a secure channel, set the policy before you connect:
 
 .. code-block:: python
 

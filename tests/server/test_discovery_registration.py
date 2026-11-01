@@ -46,13 +46,13 @@ async def _registrant(server: Server, secure: bool = True) -> Client:
 
 
 async def _registered_uris(server: Server) -> list[str]:
-    async with Client(server.endpoint.geturl()) as client:
+    async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
         return [description.ApplicationUri for description in await client.find_servers()]
 
 
 async def test_srv5_register_server_is_refused_by_default(server: Server) -> None:
     """Part 4, 5.5.5: only discovery servers accept RegisterServer; others answer Bad_ServiceUnsupported."""
-    async with Client(server.endpoint.geturl()) as client:
+    async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
         with pytest.raises(ua.uaerrors.BadServiceUnsupported):
             await client.uaclient.register_server(_registered_server("urn:evil"))
         uris = [description.ApplicationUri for description in await client.find_servers()]

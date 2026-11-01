@@ -291,7 +291,7 @@ class SessionProbe:
     """A client with an open None-policy channel that creates, activates, uses and closes sessions by token."""
 
     def __init__(self, url: str) -> None:
-        self.client = Client(url)
+        self.client = Client(url, allow_no_security=True)
 
     @classmethod
     async def open(cls, url: str) -> SessionProbe:

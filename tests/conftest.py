@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from enginir_opcua import Client, Server, ua
-from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode
+from enginir_opcua.client.ha.ha_client import HaClient, HaConfig, HaMode, HaSecurityConfig
 from enginir_opcua.client.ua_client import UASocketState
 from enginir_opcua.server.history import HistoryDict, TimeDomain
 from enginir_opcua.server.history_sql import HistorySQLite
@@ -218,7 +218,7 @@ async def discovery_server():
 async def admin_client():
     # start admin client
     # long timeout since travis (automated testing) can be really slow
-    clt = Client(f"opc.tcp://admin@127.0.0.1:{port_num}", timeout=10)
+    clt = Client(f"opc.tcp://admin@127.0.0.1:{port_num}", timeout=10, allow_no_security=True)
     await clt.connect()
     yield clt
     await clt.disconnect()
@@ -227,7 +227,7 @@ async def admin_client():
 @pytest.fixture(scope="module")
 async def client():
     # start anonymous client
-    ro_clt = Client(f"opc.tcp://127.0.0.1:{port_num}")
+    ro_clt = Client(f"opc.tcp://127.0.0.1:{port_num}", allow_no_security=True)
     await ro_clt.connect()
     yield ro_clt
     await ro_clt.disconnect()
@@ -266,7 +266,7 @@ async def opc(request):
         await srv.start()
         # start client
         # long timeout since travis (automated testing) can be really slow
-        clt = Client(f"opc.tcp://admin@127.0.0.1:{port_num}", timeout=10)
+        clt = Client(f"opc.tcp://admin@127.0.0.1:{port_num}", timeout=10, allow_no_security=True)
         await clt.connect()
         declare_new_variables_writable(clt)
         yield Opc(clt, srv)
@@ -447,7 +447,7 @@ async def srv_variables(ha_servers):
     for srv in ha_servers:
         for var in ("V1", "V2"):
             url = f"{srv.endpoint.scheme}://admin@{srv.endpoint.netloc}"
-            c = Client(url, timeout=10)
+            c = Client(url, timeout=10, allow_no_security=True)
             clts.append(c)
             await c.connect()
             values = [1, 2, 3]
@@ -472,7 +472,7 @@ async def ha_client(ha_config, ha_servers):
     srv2_port = srv2.endpoint.port
 
     ha_config = ha_config(srv1_port, srv2_port)
-    ha_client = HaClient(ha_config)
+    ha_client = HaClient(ha_config, HaSecurityConfig(allow_no_security=True))
     yield ha_client
     if ha_client.is_running:
         await ha_client.stop()
@@ -598,8 +598,9 @@ async def start_two_user_server() -> AsyncIterator[tuple[Server, int]]:
 @pytest.fixture
 async def two_sessions(_two_user_server: tuple[Server, int]) -> AsyncIterator[TwoSessions]:
     srv, port = _two_user_server
-    alice = Client(f"opc.tcp://alice:{TWO_SESSION_USERS['alice']}@127.0.0.1:{port}")
-    bob = Client(f"opc.tcp://bob:{TWO_SESSION_USERS['bob']}@127.0.0.1:{port}")
+    alice = Client(f"opc.tcp://alice:{TWO_SESSION_USERS['alice']}@127.0.0.1:{port}", allow_no_security=True)
+    bob = Client(f"opc.tcp://bob:{TWO_SESSION_USERS['bob']}@127.0.0.1:{port}", allow_no_security=True)
+    alice.allow_plaintext_password = bob.allow_plaintext_password = True
     await alice.connect()
     await bob.connect()
     yield TwoSessions(server=srv, alice=alice, bob=bob)

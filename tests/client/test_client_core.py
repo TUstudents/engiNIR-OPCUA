@@ -7,12 +7,13 @@ import pytest
 from enginir_opcua import Client, Node, Server, ua
 from enginir_opcua.client.ua_client import UaClientState
 from enginir_opcua.client.ua_session import SessionState
+from enginir_opcua.ua.uaerrors import ConfigurationError
 from tests.harness import ResponseTampering, signing_client
 
 
 @pytest.fixture
 async def connected(server: Server) -> Iterator[Client]:
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     yield client  # type: ignore[misc]
     await client.disconnect()
@@ -78,7 +79,7 @@ async def test_cli9_write_values_needs_equal_lengths(connected: Client) -> None:
 
 async def test_cli2_register_server2_succeeds_without_the_fallback(server: Server) -> None:
     """Part 4, 5.5.6: RegisterServer2 is tried first; RegisterServer is not sent when it works."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     calls: list[str] = []
 
     async def register_server2(params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
@@ -97,7 +98,7 @@ async def test_cli2_register_server2_succeeds_without_the_fallback(server: Serve
 
 async def test_cli2_register_server_falls_back_only_when_register_server2_is_unsupported(server: Server) -> None:
     """Part 4, 5.5.5 and 5.5.6: RegisterServer is the fallback for Bad_ServiceUnsupported only."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     calls: list[tuple[str, bool]] = []
 
     async def unsupported(params: ua.RegisterServer2Parameters) -> list[ua.StatusCode]:
@@ -144,7 +145,7 @@ async def test_cli37_second_connect_raises_and_keeps_the_first_session(server: S
     """Part 4, 5.7.2.1: one Session per client; a second connect does not open another one."""
     sessions = server.iserver.session_manager.sessions
     before = len(sessions)
-    async with Client(server.endpoint.geturl()) as client:
+    async with Client(server.endpoint.geturl(), allow_no_security=True) as client:
         assert len(sessions) == before + 1
         with pytest.raises(ConnectionError, match="already connected"):
             await client.connect()
@@ -154,7 +155,7 @@ async def test_cli37_second_connect_raises_and_keeps_the_first_session(server: S
 
 async def test_cli36_url_without_a_port_uses_4840(monkeypatch: pytest.MonkeyPatch) -> None:
     """Part 6, 7.1.3: opc.tcp has a registered default port."""
-    client = Client("opc.tcp://example.invalid")
+    client = Client("opc.tcp://example.invalid", allow_no_security=True)
     connected: list[tuple[str, int]] = []
 
     async def connect_socket(host: str, port: int) -> None:
@@ -169,14 +170,14 @@ async def test_cli36_url_without_a_port_uses_4840(monkeypatch: pytest.MonkeyPatc
 def test_cli36_other_schemes_are_a_configuration_error(url: str) -> None:
     """Only opc.tcp is implemented."""
     with pytest.raises(ua.uaerrors.ConfigurationError):
-        Client(url)
+        Client(url, allow_no_security=True)
 
 
 async def test_cli24_revised_session_timeout_is_logged_at_info_with_both_values(
     server: Server, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Part 4, 5.7.2.2: a server may revise the session timeout; the log line gives the requested and revised value."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client.session_timeout = 1_234_567_890
     client.secure_channel_timeout = 3_600_000
     with caplog.at_level(logging.INFO):
@@ -190,7 +191,7 @@ async def test_cli24_revised_session_timeout_is_logged_at_info_with_both_values(
 
 async def test_cli27_reconnect_gate_survives_disconnect_and_connect(server: Server) -> None:
     """Part 4, 6.7: requests wait for the reconnect also on a client that was disconnected and connected again."""
-    client = Client(server.endpoint.geturl(), reconnect_request_timeout=0.3)
+    client = Client(server.endpoint.geturl(), reconnect_request_timeout=0.3, allow_no_security=True)
     await client.connect()
     await client.disconnect()
     await client.connect()
@@ -206,7 +207,7 @@ async def test_cli27_reconnect_gate_survives_disconnect_and_connect(server: Serv
 
 async def test_cli28_disconnect_closes_subscription_objects_and_ends_iterators(server: Server) -> None:
     """Part 4, 5.7.4.1: closing the Session ends its Subscriptions; the local objects end with them."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     subscription = await client.create_subscription(100)
     events: list[object] = []
@@ -227,7 +228,7 @@ async def test_cli28_connect_after_disconnect_does_not_recreate_old_subscription
     """Part 4, 5.7.4.1: a Subscription of the closed Session does not come back with the next connect."""
     service = server.iserver.subscription_service
     before = len(service.subscriptions)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     client._stale_check_margin = 0
     client._stale_check_interval = 0.05
     await client.connect()
@@ -241,7 +242,7 @@ async def test_cli28_connect_after_disconnect_does_not_recreate_old_subscription
 
 async def test_session_generation_increases_with_every_new_session(server: Server) -> None:
     """File handles and other per-Session state are invalidated by a new Session."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     session = client.uaclient.session
     assert session.session_generation == 0
     await client.connect()
@@ -254,7 +255,7 @@ async def test_session_generation_increases_with_every_new_session(server: Serve
 
 async def test_state_listeners_can_be_added_and_removed(server: Server) -> None:
     """The state listener API is public."""
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     seen: list[UaClientState] = []
     unsubscribe = client.uaclient.add_state_listener(seen.append)
     await client.connect()
@@ -323,7 +324,7 @@ async def test_context_manager(server):
         state[0] += 1
 
     # create client and replace instance methods with dummy methods
-    client = Client("opc.tcp://dummy_address:10000")
+    client = Client("opc.tcp://dummy_address:10000", allow_no_security=True)
     client.connect = increment_state.__get__(client)
     client.disconnect = increment_state.__get__(client)
 
@@ -459,15 +460,68 @@ async def test_translate_browsepaths(server, client: Client):
 async def test_strip_credentials_in_url():
     """Check that the credentials are correctly stripped in the server url"""
 
-    client = Client("opc.tcp://user:password@dummy_address:10000")
+    client = Client("opc.tcp://user:password@dummy_address:10000", allow_no_security=True)
     assert client.server_url.netloc == "dummy_address:10000"
 
-    client = Client("opc.tcp://user:password@dummy_address:10000")
+    client = Client("opc.tcp://user:password@dummy_address:10000", allow_no_security=True)
     client.strip_url_credentials = False
     assert client.server_url.netloc == "user:password@dummy_address:10000"
 
 
 def test_cli71_default_client_name_is_enginir() -> None:
-    client = Client("opc.tcp://127.0.0.1:4840")
+    client = Client("opc.tcp://127.0.0.1:4840", allow_no_security=True)
     assert client.name == "engiNIR OPC UA Client"
     assert client.description == "engiNIR OPC UA Client"
+
+
+async def test_connect_without_a_security_choice_is_refused(server: Server) -> None:
+    """No options means secure: a client that chose nothing does not open an unsecured channel."""
+    client = Client(server.endpoint.geturl())
+    with pytest.raises(ConfigurationError) as refused:
+        await client.connect()
+    for way in ("Client.quickstart", "set_security", "allow_no_security=True"):
+        assert way in str(refused.value)
+    assert client.uaclient.state is UaClientState.DISCONNECTED
+
+
+async def test_a_client_that_asks_for_no_security_connects_and_warns_once(
+    server: Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
+    assert client.allow_no_security is True
+    with caplog.at_level(logging.WARNING):
+        await client.connect()
+        await client.get_namespace_array()
+    await client.disconnect()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    unsecured = [m for m in warnings if "connects without security" in m]
+    assert len(unsecured) == 1 and "neither signed nor encrypted" in unsecured[0]
+
+
+async def test_discovery_works_without_a_security_choice(server: Server) -> None:
+    """Part 4, 5.5: GetEndpoints and FindServers run on an unsecured channel."""
+    client = Client(server.endpoint.geturl())
+    assert await client.connect_and_get_server_endpoints()
+    assert await client.connect_and_find_servers()
+    await client.connect_sessionless()
+    await client.disconnect_sessionless()
+
+
+async def test_a_clear_text_password_is_refused_by_default(server: Server) -> None:
+    """Part 4, 7.41: a password on a channel that cannot encrypt it crosses the network in clear text."""
+    client = Client(f"opc.tcp://operator:secret@127.0.0.1:{server.endpoint.port}", allow_no_security=True)
+    assert client.allow_plaintext_password is False
+    with pytest.raises(ConfigurationError, match="allow_plaintext_password"):
+        await client.connect()
+    assert client.uaclient.state is UaClientState.DISCONNECTED
+
+
+async def test_a_clear_text_password_is_sent_with_a_warning_when_allowed(
+    server: Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Client(f"opc.tcp://operator:secret@127.0.0.1:{server.endpoint.port}", allow_no_security=True)
+    client.allow_plaintext_password = True
+    with caplog.at_level(logging.WARNING):
+        await client.connect()
+    await client.disconnect()
+    assert any("Sending the password in clear text" in r.getMessage() for r in caplog.records)

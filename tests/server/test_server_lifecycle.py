@@ -99,7 +99,7 @@ async def test_srv34_stop_ends_sessions_subscriptions_and_background_tasks(disco
     server.set_endpoint(f"opc.tcp://127.0.0.1:{find_free_port()}")
     await server.start()
     await server.register_to_discovery(discovery.endpoint.geturl(), period=1)
-    client = Client(server.endpoint.geturl())
+    client = Client(server.endpoint.geturl(), allow_no_security=True)
     await client.connect()
     sub = await client.create_subscription(100, None)
     await sub.subscribe_data_change(client.get_node(ua.NodeId(ua.ObjectIds.Server_ServerStatus_CurrentTime)))
@@ -133,7 +133,7 @@ async def test_srv10_sync_method_callbacks_work_after_a_restart() -> None:
     await server.stop()
     await server.start()
     try:
-        client = Client(server.endpoint.geturl())
+        client = Client(server.endpoint.geturl(), allow_no_security=True)
         async with client:
             assert await client.nodes.objects.call_method(method.nodeid, 21) == 42
     finally:
@@ -235,7 +235,7 @@ async def test_session_timeout_is_clamped(attribute: str, limit: int, requested:
     port = find_free_port()
     srv = await _start_server(port)
     setattr(srv.iserver, attribute, limit)
-    client = Client(f"opc.tcp://127.0.0.1:{port}")
+    client = Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True)
     client.session_timeout = requested
     await client.connect()
     try:
@@ -250,7 +250,7 @@ async def test_unacked_buffer_cap_propagated_from_iserver() -> None:
     port = find_free_port()
     srv = await _start_server(port)
     srv.iserver.max_unacked_messages_per_subscription = 42
-    client = Client(f"opc.tcp://127.0.0.1:{port}")
+    client = Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)
@@ -278,7 +278,7 @@ async def test_monitored_item_queue_size_is_revised(server_maximum: int, request
     objects = srv.get_objects_node()
     variable = await objects.add_variable(2, "QueueVar", 0)
 
-    client = Client(f"opc.tcp://127.0.0.1:{port}")
+    client = Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True)
     await client.connect()
     try:
         sub = await client.create_subscription(50)

@@ -12,7 +12,7 @@ asynchronous classes; each call blocks until the result is there.
 
     from enginir_opcua.sync import Client
 
-    with Client("opc.tcp://localhost:4840/enginir-opcua/server/") as client:
+    with Client("opc.tcp://localhost:4840/enginir-opcua/server/", allow_no_security=True) as client:
         node = client.nodes.objects.get_child(["2:MyObject", "2:MyVariable"])
         print(node.read_value())
 
@@ -27,7 +27,7 @@ a ThreadLoop and pass it:
 .. code-block:: python
 
     with ThreadLoop() as tloop:
-        client = Client(url, tloop=tloop)
+        client = Client(url, tloop=tloop, allow_no_security=True)
         server = Server(tloop=tloop)
 
 ``Server.quickstart(...)`` and ``Client.quickstart(...)`` take ``tloop=`` too, so a quick-setup server and client can
