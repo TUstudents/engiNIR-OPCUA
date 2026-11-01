@@ -12,6 +12,8 @@ Each release has its own section; the newest is at the top.
 - `enginir-opcua init server` now creates an empty `users.toml` next to `server.toml`, or keeps an existing one, and
   sets `users_file = "users.toml"`. Before, it told you to run `enginir-opcua user add DIR/users.toml`, but the
   generated configuration never read that file, so the users you added could not log in.
+- `enginir-opcua ls` printed DisplayNames and LocalizedText values as `LocalizedText(Locale=None, Text='Objects')`,
+  and `enginir-opcua discover` printed the Application Name the same way; both now print the text.
 
 ### Additions
 

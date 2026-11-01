@@ -465,6 +465,10 @@ async def _call(client: Client, args: argparse.Namespace) -> int:
     return 0
 
 
+def _shown(value: object) -> object:
+    return (value.Text or "") if isinstance(value, ua.LocalizedText) else value
+
+
 def _row(cells: Sequence[object]) -> str:
     return " ".join(f"{clean(cell):{30 if index == 0 else 25}}" for index, cell in enumerate(cells)).rstrip()
 
@@ -491,7 +495,7 @@ async def _long_cells(node: Node) -> list[object]:
         return ["", "", f"Error: {err}"]
     data_type = attributes[0].Value.Value if attributes[0].Value is not None else None
     value = attributes[1].Value.Value if attributes[1].Value is not None else _status_name(attributes[1].StatusCode)
-    return [data_type.to_string() if data_type is not None else "", attributes[1].ServerTimestamp, value]
+    return [data_type.to_string() if data_type is not None else "", attributes[1].ServerTimestamp, _shown(value)]
 
 
 async def _list_children(node: Node, depth: int, layout: str, indent: str = "") -> None:
@@ -505,11 +509,11 @@ async def _list_children(node: Node, depth: int, layout: str, indent: str = "") 
         say()
     for description in await node.get_children_descriptions():
         child = Node(node.session, description.NodeId)
-        cells: list[object] = [description.DisplayName.to_string(), description.NodeId.to_string()]
+        cells: list[object] = [_shown(description.DisplayName), description.NodeId.to_string()]
         if layout != "name":
             cells.append(description.BrowseName.to_string())
             if description.NodeClass == ua.NodeClass.Variable:
-                cells += await _long_cells(child) if layout == "long" else [await _read_for_listing(child)]
+                cells += await _long_cells(child) if layout == "long" else [_shown(await _read_for_listing(child))]
         say(indent + _row(cells))
         if depth > 1:
             await _list_children(child, depth - 1, layout, indent + "  ")
@@ -586,7 +590,7 @@ def application_to_strings(app: ua.ApplicationDescription) -> list[tuple[str, An
     result = [("Application URI", app.ApplicationUri)]
     optionals = [
         ("Product URI", app.ProductUri),
-        ("Application Name", app.ApplicationName.to_string()),
+        ("Application Name", _shown(app.ApplicationName)),
         ("Application Type", str(app.ApplicationType)),
         ("Gateway Server URI", app.GatewayServerUri),
         ("Discovery Profile URI", app.DiscoveryProfileUri),

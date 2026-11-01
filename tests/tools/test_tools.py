@@ -302,6 +302,21 @@ def test_tool5_ls_formats(capsys, tool_server):
     assert "42" not in _listing(legacy)
 
 
+def test_ls_shows_the_text_of_localized_texts(capsys, tool_server):
+    _, out, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", tool_server["holder"], "--format", "value")
+    assert "LocalizedText(" not in out
+    row = next(line for line in out.splitlines() if line.startswith("LocalizedText "))
+    assert row.split()[-1].isalpha()
+    _, out, _ = run(capsys, "ls", "-u", URL, *NO_SECURITY, "-n", "i=84", "--format", "name")
+    assert any(line.startswith("Objects ") for line in out.splitlines())
+
+
+def test_discover_shows_the_text_of_the_application_name(capsys, tool_server):
+    _, out, _ = run(capsys, "discover", "-u", URL)
+    assert "LocalizedText(" not in out
+    assert any(line.strip().startswith("Application Name") for line in out.splitlines())
+
+
 def _listing(out: str) -> str:
     return "\n".join(line for line in out.splitlines() if not line.startswith("Browsing node "))
 
