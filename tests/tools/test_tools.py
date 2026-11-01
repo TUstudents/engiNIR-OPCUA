@@ -382,6 +382,22 @@ def test_tool2_discover_prints_each_network_record(capsys, monkeypatch):
     assert code == 0 and "alpha" in out and "opc.tcp://a:1" in out and out.count("Performing discovery") == 1
 
 
+def test_discover_prints_every_endpoint_when_one_certificate_is_malformed(capsys, monkeypatch):
+    async def endpoints(self):
+        return [
+            ua.EndpointDescription(EndpointUrl="opc.tcp://a:1", ServerCertificate=b"\x30\x03abc"),
+            ua.EndpointDescription(EndpointUrl="opc.tcp://b:2"),
+        ]
+
+    async def nothing(self):
+        return []
+
+    monkeypatch.setattr(tools.Client, "connect_and_find_servers", nothing)
+    monkeypatch.setattr(tools.Client, "connect_and_get_server_endpoints", endpoints)
+    code, out, _ = run(capsys, "discover")
+    assert code == 0 and "opc.tcp://b:2" in out and "[malformed certificate]" in out
+
+
 def test_tool6_call_with_one_method_needs_no_m(capsys, tool_server):
     code, out, err = run(capsys, "call", "-u", URL, *NO_SECURITY, "-n", tool_server["single"], "a,b")
     assert code == 0, err

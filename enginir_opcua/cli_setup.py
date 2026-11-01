@@ -1,5 +1,6 @@
 """
-The commands of the quick setup: init, trust, pki list, pair and user add|list|remove (see docs/usage/quick-setup.rst).
+The commands of the quick setup: init, trust, pki list, pair and user add|list|remove
+(see docs/usage/get-started/quick-setup.rst).
 """
 
 import argparse
@@ -10,9 +11,11 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from enginir_opcua.config import (
     PROFILES,
@@ -35,14 +38,12 @@ PAIR_WARNING = (
 )
 
 
-def cert_gen_der(certificate: x509.Certificate) -> bytes:
-    from cryptography.hazmat.primitives.serialization import Encoding
-
+def _der(certificate: x509.Certificate) -> bytes:
     return certificate.public_bytes(Encoding.DER)
 
 
 def _thumbprint(certificate: x509.Certificate) -> str:
-    return certificate_thumbprint(cert_gen_der(certificate)).hex()
+    return certificate_thumbprint(_der(certificate)).hex()
 
 
 def _subject(certificate: x509.Certificate) -> str:
@@ -107,7 +108,7 @@ def _write_trusted(directory: Path, certificate: x509.Certificate) -> tuple[Path
     target = directory / "trusted" / "certs" / f"{_thumbprint(certificate)}.der"
     if target.exists():
         return target, False
-    cert_gen.write_atomic(target, cert_gen_der(certificate), 0o644)
+    cert_gen.write_atomic(target, _der(certificate), 0o644)
     return target, True
 
 
@@ -147,7 +148,7 @@ def _init(args: argparse.Namespace) -> int:
             f"{config_path} already exists; use --force to replace it. The PKI directory and its certificate are "
             "never replaced"
         )
-    fields: dict[str, object] = {
+    fields: dict[str, Any] = {
         "profile": args.profile,
         "pki": str(root),
         "application_uri": args.application_uri or default_application_uri(args.kind),
@@ -157,14 +158,14 @@ def _init(args: argparse.Namespace) -> int:
     if args.kind == "server":
         if args.address:
             fields["endpoint"] = args.address
-        server_config = ServerConfig(**fields)  # type: ignore[arg-type]
+        server_config = ServerConfig(**fields)
         config: ServerConfig | ClientConfig = server_config
         host = urlparse(server_config.endpoint).hostname
         usage = pki.SERVER_USAGE
     else:
         if args.address:
             fields["url"] = args.address
-        config = ClientConfig(**fields)  # type: ignore[arg-type]
+        config = ClientConfig(**fields)
         host = None
         usage = pki.CLIENT_USAGE
     config.validate()
@@ -183,9 +184,10 @@ def _init(args: argparse.Namespace) -> int:
     )
     say(f"{'kept' if existed else 'created':<8} {root}")
     certificate_file = root / "own" / "certs" / pki.CERTIFICATE_NAME
+    expires = credentials.certificate.not_valid_after_utc
     say(
         f"{'kept' if certificate_existed else 'created':<8} {certificate_file}  "
-        f"thumbprint {_thumbprint(credentials.certificate)}  expires {credentials.certificate.not_valid_after_utc:%Y-%m-%d}"
+        f"thumbprint {_thumbprint(credentials.certificate)}  expires {expires:%Y-%m-%d}"
     )
     dataclasses.replace(config, pki="pki").dump(config_path)
     say(f"{'created':<8} {config_path}")
@@ -199,7 +201,8 @@ def _find_rejected(directory: Path, digits: str) -> tuple[Path, x509.Certificate
     matches = [(path, cert) for path, cert in _certificates(folder) if _thumbprint(cert).startswith(digits)]
     if not matches:
         raise ToolError(
-            f"no certificate with thumbprint {digits!r} in {folder}; list them with enginir-opcua pki list --pki {directory}"
+            f"no certificate with thumbprint {digits!r} in {folder}; list them with enginir-opcua pki list "
+            f"--pki {directory}"
         )
     if len(matches) > 1:
         listing = ", ".join(_thumbprint(cert) for _, cert in matches)
@@ -336,7 +339,7 @@ def _user_add(args: argparse.Namespace) -> int:
     records = users_file.read_users(path) if path.exists() else []
     if any(record.name == args.name for record in records) and not args.replace:
         raise ToolError(f"user {args.name!r} already exists in {path}; use --replace to set a new password")
-    problem = users_file._check_name(args.name)
+    problem = users_file.check_name(args.name)
     if problem:
         raise ToolError(f"user name: {problem}")
     password = _read_password(args)

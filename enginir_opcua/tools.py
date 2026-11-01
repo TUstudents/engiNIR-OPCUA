@@ -1,3 +1,8 @@
+"""
+The enginir-opcua command line: the client commands, discovery, the demo server and the shell, and the old
+enginir-ua* scripts that forward to them. cli_setup adds the quick-setup commands.
+"""
+
 import argparse
 import asyncio
 import code
@@ -38,14 +43,15 @@ EXPECTED_ERRORS = (OSError, TimeoutError, UaError)
 
 
 class ToolError(Exception):
-    pass
+    """A command failed; main() prints the message and exits with 1."""
 
 
 class UsageError(ToolError):
-    pass
+    """A command was called wrongly; main() prints the usage and the message and exits with 2."""
 
 
 def clean(text: object) -> str:
+    """Return the text with every unprintable character escaped, so server data cannot control the terminal."""
     return "".join(
         char
         if char in (" ", "\t") or char.isprintable()
@@ -55,10 +61,12 @@ def clean(text: object) -> str:
 
 
 def say(text: object = "") -> None:
+    """Print to standard output, cleaned."""
     print(clean(text))
 
 
 def warn(text: object) -> None:
+    """Print to standard error, cleaned."""
     print(clean(text), file=sys.stderr)
 
 
@@ -102,6 +110,7 @@ def _int_parser(low: int, high: int) -> Callable[[str], int]:
 
 
 def parse_time(text: str) -> datetime:
+    """Read an ISO time; without a zone it is UTC."""
     try:
         moment = datetime.fromisoformat(text.strip())
     except ValueError:
@@ -112,6 +121,7 @@ def parse_time(text: str) -> datetime:
 
 
 def str_to_datetime(s: str | None, default: datetime | None = None) -> datetime:
+    """Read an ISO time, or return default (now if None) for an empty text."""
     if not s:
         return default if default is not None else datetime.now(UTC)
     return parse_time(s)
@@ -127,7 +137,10 @@ def _parse_bytes(text: str) -> bytes:
 def _parse_status(text: str) -> ua.StatusCode:
     with contextlib.suppress(ValueError):
         return ua.StatusCode(int(text.strip(), 0))
-    return ua.StatusCode(text.strip())
+    code = getattr(ua.StatusCodes, text.strip(), None)
+    if not isinstance(code, int):
+        raise ValueError("expected a status code number or name, such as BadNodeIdUnknown")
+    return ua.StatusCode(code)
 
 
 def _parse_localized(text: str) -> ua.LocalizedText:
@@ -203,6 +216,10 @@ def variant_from_text(
     separator: str = ",",
     locale: str | None = None,
 ) -> ua.Variant:
+    """
+    Build a Variant from command-line text: datatype names the type ("guess" guesses it), array splits the text at
+    separator, locale is the locale of a localizedtext.
+    """
     name = ALIASES.get(datatype.lower(), datatype.lower())
     if name != "guess" and name not in TYPES:
         raise ToolError(f"unknown data type {datatype!r}")
@@ -214,6 +231,7 @@ def variant_from_text(
 
 
 def parse_attribute(text: str) -> ua.AttributeIds:
+    """Return the attribute of a name or number; UsageError for an unknown one."""
     try:
         return ua.AttributeIds(int(text, 0))
     except ValueError:
@@ -225,6 +243,7 @@ def parse_attribute(text: str) -> ua.AttributeIds:
 
 
 def add_client_options(parser: argparse.ArgumentParser, security: bool = True) -> None:
+    """Add the URL and timeout options and, with security, the security, PKI and user options of a client command."""
     parser.add_argument(
         "-u",
         "--url",
@@ -270,6 +289,7 @@ def add_client_options(parser: argparse.ArgumentParser, security: bool = True) -
 
 
 def add_node_options(parser: argparse.ArgumentParser) -> None:
+    """Add the options that name a node: a NodeId and a browse path."""
     parser.add_argument("-n", "--nodeid", metavar="NODE", help="NodeId of the node (for example: i=85 or ns=2;s=Name)")
     parser.add_argument(
         "-p",
@@ -281,6 +301,7 @@ def add_node_options(parser: argparse.ArgumentParser) -> None:
 
 
 def add_value_options(parser: argparse.ArgumentParser, default: str) -> None:
+    """Add the options that describe a value given as text: data type, list, separator and locale."""
     choices = ["auto", *TYPE_CHOICES] if default == "auto" else TYPE_CHOICES
     auto = "auto reads the DataType of the node. " if default == "auto" else ""
     parser.add_argument(
@@ -320,6 +341,10 @@ def _pki_security(text: str) -> tuple[type[security_policies.SecurityPolicy], ua
 
 
 async def configure_client(client: Client, args: argparse.Namespace) -> None:
+    """
+    Apply the security and user options to a client. Without --security and --pki-dir it raises UsageError: the
+    command has to choose, with --security None as the explicit request for no security.
+    """
     if not args.security and not args.pki_dir:
         raise UsageError(
             "no security is chosen: give --pki-dir DIR (with --security Policy,Mode, default "
@@ -345,6 +370,7 @@ async def configure_client(client: Client, args: argparse.Namespace) -> None:
 
 
 def normalise_url(args: argparse.Namespace) -> None:
+    """Add opc.tcp:// to a URL without a scheme, and warn about a password in the URL."""
     if args.url and "://" not in args.url:
         logging.getLogger(__name__).info("Adding default scheme %s to URL %s", ua.OPC_TCP_SCHEME, args.url)
         args.url = ua.OPC_TCP_SCHEME + "://" + args.url
@@ -356,6 +382,7 @@ def normalise_url(args: argparse.Namespace) -> None:
 
 
 async def with_client(args: argparse.Namespace, work: Callable[[Client], Awaitable[int]]) -> int:
+    """Connect a configured client, run work with it and disconnect."""
     client = Client(args.url, timeout=args.timeout, auto_reconnect=getattr(args, "auto_reconnect", False))
     await configure_client(client, args)
     try:
@@ -366,6 +393,7 @@ async def with_client(args: argparse.Namespace, work: Callable[[Client], Awaitab
 
 
 async def resolve_node(client: Client, args: argparse.Namespace, default: str | None = None) -> Node:
+    """Return the node of -n and -p (the path is followed from the NodeId, or from the Root object)."""
     nodeid = args.nodeid or default
     if nodeid is None and not args.path:
         raise UsageError("a NodeId (-n) or a browse path (-p) is required")
@@ -380,6 +408,7 @@ async def resolve_node(client: Client, args: argparse.Namespace, default: str | 
 
 
 async def convert_for_node(node: Node, args: argparse.Namespace) -> ua.Variant:
+    """Build the Variant to write to node from the value options; auto takes the DataType of the node."""
     datatype = args.datatype
     if datatype == "auto":
         variant_type = await node.read_data_type_as_variant_type()
@@ -557,7 +586,8 @@ async def _generate_structs(client: Client, args: argparse.Namespace) -> int:
     return 0
 
 
-def application_to_strings(app: Any) -> list[tuple[str, Any]]:
+def application_to_strings(app: ua.ApplicationDescription) -> list[tuple[str, Any]]:
+    """Return the printed fields of an ApplicationDescription; empty optional fields are left out."""
     result = [("Application URI", app.ApplicationUri)]
     optionals = [
         ("Product URI", app.ProductUri),
@@ -572,14 +602,18 @@ def application_to_strings(app: Any) -> list[tuple[str, Any]]:
 
 
 def cert_to_string(der: bytes | None) -> str:
-    if not der:
+    """Return a one-line description of a DER certificate, or a marker for a missing or malformed one."""
+    try:
+        certificate = uacrypto.x509_from_der(der)
+    except UaError:
+        return "[malformed certificate]"
+    if certificate is None:
         return "[no certificate]"
-    from .crypto import uacrypto
-
-    return uacrypto.x509_to_string(uacrypto.x509_from_der(der))
+    return uacrypto.x509_to_string(certificate)
 
 
-def endpoint_to_strings(ep: Any) -> list[tuple[str, Any]]:
+def endpoint_to_strings(ep: ua.EndpointDescription) -> list[tuple[str, Any]]:
+    """Return the printed fields of an EndpointDescription, with its server and user token policies."""
     result = [("Endpoint URL", ep.EndpointUrl)]
     result += application_to_strings(ep.Server)
     result += [
@@ -600,7 +634,8 @@ def endpoint_to_strings(ep: Any) -> list[tuple[str, Any]]:
     return result
 
 
-def network_to_strings(record: Any) -> list[tuple[str, Any]]:
+def network_to_strings(record: ua.ServerOnNetwork) -> list[tuple[str, Any]]:
+    """Return the printed fields of a FindServersOnNetwork record."""
     return [
         ("Record Id", record.RecordId),
         ("Server Name", record.ServerName),
@@ -638,6 +673,7 @@ async def _discover(args: argparse.Namespace) -> int:
 
 
 def open_shell(namespace: dict[str, Any], banner: str = "") -> None:
+    """Open IPython with the names of namespace, or the standard interactive console without IPython."""
     try:
         embed = importlib.import_module("IPython").embed
     except ImportError:
@@ -820,6 +856,8 @@ def _server(args: argparse.Namespace) -> int:
 
 @dataclass(frozen=True)
 class Command:
+    """A command of enginir-opcua: its arguments, what it runs, and whether it gets the client options."""
+
     name: str
     help: str
     add_arguments: Callable[[argparse.ArgumentParser], None]
@@ -834,6 +872,7 @@ COMMANDS: dict[str, Command] = {}
 
 
 def register(command: Command) -> None:
+    """Add a command to the parser that build_parser() makes."""
     COMMANDS[command.name] = command
 
 
@@ -952,8 +991,10 @@ def _discover_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _shell_arguments(parser: argparse.ArgumentParser) -> None:
     add_node_options(parser)
-    parser.add_argument("-c", "--certificate", help="Client certificate")
-    parser.add_argument("-k", "--private-key", "--private_key", dest="private_key", help="Client private key")
+    parser.add_argument("-c", "--certificate", help="User certificate, for an X509 identity token")
+    parser.add_argument(
+        "-k", "--private-key", "--private_key", dest="private_key", help="Private key of the user certificate"
+    )
 
 
 def _generate_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1059,6 +1100,7 @@ for _command in (
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser with every registered command."""
     from enginir_opcua import __version__
 
     parser = argparse.ArgumentParser(
@@ -1095,6 +1137,10 @@ def _command_of(args: argparse.Namespace) -> Command:
 
 
 def main(argv: Sequence[str] | None = None, legacy_comma_split: bool = False) -> int:
+    """
+    Run a command and return the exit code: 0, 1 for an error, 2 for a usage error, 130 after Ctrl-C (0 for a
+    command that runs until stopped).
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), stream=sys.stderr, format="%(levelname)s: %(message)s")
@@ -1118,6 +1164,7 @@ def main(argv: Sequence[str] | None = None, legacy_comma_split: bool = False) ->
 
 
 def cli() -> None:
+    """The enginir-opcua console script."""
     sys.exit(main())
 
 

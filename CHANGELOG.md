@@ -729,6 +729,8 @@ Security profiles:
   Basic256Sha256 with SignAndEncrypt, and `--allow-plaintext-password` is new. `enginir-opcua server` needs `--pki-dir`
   (or `--certificate` with `--private-key`) or `--no-security`, which `--accept-all-logins` requires.
   `enginir-opcua init --profile` accepts `legacy`. The demo `Dockerfile` passes `--no-security`.
+- `enginir-opcua discover` prints `[malformed certificate]` for an endpoint whose certificate cannot be read, instead
+  of stopping with an error before the remaining endpoints.
 - `examples/17_legacy_profile.py` and the page `docs/usage/common/security.rst` (profile tables, settings, log lines,
   the low-level API); `docs/migration.rst` lists the changes.
 

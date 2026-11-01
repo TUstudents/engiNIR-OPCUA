@@ -136,7 +136,8 @@ def check_password_rules(password: str) -> None:
         )
 
 
-def _check_name(name: Any) -> str | None:
+def check_name(name: Any) -> str | None:
+    """Return the problem of a user name, or None for a valid one."""
     if not isinstance(name, str) or not name:
         return "name must be a non-empty string"
     if len(name) > MAX_NAME_LENGTH or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
@@ -152,7 +153,7 @@ def _record(entry: Any, number: int, seen: set[str], source: Path) -> UserRecord
     unknown = sorted(set(entry) - {"name", "role", "password_hash"})
     if unknown:
         raise ConfigurationError(f"{label}: unknown key {unknown[0]!r}; the keys are name, role and password_hash")
-    problem = _check_name(name)
+    problem = check_name(name)
     if problem or not isinstance(name, str):
         raise ConfigurationError(f"{label}: {problem}")
     if entry.get("role") not in ROLES:
