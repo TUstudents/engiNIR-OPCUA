@@ -1211,15 +1211,21 @@ class Server:
         self, node: Node | None = None, overwrite_existing: bool = False
     ) -> dict[str, type]:
         """
-        Load custom types (custom structures/extension objects) definition from server
-        Generate Python classes for custom structures/extension objects defined in server
-        These classes will be available in ua module
+        Build Python classes for the custom DataTypes of the server (structures, unions, enumerations, OptionSets and
+        aliases of built-in types) from their DataTypeDefinition and register them in ``types``, the registry of
+        this server; node limits the structures to the subtypes of node.
+
+        Returns {name: class} of every one of them, the same on every call: classes built by an earlier call are
+        kept and returned, since a DataTypeDefinition does not change once given out (OPC 10000-3 v1.05, 5.8.3).
+        overwrite_existing reads and builds them all again. The names have no namespace and can collide;
+        ``types.get(node_id)`` is the exact lookup. The classes are not added to the ua module.
         """
         return await load_data_type_definitions(self, node, overwrite_existing=overwrite_existing)
 
     async def load_enums(self) -> dict[str, type]:
         """
-        load UA structures and generate python Enums in ua module for custom enums in server
+        Deprecated: build Python enums for the custom enumerations of this server and register them in ``types``;
+        load_data_type_definitions does this and more.
         """
         _logger.warning("Deprecated since spec 1.04, call load_data_type_definitions")
         return await load_enums(self)

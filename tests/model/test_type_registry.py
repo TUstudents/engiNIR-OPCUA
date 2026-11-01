@@ -212,3 +212,29 @@ async def test_com131_loading_definitions_does_not_report_the_standard_enumerati
         await server.load_data_type_definitions()
     collisions = [record.getMessage() for record in caplog.records if "collision" in record.getMessage()]
     assert collisions == [next(message for message in collisions if "ua.NodeClass" in message)]
+
+
+async def test_a_repeated_load_returns_the_same_types_after_a_reconnect(restore_ua_registry: None) -> None:
+    """
+    Part 3, 5.8.3: a DataTypeDefinition never changes once given to Clients, so the classes a client built stay valid;
+    every call returns them, built now or earlier.
+    """
+    port = find_free_port()
+    server = Server(allow_no_security=True)
+    await server.init()
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{port}")
+    idx = await server.register_namespace("http://test.example/reload")
+    await new_struct(server, idx, "Probe", [new_struct_field("Value", ua.VariantType.Int32)])
+    await new_enum(server, idx, "Mode", ["A", "B"])
+    async with server:
+        client = Client(f"opc.tcp://127.0.0.1:{port}", allow_no_security=True)
+        await client.connect()
+        first = await client.load_data_type_definitions()
+        again = await client.load_data_type_definitions()
+        await client.disconnect()
+        await client.connect()
+        after_reconnect = await client.load_data_type_definitions()
+        await client.disconnect()
+    assert {"Probe", "Mode"} <= set(first)
+    assert again == first
+    assert after_reconnect == first

@@ -567,6 +567,11 @@ XML import:
   `export_xml_by_ns` writes a `Models` element. `build_etree_chunked` no longer reconnects.
 
 Custom types:
+- `load_data_type_definitions()` returns every custom DataType of the server on every call, the ones built by an
+  earlier call (also before a reconnect) as well; a second call returned `{}` because only newly built classes were
+  returned. Classes are kept in the registry of the client or server, as a DataTypeDefinition does not change once
+  given out (OPC 10000-3, 5.8.3); `overwrite_existing=True` builds them again. `load_enums()` returns the
+  enumerations already registered too. The docstrings no longer claim the classes go into the `ua` module.
 - `load_data_type_definitions()` no longer logs a "Browsename collision" warning for every standard enumeration
   (`NodeClass`, `NamingRuleType`, ...), about 50 per call: a class for the same standard DataType as the built-in one is
   not a collision. A different DataType with the name of a built-in is still reported (COM-131).

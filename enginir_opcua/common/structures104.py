@@ -523,10 +523,12 @@ async def _recursive_parse_basedatatypes(
         name = clean_name(desc.BrowseName.Name)
         if parent_datatype == "Number" or desc.NodeId.NamespaceIndex == 0:
             continue
-        if server.types.find_own(desc.NodeId) is None:
+        known = server.types.find_own(desc.NodeId)
+        if known is None:
             env = make_basetype(name, parent_datatype)
             server.types.register_alias(desc.NodeId, env[name], name)
-            new_alias[name] = env[name]
+            known = env[name]
+        new_alias[name] = known
     if descs:
         await asyncio.gather(
             *[
@@ -569,12 +571,16 @@ async def _load_base_datatypes(server: Server | Client) -> dict[str, Any]:
 
 
 class RecursiveParser:
-    """Collects the Structure DataTypes below a node, each with the fields of its supertypes put in front."""
+    """
+    Collects the Structure DataTypes below a node, each with the fields of its supertypes put in front; the ones the
+    registry already holds (and overwrite_existing is not set) go to registered instead.
+    """
 
     def __init__(self, server: Server | Client) -> None:
         self.server = server
         self._visited: set[ua.NodeId] = set()
         self._dtypes: list[DataTypeInfo] = []
+        self.registered: dict[str, Any] = {}
 
     async def parse(self, base_node: Node, overwrite_existing: bool = False) -> list[DataTypeInfo]:
         await self._parse_node(
@@ -605,6 +611,9 @@ class RecursiveParser:
         overwrite_existing: bool,
     ) -> None:
         next_parent = parent_sdef
+        known = None if overwrite_existing else self.server.types.find_own(desc.NodeId)
+        if known is not None:
+            self.registered[clean_name(desc.BrowseName.Name)] = known
 
         if isinstance(sdef, ua.StructureDefinition):
             try:
@@ -637,7 +646,12 @@ async def load_data_type_definitions(
     """
     Build and register classes for the custom DataTypes of the server: aliases of built-in types, OptionSets,
     Enumerations and the Structures below base_node (default: Structure), from their DataTypeDefinition
-    Attribute (OPC 10000-3 v1.05, 5.8.3). Returns {name: class} of everything that was built.
+    Attribute (OPC 10000-3 v1.05, 5.8.3).
+
+    Returns {name: class} of every such DataType, built now or by an earlier call: a DataTypeDefinition does not
+    change once a server gave it out (5.8.3), so classes in the registry of this client or server are kept and not
+    read again, also across reconnects. overwrite_existing reads and builds every class again. The names are
+    BrowseNames without their namespace and can collide across namespaces; ``types`` finds a class by its NodeId.
     """
     await server.get_namespace_array()
     option_set_loads = [
@@ -658,13 +672,16 @@ async def load_data_type_definitions(
 
     parser = RecursiveParser(server)
     dtypes = _topological_sort_dtypes(await parser.parse(base_node, overwrite_existing))
+    new_objects.update(parser.registered)
 
     retries = 3
     for cnt in range(retries):
         failed_types = []
         log_ex = retries == cnt + 1
         for dts in dtypes:
-            if not overwrite_existing and server.types.find_own(dts.data_type) is not None:
+            known = None if overwrite_existing else server.types.find_own(dts.data_type)
+            if known is not None:
+                new_objects[dts.name] = known
                 continue
             try:
                 cls = make_structure(dts.data_type, dts.name, dts.sdef, log_error=log_ex, types=server.types)[dts.name]
@@ -773,7 +790,8 @@ async def load_enums(
     """
     Build and register an IntEnum, or an IntFlag with option_set, for the subtypes of base_node (default:
     Enumeration; all levels with recursive) from their EnumDefinition, or for enumerations without one from their
-    EnumValues or EnumStrings Property. Returns {name: class} of what was built.
+    EnumValues or EnumStrings Property. Returns {name: class} of every one of them, built now or already in the
+    registry (overwrite_existing builds them all again).
     """
     typename = "OptionSet" if option_set else "Enum"
     if base_node is None:
@@ -782,7 +800,9 @@ async def load_enums(
     new_enums = {}
     for idx, desc in enumerate(descs):
         name = clean_name(desc.BrowseName.Name)
-        if not overwrite_existing and server.types.find_own(desc.NodeId) is not None:
+        known = None if overwrite_existing else server.types.find_own(desc.NodeId)
+        if known is not None:
+            new_enums[name] = known
             continue
         _logger.info("Registering %s %s %s", typename, desc.NodeId, name)
         edef = sdefs[idx]
