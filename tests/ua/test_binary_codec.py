@@ -498,29 +498,6 @@ def test_extension_object_missing_length():
     assert obj.DiagnosticInfos == obj2.DiagnosticInfos
 
 
-def test_datetime():
-    now = datetime.now(UTC)
-    epch = ua.datetime_to_win_epoch(now)
-    dt = ua.win_epoch_to_datetime(epch)
-    assert now == dt
-    # python's datetime has a range from Jan 1, 0001 to the end of year 9999
-    # windows' filetime has a range from Jan 1, 1601 to approx. year 30828
-    # let's test an overlapping range [Jan 1, 1601 - Dec 31, 9999]
-    dt = datetime(1601, 1, 1, tzinfo=UTC)
-    assert ua.win_epoch_to_datetime(ua.datetime_to_win_epoch(dt)) == dt
-    dt = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
-    assert ua.win_epoch_to_datetime(ua.datetime_to_win_epoch(dt)) == dt
-    epch = 128930364000001000
-    dt = ua.win_epoch_to_datetime(epch)
-    epch2 = ua.datetime_to_win_epoch(dt)
-    assert epch == epch2
-    epch = 0
-    assert ua.datetime_to_win_epoch(ua.win_epoch_to_datetime(epch)) == epch
-    # Test if values that are out of range are either min or max
-    assert ua.datetime_to_win_epoch(datetime.min) == 0
-    assert ua.datetime_to_win_epoch(datetime.max) == ua.MAX_INT64
-
-
 def test_datavalue():
     dv = ua.DataValue(123, SourceTimestamp=datetime.now(UTC))
     assert dv.Value == ua.Variant(123)

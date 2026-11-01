@@ -9,7 +9,6 @@ Publication date:2026-05-01T00:00:00Z
 UA-Nodeset tag:UA-1.05.07-2026-05-01
 """
 import datetime
-from dateutil.tz import tzutc
 from enginir_opcua import ua
 from enginir_opcua.ua import NodeId, QualifiedName, NumericNodeId, StringNodeId, GuidNodeId
 from enginir_opcua.ua import NodeClass, LocalizedText

@@ -1,8 +1,7 @@
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
-from dateutil.tz import tzutc
 
 from enginir_opcua import ua
 from enginir_opcua.common.ua_utils import string_to_val, val_to_string
@@ -25,12 +24,13 @@ def utc_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_datetime_string_is_utc_independent_of_local_zone(utc_local_zone: None, text: str) -> None:
     """Part 6, 5.3.1.6: DateTime text is UTC or carries an offset; the result is UTC whatever the host's zone."""
     value = string_to_val(text, ua.VariantType.DateTime)
-    assert value == datetime(2026, 5, 1, tzinfo=tzutc())
-    assert isinstance(value.tzinfo, tzutc)
+    assert value == datetime(2026, 5, 1, tzinfo=UTC)
+    assert value.tzinfo is UTC
 
 
-def test_datetime_string_without_offset_stays_naive() -> None:
-    assert string_to_val("2026-05-01T00:00:00", ua.VariantType.DateTime) == datetime(2026, 5, 1)
+def test_datetime_string_without_offset_is_utc() -> None:
+    """Part 6, 5.1.4: DateTime values are UTC; a text without an offset is read as UTC."""
+    assert string_to_val("2026-05-01T00:00:00", ua.VariantType.DateTime) == datetime(2026, 5, 1, tzinfo=UTC)
 
 
 def test_string_to_variant_int():
@@ -52,7 +52,7 @@ def test_string_to_variant_float():
 def test_string_to_variant_datetime_string():
     s_arr_datetime = "[2014-05-6, 2016-10-3]"
     arr_string = ["2014-05-6", "2016-10-3"]
-    arr_datetime = [datetime(2014, 5, 6), datetime(2016, 10, 3)]
+    arr_datetime = [datetime(2014, 5, 6, tzinfo=UTC), datetime(2016, 10, 3, tzinfo=UTC)]
     assert s_arr_datetime == val_to_string(arr_string)
     assert arr_string == string_to_val(s_arr_datetime, ua.VariantType.String)
     assert arr_datetime == string_to_val(s_arr_datetime, ua.VariantType.DateTime)

@@ -24,12 +24,16 @@ from .history import (
     HistoryStorageInterface,
     Page,
     TimeDomain,
-    from_ticks,
     key_of_value,
-    to_ticks,
 )
 
 LAYOUT_VERSION = 2
+
+
+def _ticks_or_none(moment: datetime | None) -> int | None:
+    return None if moment is None or ua.is_null_datetime(moment) else ua.datetime_to_ticks(moment)
+
+
 RETENTION_BATCH = 100
 RETENTION_INTERVAL_SECONDS = 10.0
 IMMEDIATE_COUNT_LIMIT = 10_000
@@ -55,7 +59,7 @@ class _Retention:
         self.last = monotonic.monotonic()
 
     def cutoff(self) -> int | None:
-        return to_ticks(datetime.now(UTC) - self.period) if self.period else None
+        return ua.datetime_to_ticks(datetime.now(UTC) - self.period) if self.period else None
 
     def due(self) -> bool:
         self.saves += 1
@@ -160,8 +164,8 @@ class HistorySQLite(HistoryStorageInterface):
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 key_of_value(datavalue),
-                to_ticks(datavalue.SourceTimestamp) if datavalue.SourceTimestamp else None,
-                to_ticks(datavalue.ServerTimestamp) if datavalue.ServerTimestamp else None,
+                _ticks_or_none(datavalue.SourceTimestamp),
+                _ticks_or_none(datavalue.ServerTimestamp),
                 datavalue.StatusCode.value if datavalue.StatusCode is not None else 0,
                 str(variant.Value),
                 variant.VariantType.name,
@@ -228,8 +232,8 @@ class HistorySQLite(HistoryStorageInterface):
                 ua.DataValue(
                     variant_from_binary(Buffer(row[5])),
                     StatusCode=ua.StatusCode(row[4]),
-                    SourceTimestamp=from_ticks(row[2]) if row[2] is not None else None,
-                    ServerTimestamp=from_ticks(row[3]) if row[3] is not None else None,
+                    SourceTimestamp=ua.ticks_to_datetime(row[2]) if row[2] is not None else None,
+                    ServerTimestamp=ua.ticks_to_datetime(row[3]) if row[3] is not None else None,
                 ),
             )
             for row in rows[: domain.limit]
@@ -293,7 +297,7 @@ class HistorySQLite(HistoryStorageInterface):
             marks = ", ?" * len(columns)
             await self._db.execute(
                 f'INSERT INTO {quote_identifier(table)} ("_Time", "_EventType"{column_text}) VALUES (?, ?{marks})',
-                (to_ticks(time), str(event_type.Value) if event_type is not None else None, *values),
+                (ua.datetime_to_ticks(time), str(event_type.Value) if event_type is not None else None, *values),
             )
             await self._retain(table)
 

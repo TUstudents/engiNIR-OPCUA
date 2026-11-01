@@ -58,8 +58,8 @@ class HistoryRig:
     ) -> ua.HistoryReadResult:
         details = ua.ReadRawModifiedDetails(
             IsReadModified=False,
-            StartTime=at(start) if start is not None else ua.get_win_epoch(),
-            EndTime=at(end) if end is not None else ua.get_win_epoch(),
+            StartTime=at(start) if start is not None else ua.DATETIME_MIN_VALUE,
+            EndTime=at(end) if end is not None else ua.DATETIME_MIN_VALUE,
             NumValuesPerNode=count,
             ReturnBounds=bounds,
         )

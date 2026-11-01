@@ -14,6 +14,7 @@ import typing
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import Field, dataclass, fields, is_dataclass
+from datetime import datetime
 from enum import Enum, IntFlag
 from types import UnionType
 from typing import IO, TYPE_CHECKING, Any, cast, get_args, get_origin
@@ -176,13 +177,11 @@ def unset_bit(data: int, offset: int) -> int:
 class _DateTime:
     @staticmethod
     def pack(dt: Any) -> bytes:
-        epch = ua.datetime_to_win_epoch(dt)
-        return Primitives.Int64.pack(epch)
+        return Primitives.Int64.pack(ua.datetime_to_ticks(dt))
 
     @staticmethod
     def unpack(data: Buffer | IO) -> Any:
-        epch = Primitives.Int64.unpack(data)
-        return ua.win_epoch_to_datetime(epch)
+        return ua.ticks_to_datetime(Primitives.Int64.unpack(data))
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +581,8 @@ def create_dataclass_serializer(dataclazz: type) -> Callable[[Any], bytes]:
         return _localizedtext_to_binary
     if dataclazz is ua.DiagnosticInfo:
         return diagnosticinfo_to_binary
+    if dataclazz is ua.DataValue:
+        return datavalue_to_binary
     data_fields = fields(dataclazz)
     # The result is cached, so get_type_hints only runs once per class.
     try:
@@ -647,6 +648,104 @@ def _localizedtext_to_binary(obj: ua.LocalizedText) -> bytes:
         mask |= 0x02
         parts.append(Primitives.String.pack(obj.Text))
     return Primitives.Byte.pack(mask) + b"".join(parts)
+
+
+_DATA_VALUE_VALUE = 0x01
+_DATA_VALUE_STATUS = 0x02
+_DATA_VALUE_SOURCE_TIMESTAMP = 0x04
+_DATA_VALUE_SERVER_TIMESTAMP = 0x08
+_DATA_VALUE_SOURCE_PICOSECONDS = 0x10
+_DATA_VALUE_SERVER_PICOSECONDS = 0x20
+_DATA_VALUE_UNASSIGNED = 0xC0
+_TICKS_PER_MICROSECOND = 10
+_PICOSECONDS_PER_TICK = 10_000
+_MAX_WIRE_PICOSECONDS = _PICOSECONDS_PER_TICK - 1
+_MAX_PICOSECONDS = _TICKS_PER_MICROSECOND * _PICOSECONDS_PER_TICK - 1
+
+
+def _timestamp_to_binary(
+    timestamp: datetime | None, picoseconds: int | None, timestamp_bit: int, picoseconds_bit: int
+) -> tuple[int, bytes]:
+    if ua.is_null_datetime(timestamp):
+        return 0, b""
+    assert timestamp is not None
+    ticks = ua.datetime_to_ticks(timestamp)
+    if ticks == ua.MAX_INT64 or not picoseconds:
+        return timestamp_bit, Primitives.Int64.pack(ticks)
+    if not 0 <= picoseconds <= _MAX_PICOSECONDS:
+        raise UaError(f"DataValue Picoseconds {picoseconds} are outside 0 to {_MAX_PICOSECONDS}")
+    extra_ticks, wire_picoseconds = divmod(picoseconds, _PICOSECONDS_PER_TICK)
+    encoded = Primitives.Int64.pack(ticks + extra_ticks)
+    if wire_picoseconds == 0:
+        return timestamp_bit, encoded
+    return timestamp_bit | picoseconds_bit, encoded + Primitives.UInt16.pack(wire_picoseconds)
+
+
+def datavalue_to_binary(value: ua.DataValue) -> bytes:
+    """
+    Encode a DataValue (OPC 10000-6 v1.05, 5.2.2.17): fields in the order of Table 27, a null Value, a Good
+    StatusCode and null timestamps left out, and the 100 ns digit of the Picoseconds moved into the timestamp.
+    """
+    mask = 0
+    parts: list[bytes] = []
+    if value.Value is not None and value.Value.VariantType != ua.VariantType.Null:
+        mask |= _DATA_VALUE_VALUE
+        parts.append(variant_to_binary(value.Value))
+    if value.StatusCode is not None and value.StatusCode.value != ua.StatusCodes.Good:
+        mask |= _DATA_VALUE_STATUS
+        parts.append(Primitives.UInt32.pack(value.StatusCode.value))
+    for timestamp, picoseconds, timestamp_bit, picoseconds_bit in (
+        (value.SourceTimestamp, value.SourcePicoseconds, _DATA_VALUE_SOURCE_TIMESTAMP, _DATA_VALUE_SOURCE_PICOSECONDS),
+        (value.ServerTimestamp, value.ServerPicoseconds, _DATA_VALUE_SERVER_TIMESTAMP, _DATA_VALUE_SERVER_PICOSECONDS),
+    ):
+        bits, encoded = _timestamp_to_binary(timestamp, picoseconds, timestamp_bit, picoseconds_bit)
+        mask |= bits
+        parts.append(encoded)
+    return Primitives.Byte.pack(mask) + b"".join(parts)
+
+
+def _timestamp_from_binary(
+    data: Buffer | IO, mask: int, timestamp_bit: int, picoseconds_bit: int
+) -> tuple[datetime | None, int | None]:
+    ticks = Primitives.Int64.unpack(data) if mask & timestamp_bit else None
+    wire_picoseconds = Primitives.UInt16.unpack(data) if mask & picoseconds_bit else None
+    if ticks is None:
+        return None, None
+    timestamp = ua.ticks_to_datetime(ticks)
+    if timestamp in (ua.DATETIME_MIN_VALUE, ua.DATETIME_MAX_VALUE):
+        return timestamp, None
+    sub_microsecond_ticks = ticks % _TICKS_PER_MICROSECOND
+    if wire_picoseconds is None and sub_microsecond_ticks == 0:
+        return timestamp, None
+    picoseconds = sub_microsecond_ticks * _PICOSECONDS_PER_TICK + min(wire_picoseconds or 0, _MAX_WIRE_PICOSECONDS)
+    return timestamp, picoseconds
+
+
+@_bounded
+def datavalue_from_binary(data: Buffer | IO) -> ua.DataValue:
+    """
+    Decode a DataValue (OPC 10000-6 v1.05, 5.2.2.17); Picoseconds of 10 000 or more count as 9999, Picoseconds without
+    their timestamp are dropped, and the 100 ns digit of a timestamp goes into its Picoseconds.
+    """
+    mask = Primitives.Byte.unpack(data)
+    if mask & _DATA_VALUE_UNASSIGNED:
+        raise UaError(f"DataValue has unassigned encoding bits {mask & _DATA_VALUE_UNASSIGNED:#x}")
+    value = variant_from_binary(data) if mask & _DATA_VALUE_VALUE else ua.Variant()
+    status = ua.StatusCode(Primitives.UInt32.unpack(data)) if mask & _DATA_VALUE_STATUS else ua.StatusCode()
+    source, source_picoseconds = _timestamp_from_binary(
+        data, mask, _DATA_VALUE_SOURCE_TIMESTAMP, _DATA_VALUE_SOURCE_PICOSECONDS
+    )
+    server, server_picoseconds = _timestamp_from_binary(
+        data, mask, _DATA_VALUE_SERVER_TIMESTAMP, _DATA_VALUE_SERVER_PICOSECONDS
+    )
+    return ua.DataValue(
+        value,
+        status,
+        SourceTimestamp=source,
+        ServerTimestamp=server,
+        SourcePicoseconds=source_picoseconds,
+        ServerPicoseconds=server_picoseconds,
+    )
 
 
 _DIAGNOSTIC_INFO_INDEX_FIELDS = (
@@ -1157,6 +1256,8 @@ def _create_dataclass_deserializer(objtype: type | str) -> Callable[[Buffer | IO
     assert isinstance(objtype, type)
     if objtype is ua.DiagnosticInfo:
         return diagnosticinfo_from_binary
+    if objtype is ua.DataValue:
+        return datavalue_from_binary
     if issubclass(objtype, Enum):
         return create_enum_deserializer(objtype)  # type: ignore[arg-type]
     if issubclass(objtype, ua.UaUnion):

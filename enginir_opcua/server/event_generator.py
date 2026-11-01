@@ -20,10 +20,10 @@ def stamp_event(event: Any, time_attr: datetime | None = None) -> None:
     """
     Give an event a new EventId and set its Time, ReceiveTime and LocalTime.
 
-    :param time_attr: The Time of the event; now if None.
+    :param time_attr: The Time of the event; now if None or null (``ua.is_null_datetime``).
     """
     event.EventId = ua.Variant(secrets.token_bytes(16), ua.VariantType.ByteString)
-    event.Time = time_attr if time_attr else datetime.now(UTC)
+    event.Time = datetime.now(UTC) if time_attr is None or ua.is_null_datetime(time_attr) else time_attr
     event.ReceiveTime = datetime.now(UTC)
     event.LocalTime = ua.uaprotocol_auto.TimeZoneDataType()
     localtime = time.localtime(event.Time.timestamp())

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Literal, overload
 
 from enginir_opcua import ua
@@ -52,14 +52,14 @@ def _to_nodeid(nodeid: Node | ua.NodeId | str | int) -> ua.NodeId:
 
 
 _ALL_ELEMENTS_PROCESSED = 0xFFFFFFFF
-_EARLIEST_SPECIFIED_TIME = ua.get_win_epoch() + timedelta(microseconds=1)
+_EARLIEST_SPECIFIED_TIME = ua.ticks_to_datetime(10)
 
 
 def _history_time_domain(
     starttime: datetime | None, endtime: datetime | None, numvalues: int
 ) -> tuple[datetime, datetime]:
-    start = starttime or ua.get_win_epoch()
-    end = endtime or ua.get_win_epoch()
+    start = starttime or ua.DATETIME_MIN_VALUE
+    end = endtime or ua.DATETIME_MIN_VALUE
     given = sum((starttime is not None, endtime is not None, numvalues > 0))
     if given < 2 and endtime is None:
         end = datetime.now(UTC)
@@ -388,7 +388,6 @@ class Node:
         desc.ResultMask = result_mask
         desc.NodeId = self.nodeid
         params = ua.BrowseParameters()
-        params.View.Timestamp = ua.get_win_epoch()
         params.NodesToBrowse.append(desc)
         params.RequestedMaxReferencesPerNode = 0
         return await self._browse_next(await self.session.browse(params))

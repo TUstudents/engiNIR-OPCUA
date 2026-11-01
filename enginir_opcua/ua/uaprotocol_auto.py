@@ -4,12 +4,12 @@ Autogenerate code from xml spec
 UA-Nodeset tag UA-1.05.07-2026-05-01, core model 1.05.07 published 2026-05-01T00:00:00Z
 """
 
-from datetime import datetime, timezone
 from enum import IntEnum, IntFlag
 from dataclasses import dataclass, field
 
 from enginir_opcua.ua.uatypes import SByte, Byte, Bytes, ByteString, Int16, Int32, Int64, UInt16, UInt32
 from enginir_opcua.ua.uatypes import UInt64, Boolean, Float, Double, Null, String, CharArray, DateTime, Guid
+from enginir_opcua.ua.uatypes import DATETIME_MIN_VALUE
 from enginir_opcua.ua.uatypes import AccessLevel, EventNotifier
 from enginir_opcua.ua.uatypes import LocalizedText, Variant, QualifiedName, StatusCode, DataValue
 from enginir_opcua.ua.uatypes import RelativePath, RelativePathElement
@@ -2611,8 +2611,8 @@ class ServiceCertificateDataType:
 
     Certificate: 'ua.ByteString' = None
     Issuers: 'list[ua.ByteString]' = field(default_factory=list)
-    ValidFrom: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    ValidTo: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    ValidFrom: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    ValidTo: 'ua.UtcTime' = DATETIME_MIN_VALUE
 
 
 @dataclass(slots=True)
@@ -3656,7 +3656,7 @@ class JsonDataSetMessage:
     SequenceNumber: 'ua.UInt32' = 0
     MetaDataVersion: 'ua.ConfigurationVersionDataType' = field(default_factory=lambda: ConfigurationVersionDataType())
     MinorVersion: 'ua.VersionTime' = 0
-    Timestamp: 'ua.DateTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.DateTime' = DATETIME_MIN_VALUE
     Status: 'ua.StatusCode' = field(default_factory=lambda: StatusCode())
     MessageType: 'ua.String' = None
     Payload: 'ua.ExtensionObject' = ExtensionObject()
@@ -3686,10 +3686,10 @@ class JsonStatusMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     IsCyclic: 'ua.Boolean' = False
     Status: 'ua.PubSubState' = field(default_factory=lambda:PubSubState.Disabled)
-    NextReportTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    NextReportTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
 
 
 @dataclass(slots=True)
@@ -3720,7 +3720,7 @@ class JsonActionNetworkMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     ResponseAddress: 'ua.String' = None
     CorrelationData: 'ua.ByteString' = None
     RequestorId: 'ua.String' = None
@@ -3763,7 +3763,7 @@ class JsonActionRequestMessage:
     WriterGroupName: 'ua.String' = None
     MetaDataVersion: 'ua.ConfigurationVersionDataType' = field(default_factory=lambda: ConfigurationVersionDataType())
     MinorVersion: 'ua.VersionTime' = 0
-    Timestamp: 'ua.DateTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.DateTime' = DATETIME_MIN_VALUE
     MessageType: 'ua.String' = None
     RequestId: 'ua.UInt16' = 0
     ActionState: 'ua.ActionState' = field(default_factory=lambda:ActionState.Idle)
@@ -3807,7 +3807,7 @@ class JsonActionResponseMessage:
     WriterGroupName: 'ua.String' = None
     MetaDataVersion: 'ua.ConfigurationVersionDataType' = field(default_factory=lambda: ConfigurationVersionDataType())
     MinorVersion: 'ua.VersionTime' = 0
-    Timestamp: 'ua.DateTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.DateTime' = DATETIME_MIN_VALUE
     Status: 'ua.StatusCode' = field(default_factory=lambda: StatusCode())
     MessageType: 'ua.String' = None
     RequestId: 'ua.UInt16' = 0
@@ -4122,7 +4122,7 @@ class LogRecord:
 
     data_type = NodeId(ObjectIds.LogRecord)
 
-    Time: 'ua.DateTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Time: 'ua.DateTime' = DATETIME_MIN_VALUE
     Severity: 'ua.UInt16' = 0
     EventType: 'ua.NodeId | None' = None
     SourceNode: 'ua.NodeId | None' = None
@@ -4617,7 +4617,7 @@ class JsonDataSetMetaDataMessage:
     DataSetWriterId: 'ua.UInt16' = 0
     WriterGroupName: 'ua.String' = None
     DataSetWriterName: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     MetaData: 'ua.DataSetMetaDataType' = field(default_factory=lambda: DataSetMetaDataType())
 
 
@@ -4653,7 +4653,7 @@ class JsonActionMetaDataMessage:
     PublisherId: 'ua.String' = None
     DataSetWriterId: 'ua.UInt16' = 0
     DataSetWriterName: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     ActionTargets: 'list[ua.ActionTargetDataType]' = field(default_factory=list)
     Request: 'ua.DataSetMetaDataType' = field(default_factory=lambda: DataSetMetaDataType())
     Response: 'ua.DataSetMetaDataType' = field(default_factory=lambda: DataSetMetaDataType())
@@ -4812,7 +4812,7 @@ class JsonApplicationDescriptionMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Description: 'ua.ApplicationDescription' = field(default_factory=lambda: ApplicationDescription())
     ServerCapabilities: 'list[ua.String]' = field(default_factory=list)
 
@@ -4841,7 +4841,7 @@ class RequestHeader:
     data_type = NodeId(ObjectIds.RequestHeader)
 
     AuthenticationToken: 'ua.SessionAuthenticationToken' = field(default_factory=lambda: NodeId())
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     RequestHandle: 'ua.IntegerId' = 0
     ReturnDiagnostics: 'ua.UInt32' = 0
     AuditEntryId: 'ua.String' = None
@@ -4870,7 +4870,7 @@ class ResponseHeader:
 
     data_type = NodeId(ObjectIds.ResponseHeader)
 
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     RequestHandle: 'ua.IntegerId' = 0
     ServiceResult: 'ua.StatusCode' = field(default_factory=lambda: StatusCode())
     ServiceDiagnostics: 'ua.DiagnosticInfo' = field(default_factory=lambda: DiagnosticInfo())
@@ -5061,7 +5061,7 @@ class FindServersOnNetworkResult:
     :vartype Servers: ServerOnNetwork
     """
 
-    LastCounterResetTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    LastCounterResetTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Servers: 'list[ua.ServerOnNetwork]' = field(default_factory=list)
 
 
@@ -5456,7 +5456,7 @@ class JsonPubSubConnectionMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Connection: 'ua.PubSubConnectionDataType' = field(default_factory=lambda: PubSubConnectionDataType())
 
 
@@ -5480,7 +5480,7 @@ class JsonActionResponderMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Connection: 'ua.PubSubConnectionDataType' = field(default_factory=lambda: PubSubConnectionDataType())
 
 
@@ -5547,7 +5547,7 @@ class JsonServerEndpointsMessage:
     MessageId: 'ua.String' = None
     MessageType: 'ua.String' = None
     PublisherId: 'ua.String' = None
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Description: 'ua.ApplicationDescription' = field(default_factory=lambda: ApplicationDescription())
     Endpoints: 'list[ua.EndpointDescription]' = field(default_factory=list)
 
@@ -5780,7 +5780,7 @@ class ChannelSecurityToken:
 
     ChannelId: 'ua.UInt32' = 0
     TokenId: 'ua.UInt32' = 0
-    CreatedAt: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    CreatedAt: 'ua.UtcTime' = DATETIME_MIN_VALUE
     RevisedLifetime: 'ua.UInt32' = 0
 
 
@@ -6998,7 +6998,7 @@ class ViewDescription:
     data_type = NodeId(ObjectIds.ViewDescription)
 
     ViewId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
-    Timestamp: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    Timestamp: 'ua.UtcTime' = DATETIME_MIN_VALUE
     ViewVersion: 'ua.UInt32' = 0
 
 
@@ -8053,8 +8053,8 @@ class ReadRawModifiedDetails(HistoryReadDetails):
     data_type = NodeId(ObjectIds.ReadRawModifiedDetails)
 
     IsReadModified: 'ua.Boolean' = False
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     NumValuesPerNode: 'ua.Counter' = 0
     ReturnBounds: 'ua.Boolean' = False
 
@@ -8119,7 +8119,7 @@ class ModificationInfo:
 
     data_type = NodeId(ObjectIds.ModificationInfo)
 
-    ModificationTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    ModificationTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     UpdateType: 'ua.HistoryUpdateType' = field(default_factory=lambda:HistoryUpdateType.Insert)
     UserName: 'ua.String' = None
 
@@ -8348,8 +8348,8 @@ class DeleteRawModifiedDetails(HistoryUpdateDetails):
 
     NodeId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     IsDeleteModified: 'ua.Boolean' = False
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
 
 
 @dataclass(slots=True)
@@ -8620,8 +8620,8 @@ class ReadEventDetails(HistoryReadDetails):
     data_type = NodeId(ObjectIds.ReadEventDetails)
 
     NumValuesPerNode: 'ua.Counter' = 0
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Filter: 'ua.EventFilter' = field(default_factory=lambda: EventFilter())
 
 
@@ -8645,8 +8645,8 @@ class ReadEventDetails2(ReadEventDetails):
     data_type = NodeId(ObjectIds.ReadEventDetails2)
 
     NumValuesPerNode: 'ua.Counter' = 0
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Filter: 'ua.EventFilter' = field(default_factory=lambda: EventFilter())
     ReadModified: 'ua.Boolean' = False
 
@@ -8671,8 +8671,8 @@ class ReadEventDetailsSorted(ReadEventDetails):
     data_type = NodeId(ObjectIds.ReadEventDetailsSorted)
 
     NumValuesPerNode: 'ua.Counter' = 0
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     Filter: 'ua.EventFilter' = field(default_factory=lambda: EventFilter())
     SortClause: 'list[ua.SortRuleElement]' = field(default_factory=list)
 
@@ -8722,8 +8722,8 @@ class ReadProcessedDetails(HistoryReadDetails):
 
     data_type = NodeId(ObjectIds.ReadProcessedDetails)
 
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    EndTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    EndTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     ProcessingInterval: 'ua.Duration' = 0
     AggregateType: 'list[ua.NodeId]' = field(default_factory=list)
     AggregateConfiguration: 'ua.AggregateConfiguration' = field(default_factory=lambda: AggregateConfiguration())
@@ -8746,7 +8746,7 @@ class AggregateFilter(MonitoringFilter):
 
     data_type = NodeId(ObjectIds.AggregateFilter)
 
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     AggregateType: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     ProcessingInterval: 'ua.Duration' = 0
     AggregateConfiguration: 'ua.AggregateConfiguration' = field(default_factory=lambda: AggregateConfiguration())
@@ -8795,7 +8795,7 @@ class AggregateFilterResult(MonitoringFilterResult):
 
     data_type = NodeId(ObjectIds.AggregateFilterResult)
 
-    RevisedStartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    RevisedStartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     RevisedProcessingInterval: 'ua.Duration' = 0
     RevisedAggregateConfiguration: 'ua.AggregateConfiguration' = field(default_factory=lambda: AggregateConfiguration())
 
@@ -9480,7 +9480,7 @@ class NotificationMessage:
     data_type = NodeId(ObjectIds.NotificationMessage)
 
     SequenceNumber: 'ua.Counter' = 0
-    PublishTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    PublishTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     NotificationData: 'list[ua.ExtensionObject]' = field(default_factory=list)
 
 
@@ -9951,7 +9951,7 @@ class BuildInfo:
     ProductName: 'ua.String' = None
     SoftwareVersion: 'ua.String' = None
     BuildNumber: 'ua.String' = None
-    BuildDate: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    BuildDate: 'ua.UtcTime' = DATETIME_MIN_VALUE
 
 
 @dataclass(slots=True)
@@ -10096,8 +10096,8 @@ class ServerStatusDataType:
 
     data_type = NodeId(ObjectIds.ServerStatusDataType)
 
-    StartTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    CurrentTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    StartTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    CurrentTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     State: 'ua.ServerState' = field(default_factory=lambda:ServerState.Running)
     BuildInfo: 'ua.BuildInfo' = field(default_factory=lambda: BuildInfo())
     SecondsTillShutdown: 'ua.UInt32' = 0
@@ -10262,8 +10262,8 @@ class SessionDiagnosticsDataType:
     LocaleIds: 'list[ua.LocaleId]' = field(default_factory=list)
     ActualSessionTimeout: 'ua.Duration' = 0
     MaxResponseMessageSize: 'ua.UInt32' = 0
-    ClientConnectionTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    ClientLastContactTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    ClientConnectionTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    ClientLastContactTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     CurrentSubscriptionsCount: 'ua.UInt32' = 0
     CurrentMonitoredItemsCount: 'ua.UInt32' = 0
     CurrentPublishRequestsInQueue: 'ua.UInt32' = 0
@@ -10603,13 +10603,13 @@ class ProgramDiagnosticDataType:
 
     CreateSessionId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     CreateClientName: 'ua.String' = None
-    InvocationCreationTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    LastTransitionTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    InvocationCreationTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    LastTransitionTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     LastMethodCall: 'ua.String' = None
     LastMethodSessionId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     LastMethodInputArguments: 'list[ua.Argument]' = field(default_factory=list)
     LastMethodOutputArguments: 'list[ua.Argument]' = field(default_factory=list)
-    LastMethodCallTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    LastMethodCallTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     LastMethodReturnStatus: 'ua.StatusResult' = field(default_factory=lambda: StatusResult())
 
 
@@ -10648,15 +10648,15 @@ class ProgramDiagnostic2DataType:
 
     CreateSessionId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     CreateClientName: 'ua.String' = None
-    InvocationCreationTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
-    LastTransitionTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    InvocationCreationTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
+    LastTransitionTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     LastMethodCall: 'ua.String' = None
     LastMethodSessionId: 'ua.NodeId' = field(default_factory=lambda: NodeId())
     LastMethodInputArguments: 'list[ua.Argument]' = field(default_factory=list)
     LastMethodOutputArguments: 'list[ua.Argument]' = field(default_factory=list)
     LastMethodInputValues: 'list[ua.Variant]' = field(default_factory=list)
     LastMethodOutputValues: 'list[ua.Variant]' = field(default_factory=list)
-    LastMethodCallTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    LastMethodCallTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
     LastMethodReturnStatus: 'ua.StatusCode' = field(default_factory=lambda: StatusCode())
 
 
@@ -10677,7 +10677,7 @@ class Annotation:
 
     Message: 'ua.String' = None
     UserName: 'ua.String' = None
-    AnnotationTime: 'ua.UtcTime' = field(default_factory=lambda: datetime.now(timezone.utc))
+    AnnotationTime: 'ua.UtcTime' = DATETIME_MIN_VALUE
 
 
 nid = FourByteNodeId(ObjectIds.Union_Encoding_DefaultBinary)

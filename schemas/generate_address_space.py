@@ -212,7 +212,6 @@ class CodeGenerator:
             f"""UA-Nodeset tag:{nodeset_source.nodeset_tag()}\n"""
             f'''"""\n'''
             f"""import datetime\n"""
-            f"""from dateutil.tz import tzutc\n"""
             f""""""
             f"""from enginir_opcua import ua\n"""
             f"""from enginir_opcua.ua import NodeId, QualifiedName, NumericNodeId, StringNodeId, GuidNodeId\n"""

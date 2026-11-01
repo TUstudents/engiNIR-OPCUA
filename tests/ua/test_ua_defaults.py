@@ -9,7 +9,7 @@ from enginir_opcua import ua
 
 def test_ua28_defaults_are_deterministic_and_null_values() -> None:
     """Part 6, 5.1.2, Table 1: DateTime.MinValue (5.1.4) and an all-zero Guid are the defaults."""
-    assert ua.get_default_value(ua.VariantType.DateTime) == datetime(1601, 1, 1, tzinfo=UTC)
+    assert ua.get_default_value(ua.VariantType.DateTime) == datetime.min.replace(tzinfo=UTC)
     assert ua.get_default_value(ua.VariantType.DateTime) == ua.get_default_value(ua.VariantType.DateTime)
     assert ua.get_default_value(ua.VariantType.Guid) == uuid.UUID(int=0)
     assert ua.get_default_value(ua.VariantType.ByteString) == b""

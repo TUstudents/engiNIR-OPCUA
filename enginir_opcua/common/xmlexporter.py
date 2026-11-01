@@ -12,7 +12,7 @@ import logging
 import xml.etree.ElementTree as Et
 from collections.abc import Iterable
 from dataclasses import is_dataclass
-from datetime import UTC
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +26,7 @@ from .. import Node
 from ..ua import object_ids as o_ids
 from .ua_utils import get_base_data_type
 from .utils import fields_with_resolved_types
+from .xmlparser import xs_datetime_text
 
 UINTEGER_TYPES = frozenset(
     (ua.ObjectIds.Byte, ua.ObjectIds.UInt16, ua.ObjectIds.UInt32, ua.ObjectIds.UInt64, ua.ObjectIds.UInteger)
@@ -461,8 +462,8 @@ class XmlExporter:
         if meta["Version"]:
             attributes["Version"] = meta["Version"]
         published = meta["PublicationDate"]
-        if published is not None and published.year > 1601:
-            attributes["PublicationDate"] = published.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if not ua.is_null_datetime(published):
+            attributes["PublicationDate"] = xs_datetime_text(published.replace(microsecond=0))
         if meta["ModelVersion"]:
             attributes["ModelVersion"] = meta["ModelVersion"]
         return attributes
@@ -543,6 +544,8 @@ class XmlExporter:
             id_el.text = str(val)
         elif dtype == ua.NodeId(ua.ObjectIds.Boolean):
             el.text = "true" if val else "false"
+        elif isinstance(val, datetime):
+            el.text = xs_datetime_text(val)
         elif dtype == ua.NodeId(ua.ObjectIds.XmlElement):
             el.text = val.Value or ""
         elif dtype == ua.NodeId(ua.ObjectIds.ByteString):

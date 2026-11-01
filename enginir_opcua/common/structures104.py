@@ -187,7 +187,7 @@ def _default_value_for(uatype: str, optional: bool = False) -> Any:
     if uatype == "Boolean":
         return False
     if uatype == "DateTime":
-        return ua.get_win_epoch()
+        return ua.DATETIME_MIN_VALUE
     if uatype in _NUMERIC_TYPES:
         return getattr(ua, uatype)(0)
     if isinstance(cls, type) and issubclass(cls, Enum):

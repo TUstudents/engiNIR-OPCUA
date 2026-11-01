@@ -16,6 +16,7 @@ import contextlib
 import copy
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
@@ -362,6 +363,7 @@ class UASocketProtocol(asyncio.Protocol):
         self._request_handle += 1
         hdr.RequestHandle = self._request_handle
         hdr.TimeoutHint = int(timeout * 1000)
+        hdr.Timestamp = datetime.now(UTC)
 
     @property
     def is_closed(self) -> bool:

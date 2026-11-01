@@ -9,7 +9,6 @@ Publication date:2026-05-01T00:00:00Z
 UA-Nodeset tag:UA-1.05.07-2026-05-01
 """
 import datetime
-from dateutil.tz import tzutc
 from enginir_opcua import ua
 from enginir_opcua.ua import NodeId, QualifiedName, NumericNodeId, StringNodeId, GuidNodeId
 from enginir_opcua.ua import NodeClass, LocalizedText
@@ -1489,7 +1488,7 @@ def create_standard_address_space_Services_1(server):
     attrs = ua.VariableAttributes(
         DisplayName=LocalizedText("NamespacePublicationDate"),
         DataType=ua.NodeId(ua.ObjectIds.DateTime),
-        Value=ua.Variant(datetime.datetime(2026, 5, 1, 0, 0, tzinfo=tzutc()), ua.VariantType.DateTime),
+        Value=ua.Variant(datetime.datetime(2026, 5, 1, 0, 0, tzinfo=datetime.timezone.utc), ua.VariantType.DateTime),
         ValueRank=-1,
         )
     node = ua.AddNodesItem(

@@ -55,7 +55,6 @@ HARD_TRUST_LIST_LIMIT = 64 * 1024 * 1024
 DEFAULT_ACTIVITY_TIMEOUT = 60.0
 MIN_NONCE_LENGTH = 32
 ENCODING_OVERHEAD = 16 * 1024
-MIN_DATE = datetime(1601, 1, 1, tzinfo=UTC)
 CERTIFICATE_TYPE = ua.NodeId(ua.ObjectIds.RsaSha256ApplicationCertificateType)
 APPLICATION_GROUP = ua.NodeId(ua.ObjectIds.ServerConfiguration_CertificateGroups_DefaultApplicationGroup_TrustList)
 _STATUS = ua.StatusCodes
@@ -124,7 +123,7 @@ class Group:
     store: TrustStore
     kind: str
     entry: FileEntry | None = None
-    last_update: datetime = MIN_DATE
+    last_update: datetime = ua.DATETIME_MIN_VALUE
 
 
 @dataclass
@@ -406,7 +405,7 @@ class CertificateManager:
         for method_name, callback in group_callbacks.items():
             method = await trust_list.get_child(method_name)
             await service.bind_method(method.nodeid, self._guarded(self._for_group(group, callback)))
-        await self._write(await trust_list.get_child("LastUpdateTime"), MIN_DATE, ua.VariantType.DateTime)
+        await self._write(await trust_list.get_child("LastUpdateTime"), ua.DATETIME_MIN_VALUE, ua.VariantType.DateTime)
         timeout = await self._child(trust_list, "ActivityTimeout")
         if timeout is not None:
             await self._write(timeout, self.activity_timeout * 1000, ua.VariantType.Double)

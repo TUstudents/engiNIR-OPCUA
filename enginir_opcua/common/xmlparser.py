@@ -5,14 +5,13 @@ parse xml file from enginir_opcua-spec
 import asyncio
 import base64
 import logging
+import re
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
-
-from dateutil.tz import tzutc
 
 from enginir_opcua import ua
 
@@ -65,12 +64,22 @@ def xs_float(text: str) -> float:
     return float(value)
 
 
+_XS_YEAR = re.compile(r"^(-?)(\d{4,})-")
+_XS_LATEST = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+
 def xs_datetime(text: str) -> datetime:
     """
-    Parse an xs:dateTime. A value without a time zone is UTC. The earliest representable value is the null DateTime
-    (OPC 10000-6 v1.05, 5.3.1.6).
+    Parse an xs:dateTime into an aware UTC datetime (OPC 10000-6 v1.05, 5.3.1.6). A value without a time zone is UTC.
+    A time the platform cannot represent becomes ``ua.DATETIME_MIN_VALUE`` or ``ua.DATETIME_MAX_VALUE`` without an
+    error, and so does 9999-12-31T23:59:59Z and anything later.
     """
     value = text.strip()
+    year = _XS_YEAR.match(value)
+    if year is not None and (year.group(1) or int(year.group(2)) == 0):
+        return ua.DATETIME_MIN_VALUE
+    if year is not None and int(year.group(2)) > 9999:
+        return ua.DATETIME_MAX_VALUE
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     try:
@@ -79,7 +88,25 @@ def xs_datetime(text: str) -> datetime:
         raise ValueError(f"'{text}' is not an xs:dateTime") from ex
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(tzutc())
+    try:
+        parsed = parsed.astimezone(UTC)
+    except OverflowError:
+        return ua.DATETIME_MIN_VALUE if parsed.year == 1 else ua.DATETIME_MAX_VALUE
+    return ua.DATETIME_MAX_VALUE if parsed >= _XS_LATEST else parsed
+
+
+def xs_datetime_text(moment: datetime) -> str:
+    """
+    Write a datetime as a UTC xs:dateTime (OPC 10000-6 v1.05, 5.3.1.6); a naive datetime is UTC. A null DateTime
+    (``ua.is_null_datetime``) is written as 0001-01-01T00:00:00Z and every time from 9999-12-31T23:59:59Z on as
+    9999-12-31T23:59:59Z.
+    """
+    if ua.is_null_datetime(moment):
+        return "0001-01-01T00:00:00Z"
+    utc = moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+    if utc >= _XS_LATEST:
+        return "9999-12-31T23:59:59Z"
+    return utc.replace(tzinfo=None).isoformat() + "Z"
 
 
 def parse_scalar(text: str, type_name: str | type) -> Any:

@@ -31,7 +31,7 @@ def _nested_diagnostics(levels: int) -> ua.DiagnosticInfo:
 
 
 def _data_values() -> list[ua.DataValue]:
-    now = ua.get_win_epoch()
+    now = ua.ticks_to_datetime(10)
     return [
         ua.DataValue(ua.Variant(3.5, ua.VariantType.Double), SourceTimestamp=now),
         ua.DataValue(ua.Variant([1, 2, 3], ua.VariantType.Int32), StatusCode=ua.StatusCode(0x80000000)),

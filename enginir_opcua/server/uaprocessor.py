@@ -9,6 +9,7 @@ import asyncio
 import copy
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from enginir_opcua import ua
@@ -181,6 +182,7 @@ class UaProcessor:
         one that fails after its first chunk is aborted (OPC 10000-6 v1.05, 6.7.3).
         """
         response.ResponseHeader.RequestHandle = requesthandle
+        response.ResponseHeader.Timestamp = datetime.now(UTC)
         try:
             with self.iserver.types.encoding():
                 body = struct_to_binary(response)
@@ -192,6 +194,7 @@ class UaProcessor:
             fault = ua.ServiceFault()
             fault.ResponseHeader.RequestHandle = requesthandle
             fault.ResponseHeader.ServiceResult = ua.StatusCode(ua.StatusCodes.BadResponseTooLarge)
+            fault.ResponseHeader.Timestamp = response.ResponseHeader.Timestamp
             data = self._channel.message_to_binary(
                 struct_to_binary(fault), message_type=msgtype, request_id=seqhdr.RequestId
             )

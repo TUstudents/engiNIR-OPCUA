@@ -36,20 +36,12 @@ class UaNodeAlreadyHistorizedError(ua.UaError):
     """The node's data changes or events are already historized."""
 
 
-def to_ticks(moment: datetime) -> int:
-    """Return a datetime as Int64 ticks of 100 ns since 1601-01-01 UTC."""
-    return ua.datetime_to_win_epoch(moment)
-
-
-def from_ticks(ticks: int) -> datetime:
-    """Return the datetime of Int64 ticks of 100 ns since 1601-01-01 UTC."""
-    return ua.win_epoch_to_datetime(ticks)
-
-
 def key_of_value(datavalue: ua.DataValue) -> int:
     """Return the time a value is stored under: its SourceTimestamp, else its ServerTimestamp, else now."""
-    moment = datavalue.SourceTimestamp or datavalue.ServerTimestamp or datetime.now(UTC)
-    return to_ticks(moment)
+    for moment in (datavalue.SourceTimestamp, datavalue.ServerTimestamp):
+        if moment is not None and not ua.is_null_datetime(moment):
+            return ua.datetime_to_ticks(moment)
+    return ua.datetime_to_ticks(datetime.now(UTC))
 
 
 class HistoryPosition(NamedTuple):
@@ -162,7 +154,7 @@ class _MemoryStore:
     def cutoff(self) -> int | None:
         if not self.period:
             return None
-        return to_ticks(datetime.now(UTC) - self.period)
+        return ua.datetime_to_ticks(datetime.now(UTC) - self.period)
 
     def add(self, key: int, value: Any) -> None:
         self.next_seq += 1
@@ -241,7 +233,7 @@ class HistoryDict(HistoryStorageInterface):
             store.period, store.count = period, count
 
     async def save_event(self, source_id: ua.NodeId, fields: dict[str, ua.Variant], time: datetime) -> None:
-        self._events[source_id].add(to_ticks(time), dict(fields))
+        self._events[source_id].add(ua.datetime_to_ticks(time), dict(fields))
 
     async def read_event_history(self, source_id: ua.NodeId, domain: TimeDomain) -> Page:
         store = self._events.get(source_id)
@@ -354,7 +346,9 @@ class HistoryManager:
         """Queue an event for the history of a notifier; an event without a Time is stored at the current time."""
         self._ensure_consumer()
         fields = event.get_event_props_as_fields_dict()
-        time = getattr(event, "Time", None) or datetime.now(UTC)
+        time = getattr(event, "Time", None)
+        if ua.is_null_datetime(time):
+            time = datetime.now(UTC)
         self._queue.put_nowait(("event", node_id, copy.deepcopy(fields), time))
 
     async def _create_subscription(self) -> Subscription:

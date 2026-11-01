@@ -16,7 +16,7 @@ from enginir_opcua.ua.uaerrors import BadIndexRangeNoData, UaStatusCodeError
 
 from .content_filter import WhereClauseEvaluator
 from .continuation_points import ContinuationPoints
-from .history import HistoryEntry, HistoryPosition, Page, TimeDomain, from_ticks, to_ticks
+from .history import HistoryEntry, HistoryPosition, Page, TimeDomain
 from .node_walk import is_subtype
 
 if TYPE_CHECKING:
@@ -205,12 +205,11 @@ class HistoryReader:
         return digest.digest()
 
     def _request_of(self, details: ua.ReadRawModifiedDetails | ua.ReadEventDetails) -> _Request:
-        epoch = ua.get_win_epoch()
-        start_given = details.StartTime is not None and details.StartTime > epoch
-        end_given = details.EndTime is not None and details.EndTime > epoch
+        start_given = not ua.is_null_datetime(details.StartTime)
+        end_given = not ua.is_null_datetime(details.EndTime)
         count = details.NumValuesPerNode
-        start = to_ticks(details.StartTime) if start_given else None
-        end = to_ticks(details.EndTime) if end_given else None
+        start = ua.datetime_to_ticks(details.StartTime) if start_given else None
+        end = ua.datetime_to_ticks(details.EndTime) if end_given else None
         cap = self.page_cap
         if start is not None and end is not None:
             backward = start > end
@@ -346,7 +345,9 @@ class HistoryReader:
         if outside is not None:
             value: ua.DataValue = outside.value
             return value
-        return ua.DataValue(StatusCode=_status(ua.StatusCodes.BadBoundNotFound), SourceTimestamp=from_ticks(edge))
+        return ua.DataValue(
+            StatusCode=_status(ua.StatusCodes.BadBoundNotFound), SourceTimestamp=ua.ticks_to_datetime(edge)
+        )
 
     async def _nearest(self, node_id: ua.NodeId, edge: int, toward_older: bool) -> HistoryEntry | None:
         if toward_older:

@@ -155,7 +155,7 @@ def test_generated_code_and_runtime_classes_have_the_same_defaults(tmp_path: Pat
     built = generator.get_python_classes({})["ScalarValueDataType"]
     first, second, runtime = ns["ScalarValueDataType"](), ns["ScalarValueDataType"](), built()
     assert first.GuidValue == second.GuidValue == runtime.GuidValue == uuid.UUID(int=0)
-    assert first.DateTimeValue == runtime.DateTimeValue == ua.get_win_epoch()
+    assert first.DateTimeValue == runtime.DateTimeValue == ua.DATETIME_MIN_VALUE
 
 
 def test_custom_structs_array(tmpdir):

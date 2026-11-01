@@ -244,8 +244,14 @@ Variant and defaults:
 - A scalar `None` is accepted for every nullable type and becomes that type's null value.
 - ArrayDimensions are written only for two or more dimensions, all above 0, so an empty multi-dimensional array comes
   back flat.
-- `get_default_value()` returns the null values: DateTime 1601-01-01 UTC and the all-zero Guid instead of the current
-  time and a random Guid.
+- `get_default_value()` returns the null values: DateTime.MinValue (`ua.DATETIME_MIN_VALUE`) and the all-zero Guid
+  instead of the current time and a random Guid.
+- DateTime fields of generated structures default to DateTime.MinValue instead of the time the structure was built
+  (OPC 10000-6, 5.1.2; UA-58). `ua.ViewDescription()` therefore asks for the current view instead of the view at a
+  time, history details such as `ua.ReadRawModifiedDetails()` start with no StartTime and EndTime instead of an empty
+  range at the current time, and two structures built the same way are equal. The client stamps
+  `RequestHeader.Timestamp` and the server `ResponseHeader.Timestamp` when the message is sent; set any other DateTime
+  field, such as `BuildInfo.BuildDate`, yourself.
 - Boolean fields of generated structures default to `False` instead of `True` (OPC 10000-6, 5.1.2), so
   `ua.ReadRawModifiedDetails()` no longer asks for modified values and bounds, and `ua.MonitoringParameters()` no
   longer discards the oldest value. Code that built these structures without setting the field must set it.
@@ -274,6 +280,34 @@ Encoding and decoding:
 - `Buffer.copy(n)` beyond the remaining bytes raises, `Buffer.rewind()` stays inside its window, and
   `Buffer(data, start, size)` checks the window.
 - `ua_binary.test_bit` is `is_bit_set` and returns a `bool`.
+
+Dates and times (OPC 10000-6, 5.1.4, 5.2.2.5 and 5.3.1.6):
+- DateTime.MinValue and MaxValue are the limits of Python's `datetime`, `ua.DATETIME_MIN_VALUE` (0001-01-01 UTC) and
+  `ua.DATETIME_MAX_VALUE` (9999-12-31 23:59:59.999999 UTC), as in the .NET stack. Every time at or before 1601-01-01
+  UTC encodes as 0, every time from 9999-12-31 23:59:59 UTC on as the largest Int64; 0 decodes as MinValue (it decoded
+  as 1601-01-01) and the largest Int64 as MaxValue. A 1601-01-01 UTC that was encoded therefore comes back as
+  MinValue; the earliest time that is not null is 1601-01-01 plus 1 microsecond.
+- `ua.is_null_datetime(dt)` is the test for a null DateTime: None or any time that encodes as 0. Compare with it, not
+  with `== ua.DATETIME_MIN_VALUE`, and check it before arithmetic or time zone conversion, which overflow on MinValue.
+  The server's history, event stamping and XML export use it.
+- `ua.datetime_to_ticks()` and `ua.ticks_to_datetime()` replace `datetime_to_win_epoch()` and
+  `win_epoch_to_datetime()`. Removed: `get_win_epoch()` (use `ua.DATETIME_MIN_VALUE`), `EPOCH_AS_FILETIME`,
+  `HUNDREDS_OF_NANOSECONDS`, `FILETIME_EPOCH_AS_DATETIME`, `FILETIME_EPOCH_AS_UTC_DATETIME`,
+  `MAX_FILETIME_EPOCH_DATETIME`, `MAX_FILETIME_EPOCH_AS_UTC_DATETIME`, `MAX_OPC_FILETIME`, and `to_ticks()` and
+  `from_ticks()` in `server.history`.
+- A DataValue is encoded in the field order of OPC 10000-6, Table 27: SourcePicoseconds comes right after
+  SourceTimestamp. It came after ServerTimestamp, so a DataValue with SourcePicoseconds and a ServerTimestamp was
+  misread by other stacks, and theirs by this one. A null Value, a Good StatusCode and null timestamps are left out,
+  Picoseconds without their timestamp are ignored, and Picoseconds of 10 000 or more are read as 9999.
+- The Picoseconds of a DataValue count the 10 ps intervals below the microsecond of their timestamp, 0 to 99 999, so
+  the 100 ns digit that a `datetime` cannot hold survives a decode and encode. Values below 10 000 mean the same as
+  before. They are None for MinValue and MaxValue.
+- XML: DateTime values are exported as UTC `xs:dateTime` (`2026-11-01T12:30:15Z`, it was `2026-11-01 12:30:15+00:00`),
+  a null DateTime as `0001-01-01T00:00:00Z`; on import, times the platform cannot represent become MinValue or MaxValue
+  instead of an error. `xmlparser.xs_datetime_text()` writes the lexical form. Parsed times carry `datetime.UTC`
+  instead of `dateutil`'s `tzutc()`, also in the generated standard address space, and a text DateTime without a time
+  zone (`string_to_val`) is UTC.
+- An event whose Time is null is stamped with the current time, as one without a Time already was.
 
 Messages and paths:
 - `ua.DataChangeFilter().Trigger` defaults to `StatusValue`.
@@ -538,7 +572,7 @@ Custom types:
   Variant, ...) as `ua:` types, as the standard dictionary does (OPC 10000-5, C.3), instead of `opc:` types that other
   stacks cannot resolve. `DataTypeDictionaryBuilder` raises `UaError` when used before `init()`.
 - A field of a dictionary EnumeratedType defaults to the enumeration's first value, not its last. Code from
-  `generate-structs` defaults a Guid to the null Guid and a DateTime to 1601-01-01, as the classes built at run time do,
+  `generate-structs` defaults a Guid to the null Guid and a DateTime to `ua.DATETIME_MIN_VALUE`, as the classes built at run time do,
   instead of one random Guid and the import time shared by all instances.
 - `make_structure` raises `TypeError` or `ValueError` when the class cannot be built instead of returning `{}`.
   Removed: `structures104.get_default_value` (its only user, the code generator, has its own), `get_ua_class`,

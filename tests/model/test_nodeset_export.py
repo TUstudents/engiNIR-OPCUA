@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -203,3 +204,25 @@ async def test_com87_export_by_namespace_writes_the_model(tmp_path: Path) -> Non
     assert model.get("ModelUri") == URI and model.get("Version") == "2.1"
     assert str(model.get("PublicationDate")).startswith("2022-02-03T04:05:06")
     assert [child.get("ModelUri") for child in model] == ["http://opcfoundation.org/UA/"]
+
+
+async def test_datetime_values_are_exported_as_utc_xs_datetime(tmp_path: Path) -> None:
+    """Part 6, 5.3.1.6: UTC xs:dateTime; DateTime.MinValue is written as 0001-01-01T00:00:00Z."""
+    server = await new_server()
+    ns = await server.register_namespace(URI)
+    stamped = await server.nodes.objects.add_variable(
+        ns, "Stamped", datetime(2026, 11, 1, 12, 30, 15, tzinfo=UTC), ua.VariantType.DateTime
+    )
+    null = await server.nodes.objects.add_variable(ns, "Null", ua.DATETIME_MIN_VALUE, ua.VariantType.DateTime)
+    path = await exported(server, [stamped, null], tmp_path, export_values=True)
+    texts = [
+        str(el.text) for el in ET.parse(path).getroot().iter("{http://opcfoundation.org/UA/2008/02/Types.xsd}DateTime")
+    ]
+    assert sorted(texts) == ["0001-01-01T00:00:00Z", "2026-11-01T12:30:15Z"]
+    fresh = await new_server()
+    await fresh.import_xml(str(path))
+    new_ns = await fresh.get_namespace_index(URI)
+    assert await fresh.get_node(ua.NodeId(stamped.nodeid.Identifier, new_ns)).read_value() == datetime(
+        2026, 11, 1, 12, 30, 15, tzinfo=UTC
+    )
+    assert await fresh.get_node(ua.NodeId(null.nodeid.Identifier, new_ns)).read_value() == ua.DATETIME_MIN_VALUE

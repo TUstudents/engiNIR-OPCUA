@@ -14,7 +14,7 @@ from enginir_opcua.common import sql_injection
 from enginir_opcua.common.event_objects import BaseEvent
 from enginir_opcua.common.node import Node
 from enginir_opcua.common.sql_injection import quote_identifier
-from enginir_opcua.server.history import HistoryDict, HistoryManager, TimeDomain, to_ticks
+from enginir_opcua.server.history import HistoryDict, HistoryManager, TimeDomain
 from enginir_opcua.server.history_sql import HistorySQLite, event_table
 
 
@@ -63,8 +63,8 @@ async def test_srv20_fewer_than_two_of_start_end_count_is_invalid_argument(histo
     for start, end, count in ((None, None, 0), (None, None, 5), (old, None, 0), (None, future(), 0)):
         details = ua.ReadRawModifiedDetails(
             IsReadModified=False,
-            StartTime=start or ua.get_win_epoch(),
-            EndTime=end or ua.get_win_epoch(),
+            StartTime=start or ua.DATETIME_MIN_VALUE,
+            EndTime=end or ua.DATETIME_MIN_VALUE,
             NumValuesPerNode=count,
             ReturnBounds=False,
         )
@@ -329,8 +329,8 @@ async def test_srv22_sql_timestamps_are_integers(history: HistorySQLite) -> None
     await history.save_node_value(node_id, value(1, 1, ServerTimestamp=BASE))
     async with history._db.execute('SELECT "Key", "SourceTimestamp", "ServerTimestamp" FROM "data:ns=2;s=Ticks"') as c:
         row = list(await c.fetchall())[0]
-    expected = to_ticks(BASE + timedelta(seconds=1))
-    assert tuple(row) == (expected, expected, to_ticks(BASE))
+    expected = ua.datetime_to_ticks(BASE + timedelta(seconds=1))
+    assert tuple(row) == (expected, expected, ua.datetime_to_ticks(BASE))
     assert all(isinstance(item, int) for item in row)
 
 
@@ -449,7 +449,7 @@ async def test_com54_event_time_and_type_are_bound_as_parameters() -> None:
     await history.save_event(source, {"EventType": ua.Variant(event_type)}, time)
     async with history._db.execute('SELECT "_Time", "_EventType" FROM "event:i=2253"') as cursor:
         rows = list(await cursor.fetchall())
-    assert rows == [(to_ticks(time), str(event_type))]
+    assert rows == [(ua.datetime_to_ticks(time), str(event_type))]
     await history.stop()
 
 
@@ -480,7 +480,7 @@ async def test_an_event_without_time_is_stored_at_the_capture_time() -> None:
     source = ua.NodeId(ua.ObjectIds.Server)
     await manager.storage.new_historized_event(source, None)
     event = BaseEvent()
-    before = to_ticks(datetime.now(UTC))
+    before = ua.datetime_to_ticks(datetime.now(UTC))
     manager.enqueue_event(source, event)
     await manager._queue.join()
     page = await manager.storage.read_event_history(source, TimeDomain(None, None, 10))

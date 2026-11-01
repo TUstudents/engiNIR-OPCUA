@@ -7,12 +7,11 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import fields
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from dateutil import parser  # type: ignore[attr-defined]
-from dateutil.tz import tzutc
 
 from enginir_opcua import ua
 
@@ -238,9 +237,7 @@ def _convert_scalar_text(string: str, vtype: Any) -> Any:
         return ua.QualifiedName.from_string(string)
     if vtype == ua.VariantType.DateTime:
         value = parser.parse(string)
-        if value.tzinfo is not None:
-            value = value.astimezone(tzutc())
-        return value
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     if vtype == ua.VariantType.LocalizedText:
         return ua.LocalizedText.from_string(string)
     if vtype == ua.VariantType.StatusCode:

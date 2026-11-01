@@ -92,7 +92,6 @@ class CodeGenerator:
         self.write(f"Autogenerate code from xml spec\n{nodeset_source.provenance()}")
         self.write('"""')
         self.write("")
-        self.write("from datetime import datetime, timezone")
         self.write("from enum import IntEnum, IntFlag")
         self.write("from dataclasses import dataclass, field")
         self.write("")
@@ -100,6 +99,7 @@ class CodeGenerator:
         self.write(
             "from enginir_opcua.ua.uatypes import UInt64, Boolean, Float, Double, Null, String, CharArray, DateTime, Guid"
         )
+        self.write("from enginir_opcua.ua.uatypes import DATETIME_MIN_VALUE")
         self.write("from enginir_opcua.ua.uatypes import AccessLevel, EventNotifier")
         self.write("from enginir_opcua.ua.uatypes import LocalizedText, Variant, QualifiedName, StatusCode, DataValue")
         self.write("from enginir_opcua.ua.uatypes import RelativePath, RelativePathElement")
@@ -232,7 +232,7 @@ class CodeGenerator:
         if dtype == "Guid":
             return "Guid(int=0)"
         if dtype == "DateTime":
-            return "field(default_factory=lambda: datetime.now(timezone.utc))"
+            return "DATETIME_MIN_VALUE"
         if dtype in ("Int16", "Int32", "Int64", "UInt16", "UInt32", "UInt64", "Double", "Float", "Byte"):
             return "0"
         if dtype in "ExtensionObject":

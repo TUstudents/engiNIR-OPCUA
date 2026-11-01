@@ -35,16 +35,14 @@ from .uaerrors import UaError, UaStatusCodeError, UaStringParsingError
 
 _logger = logging.getLogger(__name__)
 
-EPOCH_AS_FILETIME = 116444736000000000  # January 1, 1970 as MS file time
-HUNDREDS_OF_NANOSECONDS = 10000000
-FILETIME_EPOCH_AS_DATETIME = datetime(1601, 1, 1)
-FILETIME_EPOCH_AS_UTC_DATETIME = FILETIME_EPOCH_AS_DATETIME.replace(tzinfo=UTC)
-MAX_FILETIME_EPOCH_DATETIME = datetime(9999, 12, 31, 23, 59, 59)
-MAX_FILETIME_EPOCH_AS_UTC_DATETIME = MAX_FILETIME_EPOCH_DATETIME.replace(tzinfo=UTC)
-MAX_OPC_FILETIME = (
-    int((MAX_FILETIME_EPOCH_DATETIME - FILETIME_EPOCH_AS_DATETIME).total_seconds()) * HUNDREDS_OF_NANOSECONDS
-)
 MAX_INT64 = 2**63 - 1
+DATETIME_MIN_VALUE = datetime.min.replace(tzinfo=UTC)
+DATETIME_MAX_VALUE = datetime.max.replace(tzinfo=UTC)
+_TICKS_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
+_LATEST_ENCODABLE = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+_TICKS_PER_MICROSECOND = 10
+_TICKS_PER_SECOND = 10_000_000
+_TICKS_PER_DAY = 86_400 * _TICKS_PER_SECOND
 
 
 def type_is_optional(uatype: Any) -> bool:
@@ -227,45 +225,61 @@ class Enumeration(IntEnum):
     pass
 
 
-_microsecond = timedelta(microseconds=1)
+def _ticks_since_epoch(dt: datetime) -> int:
+    delta = dt - _TICKS_EPOCH
+    return (
+        (delta.days * _TICKS_PER_DAY)
+        + (delta.seconds * _TICKS_PER_SECOND)
+        + delta.microseconds * _TICKS_PER_MICROSECOND
+    )
 
 
-def datetime_to_win_epoch(dt: datetime) -> int:
+def datetime_to_ticks(dt: datetime) -> int:
     """
-    Convert a datetime to an OPC UA DateTime: 100 ns intervals since 1601-01-01 UTC (OPC 10000-6 v1.05, 5.2.2.5).
+    Encode a datetime as an OPC UA DateTime, the number of 100 ns intervals since 1601-01-01 UTC
+    (OPC 10000-6 v1.05, 5.2.2.5).
 
-    Times before 1601 give 0, times from 9999-12-31 on give the largest Int64. A naive datetime is taken as UTC.
+    A naive datetime is UTC. Every time at or before 1601-01-01 00:00 UTC, DATETIME_MIN_VALUE included, gives 0; every
+    time at or after 9999-12-31 23:59:59 UTC, DATETIME_MAX_VALUE included, gives the largest Int64.
     """
     if dt.tzinfo is None:
-        ref = FILETIME_EPOCH_AS_DATETIME
-        max_ep = MAX_FILETIME_EPOCH_DATETIME
-    else:
-        ref = FILETIME_EPOCH_AS_UTC_DATETIME
-        max_ep = MAX_FILETIME_EPOCH_AS_UTC_DATETIME
-    # Python datetime starts from year 1, opc ua only support dates starting 1601-01-01 12:00AM UTC
-    # So we need to trunc the value to zero
-    if ref >= dt:
+        dt = dt.replace(tzinfo=UTC)
+    if dt <= _TICKS_EPOCH:
         return 0
-    # A date/time is encoded as the maximum value for an Int64 if either
-    # The value is equal to or greater than 9999-12-31 11:59:59PM UTC,
-    if dt >= max_ep:
+    if dt >= _LATEST_ENCODABLE:
         return MAX_INT64
-    return 10 * ((dt - ref) // _microsecond)
+    return _ticks_since_epoch(dt)
 
 
-def get_win_epoch() -> datetime:
-    """The OPC UA null DateTime, 1601-01-01 00:00 UTC."""
-    return win_epoch_to_datetime(0)
+_LATEST_TICKS = _ticks_since_epoch(_LATEST_ENCODABLE)
 
 
-def win_epoch_to_datetime(epch: int) -> datetime:
-    """Convert an OPC UA DateTime to an aware UTC datetime; values outside 1601 to 9999 are clamped."""
-    if epch >= MAX_OPC_FILETIME:
-        # FILETIMEs after 31 Dec 9999 are truncated to max value
-        return MAX_FILETIME_EPOCH_AS_UTC_DATETIME
-    if epch < 0:
-        return FILETIME_EPOCH_AS_UTC_DATETIME
-    return FILETIME_EPOCH_AS_UTC_DATETIME + timedelta(microseconds=epch // 10)
+def ticks_to_datetime(ticks: int) -> datetime:
+    """
+    Decode an OPC UA DateTime (OPC 10000-6 v1.05, 5.2.2.5) to an aware UTC datetime.
+
+    0 and below give DATETIME_MIN_VALUE, every value from 9999-12-31 23:59:59 UTC on gives DATETIME_MAX_VALUE, and the
+    100 ns digit is truncated. The earliest time that is not null is therefore 1601-01-01 00:00:00.000001 UTC; a
+    1601-01-01 00:00 UTC that was encoded comes back as DATETIME_MIN_VALUE.
+    """
+    if ticks <= 0:
+        return DATETIME_MIN_VALUE
+    if ticks >= _LATEST_TICKS:
+        return DATETIME_MAX_VALUE
+    return _TICKS_EPOCH + timedelta(microseconds=ticks // _TICKS_PER_MICROSECOND)
+
+
+def is_null_datetime(dt: datetime | None) -> bool:
+    """
+    Whether a DateTime is null: None, or a time that encodes as 0, that is DATETIME_MIN_VALUE and every time at or
+    before 1601-01-01 00:00 UTC (OPC 10000-6 v1.05, 5.1.2 and 5.2.2.5). Check this before arithmetic, time zone
+    conversion or formatting, which overflow on DATETIME_MIN_VALUE.
+    """
+    if dt is None:
+        return True
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt <= _TICKS_EPOCH
 
 
 class ValueRank(IntEnum):
@@ -1272,8 +1286,13 @@ Integer = Variant
 @dataclass(slots=True)
 class DataValue:
     """
-    A value with an associated timestamp, and quality.
-    Automatically generated from xml , copied and modified here to fix errors in xml spec
+    A value with its StatusCode and timestamps (OPC 10000-4 v1.05, 7.11; binary encoding OPC 10000-6 v1.05, 5.2.2.17).
+
+    A datetime holds microseconds, the encoding 100 ns ticks plus 10 ps intervals. So that a DataValue keeps the full
+    precision (OPC 10000-6 v1.05, 5.1.4), the Picoseconds fields count the 10 ps intervals below the microsecond of
+    their timestamp, 0 to 99 999; the encoder moves the 100 ns digit into the timestamp and sends the rest, the
+    decoder does the reverse. Values below 10 000 therefore mean the same as on the wire. A timestamp that is None or
+    null (``is_null_datetime``) is not sent, nor are its Picoseconds; neither are a null Value and a Good StatusCode.
 
     :ivar Value:
     :vartype Value: Variant
@@ -1281,11 +1300,11 @@ class DataValue:
     :vartype StatusCode: StatusCode
     :ivar SourceTimestamp:
     :vartype SourceTimestamp: datetime
-    :ivar SourcePicoSeconds:
+    :ivar SourcePicoseconds: 10 ps intervals below the microsecond of SourceTimestamp, 0 to 99 999
     :vartype SourcePicoseconds: int
     :ivar ServerTimestamp:
     :vartype ServerTimestamp: datetime
-    :ivar ServerPicoseconds:
+    :ivar ServerPicoseconds: 10 ps intervals below the microsecond of ServerTimestamp, 0 to 99 999
     :vartype ServerPicoseconds: int
     """
 
@@ -1358,7 +1377,7 @@ def datatype_to_varianttype(int_type: int | NodeId) -> VariantType | VariantType
 
 
 _NULL_SCALAR_FACTORIES: dict[VariantType | VariantTypeCustom, Callable[[], Any]] = {
-    VariantType.DateTime: get_win_epoch,
+    VariantType.DateTime: lambda: DATETIME_MIN_VALUE,
     VariantType.Guid: lambda: uuid.UUID(int=0),
     VariantType.NodeId: NodeId,
     VariantType.ExpandedNodeId: ExpandedNodeId,
@@ -1392,7 +1411,7 @@ def get_default_value(vtype: VariantType) -> Any:
     if vtype == VariantType.String:
         return None
     if vtype == VariantType.DateTime:
-        return get_win_epoch()
+        return DATETIME_MIN_VALUE
     if vtype == VariantType.Guid:
         return uuid.UUID(int=0)
     if vtype == VariantType.XmlElement:

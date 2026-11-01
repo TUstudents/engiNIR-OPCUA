@@ -140,6 +140,15 @@ after subscribing; pass ``refresh=False`` for the old behaviour. ``get_keepalive
 **Structures.** Boolean fields of generated structures default to ``False``, as the specification says. For example
 ``ua.ReadRawModifiedDetails()`` no longer asks for modified values and bounds, and ``ua.MonitoringParameters()`` no
 longer discards the oldest value; set the field when you need ``True``.
+DateTime fields default to DateTime.MinValue instead of the current time, so set ``StartTime`` and ``EndTime`` of
+history details and any timestamp you send.
+
+**Dates and times.** DateTime.MinValue is ``ua.DATETIME_MIN_VALUE`` (0001-01-01 UTC, Python's earliest time); a
+DateTime of 0 on the wire decodes to it instead of 1601-01-01. Test for a null DateTime with ``ua.is_null_datetime()``,
+which is true for every time at or before 1601-01-01 UTC, and check it before arithmetic or time zone conversion.
+``ua.datetime_to_ticks()`` and ``ua.ticks_to_datetime()`` replace ``datetime_to_win_epoch()`` and
+``win_epoch_to_datetime()``; ``get_win_epoch()`` is gone. The Picoseconds of a DataValue count 10 ps below the
+microsecond (0 to 99 999), so the 100 ns digit survives a round trip.
 
 **Strings.** ``NodeId.to_string()`` writes ``svr=`` in front, and ``from_string()`` refuses anything malformed.
 ``QualifiedName.to_string()`` writes names in namespace 0 without a prefix (``Root``, not ``0:Root``), which also
